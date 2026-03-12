@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "starfish-server"
+version = "0.1.0"
+description = "Python server for the Starfish sync protocol"
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi>=0.100",
+  "pydantic>=2.0",
+  "cryptography>=41.0",
+  "uvicorn>=0.20",
+  "httpx>=0.25.0",
+  "starfish-protocol",
+]
+
+[project.optional-dependencies]
+s3 = ["aiobotocore>=2.5.0"]
+dev = [
+  "pytest>=7.0",
+  "pytest-asyncio>=0.21",
+  "respx>=0.20",
+]
+
+[tool.uv.sources]
+starfish-protocol = { path = "../protocol", editable = true }
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

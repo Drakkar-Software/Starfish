@@ -1,0 +1,178 @@
+name: Publish Python Packages to PyPI
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install protocol
+        working-directory: packages/python/protocol
+        run: uv pip install --system -e ".[dev]"
+
+      - name: Run protocol tests
+        working-directory: packages/python/protocol
+        run: pytest -v
+
+      - name: Install server dependencies
+        working-directory: packages/python/server
+        run: uv pip install --system -e ".[dev]"
+
+      - name: Run server tests
+        working-directory: packages/python/server
+        run: pytest -v
+
+      - name: Install client dependencies
+        working-directory: packages/python/client
+        run: uv pip install --system -e ".[dev]"
+
+      - name: Run client tests
+        working-directory: packages/python/client
+        run: pytest -v
+
+  publish-protocol:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set version from tag
+        working-directory: packages/python/protocol
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$'; then
+            echo "Invalid version format: $VERSION" >&2
+            exit 1
+          fi
+          python -c "
+          import sys
+          version = sys.argv[1]
+          path = 'pyproject.toml'
+          content = open(path).read()
+          content = content.replace('version = \"0.1.0\"', f'version = \"{version}\"', 1)
+          open(path, 'w').write(content)
+          " "$VERSION"
+
+      - name: Build package
+        working-directory: packages/python/protocol
+        run: uv build
+
+      - name: Publish to PyPI
+        working-directory: packages/python/protocol
+        run: uv publish
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}
+
+  publish-client:
+    needs: [test, publish-protocol]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set version from tag
+        working-directory: packages/python/client
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$'; then
+            echo "Invalid version format: $VERSION" >&2
+            exit 1
+          fi
+          python -c "
+          import sys
+          version = sys.argv[1]
+          path = 'pyproject.toml'
+          content = open(path).read()
+          content = content.replace('version = \"0.1.0\"', f'version = \"{version}\"', 1)
+          open(path, 'w').write(content)
+          " "$VERSION"
+
+      - name: Build package
+        working-directory: packages/python/client
+        run: uv build
+
+      - name: Publish to PyPI
+        working-directory: packages/python/client
+        run: uv publish
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}
+
+  publish-server:
+    needs: [test, publish-protocol]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set version from tag
+        working-directory: packages/python/server
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$'; then
+            echo "Invalid version format: $VERSION" >&2
+            exit 1
+          fi
+          python -c "
+          import sys
+          version = sys.argv[1]
+          path = 'pyproject.toml'
+          content = open(path).read()
+          content = content.replace('version = \"0.1.0\"', f'version = \"{version}\"', 1)
+          open(path, 'w').write(content)
+          " "$VERSION"
+
+      - name: Build package
+        working-directory: packages/python/server
+        run: uv build
+
+      - name: Publish to PyPI
+        working-directory: packages/python/server
+        run: uv publish
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}
