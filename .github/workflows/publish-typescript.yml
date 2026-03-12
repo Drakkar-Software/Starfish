@@ -1,0 +1,94 @@
+name: Publish TS Packages to GitHub Packages
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm build
+
+      - name: Run tests
+        run: pnpm test
+
+  publish-protocol:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          registry-url: "https://npm.pkg.github.com"
+          scope: "@${{ github.repository_owner }}"
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm build
+
+      - name: Set version and scope from tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          cd packages/ts/protocol
+          npm pkg set "name=@${OWNER}/starfish-protocol" "version=$VERSION"
+
+      - name: Publish starfish-protocol
+        working-directory: packages/ts/protocol
+        run: pnpm publish --no-git-checks --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-client:
+    needs: publish-protocol
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          registry-url: "https://npm.pkg.github.com"
+          scope: "@${{ github.repository_owner }}"
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm build
+
+      - name: Set version and scope from tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          cd packages/ts/client
+          npm pkg set "name=@${OWNER}/starfish-client" "version=$VERSION"
+
+      - name: Publish starfish-client
+        working-directory: packages/ts/client
+        run: pnpm publish --no-git-checks --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

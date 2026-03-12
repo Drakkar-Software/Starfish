@@ -1,0 +1,28 @@
+# Node / TypeScript
+node_modules/
+dist/
+.turbo/
+*.tsbuildinfo
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+*.egg
+.venv/
+venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Rust
+target/
+Cargo.lock
+
+# Environment
+.env
+.env.local
+.env.*.local
+.env.test

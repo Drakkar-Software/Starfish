@@ -1,0 +1,147 @@
+{
+  "secret": "test-secret-key",
+  "salt": "test-pubkey",
+  "derived_key_hex": "d2351f64847fb9de892ba7ea754402fe7ca04924c31b28d716dee0b2658016c7",
+  "vectors": [
+    {
+      "plaintext": { "signal": "buy", "price": 100 },
+      "iv_hex": "000102030405060708090a0b",
+      "encrypted": "AAECAwQFBgcICQoLOZhj50a7ZjXw5Xr5jCYtKxlOebTAaF+NpvrbSrlgeiSLRl6bhiTCSo1XIeU="
+    },
+    {
+      "plaintext": { "nested": { "a": 1, "b": { "c": "hello" } }, "arr": [1, 2, 3] },
+      "iv_hex": "0c0d0e0f1011121314151617",
+      "encrypted": "DA0ODxAREhMUFRYXisaDSGzW9MSdvLhYdqqW7zHZ9U85aca6DavLTFVGOCErN9ABVXFwEzCeD9K3fE66r0QBCzPQpIZ4TZ3uaqkwqUJw"
+    },
+    {
+      "plaintext": {},
+      "iv_hex": "191a1b1c1d1e1f2021222324",
+      "encrypted": "GRobHB0eHyAhIiMkRneOaS5B/FgQ6utDjwkETP7x"
+    },
+    {
+      "plaintext": {
+        "level1": {
+          "level2": { "level3": { "value": "deep", "flag": true } },
+          "name": "test"
+        }
+      },
+      "iv_hex": "252627282930313233343536",
+      "encrypted": "JSYnKCkwMTIzNDU2jZUdDo9Y7uuMKLEuiWLb+nwSkGfwpfuPwut9u0+zJvjnpVLBoRxF/CjF0Jmq5N7CfVT7WF/bye4G5O+nco74EzDqQVcE5QwcpHqaSl611u2znCJmYhXMHeLm2Q=="
+    },
+    {
+      "plaintext": {
+        "items": [
+          { "id": 1, "meta": { "tag": "a" } },
+          { "id": 2, "meta": { "tag": "b" } }
+        ]
+      },
+      "iv_hex": "373839404142434445464748",
+      "encrypted": "Nzg5QEFCQ0RFRkdIlfU5vcxpr1iHsg9VupJNABeiRjsa90ewVY+KuKZrQUp8gHRskCsuy2pfv/gnpzTq9dlJoAKYPzmOrW4AtqkmAi+fB4Yl/hLConJRTIq3GZWJjqM="
+    },
+    {
+      "plaintext": {
+        "k1": "v1", "k2": "v2", "k3": "v3", "k4": "v4",
+        "k5": "v5", "k6": "v6", "k7": "v7", "k8": "v8",
+        "nested": { "a": 1, "b": 2, "c": 3 }
+      },
+      "iv_hex": "494a4b4c4d4e4f5051525354",
+      "encrypted": "SUpLTE1OT1BRUlNUH25Utn2v7zZpqdgtenQqB/EXMjP1QlkQd4xJC3SKHqSx1fNgTVxJ44X9JDpoojrwYBPao6CqVRN/qNahTFwfokaHhV4blGT85o7PamuRTbjGH10vosv0huuRrsjmRosx4531Z4478x6RODh7XwLaUBF6UcF2xbt4NHyNW/u3"
+    },
+    {
+      "plaintext": {
+        "special": "line1\\nline2\\ttab",
+        "unicode": "🎯🔑",
+        "empty": "",
+        "quote": "he said \"hi\""
+      },
+      "iv_hex": "555657585960616263646566",
+      "encrypted": "VVZXWFlgYWJjZGVmXSSHNzgDNSTXPkfTshAaWWw4xIo09yc7gJP1O6gpePt1DBUCq86B1daV5ZeRslNwt5nok7vBzBa0J5HVjnpGMQ38wnm92lqNh5zgkbDbt/GtSinaISUoOuRqscG+mK7wAWPrOiuo8Jfx6w=="
+    },
+    {
+      "plaintext": {
+        "trades": [
+          { "pair": "BTC/USD", "side": "buy", "qty": 0.5, "price": 42000.5, "ts": 1700000000 },
+          { "pair": "ETH/USD", "side": "sell", "qty": 10, "price": 2200.75, "ts": 1700000001 }
+        ],
+        "account": {
+          "id": "acc-123",
+          "balance": { "usd": 50000, "btc": 1.5, "eth": 20 },
+          "margin": { "used": 0.3, "available": 0.7 }
+        }
+      },
+      "iv_hex": "676869707172737475767778",
+      "encrypted": "Z2hpcHFyc3R1dnd4F3EOgoZONai3nUadHBexlLctT+YviM+gPL4+cWeHNxE1a/3HxMiZG5mV8vTABCwwI8L3mc1SMcQ1foWpfR+SV/lLuLOQxdga0M7cGy6pcEhV0KsoxrCdSvjAGWCobOE6m6wpa4Wk3Cks7O4mRtoMdtbdGqtIPUCAdIqDU9umLkq+d0xF8KB0wuzzzgvJ/FxGjdwDwyYxlYZ80eXjWX92vAD7f/1u+O0L9QD6rpCRHZISqMmSeJYlE8eZIvzXN5L1VNXcJfhU8xmxtLnb8vhpHGJur5tgzBTd9DFDog8GCgGIxNX7mX/2L9GhELI59jbWwMgOKqXuuFEd44mIYhk64ED1WUvc8KY2WNfyYthusHBKSa0kl3t5yRLWgxk="
+    },
+    {
+      "plaintext": {
+        "matrix": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+        "labels": ["x", "y", "z"],
+        "transform": {
+          "scale": { "x": 1.5, "y": 2, "z": 0.5 },
+          "rotate": { "pitch": 45, "yaw": -30, "roll": 0 },
+          "translate": { "x": 100, "y": -50, "z": 0 }
+        }
+      },
+      "iv_hex": "797a7b7c7d7e7f8081828384",
+      "encrypted": "eXp7fH1+f4CBgoOEsm7lekUaullKIxXNSvyWeLZ+Zavk5BJStBoo1K3TXGUEyvppD1wzZPI990rh7AZgPwIbb3v8RdXa3648C6u+lVKf1k6aUETWmleSsu5d3UM+EvrVTZ8Zxa/GHMek08o8j59hE78vvsEh269WOA7ENimwxxJoCCWtZl4fy3ahJWMOVrWwV5nUTOq7xS8V32alxUTurUTkRDTLesWV0mTgaqlcx20kzV8PMsxNjFoRJAIJjRfbG+0Q9WSiKcmVyP/8bROl7VCJ"
+    },
+    {
+      "plaintext": {
+        "config": {
+          "retry": { "max_attempts": 5, "backoff_ms": [100, 200, 400, 800, 1600], "jitter": true },
+          "endpoints": [
+            { "url": "https://api.example.com/v1", "weight": 0.7, "healthy": true },
+            { "url": "https://api.example.com/v2", "weight": 0.3, "healthy": false }
+          ],
+          "timeouts": { "connect": 5000, "read": 30000, "write": 10000 },
+          "features": { "encryption": true, "compression": "gzip", "batch_size": 100 }
+        }
+      },
+      "iv_hex": "858687888990919293949596",
+      "encrypted": "hYaHiImQkZKTlJWWaevrWMBkeZ2nmmGh9ZkNrXBLuzt1x600Th6Dm8Oh8CVdjfG0gawaTWRXUOzBT1pUxeg5uG0P/yv41OvruSHbC+JEblMCTUGflgSIcwUcp+gDdG2qqco+svs1RWIwCVhYtJBJ7LoQYXedBiPQYKeyTElUfyTOBFxwbTB2VWEQHkjInhpLbZS/hIwpIwyJxDueixixw0jo4V9wBnSlVeoD7+MfpUmeP1wx02RxFuTku2Oap0DAVAy7BBWQFcD41226j8vu4FtPDh9yyzQyXPLwU3hij8MXTlCYclKXW56tP2ndqm4fstHN0H8Wgsb2jswgeb4nKtjY+93tqTQ0TLSyfdxnnmXlqHlpjmjDcQP0g12IYP0g7YWIbItgOnziTE2lZirJq/cK2GAa6ORgb0Khob8jL7BNcXsEVuUPoiO+rvhsDqF3AbYTfo+v0Gik//MiXDpWFPNbBuldj1c6eDD3tyW25sp35SyAKMSYRQ1ns7ij4MiZFTA="
+    },
+    {
+      "plaintext": {
+        "pipeline": [
+          { "stage": "ingest", "status": "complete", "metrics": { "rows": 1000000, "bytes": 52428800, "duration_ms": 3400 } },
+          { "stage": "transform", "status": "running", "metrics": { "rows": 750000, "bytes": null, "duration_ms": null } },
+          { "stage": "load", "status": "pending", "metrics": null }
+        ],
+        "metadata": {
+          "run_id": "run-2024-001",
+          "triggered_by": "cron",
+          "tags": ["production", "daily", "critical"]
+        }
+      },
+      "iv_hex": "979899a0a1a2a3a4a5a6a7a8",
+      "encrypted": "l5iZoKGio6SlpqeoR3hxnEDGMo1m0ypbYnMw6imFFjxL6MgMo3AKiFKbRkN2dmuWnLmaXaUkGo8Xq8hLBFUSjI7U1MGuagLLSiQ2bcunRe+hBBM/2CqiJTpu4nMWDk3R1raktfBPl0+zU5PECUrl283T4jEHZLlUj5CUYMD9JGKu0S3wpxx7uTB1lDUTz6OdQcx+0XDfeXKSdYprf/qzzTdh9Q0891DVpbUXnVSPI0XnqibCCn3mBVOXYQRXbhwJolPOVXvrSF9rZUaR8ZLRdqm+NZUAef/1sjAnG3kgszD71rymPUkukx7oal9e13rVbVl2AsqH7eJUTfuWDQDwuNRfU7dJHgA+Wfs6n9+w/liI9hHYDgxkT84HYrtWGqK173CUfxhTBo6RAboS572AeKinB9anp+C79lPZw2DTUbBywOkW0JSuXonU+gszA4cfBX2yAS7ue3f2+pvINpicwbo0NIpbgtzAhj2NRJPswSiCPFpn1t/BrtzuGe+ZgJWTb6XvMRyaojH4NQ=="
+    },
+    {
+      "plaintext": {
+        "users": [
+          {
+            "id": 1, "name": "Alice", "roles": ["admin", "editor"],
+            "preferences": {
+              "theme": "dark", "locale": "en-US",
+              "notifications": { "email": true, "push": false, "sms": true }
+            }
+          },
+          {
+            "id": 2, "name": "Bob", "roles": ["viewer"],
+            "preferences": {
+              "theme": "light", "locale": "fr-FR",
+              "notifications": { "email": false, "push": true, "sms": false }
+            }
+          }
+        ],
+        "permissions": {
+          "admin": ["read", "write", "delete", "manage"],
+          "editor": ["read", "write"],
+          "viewer": ["read"]
+        }
+      },
+      "iv_hex": "a9aaabacadaeafb0b1b2b3b4",
+      "encrypted": "qaqrrK2ur7CxsrO0u5nmFHoDKbZ22StDFtvJXMFvHA7xzpa+j5/Z925bj2vxejtcLHZwxJlMU+ZT6KJOxy+YPwkf4VbZdNvpKQ7hskHcGVOx2MzSDDa1pwEl6cN6EfHEl/+29/GsYH7VBgDBJWrMYCM92iPLsdrPX08ElsDGvr2oUQrCQY1YEnvHR/EGyMMob299QRJQTAUJ+1ObYyNlHwb2YWNj/CS1xIs3waKO2DVoxYd2V2BvJXVD/VVdbYbqHX1rHAWYhmA/EPvrnX6zU6/sDCsRrCoMMKvoa4/U0VGTLH2FEwDIFPe8zrt9+nIOR7r5yVnpM1eRrhSNXaVTwljxpP5Y8XrTUw0I/lSIbay9JP6DRL39wTYrwdSB/ejsj2hPn6PDEaeOEiwzSNOWtC6S65NmPfE6sa9ZTKDlIYrxdp0ORi0INFvuKJHXzhiwK6HekbkwzlaFiyTujwvOOluWuLK7Nsfbh13yrOz86xvgA4K3rGCcVDYTQma5R5argqBdOKBTWX9z59AcDIBgQnA+uN3PLzDwiC+8aXaphst5Qiq7FJbC9unE04/6SymR34ONSXJO5F+tPQ=="
+    }
+  ]
+}

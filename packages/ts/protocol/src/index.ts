@@ -1,0 +1,6 @@
+export { configurePlatform, getCrypto, getBase64 } from "./platform.js"
+export type { CryptoProvider, Base64Provider, PlatformConfig } from "./platform.js"
+export { stableStringify, computeHash } from "./hash.js"
+export { deepMerge } from "./merge.js"
+export type { PullResult, PushSuccess } from "./types.js"
+export { deriveKey, IV_BYTES, ENCRYPTED_KEY } from "./crypto.js"
