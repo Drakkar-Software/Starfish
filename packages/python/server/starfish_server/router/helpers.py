@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 
 from fastapi.responses import JSONResponse
 
-from starfish_server.interfaces import IObjectStore
+from starfish_server.storage.base import AbstractObjectStore
 from starfish_server.protocol.pull import pull
 from starfish_server.protocol.push import push
 from starfish_server.protocol.push import Author
@@ -63,7 +63,7 @@ def deep_sanitize(obj: dict[str, Any]) -> dict[str, Any]:
 
 async def handle_sync_pull(
     document_key: str,
-    store: IObjectStore,
+    store: AbstractObjectStore,
     checkpoint_param: str | None = None,
     force_full_fetch: bool = False,
     client_encrypted: bool = False,
@@ -97,7 +97,7 @@ async def handle_sync_pull(
 
 async def handle_sync_push(
     document_key: str,
-    store: IObjectStore,
+    store: AbstractObjectStore,
     body: dict[str, Any],
     identity: str | None = None,
     verify_signature: SignatureVerifier | None = None,

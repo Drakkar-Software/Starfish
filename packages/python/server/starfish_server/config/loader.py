@@ -4,7 +4,7 @@
 import json
 from pathlib import Path
 
-from starfish_server.interfaces import IObjectStore
+from starfish_server.storage.base import AbstractObjectStore
 from starfish_server.config.schema import SyncConfig
 from starfish_server.config.validate import validate_config
 from starfish_server.errors import StartupError
@@ -35,7 +35,7 @@ def load_config_file(path: str | Path) -> SyncConfig:
 
 
 async def load_config(
-    store: IObjectStore,
+    store: AbstractObjectStore,
     config_key: str = DEFAULT_CONFIG_KEY,
 ) -> SyncConfig | None:
     """Load and validate a SyncConfig from storage.
@@ -54,7 +54,7 @@ async def load_config(
 
 
 async def save_config(
-    store: IObjectStore,
+    store: AbstractObjectStore,
     config: SyncConfig,
     config_key: str = DEFAULT_CONFIG_KEY,
 ) -> None:

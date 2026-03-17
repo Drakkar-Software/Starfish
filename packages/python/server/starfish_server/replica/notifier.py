@@ -1,6 +1,7 @@
 """Notification publisher — fan-out push notifications to replica subscribers."""
 
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -8,7 +9,7 @@ import logging
 
 import httpx
 
-from starfish_server.replica.subscriber import SubscriptionStore
+from starfish_server.replica.subscriber import Subscription, SubscriptionStore
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +67,7 @@ class NotificationPublisher:
         if self._secret:
             headers[_SIGNATURE_HEADER] = _sign(body, self._secret)
 
-        for sub in subscribers:
+        async def _notify_one(sub: Subscription) -> None:
             try:
                 resp = await self._client.post(
                     f"{sub.webhook_url.rstrip('/')}/replica/notify",
@@ -81,3 +82,5 @@ class NotificationPublisher:
                     )
             except httpx.HTTPError as exc:
                 logger.warning("Failed to notify %s: %s", sub.webhook_url, exc)
+
+        await asyncio.gather(*(_notify_one(sub) for sub in subscribers), return_exceptions=True)

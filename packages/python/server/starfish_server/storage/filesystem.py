@@ -6,7 +6,10 @@ import re
 from asyncio import to_thread
 from dataclasses import dataclass
 
-from starfish_server.interfaces import IObjectStore
+import aiofiles
+import aiofiles.os
+
+from starfish_server.storage.base import AbstractObjectStore
 
 # Keys may only contain alphanumeric chars, dots, underscores, hyphens, colons, at-signs,
 # and forward slashes (used as directory separators). This mirrors the path-segment
@@ -27,15 +30,16 @@ class FilesystemStorageOptions:
     """Root directory for all stored objects, e.g. ``"./data"`` or ``"/var/starfish"``."""
 
 
-class FilesystemObjectStore:
+class FilesystemObjectStore(AbstractObjectStore):
     """Object store backed by the local filesystem.
 
     Each key maps to a file at ``{base_dir}/{key}``. The ``base_dir`` is created
     on first write if it does not already exist.
 
-    All I/O is dispatched to a thread pool via ``asyncio.to_thread`` so the
-    event loop is never blocked. Writes are atomic: data is written to a
-    temporary ``.tmp`` sibling file and then renamed into place.
+    File reads and writes use ``aiofiles`` for non-blocking async I/O.
+    Writes are atomic: data is written to a temporary ``.tmp`` sibling file
+    and then renamed into place. Directory listing uses ``asyncio.to_thread``
+    as ``os.walk`` has no async equivalent.
 
     This store is intended for local development and simple single-node
     deployments. For production, use :class:`~starfish_server.storage.s3.S3ObjectStore`.
@@ -44,25 +48,17 @@ class FilesystemObjectStore:
     def __init__(self, opts: FilesystemStorageOptions) -> None:
         self._base = os.path.abspath(opts.base_dir)
 
-    # ── Helpers ──────────────────────────────────────────────────────────────
-
     def _path(self, key: str) -> str:
         _validate_key(key)
         return os.path.join(self._base, *key.split("/"))
 
-    # ── IObjectStore ─────────────────────────────────────────────────────────
-
     async def get_string(self, key: str) -> str | None:
         path = self._path(key)
-
-        def _read() -> str | None:
-            try:
-                with open(path, encoding="utf-8") as f:
-                    return f.read()
-            except FileNotFoundError:
-                return None
-
-        return await to_thread(_read)
+        try:
+            async with aiofiles.open(path, encoding="utf-8") as f:
+                return await f.read()
+        except FileNotFoundError:
+            return None
 
     async def put(
         self,
@@ -73,25 +69,21 @@ class FilesystemObjectStore:
         cache_control: str | None = None,
     ) -> None:
         path = self._path(key)
-
-        def _write() -> None:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            tmp = path + ".tmp"
+        await aiofiles.os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        try:
+            async with aiofiles.open(tmp, "w", encoding="utf-8") as f:
+                await f.write(body)
+            await aiofiles.os.replace(tmp, path)
+        except Exception:
+            # Clean up temp file on failure
             try:
-                with open(tmp, "w", encoding="utf-8") as f:
-                    f.write(body)
-                os.replace(tmp, path)
-            except Exception:
-                # Clean up temp file on failure
-                try:
-                    os.unlink(tmp)
-                except OSError:
-                    pass
-                raise
+                await aiofiles.os.remove(tmp)
+            except OSError:
+                pass
+            raise
 
-        await to_thread(_write)
-
-    async def list(
+    async def list_keys(
         self,
         prefix: str,
         *,
@@ -136,14 +128,10 @@ class FilesystemObjectStore:
 
     async def delete(self, key: str) -> None:
         path = self._path(key)
-
-        def _delete() -> None:
-            try:
-                os.unlink(path)
-            except FileNotFoundError:
-                pass
-
-        await to_thread(_delete)
+        try:
+            await aiofiles.os.remove(path)
+        except FileNotFoundError:
+            pass
 
     async def delete_many(self, keys: list[str]) -> None:
         for key in keys:

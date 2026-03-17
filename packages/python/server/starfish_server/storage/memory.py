@@ -1,8 +1,7 @@
 """In-memory and callback-based object stores."""
 
-from __future__ import annotations
-
 import inspect
+from starfish_server.storage.base import AbstractObjectStore
 from typing import Any, Awaitable, Callable
 
 
@@ -10,10 +9,7 @@ from typing import Any, Awaitable, Callable
 _global_data: dict[str, str] = {}
 
 
-# ── MemoryObjectStore ─────────────────────────────────────────────────────────
-
-
-class MemoryObjectStore:
+class MemoryObjectStore(AbstractObjectStore):
     """Pure in-memory object store backed by a module-level global dict.
 
     All instances share the same module-level backing dict, so data written
@@ -46,7 +42,7 @@ class MemoryObjectStore:
     ) -> None:
         self._data[key] = body
 
-    async def list(
+    async def list_keys(
         self,
         prefix: str,
         *,
@@ -68,9 +64,6 @@ class MemoryObjectStore:
             self._data.pop(key, None)
 
 
-# ── CustomObjectStore ─────────────────────────────────────────────────────────
-
-
 async def _call(fn: Callable[..., Any], *args: Any) -> Any:
     """Invoke ``fn`` with ``args``, awaiting the result if it is a coroutine."""
     result = fn(*args)
@@ -85,7 +78,7 @@ ListFn = Callable[[str, str | None, int | None], list[str] | Awaitable[list[str]
 DeleteFn = Callable[[str], None | Awaitable[None]]
 
 
-class CustomObjectStore:
+class CustomObjectStore(AbstractObjectStore):
     """Object store backed entirely by user-supplied callback functions.
 
     Each storage operation dispatches to the corresponding callback.
@@ -93,7 +86,7 @@ class CustomObjectStore:
     safe no-op / empty-result defaults.
 
     Use this to bridge Starfish to any external system (database, remote API,
-    custom file format, …) without implementing the full ``IObjectStore``
+    custom file format, …) without subclassing ``AbstractObjectStore``
     protocol::
 
         import json
@@ -146,7 +139,7 @@ class CustomObjectStore:
         if self._on_put is not None:
             await _call(self._on_put, key, body)
 
-    async def list(
+    async def list_keys(
         self,
         prefix: str,
         *,

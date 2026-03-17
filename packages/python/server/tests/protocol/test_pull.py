@@ -1,5 +1,7 @@
 """Tests for pull operation — ported from pull.test.ts."""
 
+import asyncio
+
 import pytest
 
 from starfish_server.protocol.pull import pull
@@ -38,6 +40,7 @@ async def test_returns_filtered_data_with_checkpoint():
     assert isinstance(r1, PushSuccess)
     checkpoint = r1.timestamp
 
+    await asyncio.sleep(0.001)
     data2 = {"sig-1": {"payload": {"value": 1}}, "sig-2": {"payload": {"value": 2}}}
     await push(store, "col/doc1", data2, r1.hash)
 

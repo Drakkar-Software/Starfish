@@ -4,7 +4,7 @@
 import asyncio
 from dataclasses import dataclass
 from typing import Any
-from starfish_server.interfaces import IObjectStore
+from starfish_server.storage.base import AbstractObjectStore
 
 
 @dataclass
@@ -18,7 +18,7 @@ class S3StorageOptions:
     region: str = "us-east-1"
 
 
-class S3ObjectStore:
+class S3ObjectStore(AbstractObjectStore):
     """S3-compatible object store using aiobotocore."""
 
     def __init__(self, opts: S3StorageOptions) -> None:
@@ -89,7 +89,7 @@ class S3ObjectStore:
             kwargs["CacheControl"] = cache_control
         await client.put_object(**kwargs)
 
-    async def list(
+    async def list_keys(
         self,
         prefix: str,
         *,

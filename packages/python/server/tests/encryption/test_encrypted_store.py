@@ -87,7 +87,7 @@ async def test_list_delegates_to_inner_store():
     await store.put("prefix/b", "data-b")
     await store.put("other/c", "data-c")
 
-    keys = await store.list("prefix/")
+    keys = await store.list_keys("prefix/")
     assert len(keys) == 2
     assert "prefix/a" in keys
     assert "prefix/b" in keys

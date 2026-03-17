@@ -2,11 +2,11 @@
 
 
 import json
+import time
 from dataclasses import dataclass
 from typing import Any
 
-from starfish_server.interfaces import IObjectStore
-from starfish_server.timestamp import next_timestamp
+from starfish_server.storage.base import AbstractObjectStore
 from starfish_server.constants import ERROR_HASH_MISMATCH, CONTENT_TYPE_JSON
 from starfish_server.protocol.types import (
     StoredDocument,
@@ -28,7 +28,7 @@ class Author:
 
 
 async def push(
-    store: IObjectStore,
+    store: AbstractObjectStore,
     document_key: str,
     new_data: dict[str, Any],
     base_hash: str | None,
@@ -62,7 +62,7 @@ async def push(
         if base_hash != current_hash:
             return PushConflict(error=ERROR_HASH_MISMATCH)
 
-    now = next_timestamp()
+    now = time.time_ns() // 1_000_000
     new_hash = compute_hash(new_data)
     timestamps = {} if skip_timestamps else compute_timestamps(old_data, new_data, old_timestamps, now)
 

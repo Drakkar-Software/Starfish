@@ -5,9 +5,6 @@ import pytest
 from starfish_server.storage.memory import MemoryObjectStore, CustomObjectStore, _global_data
 
 
-# ── MemoryObjectStore — isolated (data={}) ────────────────────────────────────
-
-
 @pytest.fixture
 def store():
     return MemoryObjectStore(data={})
@@ -52,7 +49,7 @@ async def test_list_prefix(store):
     await store.put("posts/a", "1")
     await store.put("posts/b", "2")
     await store.put("settings/x", "3")
-    result = await store.list("posts")
+    result = await store.list_keys("posts")
     assert result == ["posts/a", "posts/b"]
 
 
@@ -60,7 +57,7 @@ async def test_list_start_after(store):
     await store.put("posts/a", "1")
     await store.put("posts/b", "2")
     await store.put("posts/c", "3")
-    result = await store.list("posts", start_after="posts/a")
+    result = await store.list_keys("posts", start_after="posts/a")
     assert result == ["posts/b", "posts/c"]
 
 
@@ -68,15 +65,12 @@ async def test_list_limit(store):
     await store.put("posts/a", "1")
     await store.put("posts/b", "2")
     await store.put("posts/c", "3")
-    result = await store.list("posts", limit=2)
+    result = await store.list_keys("posts", limit=2)
     assert result == ["posts/a", "posts/b"]
 
 
 async def test_list_empty_prefix(store):
-    assert await store.list("nothing") == []
-
-
-# ── MemoryObjectStore — global dict ──────────────────────────────────────────
+    assert await store.list_keys("nothing") == []
 
 
 async def test_global_store_shared_between_instances():
@@ -103,9 +97,6 @@ async def test_isolated_store_independent_from_global():
         _global_data.clear()
 
 
-# ── CustomObjectStore ─────────────────────────────────────────────────────────
-
-
 async def test_custom_on_get():
     store = CustomObjectStore(on_get=lambda key: f"computed:{key}")
     assert await store.get_string("any/key") == "computed:any/key"
@@ -126,7 +117,7 @@ async def test_custom_on_list():
     store = CustomObjectStore(
         on_list=lambda prefix, start_after, limit: ["remote/a", "remote/b"],
     )
-    assert await store.list("anything") == ["remote/a", "remote/b"]
+    assert await store.list_keys("anything") == ["remote/a", "remote/b"]
 
 
 async def test_custom_on_delete():
@@ -156,5 +147,5 @@ async def test_custom_no_callbacks_returns_safe_defaults():
     store = CustomObjectStore()
     assert await store.get_string("k") is None
     await store.put("k", "v")  # no-op
-    assert await store.list("k") == []
+    assert await store.list_keys("k") == []
     await store.delete("k")  # no-op

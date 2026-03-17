@@ -51,7 +51,7 @@ async def test_list_prefix(store):
     await store.put("posts/a", "1")
     await store.put("posts/b", "2")
     await store.put("settings/x", "3")
-    result = await store.list("posts")
+    result = await store.list_keys("posts")
     assert result == ["posts/a", "posts/b"]
 
 
@@ -59,7 +59,7 @@ async def test_list_start_after(store):
     await store.put("posts/a", "1")
     await store.put("posts/b", "2")
     await store.put("posts/c", "3")
-    result = await store.list("posts", start_after="posts/a")
+    result = await store.list_keys("posts", start_after="posts/a")
     assert result == ["posts/b", "posts/c"]
 
 
@@ -67,7 +67,7 @@ async def test_list_limit(store):
     await store.put("posts/a", "1")
     await store.put("posts/b", "2")
     await store.put("posts/c", "3")
-    result = await store.list("posts", limit=2)
+    result = await store.list_keys("posts", limit=2)
     assert result == ["posts/a", "posts/b"]
 
 

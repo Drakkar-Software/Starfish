@@ -3,6 +3,7 @@
 
 import asyncio
 import logging
+import time
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -12,7 +13,6 @@ from starfish_server.replica.manager import ReplicaManager
 from starfish_server.replica.notifier import verify_signature
 from starfish_server.replica.subscriber import SubscriptionStore
 from starfish_server.router.route_builder import AuthResult, RoleResolver
-from starfish_server.timestamp import next_timestamp
 
 logger = logging.getLogger(__name__)
 
@@ -53,8 +53,6 @@ def create_replica_router(
     """
     router = APIRouter()
 
-    # ── POST /replica/subscribe (primary side) ────────────────────────────
-
     if subscription_store is not None:
         async def subscribe_handler(request: Request) -> JSONResponse:
             # Auth: caller must have subscribe_role
@@ -85,13 +83,11 @@ def create_replica_router(
             if not all(isinstance(n, str) for n in col_names):
                 return JSONResponse({"error": "collections must be a list of strings"}, status_code=400)
 
-            await subscription_store.add(webhook_url, col_names, next_timestamp())
+            await subscription_store.add(webhook_url, col_names, time.time_ns() // 1_000_000)
             logger.info("New replica subscriber: %s for %s", webhook_url, col_names)
             return JSONResponse({"ok": True})
 
         router.add_api_route("/replica/subscribe", subscribe_handler, methods=["POST"])
-
-    # ── POST /replica/notify (replica side) ───────────────────────────────
 
     if replica_manager is not None:
         # Build a quick lookup: collection name → webhook_secret
