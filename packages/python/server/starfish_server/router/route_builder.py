@@ -12,7 +12,7 @@ import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from starfish_server.interfaces import IObjectStore
+from starfish_server.storage.base import AbstractObjectStore
 from starfish_server.config.schema import SyncConfig, CollectionConfig, SyncTrigger, WriteMode
 from starfish_server.encryption.encrypted_store import EncryptedObjectStore
 from starfish_server.protocol.pull import pull
@@ -59,7 +59,7 @@ RoleEnricher = Callable[[AuthResult, dict[str, str]], Awaitable[list[str]]]
 
 @dataclass
 class SyncRouterOptions:
-    store: IObjectStore
+    store: AbstractObjectStore
     config: SyncConfig
     role_resolver: RoleResolver
     role_enricher: RoleEnricher | None = None
@@ -69,8 +69,8 @@ class SyncRouterOptions:
     identity_encryption_info: str | None = None
     server_encryption_info: str | None = None
     signature_verifier: SignatureVerifier | None = None
-    replica_manager: ReplicaManager | None = None
-    notification_publisher: NotificationPublisher | None = None
+    replica_manager: "ReplicaManager | None" = None
+    notification_publisher: "NotificationPublisher | None" = None
     role_resolver_timeout: float = 5.0
 
 
@@ -146,11 +146,11 @@ async def _check_auth(
 
 def _resolve_store(
     col: CollectionConfig,
-    base_store: IObjectStore,
+    base_store: AbstractObjectStore,
     params: dict[str, str],
     identity: str | None,
     opts: SyncRouterOptions,
-) -> IObjectStore:
+) -> AbstractObjectStore:
     if col.encryption == ENCRYPTION_IDENTITY:
         if not opts.encryption_secret:
             raise RuntimeError(f'Collection "{col.name}" requires encryption_secret')
@@ -178,7 +178,7 @@ def _resolve_store(
 async def _proxy_push_to_primary(
     col: CollectionConfig,
     request: Request,
-    replica_manager: ReplicaManager,
+    replica_manager: "ReplicaManager",
 ) -> JSONResponse:
     remote = col.remote  # type: ignore[union-attr]
     primary_url = f"{remote.url.rstrip('/')}{remote.push_path}"

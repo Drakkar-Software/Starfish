@@ -153,7 +153,6 @@ async def test_conflict_on_stale_hash():
     assert resp.json()["error"] == "hash_mismatch"
 
 
-# ── Delegated encryption tests ───────────────────────────────────────────
 
 
 def _build_delegated_app(

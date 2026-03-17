@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "starfish-sdk"
 version = "0.1.0"
 description = "Python client SDK for the Starfish sync protocol"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
   "httpx>=0.25.0",
   "cryptography>=41.0",

@@ -110,7 +110,7 @@ class StarfishClient:
         )
 
         if resp.status_code == 409:
-            raise ConflictError()
+            raise ConflictError(resp.text)
         if resp.status_code != 200:
             raise StarfishHttpError(resp.status_code, resp.text)
 

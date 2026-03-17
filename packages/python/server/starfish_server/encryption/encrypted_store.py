@@ -8,19 +8,19 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from starfish_protocol.crypto import _derive_key, IV_BYTES
-from starfish_server.interfaces import IObjectStore
+from starfish_server.storage.base import AbstractObjectStore
 from starfish_server.constants import HKDF_INFO_DEFAULT
 
 
-class EncryptedObjectStore:
-    """Wraps an IObjectStore to transparently encrypt/decrypt all values.
+class EncryptedObjectStore(AbstractObjectStore):
+    """Wraps an AbstractObjectStore to transparently encrypt/decrypt all values.
 
     Keys (paths) are NOT encrypted — only the stored content.
     """
 
     def __init__(
         self,
-        inner: IObjectStore,
+        inner: AbstractObjectStore,
         secret: str,
         salt: str,
         info: str = HKDF_INFO_DEFAULT,
@@ -65,14 +65,14 @@ class EncryptedObjectStore:
         encrypted = self._encrypt(body)
         await self._inner.put(key, encrypted, content_type=content_type, cache_control=cache_control)
 
-    async def list(
+    async def list_keys(
         self,
         prefix: str,
         *,
         start_after: str | None = None,
         limit: int | None = None,
     ) -> list[str]:
-        return await self._inner.list(prefix, start_after=start_after, limit=limit)
+        return await self._inner.list_keys(prefix, start_after=start_after, limit=limit)
 
     async def delete(self, key: str) -> None:
         await self._inner.delete(key)

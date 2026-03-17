@@ -2,6 +2,7 @@
 
 
 import asyncio
+import json
 import logging
 import time
 from collections.abc import Callable
@@ -11,7 +12,7 @@ import httpx
 
 from starfish_server.config.schema import CollectionConfig, SyncTrigger, WriteMode
 
-from starfish_server.interfaces import IObjectStore
+from starfish_server.storage.base import AbstractObjectStore
 from starfish_protocol.merge import deep_merge
 from starfish_server.protocol.push import push
 from starfish_server.protocol.types import PushSuccess
@@ -29,7 +30,7 @@ class ReplicaManager:
 
     def __init__(
         self,
-        store: IObjectStore,
+        store: AbstractObjectStore,
         collections: list[CollectionConfig],
         *,
         self_base_url: str | None = None,
@@ -154,7 +155,6 @@ class ReplicaManager:
         current_local_hash: str = ""
         current_local_data: dict[str, Any] = {}
         if raw_local:
-            import json
             local_doc = json.loads(raw_local)
             current_local_hash = local_doc.get("hash", "")
             current_local_data = local_doc.get("data", {})

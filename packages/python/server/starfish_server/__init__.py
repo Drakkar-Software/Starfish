@@ -1,6 +1,5 @@
 """Starfish sync protocol server."""
 
-from starfish_server.interfaces import IObjectStore
 from starfish_server.errors import StartupError, AuthError, ConflictError, NotFoundError
 from starfish_server.constants import (
     ROLE_PUBLIC,
@@ -23,7 +22,6 @@ from starfish_server.constants import (
     ERROR_HASH_MISMATCH,
     CONTENT_TYPE_JSON,
 )
-from starfish_server.timestamp import next_timestamp
 from starfish_protocol.hash import stable_stringify, compute_hash
 from starfish_protocol.merge import deep_merge
 from starfish_server.protocol.types import StoredDocument, PullResult, PushResult, Timestamps
@@ -49,11 +47,11 @@ from starfish_server.replica import (
     SubscriptionStore,
     create_replica_router,
 )
+from starfish_server.storage.base import AbstractObjectStore
 from starfish_server.storage.filesystem import FilesystemObjectStore, FilesystemStorageOptions
 from starfish_server.storage.memory import MemoryObjectStore, CustomObjectStore
 
 __all__ = [
-    "IObjectStore",
     "StartupError",
     "AuthError",
     "ConflictError",
@@ -77,7 +75,6 @@ __all__ = [
     "DEFAULT_CONFIG_KEY",
     "ERROR_HASH_MISMATCH",
     "CONTENT_TYPE_JSON",
-    "next_timestamp",
     "stable_stringify",
     "compute_hash",
     "StoredDocument",
@@ -106,6 +103,7 @@ __all__ = [
     "Subscription",
     "SubscriptionStore",
     "create_replica_router",
+    "AbstractObjectStore",
     "FilesystemObjectStore",
     "FilesystemStorageOptions",
     "MemoryObjectStore",

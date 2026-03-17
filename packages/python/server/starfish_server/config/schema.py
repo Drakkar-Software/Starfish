@@ -1,7 +1,7 @@
 """Pydantic models for sync configuration."""
 
 
-from enum import Enum
+from enum import StrEnum
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -11,7 +11,7 @@ from starfish_server.constants import ENCRYPTION_NONE, ENCRYPTION_IDENTITY, ENCR
 EncryptionMode = Literal["none", "identity", "server", "delegated"]
 
 
-class WriteMode(str, Enum):
+class WriteMode(StrEnum):
     """Controls how local client writes are handled on a replica collection."""
 
     PULL_ONLY = "pull_only"
@@ -28,7 +28,7 @@ class WriteMode(str, Enum):
     The replica does not sync from the primary — data is managed entirely locally."""
 
 
-class SyncTrigger(str, Enum):
+class SyncTrigger(StrEnum):
     """Events that trigger a sync from the primary."""
 
     SCHEDULED = "scheduled"

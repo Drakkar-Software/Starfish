@@ -2,15 +2,15 @@
 
 
 import json
+import time
 
-from starfish_server.interfaces import IObjectStore
-from starfish_server.timestamp import next_timestamp
+from starfish_server.storage.base import AbstractObjectStore
 from starfish_server.protocol.types import StoredDocument, PullResult
 from starfish_server.protocol.timestamps import filter_by_checkpoint
 
 
 async def pull(
-    store: IObjectStore,
+    store: AbstractObjectStore,
     document_key: str,
     checkpoint: int = 0,
 ) -> PullResult:
@@ -20,7 +20,7 @@ async def pull(
     - With checkpoint: returns only paths updated after checkpoint
     - hash is always the hash of the FULL document
     """
-    timestamp = next_timestamp()
+    timestamp = time.time_ns() // 1_000_000
     raw = await store.get_string(document_key)
 
     if not raw:

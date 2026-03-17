@@ -4,7 +4,7 @@
 import json
 from dataclasses import asdict, dataclass
 
-from starfish_server.interfaces import IObjectStore
+from starfish_server.storage.base import AbstractObjectStore
 from starfish_server.router.helpers import validate_url_not_private
 
 _SUBSCRIPTIONS_KEY = "__sync__/subscriptions.json"
@@ -26,7 +26,7 @@ class SubscriptionStore:
     dedicated database instead.
     """
 
-    def __init__(self, store: IObjectStore) -> None:
+    def __init__(self, store: AbstractObjectStore) -> None:
         self._store = store
 
     async def _load(self) -> list[Subscription]:

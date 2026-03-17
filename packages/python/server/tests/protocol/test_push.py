@@ -1,5 +1,6 @@
 """Tests for push operation — ported from push.test.ts."""
 
+import asyncio
 import json
 
 import pytest
@@ -106,6 +107,7 @@ async def test_preserves_timestamps_for_unchanged_values():
     doc1 = json.loads(raw1)
     ts_a = doc1["timestamps"]["a"]
 
+    await asyncio.sleep(0.001)
     await push(store, "col/doc1", {"a": 1, "b": 3}, r1.hash)
 
     raw2 = await store.get_string("col/doc1")

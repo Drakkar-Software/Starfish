@@ -49,8 +49,6 @@ def _primary_response(data: dict, hash_val: str = "abc123", timestamp: int = 100
     return {"data": data, "hash": hash_val, "timestamp": timestamp}
 
 
-# ── deep_merge ────────────────────────────────────────────────────────────
-
 
 def test_deep_merge_remote_wins_scalar():
     result = deep_merge({"a": 1}, {"a": 2})
@@ -68,8 +66,6 @@ def test_deep_merge_recursive():
     result = deep_merge(local, remote)
     assert result == {"nested": {"x": 1, "y": 99, "z": 3}}
 
-
-# ── Sync logic ────────────────────────────────────────────────────────────
 
 
 @respx.mock
@@ -211,8 +207,6 @@ async def test_sync_now_unknown_collection_raises():
         await manager.sync_now("nonexistent")
 
 
-# ── on_pull cooldown ──────────────────────────────────────────────────────
-
 
 @respx.mock
 async def test_on_pull_respects_cooldown():
@@ -272,8 +266,6 @@ async def test_on_pull_no_cooldown_always_syncs():
 
     assert route.call_count == 2
 
-
-# ── PUSH_ONLY write mode ─────────────────────────────────────────────────
 
 
 @respx.mock

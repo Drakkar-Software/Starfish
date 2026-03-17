@@ -9,8 +9,9 @@ from starfish_protocol.types import PullResult, PushSuccess, Timestamps
 class ConflictError(Exception):
     """Push conflict error (HTTP 409 — hash mismatch)."""
 
-    def __init__(self) -> None:
-        super().__init__("hash_mismatch")
+    def __init__(self, server_response: str = "") -> None:
+        self.server_response = server_response
+        super().__init__(f"hash_mismatch: {server_response}" if server_response else "hash_mismatch")
 
 
 class StarfishHttpError(Exception):
