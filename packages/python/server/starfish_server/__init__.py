@@ -32,6 +32,7 @@ from starfish_server.encryption.encrypted_store import EncryptedObjectStore
 from starfish_server.config.schema import (
     SyncConfig,
     CollectionConfig,
+    CollectionRateLimitConfig,
     RateLimitConfig,
     EncryptionMode,
     RemoteConfig,
@@ -88,6 +89,7 @@ __all__ = [
     "EncryptedObjectStore",
     "SyncConfig",
     "CollectionConfig",
+    "CollectionRateLimitConfig",
     "RateLimitConfig",
     "EncryptionMode",
     "RemoteConfig",

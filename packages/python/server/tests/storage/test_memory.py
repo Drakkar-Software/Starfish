@@ -142,6 +142,47 @@ async def test_custom_delete_many_delegates():
     assert deleted == ["a/1", "a/2"]
 
 
+# ---------------------------------------------------------------------------
+# Binary storage (get_bytes / put_bytes)
+# ---------------------------------------------------------------------------
+
+async def test_put_bytes_and_get_bytes(store):
+    await store.put_bytes("img/logo", b"\x89PNG", content_type="image/png")
+    result = await store.get_bytes("img/logo")
+    assert result is not None
+    body, ct = result
+    assert body == b"\x89PNG"
+    assert ct == "image/png"
+
+
+async def test_get_bytes_missing_key(store):
+    assert await store.get_bytes("missing/key") is None
+
+
+async def test_put_bytes_overwrites(store):
+    await store.put_bytes("img/logo", b"first", content_type="image/png")
+    await store.put_bytes("img/logo", b"second", content_type="image/jpeg")
+    result = await store.get_bytes("img/logo")
+    assert result is not None
+    body, ct = result
+    assert body == b"second"
+    assert ct == "image/jpeg"
+
+
+async def test_delete_cleans_binary(store):
+    await store.put_bytes("img/logo", b"data", content_type="image/png")
+    await store.delete("img/logo")
+    assert await store.get_bytes("img/logo") is None
+
+
+async def test_delete_many_cleans_binary(store):
+    await store.put_bytes("img/a", b"a", content_type="image/png")
+    await store.put_bytes("img/b", b"b", content_type="image/png")
+    await store.delete_many(["img/a", "img/b"])
+    assert await store.get_bytes("img/a") is None
+    assert await store.get_bytes("img/b") is None
+
+
 async def test_custom_no_callbacks_returns_safe_defaults():
     """Omitted callbacks return None / [] / no-op without raising."""
     store = CustomObjectStore()

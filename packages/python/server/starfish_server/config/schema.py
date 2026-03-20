@@ -2,9 +2,9 @@
 
 
 from enum import StrEnum
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from starfish_server.constants import ENCRYPTION_NONE, ENCRYPTION_IDENTITY, ENCRYPTION_SERVER, ENCRYPTION_DELEGATED
 
@@ -86,6 +86,23 @@ class RemoteConfig(BaseModel):
     Only relevant when ``on_pull`` is listed in ``sync_triggers``."""
 
 
+class CollectionRateLimitConfig(BaseModel):
+    """Per-collection rate limit overrides.
+
+    Fields that are ``None`` fall back to the global ``rateLimit`` config.
+    Passing an empty object (or ``"rateLimit": true`` in JSON) enables rate
+    limiting with the global defaults.
+    """
+
+    model_config = {"populate_by_name": True}
+
+    window_ms: int | None = Field(default=None, gt=0, alias="windowMs")
+    """Override the global window (in milliseconds) for this collection."""
+
+    max_requests: int | None = Field(default=None, gt=0, alias="maxRequests")
+    """Override the global max requests per window for this collection."""
+
+
 class CollectionConfig(BaseModel):
     """Configuration for a single synced collection."""
 
@@ -97,7 +114,42 @@ class CollectionConfig(BaseModel):
     write_roles: list[str] = Field(alias="writeRoles")
     encryption: EncryptionMode
     max_body_bytes: int = Field(gt=0, alias="maxBodyBytes")
-    rate_limit: bool | None = Field(default=None, alias="rateLimit")
+    rate_limit: CollectionRateLimitConfig | None = Field(default=None, alias="rateLimit")
+    """Enable rate limiting for push operations on this collection.
+
+    Accepts ``true`` (use global defaults), ``false``/``null`` (disabled),
+    or an object ``{"windowMs": …, "maxRequests": …}`` to override specific
+    global values.  Requires a global ``rateLimit`` config to be set."""
+
+    cache_duration_ms: int | None = Field(default=None, gt=0, alias="cacheDurationMs")
+    """Custom ``Cache-Control: max-age`` duration (in milliseconds) for pull responses.
+
+    When set, the server adds a ``Cache-Control`` header to GET pull responses
+    so that downstream proxies or clients can cache the response.
+    ``None`` (default) means no ``Cache-Control`` header is added."""
+
+    object_schema: dict[str, Any] | None = Field(default=None, alias="objectSchema")
+    """Optional JSON Schema that pushed data objects must conform to.
+
+    When set, every push validates ``body.data`` against this schema before
+    writing.  Invalid payloads are rejected with ``400``.
+    Requires the ``jsonschema`` package (``pip install jsonschema``)."""
+
+    allowed_mime_types: list[str] = Field(
+        default_factory=lambda: ["application/json"],
+        alias="allowedMimeTypes",
+    )
+    """MIME types this collection accepts on push.
+
+    Defaults to ``["application/json"]`` (standard JSON sync protocol).
+    Set to other types (e.g. ``["image/png", "image/jpeg"]`` or ``["image/*"]``)
+    to create a binary collection that accepts raw file uploads.
+    Supports wildcard patterns via ``fnmatch`` (e.g. ``image/*``).
+
+    Binary collections (those without ``application/json``) use simple
+    overwrite semantics — no conflict detection, no timestamps, no
+    incremental sync."""
+
     pull_only: bool | None = Field(default=None, alias="pullOnly")
     push_only: bool | None = Field(default=None, alias="pushOnly")
     force_full_fetch: bool | None = Field(default=None, alias="forceFullFetch")
@@ -106,6 +158,15 @@ class CollectionConfig(BaseModel):
     remote: RemoteConfig | None = Field(default=None)
     """When set, this collection is replicated from a remote primary starfish server.
     All replica behavior (write mode, sync triggers, interval, auth) is fully described here."""
+
+    @field_validator("rate_limit", mode="before")
+    @classmethod
+    def _coerce_rate_limit(cls, v: object) -> object:
+        if v is True:
+            return CollectionRateLimitConfig()
+        if v is False:
+            return None
+        return v
 
 
 class RateLimitConfig(BaseModel):
