@@ -67,6 +67,8 @@ async def handle_sync_pull(
     checkpoint_param: str | None = None,
     force_full_fetch: bool = False,
     client_encrypted: bool = False,
+    cache_duration_ms: int | None = None,
+    is_public: bool = True,
 ) -> JSONResponse:
     if UNSAFE_KEY.search(document_key):
         return JSONResponse({"error": "Invalid path parameter"}, status_code=400)
@@ -92,7 +94,13 @@ async def handle_sync_pull(
     if result.author_signature:
         body["authorSignature"] = result.author_signature
 
-    return JSONResponse(body)
+    headers: dict[str, str] | None = None
+    if cache_duration_ms is not None:
+        max_age = cache_duration_ms // 1000
+        directive = f"max-age={max_age}" if is_public else f"private, max-age={max_age}"
+        headers = {"Cache-Control": directive}
+
+    return JSONResponse(body, headers=headers)
 
 
 async def handle_sync_push(

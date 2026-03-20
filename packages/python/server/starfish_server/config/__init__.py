@@ -3,6 +3,7 @@
 from starfish_server.config.schema import (
     SyncConfig,
     CollectionConfig,
+    CollectionRateLimitConfig,
     RateLimitConfig,
     EncryptionMode,
 )
@@ -17,6 +18,7 @@ from starfish_server.config.loader import (
 __all__ = [
     "SyncConfig",
     "CollectionConfig",
+    "CollectionRateLimitConfig",
     "RateLimitConfig",
     "EncryptionMode",
     "validate_config",

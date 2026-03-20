@@ -2,18 +2,21 @@
 
 
 import asyncio
+import hashlib
 import json
 import re
+import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Awaitable
 
 import httpx
+import jsonschema
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from starfish_server.storage.base import AbstractObjectStore
-from starfish_server.config.schema import SyncConfig, CollectionConfig, SyncTrigger, WriteMode
+from starfish_server.config.schema import SyncConfig, CollectionConfig, SyncTrigger, WriteMode, CollectionRateLimitConfig
 from starfish_server.encryption.encrypted_store import EncryptedObjectStore
 from starfish_server.protocol.pull import pull
 from starfish_server.router.helpers import (
@@ -23,6 +26,7 @@ from starfish_server.router.helpers import (
     SignatureVerifier,
 )
 from starfish_server.router.middleware import check_body_limit, RateLimiter
+from starfish_server.router.mime import matches_allowed_mime, is_json_collection
 from starfish_server.constants import (
     ROLE_PUBLIC,
     ROLE_SELF,
@@ -72,6 +76,34 @@ class SyncRouterOptions:
     replica_manager: "ReplicaManager | None" = None
     notification_publisher: "NotificationPublisher | None" = None
     role_resolver_timeout: float = 5.0
+
+
+def _validate_object_schema(data: dict, schema: dict) -> JSONResponse | None:
+    """Validate *data* against a JSON Schema. Returns 400 on failure, else None."""
+    try:
+        jsonschema.validate(data, schema)
+    except jsonschema.ValidationError as exc:
+        detail: dict[str, Any] = {
+            "error": f"Schema validation failed: {exc.message}",
+            "path": list(exc.absolute_path),
+            "validator": exc.validator,
+        }
+        return JSONResponse(detail, status_code=400)
+    return None
+
+
+def _build_rate_limiter(
+    col_rl: CollectionRateLimitConfig | None,
+    opts: SyncRouterOptions,
+) -> RateLimiter | None:
+    """Build a RateLimiter using per-collection overrides falling back to the global config."""
+    if col_rl is None or opts.config.rate_limit is None:
+        return None
+    global_rl = opts.config.rate_limit
+    return RateLimiter(
+        window_ms=col_rl.window_ms if col_rl.window_ms is not None else global_rl.window_ms,
+        max_requests=col_rl.max_requests if col_rl.max_requests is not None else global_rl.max_requests,
+    )
 
 
 def _to_route_path(action: str, storage_path: str) -> str:
@@ -239,12 +271,111 @@ async def _run_push(
     if not isinstance(body, dict):
         return JSONResponse({"error": "Body must be a JSON object"}, status_code=400)
 
+    if col.object_schema is not None:
+        data = body.get("data")
+        if isinstance(data, dict):
+            schema_error = _validate_object_schema(data, col.object_schema)
+            if schema_error:
+                return schema_error
+
     store = _resolve_store(col, opts.store, params, identity, opts)
     is_client_encrypted = bool(col.client_encrypted) or col.encryption == ENCRYPTION_DELEGATED
     return await handle_sync_push(
         document_key, store, body, identity,
         opts.signature_verifier, is_client_encrypted,
     )
+
+
+async def _run_binary_push(
+    request: Request,
+    col: CollectionConfig,
+    document_key: str,
+    identity: str | None,
+    rate_limiter: RateLimiter | None,
+    opts: SyncRouterOptions,
+) -> Response:
+    """Handle a binary push: validate MIME type, store raw bytes."""
+
+    content_length = request.headers.get("content-length")
+    limit_error = check_body_limit(content_length, col.max_body_bytes)
+    if limit_error:
+        return limit_error
+
+    if rate_limiter:
+        rate_error = rate_limiter.check(identity, request)
+        if rate_error:
+            return rate_error
+
+    content_type = request.headers.get("content-type", "")
+    if not matches_allowed_mime(content_type, col.allowed_mime_types):
+        return JSONResponse(
+            {"error": f"Content-Type '{content_type}' is not allowed. "
+                      f"Allowed: {col.allowed_mime_types}"},
+            status_code=415,
+        )
+
+    body = await request.body()
+    content_hash = hashlib.sha256(body).hexdigest()
+
+    media_type = content_type.split(";")[0].strip()
+    await opts.store.put_bytes(document_key, body, content_type=media_type)
+
+    return JSONResponse({"hash": content_hash})
+
+
+def _make_push_handler(
+    col: CollectionConfig,
+    rate_limiter: RateLimiter | None,
+    opts: SyncRouterOptions,
+) -> Callable:
+    """Create a push handler with *col* and *rate_limiter* captured in a closure.
+
+    Returning the handler from a factory avoids exposing these as function
+    parameters, which would cause FastAPI's dependency injection to re-create
+    the instances on every request.
+    """
+    async def push_handler(request: Request) -> JSONResponse:
+        params = request.path_params
+        if not _validate_all_params(params):
+            return JSONResponse({"error": "Invalid path parameter"}, status_code=400)
+
+        identity, error = await _check_auth(col, OP_WRITE, request, params, opts)
+        if error:
+            return error
+
+        if (
+            col.remote is not None
+            and col.remote.write_mode == WriteMode.PUSH_THROUGH
+            and opts.replica_manager is not None
+        ):
+            return await _proxy_push_to_primary(col, request, opts.replica_manager)
+
+        if col.remote is not None and col.remote.write_mode == WriteMode.PULL_ONLY:
+            return JSONResponse(
+                {"error": "This collection is read-only on this server"},
+                status_code=405,
+            )
+
+        document_key = _resolve_document_key(col.storage_path, params)
+
+        if not is_json_collection(col.allowed_mime_types):
+            return await _run_binary_push(
+                request, col, document_key, identity, rate_limiter, opts,
+            )
+
+        response = await _run_push(request, col, params, document_key, identity, rate_limiter, opts)
+
+        if opts.notification_publisher is not None and response.status_code == 200:
+            resp_body = json.loads(response.body)
+            asyncio.create_task(
+                opts.notification_publisher.notify(
+                    col.name, resp_body.get("hash", ""), resp_body.get("timestamp", 0)
+                )
+            )
+
+        return response
+
+    return push_handler
 
 
 def _add_collection_routes(
@@ -278,62 +409,44 @@ def _add_collection_routes(
                 await opts.replica_manager.on_pull(col.name)
 
             document_key = _resolve_document_key(col.storage_path, params)
+
+            # Binary collection: return raw bytes
+            if not is_json_collection(col.allowed_mime_types):
+            
+                result = await opts.store.get_bytes(document_key)
+                if result is None:
+                    return Response(status_code=404)
+                raw_bytes, stored_content_type = result
+                headers: dict[str, str] = {}
+                headers["ETag"] = f'"{hashlib.sha256(raw_bytes).hexdigest()}"'
+                if col.cache_duration_ms is not None:
+                    max_age = col.cache_duration_ms // 1000
+                    directive = (
+                        f"max-age={max_age}"
+                        if ROLE_PUBLIC in col.read_roles
+                        else f"private, max-age={max_age}"
+                    )
+                    headers["Cache-Control"] = directive
+                return Response(content=raw_bytes, media_type=stored_content_type, headers=headers)
+
             store = _resolve_store(col, opts.store, params, identity, opts)
             checkpoint_param = request.query_params.get(QUERY_CHECKPOINT)
             is_client_encrypted = bool(col.client_encrypted) or col.encryption == ENCRYPTION_DELEGATED
             return await handle_sync_pull(
                 document_key, store, checkpoint_param,
                 bool(col.force_full_fetch), is_client_encrypted,
+                col.cache_duration_ms,
+                is_public=ROLE_PUBLIC in col.read_roles,
             )
 
         router.add_api_route(pull_path, pull_handler, methods=["GET"])
 
     if not col.pull_only:
         push_path = _to_route_path(ACTION_PUSH, col.storage_path)
-
-        rate_limiter = None
-        if col.rate_limit and opts.config.rate_limit:
-            rate_limiter = RateLimiter(
-                window_ms=opts.config.rate_limit.window_ms,
-                max_requests=opts.config.rate_limit.max_requests,
-            )
-
-        async def push_handler(request: Request, col=col, rate_limiter=rate_limiter) -> JSONResponse:
-            params = request.path_params
-            if not _validate_all_params(params):
-                return JSONResponse({"error": "Invalid path parameter"}, status_code=400)
-
-            identity, error = await _check_auth(col, OP_WRITE, request, params, opts)
-            if error:
-                return error
-
-            if (
-                col.remote is not None
-                and col.remote.write_mode == WriteMode.PUSH_THROUGH
-                and opts.replica_manager is not None
-            ):
-                return await _proxy_push_to_primary(col, request, opts.replica_manager)
-
-            if col.remote is not None and col.remote.write_mode == WriteMode.PULL_ONLY:
-                return JSONResponse(
-                    {"error": "This collection is read-only on this server"},
-                    status_code=405,
-                )
-
-            document_key = _resolve_document_key(col.storage_path, params)
-            response = await _run_push(request, col, params, document_key, identity, rate_limiter, opts)
-
-            if opts.notification_publisher is not None and response.status_code == 200:
-                resp_body = json.loads(response.body)
-                asyncio.create_task(
-                    opts.notification_publisher.notify(
-                        col.name, resp_body.get("hash", ""), resp_body.get("timestamp", 0)
-                    )
-                )
-
-            return response
-
-        router.add_api_route(push_path, push_handler, methods=["POST"])
+        rate_limiter = _build_rate_limiter(col.rate_limit, opts)
+        router.add_api_route(
+            push_path, _make_push_handler(col, rate_limiter, opts), methods=["POST"],
+        )
 
 
 def _add_bundled_routes(
@@ -399,29 +512,24 @@ def _add_bundled_routes(
             continue
 
         push_path = _to_route_path(ACTION_PUSH, storage_path) + f"/{col.name}"
+        rate_limiter = _build_rate_limiter(col.rate_limit, opts)
 
-        rate_limiter = None
-        if col.rate_limit and opts.config.rate_limit:
-            rate_limiter = RateLimiter(
-                window_ms=opts.config.rate_limit.window_ms,
-                max_requests=opts.config.rate_limit.max_requests,
-            )
+        def _make_bundle_push(col: CollectionConfig, rl: RateLimiter | None) -> Callable:
+            async def bundle_push_handler(request: Request) -> JSONResponse:
+                params = request.path_params
+                if not _validate_all_params(params):
+                    return JSONResponse({"error": "Invalid path parameter"}, status_code=400)
 
-        async def bundle_push_handler(
-            request: Request, col=col, rate_limiter=rate_limiter,
-        ) -> JSONResponse:
-            params = request.path_params
-            if not _validate_all_params(params):
-                return JSONResponse({"error": "Invalid path parameter"}, status_code=400)
+                identity, error = await _check_auth(col, OP_WRITE, request, params, opts)
+                if error:
+                    return error
 
-            identity, error = await _check_auth(col, OP_WRITE, request, params, opts)
-            if error:
-                return error
+                document_key = f"{_resolve_document_key(storage_path, params)}/{col.name}"
+                return await _run_push(request, col, params, document_key, identity, rl, opts)
 
-            document_key = f"{_resolve_document_key(storage_path, params)}/{col.name}"
-            return await _run_push(request, col, params, document_key, identity, rate_limiter, opts)
+            return bundle_push_handler
 
-        router.add_api_route(push_path, bundle_push_handler, methods=["POST"])
+        router.add_api_route(push_path, _make_bundle_push(col, rate_limiter), methods=["POST"])
 
 
 def create_sync_router(opts: SyncRouterOptions) -> APIRouter:
@@ -435,7 +543,7 @@ def create_sync_router(opts: SyncRouterOptions) -> APIRouter:
 
     @router.get("/health")
     async def health() -> dict:
-        return {"status": "ok"}
+        return {"ok": True, "ts": int(time.time() * 1000)}
 
     bundles: dict[str, list[CollectionConfig]] = {}
     standalone: list[CollectionConfig] = []

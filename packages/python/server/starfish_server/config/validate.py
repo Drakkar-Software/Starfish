@@ -4,7 +4,13 @@
 import re
 
 from starfish_server.config.schema import SyncConfig, SyncTrigger, WriteMode
-from starfish_server.constants import ENCRYPTION_IDENTITY, ENCRYPTION_DELEGATED, IDENTITY_PARAM, ROLE_PUBLIC
+from starfish_server.constants import ENCRYPTION_IDENTITY, ENCRYPTION_SERVER, ENCRYPTION_DELEGATED, IDENTITY_PARAM, ROLE_PUBLIC
+
+MIME_JSON = "application/json"
+
+
+def _is_binary_collection(allowed_mime_types: list[str]) -> bool:
+    return MIME_JSON not in [m.lower() for m in allowed_mime_types]
 
 
 def validate_config(config: SyncConfig) -> list[str]:
@@ -49,6 +55,31 @@ def validate_config(config: SyncConfig) -> list[str]:
         if not col.pull_only and not col.read_roles:
             errors.append(
                 f'Collection "{col.name}": readRoles must not be empty (use ["{ROLE_PUBLIC}"] for public access)'
+            )
+
+        # Binary collection constraints (allowedMimeTypes without application/json)
+        is_binary = _is_binary_collection(col.allowed_mime_types)
+        if is_binary:
+            if col.encryption in (ENCRYPTION_IDENTITY, ENCRYPTION_SERVER):
+                errors.append(
+                    f'Collection "{col.name}": binary collections cannot use '
+                    f'"{col.encryption}" encryption (storage layer is string-based)'
+                )
+            if col.object_schema is not None:
+                errors.append(
+                    f'Collection "{col.name}": binary collections cannot have objectSchema'
+                )
+            if col.bundle:
+                errors.append(
+                    f'Collection "{col.name}": binary collections cannot be part of a bundle'
+                )
+            if col.remote:
+                errors.append(
+                    f'Collection "{col.name}": binary collections cannot have remote replication'
+                )
+        if not col.allowed_mime_types:
+            errors.append(
+                f'Collection "{col.name}": allowedMimeTypes must contain at least one pattern'
             )
 
         # Remote collection constraints

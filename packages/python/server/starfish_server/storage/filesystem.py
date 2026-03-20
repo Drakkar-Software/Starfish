@@ -1,6 +1,7 @@
 """Filesystem-backed object store for local development and simple deployments."""
 
 
+import json
 import os
 import re
 from asyncio import to_thread
@@ -83,6 +84,59 @@ class FilesystemObjectStore(AbstractObjectStore):
                 pass
             raise
 
+    async def get_bytes(self, key: str) -> tuple[bytes, str] | None:
+        path = self._path(key)
+        try:
+            async with aiofiles.open(path, "rb") as f:
+                body = await f.read()
+        except FileNotFoundError:
+            return None
+        # Read content-type from sidecar
+        meta_path = path + ".__meta__"
+        content_type = "application/octet-stream"
+        try:
+            async with aiofiles.open(meta_path, encoding="utf-8") as f:
+                meta = json.loads(await f.read())
+                content_type = meta.get("contentType", content_type)
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
+        return body, content_type
+
+    async def put_bytes(
+        self,
+        key: str,
+        body: bytes,
+        *,
+        content_type: str,
+        cache_control: str | None = None,
+    ) -> None:
+        path = self._path(key)
+        await aiofiles.os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        try:
+            async with aiofiles.open(tmp, "wb") as f:
+                await f.write(body)
+            await aiofiles.os.replace(tmp, path)
+        except Exception:
+            try:
+                await aiofiles.os.remove(tmp)
+            except OSError:
+                pass
+            raise
+        # Write sidecar metadata
+        meta_path = path + ".__meta__"
+        meta_tmp = meta_path + ".tmp"
+        try:
+            async with aiofiles.open(meta_tmp, "w", encoding="utf-8") as f:
+                await f.write(json.dumps({"contentType": content_type}))
+            await aiofiles.os.replace(meta_tmp, meta_path)
+        except Exception:
+            try:
+                await aiofiles.os.remove(meta_tmp)
+            except OSError:
+                pass
+            raise
+
     async def list_keys(
         self,
         prefix: str,
@@ -107,7 +161,7 @@ class FilesystemObjectStore(AbstractObjectStore):
 
             for dirpath, _dirnames, filenames in os.walk(prefix_path):
                 for fname in sorted(filenames):
-                    if fname.endswith(".tmp"):
+                    if fname.endswith(".tmp") or fname.endswith(".__meta__"):
                         continue
                     abs_path = os.path.join(dirpath, fname)
                     # Convert back to key form
@@ -130,6 +184,11 @@ class FilesystemObjectStore(AbstractObjectStore):
         path = self._path(key)
         try:
             await aiofiles.os.remove(path)
+        except FileNotFoundError:
+            pass
+        # Clean up
+        try:
+            await aiofiles.os.remove(path + ".__meta__")
         except FileNotFoundError:
             pass
 

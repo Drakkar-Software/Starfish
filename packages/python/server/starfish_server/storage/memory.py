@@ -28,6 +28,8 @@ class MemoryObjectStore(AbstractObjectStore):
 
     def __init__(self, data: dict[str, str] | None = None) -> None:
         self._data: dict[str, str] = _global_data if data is None else data
+        self._binary: dict[str, bytes] = {}
+        self._binary_meta: dict[str, str] = {}
 
     async def get_string(self, key: str) -> str | None:
         return self._data.get(key)
@@ -56,12 +58,33 @@ class MemoryObjectStore(AbstractObjectStore):
             keys = keys[:limit]
         return keys
 
+    async def get_bytes(self, key: str) -> tuple[bytes, str] | None:
+        body = self._binary.get(key)
+        if body is None:
+            return None
+        return body, self._binary_meta.get(key, "application/octet-stream")
+
+    async def put_bytes(
+        self,
+        key: str,
+        body: bytes,
+        *,
+        content_type: str,
+        cache_control: str | None = None,  # noqa: ARG002
+    ) -> None:
+        self._binary[key] = body
+        self._binary_meta[key] = content_type
+
     async def delete(self, key: str) -> None:
         self._data.pop(key, None)
+        self._binary.pop(key, None)
+        self._binary_meta.pop(key, None)
 
     async def delete_many(self, keys: list[str]) -> None:
         for key in keys:
             self._data.pop(key, None)
+            self._binary.pop(key, None)
+            self._binary_meta.pop(key, None)
 
 
 async def _call(fn: Callable[..., Any], *args: Any) -> Any:

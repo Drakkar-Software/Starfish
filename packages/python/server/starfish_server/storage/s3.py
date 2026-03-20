@@ -89,6 +89,35 @@ class S3ObjectStore(AbstractObjectStore):
             kwargs["CacheControl"] = cache_control
         await client.put_object(**kwargs)
 
+    async def get_bytes(self, key: str) -> tuple[bytes, str] | None:
+        client = await self._get_client()
+        try:
+            resp = await client.get_object(Bucket=self._opts.bucket, Key=key)
+            body = await resp["Body"].read()
+            content_type = resp.get("ContentType", "application/octet-stream")
+            return body, content_type
+        except client.exceptions.NoSuchKey:
+            return None
+
+    async def put_bytes(
+        self,
+        key: str,
+        body: bytes,
+        *,
+        content_type: str,
+        cache_control: str | None = None,
+    ) -> None:
+        client = await self._get_client()
+        kwargs: dict[str, Any] = {
+            "Bucket": self._opts.bucket,
+            "Key": key,
+            "Body": body,
+            "ContentType": content_type,
+        }
+        if cache_control:
+            kwargs["CacheControl"] = cache_control
+        await client.put_object(**kwargs)
+
     async def list_keys(
         self,
         prefix: str,
