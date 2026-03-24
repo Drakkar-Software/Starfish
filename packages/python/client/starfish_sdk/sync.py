@@ -96,7 +96,7 @@ class SyncManager:
                 )
 
                 sig = (
-                    await self._sign_data(stable_stringify(pending_data))
+                    await self._sign_data(stable_stringify(payload))
                     if self._sign_data is not None
                     else None
                 )

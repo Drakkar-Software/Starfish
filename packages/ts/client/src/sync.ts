@@ -88,7 +88,7 @@ export class SyncManager {
           : pendingData
 
         const sig = this.signData
-          ? await this.signData(stableStringify(pendingData))
+          ? await this.signData(stableStringify(payload))
           : undefined
 
         const result = await this.client.push(

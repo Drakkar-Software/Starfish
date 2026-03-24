@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest"
+import { stableStringify } from "@starfish/protocol"
 import { StarfishClient } from "../src/client.js"
 import { SyncManager } from "../src/sync.js"
 import type { PullResponse, PushSuccess } from "../src/types.js"
@@ -100,5 +101,89 @@ describe("SyncManager", () => {
 
     expect(result.hash).toBe("updated")
     expect(pushFn).toHaveBeenCalled()
+  })
+
+  it("signData signs the encrypted payload, not the plaintext", async () => {
+    const signedStrings: string[] = []
+    const signData = async (data: string) => {
+      signedStrings.push(data)
+      return "dummy-sig"
+    }
+
+    const pushFn = vi.fn(async () => ({ hash: "h1", timestamp: 1 }))
+    const client = mockClient({ push: pushFn as any })
+
+    const plaintext = { hello: "world", nested: { a: 1 } }
+
+    const sync = new SyncManager({
+      client,
+      pullPath: "/pull/test",
+      pushPath: "/push/test",
+      encryptionSecret: "a]cZ#8=6gT{>w$Q}",
+      encryptionSalt: "user-public-key-abc123",
+      encryptionInfo: "starfish-e2e",
+      signData,
+    })
+
+    await sync.push(plaintext)
+
+    // signData was called exactly once
+    expect(signedStrings).toHaveLength(1)
+
+    // The push call's second arg is the actual payload sent to the server
+    const actualPayload = pushFn.mock.calls[0][1]
+
+    // The signed string must be stableStringify of the encrypted payload
+    expect(signedStrings[0]).toBe(stableStringify(actualPayload))
+
+    // And it must NOT be the plaintext stringification
+    expect(signedStrings[0]).not.toBe(stableStringify(plaintext))
+
+    // The payload must be an encrypted wrapper
+    expect(actualPayload).toHaveProperty("_encrypted")
+  })
+
+  it("signData signs the raw data when no encryption is configured", async () => {
+    const signedStrings: string[] = []
+    const signData = async (data: string) => {
+      signedStrings.push(data)
+      return "dummy-sig"
+    }
+
+    const pushFn = vi.fn(async () => ({ hash: "h1", timestamp: 1 }))
+    const client = mockClient({ push: pushFn as any })
+
+    const plaintext = { key: "value" }
+
+    const sync = new SyncManager({
+      client,
+      pullPath: "/pull/test",
+      pushPath: "/push/test",
+      signData,
+    })
+
+    await sync.push(plaintext)
+
+    expect(signedStrings).toHaveLength(1)
+    // Without encryption, payload == plaintext
+    expect(signedStrings[0]).toBe(stableStringify(plaintext))
+  })
+
+  it("push forwards the signature to client.push()", async () => {
+    const signData = async () => "test-signature-abc"
+    const pushFn = vi.fn(async () => ({ hash: "h1", timestamp: 1 }))
+    const client = mockClient({ push: pushFn as any })
+
+    const sync = new SyncManager({
+      client,
+      pullPath: "/pull/test",
+      pushPath: "/push/test",
+      signData,
+    })
+
+    await sync.push({ foo: "bar" })
+
+    // Fourth positional arg to client.push is the signature
+    expect(pushFn.mock.calls[0][3]).toBe("test-signature-abc")
   })
 })
