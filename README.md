@@ -277,6 +277,11 @@ async with StarfishClient(
         "/push/users/abc/settings",
         encryption_secret="my-secret",
         encryption_salt="user-abc",
+        # Optional: sign pushed data for author verification.
+        # The callback receives stable_stringify(payload) — i.e. the
+        # encrypted payload when encryption is active, or the raw data
+        # when it is not — and must return a signature string.
+        sign_data=my_signer,
     )
     await sync.pull()
     await sync.push({"theme": "dark", "lang": "en"})
