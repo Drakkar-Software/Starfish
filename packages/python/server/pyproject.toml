@@ -20,6 +20,7 @@ dependencies = [
 
 [project.optional-dependencies]
 s3 = ["aiobotocore>=2.5.0"]
+sui = ["pysui>=0.65.0"]
 dev = [
   "pytest>=7.0",
   "pytest-asyncio>=0.21",

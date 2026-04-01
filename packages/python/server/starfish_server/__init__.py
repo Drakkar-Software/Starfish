@@ -52,6 +52,11 @@ from starfish_server.storage.base import AbstractObjectStore
 from starfish_server.storage.filesystem import FilesystemObjectStore, FilesystemStorageOptions
 from starfish_server.storage.memory import MemoryObjectStore, CustomObjectStore
 
+try:
+    from starfish_server.storage.sui import SuiObjectStore, SuiStorageOptions
+except ImportError:  # pysui not installed — SUI adapter unavailable
+    pass
+
 __all__ = [
     "StartupError",
     "AuthError",
@@ -110,4 +115,6 @@ __all__ = [
     "FilesystemStorageOptions",
     "MemoryObjectStore",
     "CustomObjectStore",
+    "SuiObjectStore",
+    "SuiStorageOptions",
 ]
