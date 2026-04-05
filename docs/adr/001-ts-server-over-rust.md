@@ -8,7 +8,7 @@
 Starfish needs a server implementation alongside its existing Python/FastAPI server. The question: should the new server be written in TypeScript (Node.js) or Rust (with WASM compatibility)?
 
 Current state:
-- **Python server** (~2,900 lines): FastAPI, storage backends (memory, filesystem, S3), encryption, RBAC, replicas
+- **Python server** (~5,750 lines): FastAPI, storage backends (memory, filesystem, S3), encryption, RBAC, replicas
 - **`@starfish/protocol`** (TS): hash (SHA-256), crypto (HKDF + AES-256-GCM), merge, stable stringify — zero dependencies, Web Crypto API
 - **`@starfish/client`** (TS): HTTP client, SyncManager, Zustand/Legend State bindings
 - **No Rust/WASM** in the codebase
@@ -54,8 +54,8 @@ Hono is already a devDependency in `@starfish/client`. It runs on Node.js, Deno,
 
 ### 6. Implementation Effort
 
-- TS port: ~2,000 lines (protocol layer is free via reuse)
-- Rust port: ~3,500-4,000 lines + ~500 lines WASM glue — roughly 2x effort for zero user-facing benefit
+- TS port: ~4,000 lines (protocol layer is free via reuse, Hono is more concise than FastAPI)
+- Rust port: ~6,000-7,000 lines + ~500 lines WASM glue — significantly more effort for zero user-facing benefit
 
 ## When Rust Would Be Reconsidered
 
