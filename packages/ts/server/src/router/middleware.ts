@@ -44,7 +44,6 @@ export class RateLimiter {
     let entry = this.buckets.get(bucketKey)
 
     if (!entry || entry.resetAt <= now) {
-      // Clean expired entries
       for (const [k, v] of this.buckets) {
         if (v.resetAt <= now) this.buckets.delete(k)
       }

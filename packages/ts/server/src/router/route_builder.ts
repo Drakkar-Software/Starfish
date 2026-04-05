@@ -8,6 +8,7 @@ import {
   handleSyncPull,
   handleSyncPush,
   validatePathSegment,
+  parseCheckpoint,
   type SignatureVerifier,
 } from "./helpers.js"
 import { checkBodyLimit, RateLimiter } from "./middleware.js"
@@ -53,10 +54,11 @@ export interface SyncRouterOptions {
   serverEncryptionInfo?: string
   signatureVerifier?: SignatureVerifier
   roleResolverTimeout?: number
+  /** @internal Cached server-encryption store, lazily created. */
+  _serverEncryptedStore?: AbstractObjectStore
 }
 
 function toRoutePath(action: string, storagePath: string): string {
-  // Convert {param} to :param for Hono route registration
   const honoPath = storagePath.replace(/\{(\w+)\}/g, ":$1")
   return `/${action}/${honoPath}`
 }
@@ -153,18 +155,21 @@ function resolveStore(
     )
   }
   if (col.encryption === ENCRYPTION_SERVER) {
-    if (!opts.serverEncryptionSecret) {
-      throw new Error(`Collection "${col.name}" requires serverEncryptionSecret`)
+    if (!opts._serverEncryptedStore) {
+      if (!opts.serverEncryptionSecret) {
+        throw new Error(`Collection "${col.name}" requires serverEncryptionSecret`)
+      }
+      if (!opts.serverIdentity) {
+        throw new Error(`Collection "${col.name}" requires serverIdentity`)
+      }
+      opts._serverEncryptedStore = new EncryptedObjectStore(
+        baseStore,
+        opts.serverEncryptionSecret,
+        opts.serverIdentity,
+        opts.serverEncryptionInfo || HKDF_INFO_SERVER,
+      )
     }
-    if (!opts.serverIdentity) {
-      throw new Error(`Collection "${col.name}" requires serverIdentity`)
-    }
-    return new EncryptedObjectStore(
-      baseStore,
-      opts.serverEncryptionSecret,
-      opts.serverIdentity,
-      opts.serverEncryptionInfo || HKDF_INFO_SERVER,
-    )
+    return opts._serverEncryptedStore
   }
   return baseStore
 }
@@ -183,6 +188,24 @@ function buildRateLimiter(
   )
 }
 
+function checkPushGuards(
+  request: Request,
+  col: CollectionConfig,
+  identity: string | null,
+  rateLimiter: RateLimiter | null,
+): Response | null {
+  const contentLength = request.headers.get("content-length")
+  if (col.maxBodyBytes) {
+    const limitError = checkBodyLimit(contentLength, col.maxBodyBytes)
+    if (limitError) return limitError
+  }
+  if (rateLimiter) {
+    const rateError = rateLimiter.check(identity, request)
+    if (rateError) return rateError
+  }
+  return null
+}
+
 async function runPush(
   request: Request,
   col: CollectionConfig,
@@ -192,16 +215,8 @@ async function runPush(
   rateLimiter: RateLimiter | null,
   opts: SyncRouterOptions,
 ): Promise<Response> {
-  const contentLength = request.headers.get("content-length")
-  if (col.maxBodyBytes) {
-    const limitError = checkBodyLimit(contentLength, col.maxBodyBytes)
-    if (limitError) return limitError
-  }
-
-  if (rateLimiter) {
-    const rateError = rateLimiter.check(identity, request)
-    if (rateError) return rateError
-  }
+  const guardError = checkPushGuards(request, col, identity, rateLimiter)
+  if (guardError) return guardError
 
   const contentType = request.headers.get("content-type") ?? ""
   if (!contentType.includes(CONTENT_TYPE_JSON)) {
@@ -243,16 +258,8 @@ async function runBinaryPush(
   rateLimiter: RateLimiter | null,
   opts: SyncRouterOptions,
 ): Promise<Response> {
-  const contentLength = request.headers.get("content-length")
-  if (col.maxBodyBytes) {
-    const limitError = checkBodyLimit(contentLength, col.maxBodyBytes)
-    if (limitError) return limitError
-  }
-
-  if (rateLimiter) {
-    const rateError = rateLimiter.check(identity, request)
-    if (rateError) return rateError
-  }
+  const guardError = checkPushGuards(request, col, identity, rateLimiter)
+  if (guardError) return guardError
 
   const contentType = request.headers.get("content-type") ?? ""
   if (!matchesAllowedMime(contentType, col.allowedMimeTypes ?? [])) {
@@ -399,11 +406,9 @@ function addBundledRoutes(
     const checkpointParam = new URL(c.req.url).searchParams.get(QUERY_CHECKPOINT)
     let checkpoint = 0
     if (!anyClientEncrypted && checkpointParam != null) {
-      const parsed = parseInt(checkpointParam, 10)
-      if (isNaN(parsed) || parsed < 0 || String(parsed) !== checkpointParam) {
-        return Response.json({ error: "Invalid checkpoint" }, { status: 400 })
-      }
-      checkpoint = parsed
+      const result = parseCheckpoint(checkpointParam)
+      if (result instanceof Response) return result
+      checkpoint = result
     }
 
     const pullResults = await Promise.all(

@@ -1,4 +1,4 @@
-import { deepMerge, computeHash } from "@starfish/protocol"
+import { deepMerge } from "@starfish/protocol"
 import type { AbstractObjectStore } from "../storage/base.js"
 import type { CollectionConfig } from "../config/schema.js"
 import { pull } from "../protocol/pull.js"
@@ -7,7 +7,7 @@ import { isPushConflict } from "../protocol/types.js"
 
 export class ReplicaManager {
   private readonly store: AbstractObjectStore
-  private readonly collections: CollectionConfig[]
+  private readonly collectionsByName: Map<string, CollectionConfig>
   private readonly selfBaseUrl?: string
   private readonly onError?: (error: Error) => void
   private lastHashes = new Map<string, string>()
@@ -21,22 +21,28 @@ export class ReplicaManager {
     onError?: (error: Error) => void
   }) {
     this.store = opts.store
-    this.collections = opts.collections.filter((c) => c.remote)
+    this.collectionsByName = new Map(
+      opts.collections.filter((c) => c.remote).map((c) => [c.name, c]),
+    )
     this.selfBaseUrl = opts.selfBaseUrl
     this.onError = opts.onError
   }
 
   async start(): Promise<void> {
-    for (const col of this.collections) {
+    for (const [name, col] of this.collectionsByName) {
       const remote = col.remote!
       if (remote.intervalMs && remote.intervalMs > 0) {
         const interval = setInterval(() => {
-          this.syncNow(col.name).catch((err) => this.onError?.(err as Error))
+          this.syncNow(name).catch((err) => this.onError?.(err as Error))
         }, remote.intervalMs)
         this.intervals.push(interval)
       }
-      await this.syncNow(col.name).catch((err) => this.onError?.(err as Error))
     }
+    await Promise.allSettled(
+      [...this.collectionsByName.keys()].map((name) =>
+        this.syncNow(name).catch((err) => this.onError?.(err as Error)),
+      ),
+    )
   }
 
   async stop(): Promise<void> {
@@ -51,7 +57,7 @@ export class ReplicaManager {
   }
 
   async onPull(collectionName: string): Promise<void> {
-    const col = this.collections.find((c) => c.name === collectionName)
+    const col = this.collectionsByName.get(collectionName)
     if (!col?.remote) return
 
     const triggers = col.remote.syncTriggers ?? []
@@ -65,7 +71,7 @@ export class ReplicaManager {
   }
 
   async syncNow(name: string): Promise<void> {
-    const col = this.collections.find((c) => c.name === name)
+    const col = this.collectionsByName.get(name)
     if (!col?.remote) return
 
     const remote = col.remote
@@ -91,37 +97,17 @@ export class ReplicaManager {
     if (remoteResult.hash === lastHash) return
 
     const writeMode = remote.writeMode ?? "pull_only"
+    const localResult = await pull(this.store, col.storagePath)
+    const localHash = localResult.hash || null
 
-    if (writeMode === "bidirectional") {
-      const localResult = await pull(this.store, col.storagePath)
-      if (localResult.hash && localResult.hash !== remoteResult.hash) {
-        const merged = deepMerge(localResult.data, remoteResult.data)
-        const result = await push(this.store, col.storagePath, merged, localResult.hash)
-        if (!isPushConflict(result)) {
-          this.lastHashes.set(name, result.hash)
-        }
-      } else {
-        const result = await push(
-          this.store,
-          col.storagePath,
-          remoteResult.data,
-          localResult.hash || null,
-        )
-        if (!isPushConflict(result)) {
-          this.lastHashes.set(name, result.hash)
-        }
-      }
-    } else {
-      const localResult = await pull(this.store, col.storagePath)
-      const result = await push(
-        this.store,
-        col.storagePath,
-        remoteResult.data,
-        localResult.hash || null,
-      )
-      if (!isPushConflict(result)) {
-        this.lastHashes.set(name, result.hash)
-      }
+    let dataToWrite = remoteResult.data
+    if (writeMode === "bidirectional" && localResult.hash && localResult.hash !== remoteResult.hash) {
+      dataToWrite = deepMerge(localResult.data, remoteResult.data)
+    }
+
+    const result = await push(this.store, col.storagePath, dataToWrite, localHash)
+    if (!isPushConflict(result)) {
+      this.lastHashes.set(name, result.hash)
     }
 
     this.lastSyncTime.set(name, Date.now())
@@ -129,8 +115,8 @@ export class ReplicaManager {
 
   async syncAll(): Promise<void> {
     await Promise.allSettled(
-      this.collections.map((col) =>
-        this.syncNow(col.name).catch((err) => this.onError?.(err as Error)),
+      [...this.collectionsByName.keys()].map((name) =>
+        this.syncNow(name).catch((err) => this.onError?.(err as Error)),
       ),
     )
   }

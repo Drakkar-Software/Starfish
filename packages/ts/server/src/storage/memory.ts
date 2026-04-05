@@ -1,7 +1,5 @@
 import { AbstractObjectStore } from "./base.js"
 
-const _globalData: Record<string, string> = {}
-
 export class MemoryObjectStore extends AbstractObjectStore {
   private readonly _data: Record<string, string>
   private readonly _binary: Record<string, Buffer>
@@ -9,7 +7,7 @@ export class MemoryObjectStore extends AbstractObjectStore {
 
   constructor(options?: { data?: Record<string, string> }) {
     super()
-    this._data = options?.data ?? _globalData
+    this._data = options?.data ?? {}
     this._binary = {}
     this._binaryMeta = {}
   }

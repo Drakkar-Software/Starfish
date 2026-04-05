@@ -33,6 +33,15 @@ export function deepSanitize(obj: Record<string, unknown>): Record<string, unkno
   return safe
 }
 
+/** Parse and validate a checkpoint query param. Returns the numeric value or an error Response. */
+export function parseCheckpoint(param: string): number | Response {
+  const parsed = parseInt(param, 10)
+  if (isNaN(parsed) || parsed < 0 || String(parsed) !== param) {
+    return Response.json({ error: "Invalid checkpoint" }, { status: 400 })
+  }
+  return parsed
+}
+
 export interface SyncPullOptions {
   documentKey: string
   store: AbstractObjectStore
@@ -56,11 +65,9 @@ export async function handleSyncPull(
     !opts.clientEncrypted &&
     opts.checkpointParam != null
   ) {
-    const parsed = parseInt(opts.checkpointParam, 10)
-    if (isNaN(parsed) || parsed < 0 || String(parsed) !== opts.checkpointParam) {
-      return Response.json({ error: "Invalid checkpoint" }, { status: 400 })
-    }
-    checkpoint = parsed
+    const result = parseCheckpoint(opts.checkpointParam)
+    if (result instanceof Response) return result
+    checkpoint = result
   }
 
   const result = await pull(opts.store, opts.documentKey, checkpoint)

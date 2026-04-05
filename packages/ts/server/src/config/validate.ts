@@ -1,5 +1,5 @@
 import type { SyncConfig } from "./schema.js"
-import { IDENTITY_PARAM } from "../constants.js"
+import { IDENTITY_PARAM, CONTENT_TYPE_JSON } from "../constants.js"
 
 export function validateConfig(config: SyncConfig): string[] {
   const errors: string[] = []
@@ -27,21 +27,16 @@ export function validateConfig(config: SyncConfig): string[] {
       )
     }
 
-    if (col.bundle) {
-      if (col.allowedMimeTypes && col.allowedMimeTypes.length > 0) {
-        const isJson =
-          col.allowedMimeTypes.length === 1 && col.allowedMimeTypes[0] === "application/json"
-        if (!isJson) {
-          errors.push(`Bundled collection "${col.name}" cannot use non-JSON MIME types`)
-        }
-      }
-    }
-
-    if (
+    const isBinaryCollection =
       col.allowedMimeTypes &&
       col.allowedMimeTypes.length > 0 &&
-      !(col.allowedMimeTypes.length === 1 && col.allowedMimeTypes[0] === "application/json")
-    ) {
+      !(col.allowedMimeTypes.length === 1 && col.allowedMimeTypes[0] === CONTENT_TYPE_JSON)
+
+    if (col.bundle && isBinaryCollection) {
+      errors.push(`Bundled collection "${col.name}" cannot use non-JSON MIME types`)
+    }
+
+    if (isBinaryCollection) {
       if (col.encryption === "identity" || col.encryption === "server") {
         errors.push(
           `Binary collection "${col.name}" cannot use "${col.encryption}" encryption`,

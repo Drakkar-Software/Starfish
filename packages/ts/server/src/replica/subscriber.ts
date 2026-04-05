@@ -10,18 +10,22 @@ export interface Subscription {
 
 export class SubscriptionStore {
   private readonly store: AbstractObjectStore
+  private cache: Subscription[] | null = null
 
   constructor(store: AbstractObjectStore) {
     this.store = store
   }
 
   private async load(): Promise<Subscription[]> {
+    if (this.cache) return this.cache
     const raw = await this.store.getString(SUBSCRIPTIONS_KEY)
-    if (!raw) return []
-    return JSON.parse(raw)
+    const subs = raw ? (JSON.parse(raw) as Subscription[]) : []
+    this.cache = subs
+    return subs
   }
 
   private async save(subs: Subscription[]): Promise<void> {
+    this.cache = subs
     await this.store.put(SUBSCRIPTIONS_KEY, JSON.stringify(subs))
   }
 
@@ -30,7 +34,7 @@ export class SubscriptionStore {
     collections: string[],
     subscribedAt: number,
   ): Promise<void> {
-    const subs = await this.load()
+    const subs = [...(await this.load())]
     const idx = subs.findIndex((s) => s.webhookUrl === webhookUrl)
     const entry: Subscription = { webhookUrl, collections, subscribedAt }
     if (idx >= 0) {

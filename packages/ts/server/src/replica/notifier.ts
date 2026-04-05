@@ -1,5 +1,6 @@
 import * as crypto from "node:crypto"
 import type { SubscriptionStore } from "./subscriber.js"
+import { CONTENT_TYPE_JSON } from "../constants.js"
 
 function sign(payload: Uint8Array, secret: string): string {
   const hmac = crypto.createHmac("sha256", secret)
@@ -51,7 +52,7 @@ export class NotificationPublisher {
     const bodyBytes = new TextEncoder().encode(payload)
 
     const headers: Record<string, string> = {
-      "Content-Type": "application/json",
+      "Content-Type": CONTENT_TYPE_JSON,
     }
     if (this.webhookSecret) {
       headers["X-Starfish-Signature"] = sign(bodyBytes, this.webhookSecret)

@@ -80,7 +80,7 @@ export class FilesystemObjectStore extends AbstractObjectStore {
     try {
       await fs.unlink(this.resolvePath(key + ".__meta__"))
     } catch {
-      // meta file may not exist
+      // ignored
     }
   }
 

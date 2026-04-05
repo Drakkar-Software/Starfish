@@ -46,6 +46,7 @@ export {
   handleSyncPush,
   validatePathSegment,
   deepSanitize,
+  parseCheckpoint,
   type SignatureVerifier,
 } from "./router/helpers.js"
 export { checkBodyLimit, RateLimiter } from "./router/middleware.js"
