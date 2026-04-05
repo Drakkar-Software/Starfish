@@ -1,10 +1,13 @@
 {
-  "name": "starfish-client",
+  "name": "@starfish/client",
   "version": "0.1.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/Drakkar-Software/starfish.git",
     "directory": "packages/ts/client"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "description": "TypeScript client SDK for the Starfish sync protocol",
   "type": "module",
@@ -41,7 +44,7 @@
     }
   },
   "dependencies": {
-    "starfish-protocol": "workspace:*"
+    "@starfish/protocol": "workspace:*"
   },
   "scripts": {
     "build": "tsc --build",

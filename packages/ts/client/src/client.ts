@@ -1,4 +1,4 @@
-import type { PullResult, PushSuccess } from "starfish-protocol"
+import type { PullResult, PushSuccess } from "@starfish/protocol"
 import type {
   StarfishClientOptions,
   AuthProvider,

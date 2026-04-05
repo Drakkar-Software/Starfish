@@ -14,7 +14,7 @@ importers:
 
   packages/ts/client:
     dependencies:
-      starfish-protocol:
+      '@starfish/protocol':
         specifier: workspace:*
         version: link:../protocol
     devDependencies:
