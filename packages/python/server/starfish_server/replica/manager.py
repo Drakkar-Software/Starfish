@@ -33,13 +33,11 @@ class ReplicaManager:
         store: AbstractObjectStore,
         collections: list[CollectionConfig],
         *,
-        self_base_url: str | None = None,
         client: httpx.AsyncClient | None = None,
         on_error: Callable[[str, Exception], None] | None = None,
     ) -> None:
         self._store = store
         self._remote_cols = [c for c in collections if c.remote is not None]
-        self._self_base_url = self_base_url
         self._owned_client = client is None
         self._client = client or httpx.AsyncClient(timeout=30.0)
         self._on_error = on_error or (
@@ -50,12 +48,9 @@ class ReplicaManager:
         self._tasks: list[asyncio.Task[None]] = []
 
     async def start(self) -> None:
-        """Start background sync tasks and subscribe to primaries (webhook trigger)."""
+        """Start background sync tasks for all remote collections."""
         for col in self._remote_cols:
             remote = col.remote  # type: ignore[assignment]  # filtered above
-
-            if SyncTrigger.WEBHOOK in remote.sync_triggers and self._self_base_url:
-                asyncio.create_task(self._subscribe(col))
 
             if SyncTrigger.SCHEDULED in remote.sync_triggers:
                 task = asyncio.create_task(self._run_loop(col))
@@ -72,14 +67,6 @@ class ReplicaManager:
         self._tasks.clear()
         if self._owned_client:
             await self._client.aclose()
-
-    async def on_notification(self, collection_name: str) -> None:
-        """Called by ``POST /replica/notify`` when the primary signals a write."""
-        col = self._find(collection_name)
-        if col is None:
-            logger.warning("[ReplicaManager] Notification for unknown collection %r", collection_name)
-            return
-        await self._sync_safe(col)
 
     async def on_pull(self, collection_name: str) -> None:
         """Called by the pull route when ``on_pull`` is listed in ``sync_triggers``.
@@ -180,26 +167,3 @@ class ReplicaManager:
         self._last_sync_at[col.name] = time.monotonic()
         logger.debug("[ReplicaManager] Synced %r (hash=%s)", col.name, result.hash)
 
-    async def _subscribe(self, col: CollectionConfig) -> None:
-        """Register this replica's webhook URL with the primary."""
-        remote = col.remote  # type: ignore[assignment]
-        webhook_url = self._self_base_url
-        subscribe_url = f"{remote.url.rstrip('/')}/replica/subscribe"
-        try:
-            resp = await self._client.post(
-                subscribe_url,
-                json={"webhook_url": webhook_url, "collections": [col.name]},
-                headers={"Content-Type": "application/json", **remote.headers},
-            )
-            if not resp.is_success:
-                logger.warning(
-                    "[ReplicaManager] Subscription to %s returned HTTP %s",
-                    subscribe_url,
-                    resp.status_code,
-                )
-        except httpx.HTTPError as exc:
-            logger.warning(
-                "[ReplicaManager] Could not subscribe to %s: %s (scheduled pulls will still work)",
-                subscribe_url,
-                exc,
-            )

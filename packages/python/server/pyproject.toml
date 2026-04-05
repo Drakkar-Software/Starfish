@@ -20,6 +20,7 @@ dependencies = [
 
 [project.optional-dependencies]
 s3 = ["aiobotocore>=2.5.0"]
+nats = ["nats-py>=2.0"]
 dev = [
   "pytest>=7.0",
   "pytest-asyncio>=0.21",

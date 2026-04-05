@@ -7,7 +7,7 @@
     "directory": "packages/ts/client"
   },
   "publishConfig": {
-    "registry": "https://npm.pkg.github.com"
+    "access": "public"
   },
   "description": "TypeScript client SDK for the Starfish sync protocol",
   "type": "module",

@@ -3,7 +3,7 @@
 
 import re
 
-from starfish_server.config.schema import SyncConfig, SyncTrigger, WriteMode
+from starfish_server.config.schema import SyncConfig, WriteMode
 from starfish_server.constants import ENCRYPTION_IDENTITY, ENCRYPTION_SERVER, ENCRYPTION_DELEGATED, IDENTITY_PARAM, ROLE_PUBLIC
 
 MIME_JSON = "application/json"
@@ -109,12 +109,6 @@ def validate_config(config: SyncConfig) -> list[str]:
                         f'Collection "{col.name}": write_mode "{col.remote.write_mode.value}" '
                         f'requires remote.push_path to be set'
                     )
-            # webhook trigger requires a shared secret for HMAC verification
-            if SyncTrigger.WEBHOOK in col.remote.sync_triggers and not col.remote.webhook_secret:
-                errors.append(
-                    f'Collection "{col.name}": sync trigger "webhook" requires remote.webhook_secret to be set'
-                )
-
     # Check bundles: all collections in same bundle must share storagePath
     bundles: dict[str, str] = {}
     for col in config.collections:

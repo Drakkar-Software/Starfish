@@ -7,7 +7,6 @@ from starfish_server.config.schema import (
     CollectionConfig,
     RemoteConfig,
     SyncConfig,
-    SyncTrigger,
     WriteMode,
 )
 from starfish_server.config.validate import validate_config
@@ -96,32 +95,6 @@ def test_bidirectional_without_push_path_rejected():
     )
     errors = validate_config(_config(col))
     assert any("push_path" in e for e in errors)
-
-
-def test_webhook_trigger_without_secret_rejected():
-    col = _remote_col(
-        remote=RemoteConfig(
-            url="https://primary.example.com/v1",
-            pullPath="/pull/posts/featured",
-            syncTriggers=[SyncTrigger.WEBHOOK],
-            # webhook_secret intentionally omitted
-        )
-    )
-    errors = validate_config(_config(col))
-    assert any("webhook_secret" in e for e in errors)
-
-
-def test_webhook_trigger_with_secret_passes():
-    col = _remote_col(
-        remote=RemoteConfig(
-            url="https://primary.example.com/v1",
-            pullPath="/pull/posts/featured",
-            syncTriggers=[SyncTrigger.WEBHOOK],
-            webhookSecret="supersecret",
-        )
-    )
-    errors = validate_config(_config(col))
-    assert errors == []
 
 
 def test_push_through_with_push_path_passes():

@@ -34,9 +34,6 @@ class SyncTrigger(StrEnum):
     SCHEDULED = "scheduled"
     """Sync on a fixed interval (``interval_ms``)."""
 
-    WEBHOOK = "webhook"
-    """Sync when the primary sends a ``POST /replica/notify`` notification."""
-
     ON_PULL = "on_pull"
     """Sync before serving each local ``GET /pull/…`` request (lazy / always-fresh)."""
 
@@ -72,10 +69,6 @@ class RemoteConfig(BaseModel):
     )
     """Which events trigger a sync from the primary. Defaults to ``[scheduled]``."""
 
-    webhook_secret: str | None = Field(default=None, alias="webhookSecret")
-    """HMAC-SHA256 secret used to verify incoming ``POST /replica/notify`` requests.
-    Required when ``webhook`` is listed in ``sync_triggers``."""
-
     on_pull_min_interval_ms: int | None = Field(default=None, gt=0, alias="onPullMinIntervalMs")
     """Minimum time in milliseconds between two consecutive syncs triggered by ``on_pull``.
 
@@ -84,6 +77,25 @@ class RemoteConfig(BaseModel):
 
     ``None`` (default) means every ``on_pull`` request always syncs from the primary.
     Only relevant when ``on_pull`` is listed in ``sync_triggers``."""
+
+
+class QueueConfig(BaseModel):
+    """Per-collection queue publishing configuration.
+
+    When present on a :class:`CollectionConfig`, the server publishes a
+    change event to the configured queue after every successful push.
+    """
+
+    model_config = {"populate_by_name": True}
+
+    topic: str | None = Field(default=None)
+    """NATS subject (or equivalent topic name) to publish to.
+
+    Defaults to the collection ``name`` when ``None``."""
+
+    include_params: bool = Field(default=False, alias="includeParams")
+    """Include resolved path parameters (e.g. ``{"identity": "user-1"}``) in the
+    published message payload."""
 
 
 class CollectionRateLimitConfig(BaseModel):
@@ -159,11 +171,28 @@ class CollectionConfig(BaseModel):
     """When set, this collection is replicated from a remote primary starfish server.
     All replica behavior (write mode, sync triggers, interval, auth) is fully described here."""
 
+    queue: QueueConfig | None = Field(default=None)
+    """When set, the server publishes a change event to the configured queue
+    after every successful push.
+
+    Accepts ``true`` (use defaults — topic is the collection name),
+    ``false``/``null`` (disabled), or an object ``{"topic": …, "includeParams": …}``
+    to customise."""
+
     @field_validator("rate_limit", mode="before")
     @classmethod
     def _coerce_rate_limit(cls, v: object) -> object:
         if v is True:
             return CollectionRateLimitConfig()
+        if v is False:
+            return None
+        return v
+
+    @field_validator("queue", mode="before")
+    @classmethod
+    def _coerce_queue(cls, v: object) -> object:
+        if v is True:
+            return QueueConfig()
         if v is False:
             return None
         return v

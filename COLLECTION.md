@@ -231,6 +231,70 @@ Collections with the same `bundle` value share a `storagePath` and are served to
 
 `GET /pull/users/:identity` returns all bundled collections in one response. Push remains per-collection: `POST /push/users/:identity/settings`.
 
+### Queue (change events)
+
+Adding a `queue` block makes the server publish a change event to a queue after every successful push on that collection.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `queue` | `object` or `boolean` | `null` | When set, enables publishing change events. See below. |
+
+| Value | Behavior |
+|---|---|
+| `null` / absent | No events published. |
+| `false` | No events published. |
+| `true` | Events published with defaults (topic = collection name, no params). |
+| `{ "topic": …, "includeParams": … }` | Events published with custom settings. |
+
+#### Queue config
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `topic` | `string` | collection `name` | Subject / topic name to publish to (e.g. NATS subject). |
+| `includeParams` | `boolean` | `false` | Include resolved path parameters in the event payload. |
+
+#### Event payload
+
+```json
+{
+  "collection": "posts",
+  "hash": "abc123...",
+  "timestamp": 1712345678000,
+  "params": {"postId": "abc"}
+}
+```
+
+`params` is only present when `includeParams` is `true`.
+
+#### Examples
+
+```jsonc
+// Publish to default topic (collection name "posts")
+{ "queue": true }
+
+// Publish to a custom topic with path parameters
+{ "queue": { "topic": "data.posts.changed", "includeParams": true } }
+```
+
+#### Server setup
+
+```python
+from starfish_server.queue.nats import NatsQueue, NatsQueueOptions
+
+queue = NatsQueue(NatsQueueOptions(servers="nats://localhost:4222"))
+
+router = create_sync_router(
+    SyncRouterOptions(store=store, config=config, role_resolver=role_resolver, queue=queue)
+)
+
+# In lifespan:
+await queue.connect()
+# ... on shutdown:
+await queue.close()
+```
+
+The queue abstraction (`AbstractQueue`) supports multiple backends. Built-in: `MemoryQueue` (testing), `CustomQueue` (callback-based), `NatsQueue` (NATS). Install NATS support with `pip install starfish-server[nats]`.
+
 ### Replication (remote)
 
 Adding a `remote` block makes the collection a replica that syncs from a primary Starfish server.
@@ -250,7 +314,6 @@ Adding a `remote` block makes the collection a replica that syncs from a primary
 | `headers` | `object` | no | `{}` | Static HTTP headers sent to the primary (e.g. `{"Authorization": "Bearer token"}`). |
 | `writeMode` | `string` | no | `"pull_only"` | How client writes are handled. See [Write modes](#write-modes). |
 | `syncTriggers` | `string[]` | no | `["scheduled"]` | Events that trigger a sync. See [Sync triggers](#sync-triggers). |
-| `webhookSecret` | `string` | no | `null` | HMAC-SHA256 secret for verifying webhook notifications. Required when `"webhook"` is in `syncTriggers`. |
 | `onPullMinIntervalMs` | `integer` | no | `null` | Minimum cooldown in ms between `on_pull` syncs. When set and the cooldown hasn't elapsed, the replica serves cached data without hitting the primary. |
 
 #### Write modes
@@ -267,7 +330,6 @@ Adding a `remote` block makes the collection a replica that syncs from a primary
 | Trigger | When it fires |
 |---|---|
 | `scheduled` | Every `intervalMs` in a background task. |
-| `webhook` | When the primary sends a `POST /replica/notify` notification. |
 | `on_pull` | Before each client `GET /pull/…` request (respects `onPullMinIntervalMs` cooldown). |
 
 #### Remote collection constraints

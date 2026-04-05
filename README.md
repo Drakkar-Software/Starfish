@@ -800,6 +800,68 @@ Collections with the same `bundle` value share a storage path and expose a combi
 
 `GET /pull/users/:identity` returns all bundled collections in a single response. Push remains per-collection.
 
+### Queue (change events)
+
+Publish data-change events to a message queue after every successful push. The queue system uses the same abstraction pattern as storage: an abstract base class with pluggable implementations.
+
+Built-in backends: `MemoryQueue` (testing), `CustomQueue` (callback-based), `NatsQueue` (NATS). Install NATS support: `pip install starfish-server[nats]`.
+
+#### Collection config
+
+Enable queue events per collection:
+
+```python
+CollectionConfig(
+    name="posts",
+    storage_path="posts/{postId}",
+    read_roles=["public"],
+    write_roles=["admin"],
+    encryption="none",
+    max_body_bytes=65536,
+    queue=True,  # publish to topic "posts" (= collection name)
+    # Or with custom settings:
+    # queue=QueueConfig(topic="data.posts.changed", include_params=True),
+)
+```
+
+#### Server setup
+
+```python
+from contextlib import asynccontextmanager
+from starfish_server.queue.nats import NatsQueue, NatsQueueOptions
+
+queue = NatsQueue(NatsQueueOptions(servers="nats://localhost:4222"))
+
+sync_router = create_sync_router(SyncRouterOptions(
+    store=store,
+    config=config,
+    role_resolver=role_resolver,
+    queue=queue,
+))
+
+@asynccontextmanager
+async def lifespan(app):
+    await queue.connect()
+    yield
+    await queue.close()
+
+app = FastAPI(lifespan=lifespan)
+app.include_router(sync_router, prefix="/v1")
+```
+
+#### Event payload
+
+```json
+{
+  "collection": "posts",
+  "hash": "abc123...",
+  "timestamp": 1712345678000,
+  "params": {"postId": "abc"}
+}
+```
+
+`params` is only included when `includeParams: true` in the queue config.
+
 ### Replicas
 
 The replica system lets you run multiple Starfish servers that stay in sync. A **primary** server holds the source of truth; **replicas** pull from it and serve reads locally.
@@ -821,8 +883,7 @@ CollectionConfig(
         pull_path="/pull/posts/{postId}",
         interval_ms=30_000,           # poll every 30s
         write_mode="pull_only",       # clients can't push to replica
-        sync_triggers=["scheduled", "webhook"],
-        webhook_secret="shared-hmac-secret",
+        sync_triggers=["scheduled"],
         headers={"Authorization": "Bearer replica-token"},
     ),
 )
@@ -842,86 +903,28 @@ CollectionConfig(
 | Trigger | When |
 |---|---|
 | `scheduled` | Every `interval_ms` in the background |
-| `webhook` | When the primary POSTs to `/replica/notify` |
 | `on_pull` | Before each client `GET /pull/…` (respects `on_pull_min_interval_ms` cooldown) |
-
-#### Primary server
-
-```python
-from contextlib import asynccontextmanager
-from starfish_server import NotificationPublisher, SubscriptionStore
-from starfish_server.replica import create_replica_router
-
-subscription_store = SubscriptionStore(store)
-notification_publisher = NotificationPublisher(
-    subscription_store,
-    webhook_secret="shared-hmac-secret",
-)
-
-sync_router = create_sync_router(SyncRouterOptions(
-    store=store,
-    config=config,
-    role_resolver=role_resolver,
-    notification_publisher=notification_publisher,  # notifies replicas on write
-))
-
-replica_router = create_replica_router(
-    subscription_store=subscription_store,
-    role_resolver=role_resolver,
-    subscribe_role="admin",  # role required to register a replica
-)
-
-@asynccontextmanager
-async def lifespan(app):
-    yield
-    await notification_publisher.close()
-
-app = FastAPI(lifespan=lifespan)
-app.include_router(sync_router, prefix="/v1")
-app.include_router(replica_router, prefix="/v1")
-```
 
 #### Replica server
 
 ```python
 from starfish_server import ReplicaManager
-from starfish_server.replica import create_replica_router
 
-replica_manager = ReplicaManager(
-    store,
-    config.collections,
-    self_base_url="https://replica.example.com/v1",  # so the primary can push back
-)
+replica_manager = ReplicaManager(store, config.collections)
 
 sync_router = create_sync_router(SyncRouterOptions(
     store=store,
     config=config,
     role_resolver=role_resolver,
-    replica_manager=replica_manager,  # triggers on_pull syncs
-))
-
-replica_router = create_replica_router(
     replica_manager=replica_manager,
-    collections=config.collections,  # used to verify webhook signatures
-)
+))
 
 @asynccontextmanager
 async def lifespan(app):
-    await replica_manager.start()   # starts background tasks + subscribes to primary
+    await replica_manager.start()
     yield
     await replica_manager.stop()
 
 app = FastAPI(lifespan=lifespan)
 app.include_router(sync_router, prefix="/v1")
-app.include_router(replica_router, prefix="/v1")
 ```
-
-#### Webhook security
-
-When `webhook_secret` is configured, the primary signs every notification with HMAC-SHA256 and the replica verifies it before syncing:
-
-```
-X-Starfish-Signature: sha256=<hmac-sha256-hex>
-```
-
-The same secret must be set on both sides. Notifications with a missing or invalid signature are rejected with `401`.

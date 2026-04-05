@@ -33,6 +33,7 @@ from starfish_server.config.schema import (
     SyncConfig,
     CollectionConfig,
     CollectionRateLimitConfig,
+    QueueConfig,
     RateLimitConfig,
     EncryptionMode,
     RemoteConfig,
@@ -41,13 +42,8 @@ from starfish_server.config.schema import (
 )
 from starfish_server.config.validate import validate_config
 from starfish_server.config.loader import load_config, save_config, parse_config_json, load_config_file
-from starfish_server.replica import (
-    ReplicaManager,
-    NotificationPublisher,
-    Subscription,
-    SubscriptionStore,
-    create_replica_router,
-)
+from starfish_server.replica import ReplicaManager
+from starfish_server.queue import AbstractQueue, MemoryQueue, CustomQueue
 from starfish_server.storage.base import AbstractObjectStore
 from starfish_server.storage.filesystem import FilesystemObjectStore, FilesystemStorageOptions
 from starfish_server.storage.memory import MemoryObjectStore, CustomObjectStore
@@ -90,6 +86,7 @@ __all__ = [
     "SyncConfig",
     "CollectionConfig",
     "CollectionRateLimitConfig",
+    "QueueConfig",
     "RateLimitConfig",
     "EncryptionMode",
     "RemoteConfig",
@@ -101,10 +98,9 @@ __all__ = [
     "parse_config_json",
     "load_config_file",
     "ReplicaManager",
-    "NotificationPublisher",
-    "Subscription",
-    "SubscriptionStore",
-    "create_replica_router",
+    "AbstractQueue",
+    "MemoryQueue",
+    "CustomQueue",
     "AbstractObjectStore",
     "FilesystemObjectStore",
     "FilesystemStorageOptions",

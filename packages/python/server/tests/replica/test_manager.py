@@ -151,22 +151,6 @@ async def test_sync_bidirectional_merges_local_and_remote():
 
 
 @respx.mock
-async def test_on_notification_triggers_sync():
-    store = MemoryObjectStore()
-    col = _make_col(sync_triggers=[SyncTrigger.WEBHOOK])
-    respx.get("https://primary.example.com/v1/pull/posts/featured").respond(
-        200, json=_primary_response({"title": "From notification"}, hash_val="notifhash")
-    )
-
-    async with httpx.AsyncClient() as client:
-        manager = ReplicaManager(store, [col], client=client)
-        await manager.on_notification("featured")
-
-    raw = await store.get_string("posts/featured")
-    assert json.loads(raw)["data"] == {"title": "From notification"}
-
-
-@respx.mock
 async def test_on_pull_triggers_sync():
     store = MemoryObjectStore()
     col = _make_col(sync_triggers=[SyncTrigger.ON_PULL])
@@ -184,17 +168,17 @@ async def test_on_pull_triggers_sync():
 
 @respx.mock
 async def test_primary_error_calls_on_error_handler():
-    """Background sync paths (on_notification, on_pull) catch primary errors via on_error
+    """Background sync paths (on_pull) catch primary errors via on_error
     rather than propagating them to the caller."""
     store = MemoryObjectStore()
-    col = _make_col(sync_triggers=[SyncTrigger.WEBHOOK])
+    col = _make_col(sync_triggers=[SyncTrigger.ON_PULL])
     respx.get("https://primary.example.com/v1/pull/posts/featured").respond(503)
 
     errors: list[tuple[str, Exception]] = []
 
     async with httpx.AsyncClient() as client:
         manager = ReplicaManager(store, [col], client=client, on_error=lambda name, exc: errors.append((name, exc)))
-        await manager.on_notification("featured")  # should not raise
+        await manager.on_pull("featured")  # should not raise
 
     assert len(errors) == 1
     assert errors[0][0] == "featured"

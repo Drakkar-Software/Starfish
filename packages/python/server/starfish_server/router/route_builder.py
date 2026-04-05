@@ -2,6 +2,7 @@
 
 
 import asyncio
+import logging
 import hashlib
 import json
 import re
@@ -46,7 +47,7 @@ from starfish_server.constants import (
 
 if TYPE_CHECKING:
     from starfish_server.replica.manager import ReplicaManager
-    from starfish_server.replica.notifier import NotificationPublisher
+    from starfish_server.queue.base import AbstractQueue
 
 
 @dataclass
@@ -74,7 +75,7 @@ class SyncRouterOptions:
     server_encryption_info: str | None = None
     signature_verifier: SignatureVerifier | None = None
     replica_manager: "ReplicaManager | None" = None
-    notification_publisher: "NotificationPublisher | None" = None
+    queue: "AbstractQueue | None" = None
     role_resolver_timeout: float = 5.0
 
 
@@ -323,6 +324,36 @@ async def _run_binary_push(
     return JSONResponse({"hash": content_hash})
 
 
+async def _publish_change_event(
+    opts: SyncRouterOptions,
+    col: CollectionConfig,
+    response: JSONResponse | Response,
+    params: dict[str, str],
+) -> None:
+    """Publish a queue event after a successful push.
+
+    Errors are logged but never propagate — a queue outage must not
+    break client writes.
+    """
+    if opts.queue is None or col.queue is None or response.status_code != 200:
+        return
+    try:
+        resp_body = json.loads(response.body)
+        subject = col.queue.topic or col.name
+        msg: dict[str, Any] = {
+            "collection": col.name,
+            "hash": resp_body.get("hash", ""),
+            "timestamp": resp_body.get("timestamp", 0),
+        }
+        if col.queue.include_params and params:
+            msg["params"] = params
+        await opts.queue.publish(subject, json.dumps(msg).encode())
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "Failed to publish queue event for %s", col.name, exc_info=True,
+        )
+
+
 def _make_push_handler(
     col: CollectionConfig,
     rate_limiter: RateLimiter | None,
@@ -359,20 +390,14 @@ def _make_push_handler(
         document_key = _resolve_document_key(col.storage_path, params)
 
         if not is_json_collection(col.allowed_mime_types):
-            return await _run_binary_push(
+            response = await _run_binary_push(
                 request, col, document_key, identity, rate_limiter, opts,
             )
+            await _publish_change_event(opts, col, response, params)
+            return response
 
         response = await _run_push(request, col, params, document_key, identity, rate_limiter, opts)
-
-        if opts.notification_publisher is not None and response.status_code == 200:
-            resp_body = json.loads(response.body)
-            asyncio.create_task(
-                opts.notification_publisher.notify(
-                    col.name, resp_body.get("hash", ""), resp_body.get("timestamp", 0)
-                )
-            )
-
+        await _publish_change_event(opts, col, response, params)
         return response
 
     return push_handler
@@ -525,7 +550,9 @@ def _add_bundled_routes(
                     return error
 
                 document_key = f"{_resolve_document_key(storage_path, params)}/{col.name}"
-                return await _run_push(request, col, params, document_key, identity, rl, opts)
+                response = await _run_push(request, col, params, document_key, identity, rl, opts)
+                await _publish_change_event(opts, col, response, params)
+                return response
 
             return bundle_push_handler
 
