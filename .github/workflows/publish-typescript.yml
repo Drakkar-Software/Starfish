@@ -35,6 +35,9 @@ jobs:
     needs: test
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v6
 
@@ -59,13 +62,14 @@ jobs:
       - name: Publish starfish-protocol
         working-directory: packages/ts/protocol
         run: pnpm publish --no-git-checks --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   publish-client:
     needs: publish-protocol
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v6
 
@@ -90,5 +94,3 @@ jobs:
       - name: Publish starfish-client
         working-directory: packages/ts/client
         run: pnpm publish --no-git-checks --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
