@@ -20,7 +20,7 @@ Works with any storage backend (S3, MongoDB, in-memory) and any auth model. The 
 
 | Package | Language | Description |
 |---|---|---|
-| `@starfish/client` | TypeScript | Browser, Node.js & React Native client with sync manager |
+| `starfish-client` | TypeScript | Browser, Node.js & React Native client with sync manager |
 | `starfish-sdk` | Python | Async client (httpx) with sync manager |
 
 ## Quick Start
@@ -185,7 +185,7 @@ All clients implement the same protocol: pull/push with hash-based conflict dete
 Works in Browser, Node.js, and React Native (see [Platform Support](#platform-support)).
 
 ```ts
-import { StarfishClient, SyncManager } from "@starfish/client"
+import { StarfishClient, SyncManager } from "starfish-client"
 
 const client = new StarfishClient({
   baseUrl: "https://api.example.com/v1",
@@ -214,7 +214,7 @@ await sync.update((data) => ({ ...data, theme: "light" }))
 #### Full example: Auth + E2E Encryption + Author Signing
 
 ```ts
-import { StarfishClient, SyncManager } from "@starfish/client"
+import { StarfishClient, SyncManager } from "starfish-client"
 
 // 1. Create client with auth
 const client = new StarfishClient({
@@ -312,7 +312,7 @@ All clients support optional AES-256-GCM encryption with HKDF-derived keys. When
 You can also use the encryptor standalone:
 
 ```ts
-import { createEncryptor } from "@starfish/client"
+import { createEncryptor } from "starfish-client"
 
 const encryptor = createEncryptor("my-secret", "user-abc")
 const encrypted = await encryptor.encrypt({ hello: "world" })
@@ -336,7 +336,7 @@ The TypeScript client uses the [Web Crypto API](https://developer.mozilla.org/en
 React Native's JS engines (Hermes, JSC) don't provide the Web Crypto API. Call `configurePlatform()` once at app startup before using the SDK:
 
 ```ts
-import { configurePlatform } from "@starfish/client"
+import { configurePlatform } from "starfish-client"
 import QuickCrypto from "react-native-quick-crypto"
 
 configurePlatform({
@@ -348,7 +348,7 @@ configurePlatform({
 })
 
 // Now use the SDK normally
-import { SyncManager } from "@starfish/client"
+import { SyncManager } from "starfish-client"
 ```
 
 Alternatively, if your polyfill patches `globalThis.crypto` (e.g., `react-native-quick-crypto/polyfill`), no explicit configuration is needed.
@@ -366,8 +366,8 @@ npm install immer
 #### Creating stores per collection
 
 ```ts
-import { StarfishClient, SyncManager } from "@starfish/client"
-import { createStarfishStore } from "@starfish/client/zustand"
+import { StarfishClient, SyncManager } from "starfish-client"
+import { createStarfishStore } from "starfish-client/zustand"
 import AsyncStorage from "@react-native-async-storage/async-storage"
 
 const client = new StarfishClient({
@@ -547,8 +547,8 @@ npm install @legendapp/state
 #### Creating observables per collection
 
 ```ts
-import { StarfishClient, SyncManager } from "@starfish/client"
-import { createStarfishObservable } from "@starfish/client/legend"
+import { StarfishClient, SyncManager } from "starfish-client"
+import { createStarfishObservable } from "starfish-client/legend"
 
 const client = new StarfishClient({ ... })
 

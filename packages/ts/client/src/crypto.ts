@@ -1,4 +1,4 @@
-import { getCrypto, getBase64, IV_BYTES, ENCRYPTED_KEY, deriveKey } from "@starfish/protocol"
+import { getCrypto, getBase64, IV_BYTES, ENCRYPTED_KEY, deriveKey } from "starfish-protocol"
 
 const ALGO = "AES-GCM"
 

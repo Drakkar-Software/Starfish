@@ -60,7 +60,7 @@ let _base64: Base64Provider | undefined
  *
  * @example
  * ```ts
- * import { configurePlatform } from "@starfish/client"
+ * import { configurePlatform } from "starfish-client"
  * import QuickCrypto from "react-native-quick-crypto"
  *
  * configurePlatform({
@@ -84,7 +84,7 @@ export function getCrypto(): CryptoProvider {
     return globalThis.crypto as unknown as CryptoProvider
   }
   throw new Error(
-    "@starfish/client: No crypto provider available. " +
+    "starfish-client: No crypto provider available. " +
       "In React Native, call configurePlatform({ crypto: ... }) before using the SDK.",
   )
 }
@@ -103,7 +103,7 @@ export function getBase64(): Base64Provider {
     }
   }
   throw new Error(
-    "@starfish/client: No base64 provider available. " +
+    "starfish-client: No base64 provider available. " +
       "In React Native, call configurePlatform({ base64: ... }) before using the SDK.",
   )
 }

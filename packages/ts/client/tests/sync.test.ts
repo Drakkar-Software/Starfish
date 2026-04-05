@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest"
-import { stableStringify } from "@starfish/protocol"
+import { stableStringify } from "starfish-protocol"
 import { StarfishClient } from "../src/client.js"
 import { SyncManager } from "../src/sync.js"
 import type { PullResponse, PushSuccess } from "../src/types.js"
