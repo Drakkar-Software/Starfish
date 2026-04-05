@@ -62,6 +62,8 @@ jobs:
       - name: Publish starfish-protocol
         working-directory: packages/ts/protocol
         run: pnpm publish --no-git-checks --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   publish-client:
     needs: publish-protocol
@@ -95,6 +97,8 @@ jobs:
       - name: Publish starfish-client
         working-directory: packages/ts/client
         run: pnpm publish --no-git-checks --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   publish-server:
     needs: publish-protocol
@@ -128,3 +132,5 @@ jobs:
       - name: Publish starfish-server
         working-directory: packages/ts/server
         run: pnpm publish --no-git-checks --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
