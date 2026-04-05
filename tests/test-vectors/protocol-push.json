@@ -1,0 +1,134 @@
+{
+  "pushConflict": [
+    {
+      "description": "first push with non-null baseHash fails",
+      "documentKey": "test/doc",
+      "steps": [
+        {
+          "action": "push",
+          "data": { "a": 1 },
+          "baseHash": "wrong-hash",
+          "expect": { "type": "conflict", "error": "hash_mismatch" }
+        }
+      ]
+    },
+    {
+      "description": "second push with wrong baseHash fails",
+      "documentKey": "test/doc",
+      "steps": [
+        {
+          "action": "push",
+          "data": { "a": 1 },
+          "baseHash": null,
+          "expect": { "type": "success" }
+        },
+        {
+          "action": "push",
+          "data": { "a": 2 },
+          "baseHash": "wrong",
+          "expect": { "type": "conflict", "error": "hash_mismatch" }
+        }
+      ]
+    },
+    {
+      "description": "second push with null baseHash fails",
+      "documentKey": "test/doc",
+      "steps": [
+        {
+          "action": "push",
+          "data": { "a": 1 },
+          "baseHash": null,
+          "expect": { "type": "success" }
+        },
+        {
+          "action": "push",
+          "data": { "a": 2 },
+          "baseHash": null,
+          "expect": { "type": "conflict", "error": "hash_mismatch" }
+        }
+      ]
+    }
+  ],
+  "pushSuccess": [
+    {
+      "description": "first push with null baseHash succeeds",
+      "documentKey": "test/doc",
+      "steps": [
+        {
+          "action": "push",
+          "data": { "a": 1 },
+          "baseHash": null,
+          "expect": { "type": "success", "hashLength": 64 }
+        }
+      ]
+    },
+    {
+      "description": "second push with correct baseHash succeeds",
+      "documentKey": "test/doc",
+      "steps": [
+        {
+          "action": "push",
+          "data": { "a": 1 },
+          "baseHash": null,
+          "expect": { "type": "success" }
+        },
+        {
+          "action": "push",
+          "data": { "a": 2 },
+          "baseHash": "$previous.hash",
+          "expect": { "type": "success", "hashLength": 64 }
+        }
+      ]
+    }
+  ],
+  "pushThenPull": [
+    {
+      "description": "push then pull returns same data",
+      "documentKey": "test/doc",
+      "steps": [
+        {
+          "action": "push",
+          "data": { "theme": "dark" },
+          "baseHash": null,
+          "expect": { "type": "success" }
+        },
+        {
+          "action": "pull",
+          "checkpoint": 0,
+          "expect": {
+            "data": { "theme": "dark" },
+            "hashLength": 64
+          }
+        }
+      ]
+    },
+    {
+      "description": "push complex data then pull returns same data",
+      "documentKey": "test/doc",
+      "steps": [
+        {
+          "action": "push",
+          "data": {
+            "settings": { "theme": "dark", "lang": "en" },
+            "items": [1, 2, 3],
+            "flag": true
+          },
+          "baseHash": null,
+          "expect": { "type": "success" }
+        },
+        {
+          "action": "pull",
+          "checkpoint": 0,
+          "expect": {
+            "data": {
+              "settings": { "theme": "dark", "lang": "en" },
+              "items": [1, 2, 3],
+              "flag": true
+            },
+            "hashLength": 64
+          }
+        }
+      ]
+    }
+  ]
+}

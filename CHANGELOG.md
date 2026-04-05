@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.3.0
+
+### Added
+
+- **TypeScript server** (`@drakkarsoftware/starfish-server`) — Full TypeScript port of the Python server, built with [Hono](https://hono.dev/) for Cloudflare Workers / edge runtime compatibility. Replicates all Python server features: config system, pull/push protocol, timestamps, encryption (AES-256-GCM via Web Crypto API), role-based auth, rate limiting, binary collections, bundled collections, queue events, and replica management.
+- **Cross-language protocol test vectors** — New shared test vector files (`tests/test-vectors/protocol-push.json`, `protocol-timestamps.json`, `http-errors.json`) consumed by both Python (pytest) and TypeScript (vitest) to guarantee identical protocol behavior across implementations.
+- **`setAjv()` for serverless JSON Schema validation** — In environments without `require()` (e.g. Cloudflare Workers), call `setAjv(ajvInstance)` to provide an Ajv instance for `objectSchema` validation.
+- **`FilesystemObjectStore` (Node.js)** — Available via `@drakkarsoftware/starfish-server/node` subpath export. Atomic writes, sidecar metadata for binary content types, recursive directory listing.
+
+### Fixed
+
+- **`workspace:*` not resolved on npm publish** — The CI publish workflow now explicitly sets the `@drakkarsoftware/starfish-protocol` dependency version from the git tag before publishing client and server packages.
+
 ## 1.2.0
 
 ### Added

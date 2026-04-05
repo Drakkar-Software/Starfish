@@ -90,7 +90,41 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           cd packages/ts/client
           npm pkg set "version=$VERSION"
+          npm pkg set "dependencies.@drakkarsoftware/starfish-protocol=$VERSION"
 
       - name: Publish starfish-client
         working-directory: packages/ts/client
+        run: pnpm publish --no-git-checks --access public
+
+  publish-server:
+    needs: publish-protocol
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v5
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: pnpm
+          registry-url: "https://registry.npmjs.org"
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm build
+
+      - name: Set version from tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          cd packages/ts/server
+          npm pkg set "version=$VERSION"
+          npm pkg set "dependencies.@drakkarsoftware/starfish-protocol=$VERSION"
+
+      - name: Publish starfish-server
+        working-directory: packages/ts/server
         run: pnpm publish --no-git-checks --access public

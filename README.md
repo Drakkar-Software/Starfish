@@ -15,6 +15,7 @@ Works with any storage backend (S3, MongoDB, in-memory) and any auth model. The 
 | Package | Language | Description |
 |---|---|---|
 | `starfish-server` | Python | Protocol, encryption, config, FastAPI router, S3 storage |
+| `@drakkarsoftware/starfish-server` | TypeScript | Protocol, encryption, config, Hono router, CF Workers compatible |
 
 ### Client SDKs
 
@@ -66,6 +67,46 @@ app = FastAPI()
 app.include_router(router, prefix="/v1")
 ```
 
+### TypeScript Server (Hono / Cloudflare Workers)
+
+```ts
+import { Hono } from "hono"
+import { createSyncRouter, MemoryObjectStore, parseConfigJson } from "@drakkarsoftware/starfish-server"
+import type { AuthResult } from "@drakkarsoftware/starfish-server"
+
+const store = new MemoryObjectStore(new Map())
+
+// For Node.js filesystem storage:
+// import { FilesystemObjectStore } from "@drakkarsoftware/starfish-server/node"
+// const store = new FilesystemObjectStore({ baseDir: "./data" })
+
+const config = parseConfigJson(JSON.stringify({
+  version: 1,
+  collections: [{
+    name: "settings",
+    storagePath: "users/{identity}/settings",
+    readRoles: ["self"],
+    writeRoles: ["self"],
+    encryption: "none",
+    maxBodyBytes: 65536,
+  }],
+}))
+
+const sync = createSyncRouter({
+  store,
+  config,
+  roleResolver: async (c) => {
+    const user = await verifyToken(c.req.header("authorization"))
+    return { identity: user.id, roles: user.roles } as AuthResult
+  },
+})
+
+// Mount on a Hono app
+const app = new Hono()
+app.route("/v1", sync)
+export default app // Works as a Cloudflare Worker
+```
+
 ## Protocol
 
 Documents are synced using a pull/push model with hash-based optimistic concurrency.
@@ -85,7 +126,7 @@ Documents are synced using a pull/push model with hash-based optimistic concurre
 
 ## Config
 
-Configuration can be loaded from multiple sources (Python server):
+Configuration can be loaded from multiple sources:
 
 ```python
 # 1. From object storage (async — stored at __sync__/config.json)
@@ -104,6 +145,21 @@ from starfish_server import SyncConfig, CollectionConfig
 config = SyncConfig(version=1, collections=[
     CollectionConfig(name="notes", storagePath="users/{identity}/notes", ...),
 ])
+```
+
+TypeScript server:
+
+```ts
+import { parseConfigJson, loadConfig, saveConfig } from "@drakkarsoftware/starfish-server"
+
+// 1. From a JSON string
+const config = parseConfigJson('{"version": 1, "collections": [...]}')
+
+// 2. From object storage (async — stored at __sync__/config.json)
+const config = await loadConfig(store)
+
+// 3. Save back to storage
+await saveConfig(store, config)
 ```
 
 Collection configuration is stored **inside the storage** at `__sync__/config.json`. Each collection defines:
@@ -153,20 +209,31 @@ Roles are opaque strings resolved by your `roleResolver` callback. Two special r
 - **`"public"`** — no authentication required
 - **`"self"`** — auto-granted when `{identity}` in the URL matches the authenticated user's identity
 
-Use `role_enricher` for context-dependent roles (e.g. resource ownership):
+Use `roleEnricher` for context-dependent roles (e.g. resource ownership):
 
 ```python
+# Python
 async def role_enricher(auth, params):
     if params.get("postId") and await is_owner(auth.identity, params["postId"]):
         return ["owner"]
     return []
 
 router = create_sync_router(SyncRouterOptions(
-    store=store,
-    config=config,
-    role_resolver=role_resolver,
-    role_enricher=role_enricher,
+    store=store, config=config,
+    role_resolver=role_resolver, role_enricher=role_enricher,
 ))
+```
+
+```ts
+// TypeScript
+const router = createSyncRouter({
+  store, config,
+  roleResolver: async (c) => ({ identity: userId, roles: ["user"] }),
+  roleEnricher: async (auth, params) => {
+    if (params.postId && await isOwner(auth.identity, params.postId)) return ["owner"]
+    return []
+  },
+})
 ```
 
 ### Encryption
@@ -652,9 +719,10 @@ starfish/
 │   │   └── client/        # Python client SDK (httpx + cryptography)
 │   └── ts/
 │       ├── protocol/      # Shared protocol primitives (hash, merge, crypto, types)
+│       ├── server/        # TypeScript server (Hono router, encryption, config, CF Workers)
 │       └── client/        # TypeScript client SDK + Zustand binding
 ├── tests/
-│   └── test-vectors/      # Cross-language hash/crypto test vectors
+│   └── test-vectors/      # Cross-language hash/crypto/protocol test vectors
 ├── package.json           # pnpm workspace root
 └── pnpm-workspace.yaml
 ```
@@ -688,31 +756,42 @@ pytest -v
 
 TypeScript tests use [Vitest](https://vitest.dev/). Python tests use [pytest](https://docs.pytest.org/).
 
-The TypeScript client includes end-to-end tests that wire a real `StarfishClient` + `SyncManager` + Zustand store against an in-memory server backend — no mocks.
+The TypeScript client includes end-to-end tests that wire a real `StarfishClient` + `SyncManager` + Zustand store against an in-memory server backend — no mocks. The TypeScript server has 92 tests covering config, protocol, encryption, router, queue, replica, and storage.
 
-Cross-language test vectors in `tests/test-vectors/` ensure `stableStringify` and `computeHash` produce identical results across all TypeScript and Python implementations.
+Cross-language test vectors in `tests/test-vectors/` ensure identical behavior across all TypeScript and Python implementations:
+- `crypto.json` / `hash.json` — encryption and hashing parity
+- `protocol-push.json` / `protocol-timestamps.json` — protocol-level push, pull, and timestamp computation parity
+- `http-errors.json` — error response contract (status codes and messages)
 
 ## Advanced Setup
 
 ### Storage backends
 
-Four storage backends are provided out of the box.
+Both Python and TypeScript servers provide the same set of storage backends.
 
-**`MemoryObjectStore`** — pure in-memory dict, zero configuration. All instances share the same module-level global dict by default, so you can use `MemoryObjectStore()` anywhere in your app without dependency injection. Data is lost when the process exits.
+**`MemoryObjectStore`** — pure in-memory store, zero configuration. Data is lost when the process exits.
 
 ```python
+# Python
 from starfish_server import MemoryObjectStore
 
 store = MemoryObjectStore()           # global — shared across all default instances
 store = MemoryObjectStore(data={})    # isolated — independent empty dict (for tests)
 ```
 
+```ts
+// TypeScript
+import { MemoryObjectStore } from "@drakkarsoftware/starfish-server"
+
+const store = new MemoryObjectStore()             // global — shared across instances
+const store = new MemoryObjectStore(new Map())    // isolated (for tests)
+```
+
 **`CustomObjectStore`** — backed entirely by your own callback functions. Bridge Starfish to any external system (database, remote API, custom cache) without implementing the full storage interface. Callbacks may be sync or async; omitted callbacks are safe no-ops.
 
 ```python
+# Python
 from starfish_server import CustomObjectStore
-
-data: dict[str, str] = {}
 
 store = CustomObjectStore(
     on_get=lambda key: data.get(key),
@@ -724,15 +803,35 @@ store = CustomObjectStore(
 )
 ```
 
-**`FilesystemObjectStore`** — files on disk, atomic writes, thread-pool I/O. Good for single-node deployments.
+```ts
+// TypeScript
+import { CustomObjectStore } from "@drakkarsoftware/starfish-server"
+
+const store = new CustomObjectStore({
+  onGet: (key) => data.get(key) ?? null,
+  onPut: (key, body) => { data.set(key, body) },
+  onList: (prefix) => [...data.keys()].filter(k => k.startsWith(prefix)).sort(),
+  onDelete: (key) => { data.delete(key) },
+})
+```
+
+**`FilesystemObjectStore`** — files on disk, atomic writes. Good for single-node deployments.
 
 ```python
+# Python
 from starfish_server import FilesystemObjectStore, FilesystemStorageOptions
 
 store = FilesystemObjectStore(FilesystemStorageOptions(base_dir="./data"))
 ```
 
-**`S3ObjectStore`** — S3-compatible object storage (AWS S3, Cloudflare R2, MinIO). Requires `pip install starfish-server[s3]`.
+```ts
+// TypeScript (Node.js only — subpath export)
+import { FilesystemObjectStore } from "@drakkarsoftware/starfish-server/node"
+
+const store = new FilesystemObjectStore({ baseDir: "./data" })
+```
+
+**`S3ObjectStore`** (Python only) — S3-compatible object storage (AWS S3, Cloudflare R2, MinIO). Requires `pip install starfish-server[s3]`.
 
 ```python
 from starfish_server.storage.s3 import S3ObjectStore, S3StorageOptions
@@ -908,15 +1007,14 @@ CollectionConfig(
 #### Replica server
 
 ```python
+# Python
 from starfish_server import ReplicaManager
 
 replica_manager = ReplicaManager(store, config.collections)
 
 sync_router = create_sync_router(SyncRouterOptions(
-    store=store,
-    config=config,
-    role_resolver=role_resolver,
-    replica_manager=replica_manager,
+    store=store, config=config,
+    role_resolver=role_resolver, replica_manager=replica_manager,
 ))
 
 @asynccontextmanager
@@ -927,4 +1025,21 @@ async def lifespan(app):
 
 app = FastAPI(lifespan=lifespan)
 app.include_router(sync_router, prefix="/v1")
+```
+
+```ts
+// TypeScript
+import { ReplicaManager, createSyncRouter } from "@drakkarsoftware/starfish-server"
+
+const replicaManager = new ReplicaManager(store, config.collections)
+
+const sync = createSyncRouter({
+  store, config, roleResolver, replicaManager,
+})
+
+// Node.js: start/stop background sync
+replicaManager.start()
+process.on("SIGTERM", () => replicaManager.stop())
+
+// CF Workers: use syncNow()/syncAll() from Cron Triggers instead
 ```

@@ -1,0 +1,90 @@
+{
+  "computeTimestamps": [
+    {
+      "description": "new data gets current timestamp",
+      "oldData": null,
+      "newData": { "a": 1, "b": 2 },
+      "oldTimestamps": null,
+      "now": 1000,
+      "expected": { "a": 1000, "b": 1000 }
+    },
+    {
+      "description": "unchanged leaf keeps old timestamp",
+      "oldData": { "a": 1, "b": 2 },
+      "newData": { "a": 1, "b": 3 },
+      "oldTimestamps": { "a": 500, "b": 500 },
+      "now": 1000,
+      "expected": { "a": 500, "b": 1000 }
+    },
+    {
+      "description": "nested objects recurse",
+      "oldData": { "obj": { "x": 1, "y": 2 } },
+      "newData": { "obj": { "x": 1, "y": 3 } },
+      "oldTimestamps": { "obj": { "x": 500, "y": 500 } },
+      "now": 1000,
+      "expected": { "obj": { "x": 500, "y": 1000 } }
+    },
+    {
+      "description": "removed keys are omitted",
+      "oldData": { "a": 1, "b": 2 },
+      "newData": { "a": 1 },
+      "oldTimestamps": { "a": 500, "b": 500 },
+      "now": 1000,
+      "expected": { "a": 500 }
+    },
+    {
+      "description": "new key gets current timestamp",
+      "oldData": { "a": 1 },
+      "newData": { "a": 1, "b": 2 },
+      "oldTimestamps": { "a": 500 },
+      "now": 1000,
+      "expected": { "a": 500, "b": 1000 }
+    },
+    {
+      "description": "arrays are leaf values",
+      "oldData": { "arr": [1, 2] },
+      "newData": { "arr": [1, 2] },
+      "oldTimestamps": { "arr": 500 },
+      "now": 1000,
+      "expected": { "arr": 500 }
+    },
+    {
+      "description": "changed array gets new timestamp",
+      "oldData": { "arr": [1, 2] },
+      "newData": { "arr": [1, 2, 3] },
+      "oldTimestamps": { "arr": 500 },
+      "now": 1000,
+      "expected": { "arr": 1000 }
+    }
+  ],
+  "filterByCheckpoint": [
+    {
+      "description": "filters to keys newer than checkpoint",
+      "data": { "a": 1, "b": 2, "c": 3 },
+      "timestamps": { "a": 500, "b": 800, "c": 1200 },
+      "checkpoint": 700,
+      "expected": { "b": 2, "c": 3 }
+    },
+    {
+      "description": "returns empty when all older than checkpoint",
+      "data": { "a": 1, "b": 2 },
+      "timestamps": { "a": 500, "b": 600 },
+      "checkpoint": 1000,
+      "expected": {}
+    },
+    {
+      "description": "returns all when checkpoint is 0",
+      "data": { "a": 1, "b": 2 },
+      "timestamps": { "a": 500, "b": 600 },
+      "checkpoint": 0,
+      "expected": { "a": 1, "b": 2 }
+    },
+    {
+      "description": "filters nested objects recursively",
+      "data": { "obj": { "x": 1, "y": 2 } },
+      "timestamps": { "obj": { "x": 500, "y": 1200 } },
+      "checkpoint": 700,
+      "expected": { "obj": { "y": 2 } }
+    }
+  ]
+}
