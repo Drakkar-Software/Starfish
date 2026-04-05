@@ -1,6 +1,6 @@
 {
-  "name": "@starfish/protocol",
-  "version": "0.1.0",
+  "name": "@drakkarsoftware/starfish-protocol",
+  "version": "1.2.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/Drakkar-Software/starfish.git",

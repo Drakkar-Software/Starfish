@@ -1,6 +1,6 @@
 {
-  "name": "@starfish/client",
-  "version": "0.1.0",
+  "name": "@drakkarsoftware/starfish-client",
+  "version": "1.2.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/Drakkar-Software/starfish.git",
@@ -44,7 +44,7 @@
     }
   },
   "dependencies": {
-    "@starfish/protocol": "workspace:*"
+    "@drakkarsoftware/starfish-protocol": "workspace:*"
   },
   "scripts": {
     "build": "tsc --build",

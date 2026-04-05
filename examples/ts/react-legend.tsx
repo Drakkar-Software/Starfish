@@ -2,13 +2,13 @@
  * Starfish + Legend State React example.
  *
  * Install:
- *   npm install @starfish/client @legendapp/state
+ *   npm install @drakkarsoftware/starfish-client @legendapp/state
  */
 
 import { useEffect } from "react"
 import { observer, useSelector } from "@legendapp/state/react"
-import { StarfishClient, SyncManager } from "@starfish/client"
-import { createStarfishObservable } from "@starfish/client/legend"
+import { StarfishClient, SyncManager } from "@drakkarsoftware/starfish-client"
+import { createStarfishObservable } from "@drakkarsoftware/starfish-client/legend"
 
 // ---------------------------------------------------------------------------
 // Setup (run once at app startup)
