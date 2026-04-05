@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3.2
+
+Re-release of 1.3.1 (CI publishing fix — no code changes).
+
 ## 1.3.1
 
 ### Changed
