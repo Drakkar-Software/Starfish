@@ -1,11 +1,10 @@
+import * as net from "node:net"
 import { stableStringify } from "@starfish/protocol"
 import type { AbstractObjectStore } from "../storage/base.js"
 import { pull } from "../protocol/pull.js"
 import { push, type Author } from "../protocol/push.js"
 import { isPushConflict } from "../protocol/types.js"
 import { ERROR_HASH_MISMATCH, CONTENT_TYPE_JSON } from "../constants.js"
-
-import * as net from "node:net"
 
 const SAFE_PARAM = /^[a-zA-Z0-9._:@-]+$/
 const UNSAFE_KEY_PATTERN = /\.\.|[\x00-\x1f]|\/\//
@@ -24,21 +23,25 @@ export function validateUrlNotPrivate(url: string): boolean {
     const hostname = parsed.hostname
     if (!hostname) return false
     if (["localhost", "127.0.0.1", "::1", "0.0.0.0"].includes(hostname)) return false
-    if (net.isIP(hostname)) {
-      const buf = net.isIPv4(hostname)
-        ? Buffer.from(hostname.split(".").map(Number))
-        : null
-      if (buf) {
-        // 10.x.x.x, 172.16-31.x.x, 192.168.x.x, 127.x.x.x, 169.254.x.x
-        if (
-          buf[0] === 10 ||
-          buf[0] === 127 ||
-          (buf[0] === 172 && buf[1] >= 16 && buf[1] <= 31) ||
-          (buf[0] === 192 && buf[1] === 168) ||
-          (buf[0] === 169 && buf[1] === 254)
-        ) {
-          return false
-        }
+    const ipVersion = net.isIP(hostname)
+    if (ipVersion === 4) {
+      const parts = hostname.split(".").map(Number)
+      // 10.x.x.x, 172.16-31.x.x, 192.168.x.x, 127.x.x.x, 169.254.x.x
+      if (
+        parts[0] === 10 ||
+        parts[0] === 127 ||
+        (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) ||
+        (parts[0] === 192 && parts[1] === 168) ||
+        (parts[0] === 169 && parts[1] === 254)
+      ) {
+        return false
+      }
+    } else if (ipVersion === 6) {
+      // Normalize: strip brackets, expand to check prefixes
+      const addr = hostname.replace(/^\[|\]$/g, "").toLowerCase()
+      // fc00::/7 (unique local), fe80::/10 (link-local), ::1 (loopback)
+      if (addr.startsWith("fc") || addr.startsWith("fd") || addr.startsWith("fe80") || addr === "::1") {
+        return false
       }
     }
     return true

@@ -106,10 +106,11 @@ export class ReplicaManager {
     }
 
     const result = await push(this.store, col.storagePath, dataToWrite, localHash)
-    if (!isPushConflict(result)) {
-      this.lastHashes.set(name, result.hash)
+    if (isPushConflict(result)) {
+      throw new Error(`Concurrent write on "${name}" — will retry`)
     }
 
+    this.lastHashes.set(name, result.hash)
     this.lastSyncTime.set(name, Date.now())
   }
 
