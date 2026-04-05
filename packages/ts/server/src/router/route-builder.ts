@@ -1,6 +1,6 @@
 import { Hono } from "hono"
 import type { Context } from "hono"
-import { getCrypto } from "@drakkarsoftware/starfish-protocol"
+import { getCrypto } from "@drakkar.software/starfish-protocol"
 import type { ObjectStore } from "../storage/base.js"
 import type {
   SyncConfig,

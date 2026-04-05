@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest"
 import { ReplicaManager } from "../../src/replica/manager.js"
 import { createIsolatedStore } from "../helpers.js"
 import type { CollectionConfig } from "../../src/config/schema.js"
-import { configurePlatform } from "@drakkarsoftware/starfish-protocol"
+import { configurePlatform } from "@drakkar.software/starfish-protocol"
 import { webcrypto } from "node:crypto"
 
 configurePlatform({

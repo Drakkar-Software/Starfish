@@ -2,7 +2,7 @@ import type { ObjectStore } from "../storage/base.js"
 import type { CollectionConfig } from "../config/schema.js"
 import type { PushSuccess } from "../protocol/types.js"
 import { push } from "../protocol/push.js"
-import { deepMerge } from "@drakkarsoftware/starfish-protocol"
+import { deepMerge } from "@drakkar.software/starfish-protocol"
 
 export class ReplicaManager {
   private _store: ObjectStore

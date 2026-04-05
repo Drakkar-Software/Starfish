@@ -2,10 +2,10 @@
  * Starfish TypeScript client examples.
  *
  * Install:
- *   npm install @drakkarsoftware/starfish-client
+ *   npm install starfish-client
  */
 
-import { StarfishClient, SyncManager, createEncryptor, ConflictError } from "@drakkarsoftware/starfish-client"
+import { StarfishClient, SyncManager, createEncryptor, ConflictError } from "@drakkar.software/starfish-client"
 
 const BASE_URL = "https://api.example.com/v1"
 const USER_ID = "user-abc"

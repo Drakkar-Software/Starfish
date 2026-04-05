@@ -14,7 +14,7 @@ importers:
 
   packages/ts/client:
     dependencies:
-      '@drakkarsoftware/starfish-protocol':
+      '@drakkar.software/starfish-protocol':
         specifier: workspace:*
         version: link:../protocol
     devDependencies:
@@ -48,7 +48,7 @@ importers:
 
   packages/ts/server:
     dependencies:
-      '@drakkarsoftware/starfish-protocol':
+      '@drakkar.software/starfish-protocol':
         specifier: workspace:*
         version: link:../protocol
       hono:

@@ -1,4 +1,4 @@
-import { computeHash } from "@drakkarsoftware/starfish-protocol"
+import { computeHash } from "@drakkar.software/starfish-protocol"
 import type { ObjectStore } from "../storage/base.js"
 import type { PushResult, PushSuccess, PushConflict, StoredDocument, Timestamps } from "./types.js"
 import { DOCUMENT_VERSION } from "./types.js"

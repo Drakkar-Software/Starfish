@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest"
 import { EncryptedObjectStore } from "../../src/encryption/encrypted-store.js"
 import { createIsolatedStore } from "../helpers.js"
-import { configurePlatform } from "@drakkarsoftware/starfish-protocol"
+import { configurePlatform } from "@drakkar.software/starfish-protocol"
 import { webcrypto } from "node:crypto"
 
 configurePlatform({

@@ -15,13 +15,13 @@ Works with any storage backend (S3, MongoDB, in-memory) and any auth model. The 
 | Package | Language | Description |
 |---|---|---|
 | `starfish-server` | Python | Protocol, encryption, config, FastAPI router, S3 storage |
-| `@drakkarsoftware/starfish-server` | TypeScript | Protocol, encryption, config, Hono router, CF Workers compatible |
+| `@drakkar.software/starfish-server` | TypeScript | Protocol, encryption, config, Hono router, CF Workers compatible |
 
 ### Client SDKs
 
 | Package | Language | Description |
 |---|---|---|
-| `@drakkarsoftware/starfish-client` | TypeScript | Browser, Node.js & React Native client with sync manager |
+| `@drakkar.software/starfish-client` | TypeScript | Browser, Node.js & React Native client with sync manager |
 | `starfish-sdk` | Python | Async client (httpx) with sync manager |
 
 ## Quick Start
@@ -71,13 +71,13 @@ app.include_router(router, prefix="/v1")
 
 ```ts
 import { Hono } from "hono"
-import { createSyncRouter, MemoryObjectStore, parseConfigJson } from "@drakkarsoftware/starfish-server"
-import type { AuthResult } from "@drakkarsoftware/starfish-server"
+import { createSyncRouter, MemoryObjectStore, parseConfigJson } from "@drakkar.software/starfish-server"
+import type { AuthResult } from "@drakkar.software/starfish-server"
 
 const store = new MemoryObjectStore(new Map())
 
 // For Node.js filesystem storage:
-// import { FilesystemObjectStore } from "@drakkarsoftware/starfish-server/node"
+// import { FilesystemObjectStore } from "@drakkar.software/starfish-server/node"
 // const store = new FilesystemObjectStore({ baseDir: "./data" })
 
 const config = parseConfigJson(JSON.stringify({
@@ -150,7 +150,7 @@ config = SyncConfig(version=1, collections=[
 TypeScript server:
 
 ```ts
-import { parseConfigJson, loadConfig, saveConfig } from "@drakkarsoftware/starfish-server"
+import { parseConfigJson, loadConfig, saveConfig } from "@drakkar.software/starfish-server"
 
 // 1. From a JSON string
 const config = parseConfigJson('{"version": 1, "collections": [...]}')
@@ -252,7 +252,7 @@ All clients implement the same protocol: pull/push with hash-based conflict dete
 Works in Browser, Node.js, and React Native (see [Platform Support](#platform-support)).
 
 ```ts
-import { StarfishClient, SyncManager } from "@drakkarsoftware/starfish-client"
+import { StarfishClient, SyncManager } from "@drakkar.software/starfish-client"
 
 const client = new StarfishClient({
   baseUrl: "https://api.example.com/v1",
@@ -281,7 +281,7 @@ await sync.update((data) => ({ ...data, theme: "light" }))
 #### Full example: Auth + E2E Encryption + Author Signing
 
 ```ts
-import { StarfishClient, SyncManager } from "@drakkarsoftware/starfish-client"
+import { StarfishClient, SyncManager } from "@drakkar.software/starfish-client"
 
 // 1. Create client with auth
 const client = new StarfishClient({
@@ -379,7 +379,7 @@ All clients support optional AES-256-GCM encryption with HKDF-derived keys. When
 You can also use the encryptor standalone:
 
 ```ts
-import { createEncryptor } from "@drakkarsoftware/starfish-client"
+import { createEncryptor } from "@drakkar.software/starfish-client"
 
 const encryptor = createEncryptor("my-secret", "user-abc")
 const encrypted = await encryptor.encrypt({ hello: "world" })
@@ -403,7 +403,7 @@ The TypeScript client uses the [Web Crypto API](https://developer.mozilla.org/en
 React Native's JS engines (Hermes, JSC) don't provide the Web Crypto API. Call `configurePlatform()` once at app startup before using the SDK:
 
 ```ts
-import { configurePlatform } from "@drakkarsoftware/starfish-client"
+import { configurePlatform } from "@drakkar.software/starfish-client"
 import QuickCrypto from "react-native-quick-crypto"
 
 configurePlatform({
@@ -415,7 +415,7 @@ configurePlatform({
 })
 
 // Now use the SDK normally
-import { SyncManager } from "@drakkarsoftware/starfish-client"
+import { SyncManager } from "@drakkar.software/starfish-client"
 ```
 
 Alternatively, if your polyfill patches `globalThis.crypto` (e.g., `react-native-quick-crypto/polyfill`), no explicit configuration is needed.
@@ -433,8 +433,8 @@ npm install immer
 #### Creating stores per collection
 
 ```ts
-import { StarfishClient, SyncManager } from "@drakkarsoftware/starfish-client"
-import { createStarfishStore } from "@drakkarsoftware/starfish-client/zustand"
+import { StarfishClient, SyncManager } from "@drakkar.software/starfish-client"
+import { createStarfishStore } from "@drakkar.software/starfish-client/zustand"
 import AsyncStorage from "@react-native-async-storage/async-storage"
 
 const client = new StarfishClient({
@@ -614,8 +614,8 @@ npm install @legendapp/state
 #### Creating observables per collection
 
 ```ts
-import { StarfishClient, SyncManager } from "@drakkarsoftware/starfish-client"
-import { createStarfishObservable } from "@drakkarsoftware/starfish-client/legend"
+import { StarfishClient, SyncManager } from "@drakkar.software/starfish-client"
+import { createStarfishObservable } from "@drakkar.software/starfish-client/legend"
 
 const client = new StarfishClient({ ... })
 
@@ -781,7 +781,7 @@ store = MemoryObjectStore(data={})    # isolated — independent empty dict (for
 
 ```ts
 // TypeScript
-import { MemoryObjectStore } from "@drakkarsoftware/starfish-server"
+import { MemoryObjectStore } from "@drakkar.software/starfish-server"
 
 const store = new MemoryObjectStore()             // global — shared across instances
 const store = new MemoryObjectStore(new Map())    // isolated (for tests)
@@ -805,7 +805,7 @@ store = CustomObjectStore(
 
 ```ts
 // TypeScript
-import { CustomObjectStore } from "@drakkarsoftware/starfish-server"
+import { CustomObjectStore } from "@drakkar.software/starfish-server"
 
 const store = new CustomObjectStore({
   onGet: (key) => data.get(key) ?? null,
@@ -826,7 +826,7 @@ store = FilesystemObjectStore(FilesystemStorageOptions(base_dir="./data"))
 
 ```ts
 // TypeScript (Node.js only — subpath export)
-import { FilesystemObjectStore } from "@drakkarsoftware/starfish-server/node"
+import { FilesystemObjectStore } from "@drakkar.software/starfish-server/node"
 
 const store = new FilesystemObjectStore({ baseDir: "./data" })
 ```
@@ -1029,7 +1029,7 @@ app.include_router(sync_router, prefix="/v1")
 
 ```ts
 // TypeScript
-import { ReplicaManager, createSyncRouter } from "@drakkarsoftware/starfish-server"
+import { ReplicaManager, createSyncRouter } from "@drakkar.software/starfish-server"
 
 const replicaManager = new ReplicaManager(store, config.collections)
 

@@ -2,14 +2,14 @@
  * Starfish + Zustand React example.
  *
  * Install:
- *   npm install @drakkarsoftware/starfish-client zustand
+ *   npm install starfish-client zustand
  *   npm install immer  # optional, for draft-based mutations
  */
 
 import { useEffect } from "react"
 import { useStore } from "zustand"
-import { StarfishClient, SyncManager } from "@drakkarsoftware/starfish-client"
-import { createStarfishStore } from "@drakkarsoftware/starfish-client/zustand"
+import { StarfishClient, SyncManager } from "@drakkar.software/starfish-client"
+import { createStarfishStore } from "starfish-client/zustand"
 
 // ---------------------------------------------------------------------------
 // Setup (run once at app startup)

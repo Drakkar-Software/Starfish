@@ -3,7 +3,7 @@ import { createSyncRouter, type SyncRouterOptions, type AuthResult } from "../..
 import { MemoryObjectStore } from "../../src/storage/memory.js"
 import { MemoryQueue } from "../../src/queue/memory.js"
 import type { SyncConfig } from "../../src/config/schema.js"
-import { configurePlatform } from "@drakkarsoftware/starfish-protocol"
+import { configurePlatform } from "@drakkar.software/starfish-protocol"
 import { webcrypto } from "node:crypto"
 
 configurePlatform({

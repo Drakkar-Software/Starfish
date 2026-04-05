@@ -1,5 +1,5 @@
-import type { PullResult } from "@drakkarsoftware/starfish-protocol"
-import { deepMerge, stableStringify } from "@drakkarsoftware/starfish-protocol"
+import type { PullResult } from "@drakkar.software/starfish-protocol"
+import { deepMerge, stableStringify } from "@drakkar.software/starfish-protocol"
 import type { ConflictResolver } from "./types.js"
 import { ConflictError } from "./types.js"
 import { StarfishClient } from "./client.js"

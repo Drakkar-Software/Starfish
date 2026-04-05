@@ -1,4 +1,4 @@
-import { deriveKey, IV_BYTES, getCrypto, getBase64 } from "@drakkarsoftware/starfish-protocol"
+import { deriveKey, IV_BYTES, getCrypto, getBase64 } from "@drakkar.software/starfish-protocol"
 import type { ObjectStore } from "../storage/base.js"
 import { HKDF_INFO_DEFAULT } from "../constants.js"
 

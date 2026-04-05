@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest"
 import { push } from "../../src/protocol/push.js"
 import { pull } from "../../src/protocol/pull.js"
 import { createIsolatedStore } from "../helpers.js"
-import { configurePlatform } from "@drakkarsoftware/starfish-protocol"
+import { configurePlatform } from "@drakkar.software/starfish-protocol"
 import { webcrypto } from "node:crypto"
 
 // Configure platform for Node.js

@@ -1,7 +1,7 @@
-export { configurePlatform } from "@drakkarsoftware/starfish-protocol"
-export type { CryptoProvider, Base64Provider, PlatformConfig } from "@drakkarsoftware/starfish-protocol"
-export { stableStringify, computeHash } from "@drakkarsoftware/starfish-protocol"
-export type { PullResult, PushSuccess } from "@drakkarsoftware/starfish-protocol"
+export { configurePlatform } from "@drakkar.software/starfish-protocol"
+export type { CryptoProvider, Base64Provider, PlatformConfig } from "@drakkar.software/starfish-protocol"
+export { stableStringify, computeHash } from "@drakkar.software/starfish-protocol"
+export type { PullResult, PushSuccess } from "@drakkar.software/starfish-protocol"
 
 export { StarfishClient } from "./client.js"
 export { SyncManager } from "./sync.js"

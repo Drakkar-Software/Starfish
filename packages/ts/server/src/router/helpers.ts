@@ -2,7 +2,7 @@ import type { ObjectStore } from "../storage/base.js"
 import { pull } from "../protocol/pull.js"
 import { push, type Author } from "../protocol/push.js"
 import type { PushSuccess } from "../protocol/types.js"
-import { stableStringify } from "@drakkarsoftware/starfish-protocol"
+import { stableStringify } from "@drakkar.software/starfish-protocol"
 import { ERROR_HASH_MISMATCH } from "../constants.js"
 
 const SAFE_PARAM = /^[a-zA-Z0-9._:@-]+$/

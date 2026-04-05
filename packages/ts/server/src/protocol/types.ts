@@ -1,4 +1,4 @@
-import type { PullResult, PushSuccess } from "@drakkarsoftware/starfish-protocol"
+import type { PullResult, PushSuccess } from "@drakkar.software/starfish-protocol"
 
 export type { PullResult, PushSuccess }
 
