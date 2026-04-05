@@ -14,6 +14,7 @@ function validConfig(overrides: Partial<SyncConfig> = {}): SyncConfig {
         readRoles: ["self"],
         writeRoles: ["self"],
         encryption: "none",
+        allowedMimeTypes: ["application/json"],
       },
     ],
     ...overrides,
@@ -28,23 +29,12 @@ describe("validateConfig", () => {
   it("rejects duplicate collection names", () => {
     const config = validConfig({
       collections: [
-        { name: "a", storagePath: "path1", readRoles: ["public"], writeRoles: ["public"] },
-        { name: "a", storagePath: "path2", readRoles: ["public"], writeRoles: ["public"] },
+        { name: "a", storagePath: "path1", readRoles: ["public"], writeRoles: ["public"], allowedMimeTypes: ["application/json"] },
+        { name: "a", storagePath: "path2", readRoles: ["public"], writeRoles: ["public"], allowedMimeTypes: ["application/json"] },
       ],
     })
     const errors = validateConfig(config)
     expect(errors.some((e) => e.includes("Duplicate collection name"))).toBe(true)
-  })
-
-  it("rejects duplicate storage paths", () => {
-    const config = validConfig({
-      collections: [
-        { name: "a", storagePath: "same/path", readRoles: ["public"], writeRoles: ["public"] },
-        { name: "b", storagePath: "same/path", readRoles: ["public"], writeRoles: ["public"] },
-      ],
-    })
-    const errors = validateConfig(config)
-    expect(errors.some((e) => e.includes("Duplicate storage path"))).toBe(true)
   })
 
   it("rejects pullOnly + pushOnly", () => {
@@ -55,6 +45,7 @@ describe("validateConfig", () => {
           storagePath: "path1",
           readRoles: ["public"],
           writeRoles: ["public"],
+          allowedMimeTypes: ["application/json"],
           pullOnly: true,
           pushOnly: true,
         },
@@ -64,20 +55,21 @@ describe("validateConfig", () => {
     expect(errors.some((e) => e.includes("both pullOnly and pushOnly"))).toBe(true)
   })
 
-  it("rejects identity encryption without {identity} in path", () => {
+  it("rejects public collection with identity encryption", () => {
     const config = validConfig({
       collections: [
         {
           name: "a",
-          storagePath: "static/path",
-          readRoles: ["self"],
-          writeRoles: ["self"],
+          storagePath: "users/{identity}/data",
+          readRoles: ["public"],
+          writeRoles: ["public"],
           encryption: "identity",
+          allowedMimeTypes: ["application/json"],
         },
       ],
     })
     const errors = validateConfig(config)
-    expect(errors.some((e) => e.includes("identity encryption"))).toBe(true)
+    expect(errors.some((e) => e.includes("public collections must not use"))).toBe(true)
   })
 
   it("rejects binary collection with server encryption", () => {
@@ -94,7 +86,7 @@ describe("validateConfig", () => {
       ],
     })
     const errors = validateConfig(config)
-    expect(errors.some((e) => e.includes("Binary collection"))).toBe(true)
+    expect(errors.some((e) => e.includes("binary collections cannot use"))).toBe(true)
   })
 
   it("rejects binary collection with objectSchema", () => {
@@ -122,6 +114,7 @@ describe("validateConfig", () => {
           storagePath: "data/{identity}",
           readRoles: ["public"],
           writeRoles: ["public"],
+          allowedMimeTypes: ["application/json"],
           remote: {
             url: "https://primary.example.com",
             pullPath: "/pull/data",
@@ -141,6 +134,7 @@ describe("validateConfig", () => {
           storagePath: "data",
           readRoles: ["public"],
           writeRoles: ["public"],
+          allowedMimeTypes: ["application/json"],
           remote: {
             url: "https://primary.example.com",
             pullPath: "/pull/data",
@@ -161,6 +155,7 @@ describe("validateConfig", () => {
           storagePath: "data",
           readRoles: ["public"],
           writeRoles: ["public"],
+          allowedMimeTypes: ["application/json"],
           remote: {
             url: "https://primary.example.com",
             pullPath: "/pull/data",

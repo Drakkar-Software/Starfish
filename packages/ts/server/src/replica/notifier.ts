@@ -60,7 +60,7 @@ export class NotificationPublisher {
 
     await Promise.allSettled(
       subs.map((sub) =>
-        fetch(sub.webhookUrl, {
+        fetch(`${sub.webhookUrl.replace(/\/$/, "")}/replica/notify`, {
           method: "POST",
           headers,
           body: payload,

@@ -5,6 +5,8 @@ import { push, type Author } from "../protocol/push.js"
 import { isPushConflict } from "../protocol/types.js"
 import { ERROR_HASH_MISMATCH, CONTENT_TYPE_JSON } from "../constants.js"
 
+import * as net from "node:net"
+
 const SAFE_PARAM = /^[a-zA-Z0-9._:@-]+$/
 const UNSAFE_KEY_PATTERN = /\.\.|[\x00-\x1f]|\/\//
 
@@ -15,6 +17,35 @@ export type SignatureVerifier = (
   signature: string,
   identity: string,
 ) => Promise<boolean>
+
+export function validateUrlNotPrivate(url: string): boolean {
+  try {
+    const parsed = new URL(url)
+    const hostname = parsed.hostname
+    if (!hostname) return false
+    if (["localhost", "127.0.0.1", "::1", "0.0.0.0"].includes(hostname)) return false
+    if (net.isIP(hostname)) {
+      const buf = net.isIPv4(hostname)
+        ? Buffer.from(hostname.split(".").map(Number))
+        : null
+      if (buf) {
+        // 10.x.x.x, 172.16-31.x.x, 192.168.x.x, 127.x.x.x, 169.254.x.x
+        if (
+          buf[0] === 10 ||
+          buf[0] === 127 ||
+          (buf[0] === 172 && buf[1] >= 16 && buf[1] <= 31) ||
+          (buf[0] === 192 && buf[1] === 168) ||
+          (buf[0] === 169 && buf[1] === 254)
+        ) {
+          return false
+        }
+      }
+    }
+    return true
+  } catch {
+    return false
+  }
+}
 
 export function validatePathSegment(value: string): boolean {
   return SAFE_PARAM.test(value)

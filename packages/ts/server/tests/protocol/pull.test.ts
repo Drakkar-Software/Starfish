@@ -10,7 +10,7 @@ describe("pull", () => {
     const result = await pull(store, "missing")
     expect(result.data).toEqual({})
     expect(result.hash).toBe("")
-    expect(result.timestamp).toBe(0)
+    expect(result.timestamp).toBeGreaterThan(0)
   })
 
   it("returns full data after push", async () => {

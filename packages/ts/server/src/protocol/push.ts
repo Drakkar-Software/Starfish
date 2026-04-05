@@ -31,8 +31,14 @@ export async function push(
     currentHash = doc.hash
   }
 
-  if (baseHash !== null && baseHash !== currentHash) {
-    return { error: ERROR_HASH_MISMATCH }
+  if (baseHash === null) {
+    if (raw) {
+      return { error: ERROR_HASH_MISMATCH }
+    }
+  } else {
+    if (baseHash !== currentHash) {
+      return { error: ERROR_HASH_MISMATCH }
+    }
   }
 
   const newHash = await computeHash(newData)

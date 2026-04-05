@@ -45,6 +45,7 @@ export {
   handleSyncPull,
   handleSyncPush,
   validatePathSegment,
+  validateUrlNotPrivate,
   deepSanitize,
   parseCheckpoint,
   type SignatureVerifier,

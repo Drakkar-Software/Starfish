@@ -17,12 +17,14 @@ function buildApp(
         readRoles: ["self"],
         writeRoles: ["self"],
         maxBodyBytes: 10_000,
+        allowedMimeTypes: ["application/json"],
       },
       {
         name: "public-data",
         storagePath: "public/data",
         readRoles: ["public"],
         writeRoles: ["admin"],
+        allowedMimeTypes: ["application/json"],
       },
     ],
     ...configOverride,
@@ -200,6 +202,7 @@ describe("createSyncRouter", () => {
           readRoles: ["public"],
           writeRoles: ["public"],
           encryption: "delegated",
+          allowedMimeTypes: ["application/json"],
         },
       ],
     })

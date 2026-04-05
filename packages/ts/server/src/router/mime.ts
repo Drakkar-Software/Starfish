@@ -14,6 +14,6 @@ export function matchesAllowedMime(contentType: string, patterns: string[]): boo
 }
 
 export function isJsonCollection(allowedMimeTypes?: string[]): boolean {
-  if (!allowedMimeTypes || allowedMimeTypes.length === 0) return true
+  if (!allowedMimeTypes || allowedMimeTypes.length === 0) return false
   return allowedMimeTypes.some((m) => m.toLowerCase() === MIME_JSON)
 }

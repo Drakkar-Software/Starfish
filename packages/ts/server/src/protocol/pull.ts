@@ -8,43 +8,29 @@ export async function pull(
   documentKey: string,
   checkpoint = 0,
 ): Promise<PullResult> {
+  const timestamp = Date.now()
   const raw = await store.getString(documentKey)
   if (!raw) {
-    return { data: {}, hash: "", timestamp: 0 }
+    return { data: {}, hash: "", timestamp }
   }
 
   const doc: StoredDocument = JSON.parse(raw)
-  const fullData = doc.data
-  const fullHash = doc.hash
 
   let data: Record<string, unknown>
   if (checkpoint > 0 && doc.timestamps) {
-    data = filterByCheckpoint(fullData, doc.timestamps, checkpoint)
+    data = filterByCheckpoint(doc.data, doc.timestamps, checkpoint)
   } else {
-    data = fullData
+    data = doc.data
   }
 
   const result: PullResult = {
     data,
-    hash: fullHash,
-    timestamp: Math.max(checkpoint, maxTimestamp(doc.timestamps)),
+    hash: doc.hash,
+    timestamp,
   }
 
   if (doc.authorPubkey) result.authorPubkey = doc.authorPubkey
   if (doc.authorSignature) result.authorSignature = doc.authorSignature
 
   return result
-}
-
-function maxTimestamp(timestamps: Record<string, unknown>): number {
-  let max = 0
-  for (const val of Object.values(timestamps ?? {})) {
-    if (typeof val === "number") {
-      if (val > max) max = val
-    } else if (val && typeof val === "object" && !Array.isArray(val)) {
-      const sub = maxTimestamp(val as Record<string, unknown>)
-      if (sub > max) max = sub
-    }
-  }
-  return max
 }

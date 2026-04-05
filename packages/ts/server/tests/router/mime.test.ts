@@ -31,9 +31,9 @@ describe("matchesAllowedMime", () => {
 })
 
 describe("isJsonCollection", () => {
-  it("returns true when no MIME types specified", () => {
-    expect(isJsonCollection(undefined)).toBe(true)
-    expect(isJsonCollection([])).toBe(true)
+  it("returns false when no MIME types specified", () => {
+    expect(isJsonCollection(undefined)).toBe(false)
+    expect(isJsonCollection([])).toBe(false)
   })
 
   it("returns true when application/json included", () => {

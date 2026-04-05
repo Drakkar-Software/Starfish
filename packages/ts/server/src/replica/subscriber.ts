@@ -1,4 +1,5 @@
 import type { AbstractObjectStore } from "../storage/base.js"
+import { validateUrlNotPrivate } from "../router/helpers.js"
 
 const SUBSCRIPTIONS_KEY = "__sync__/subscriptions.json"
 
@@ -34,6 +35,9 @@ export class SubscriptionStore {
     collections: string[],
     subscribedAt: number,
   ): Promise<void> {
+    if (!validateUrlNotPrivate(webhookUrl)) {
+      throw new Error(`Webhook URL is not allowed: ${webhookUrl}`)
+    }
     const subs = [...(await this.load())]
     const idx = subs.findIndex((s) => s.webhookUrl === webhookUrl)
     const entry: Subscription = { webhookUrl, collections, subscribedAt }

@@ -23,7 +23,14 @@ export function computeTimestamps(
     const oldVal = oldData ? oldData[key] : undefined
 
     if (isLeaf(newVal)) {
-      if (stableEqual(oldVal, newVal) && oldTimestamps && typeof oldTimestamps[key] === "number") {
+      if (
+        oldData !== null &&
+        key in oldData &&
+        isLeaf(oldVal) &&
+        stableEqual(oldVal, newVal) &&
+        oldTimestamps &&
+        typeof oldTimestamps[key] === "number"
+      ) {
         result[key] = oldTimestamps[key]
       } else {
         result[key] = now
@@ -64,13 +71,18 @@ export function filterByCheckpoint(
         result[key] = val
       }
     } else if (ts && typeof ts === "object" && !Array.isArray(ts)) {
-      const sub = filterByCheckpoint(
-        val as Record<string, unknown>,
-        ts as Timestamps,
-        checkpoint,
-      )
-      if (Object.keys(sub).length > 0) {
-        result[key] = sub
+      if (isLeaf(val)) {
+        // Mismatch: timestamps say object but data is leaf — include the value
+        result[key] = val
+      } else {
+        const sub = filterByCheckpoint(
+          val as Record<string, unknown>,
+          ts as Timestamps,
+          checkpoint,
+        )
+        if (Object.keys(sub).length > 0) {
+          result[key] = sub
+        }
       }
     }
   }
