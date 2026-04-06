@@ -376,6 +376,8 @@ auth: async ({ method, path, body }) => ({
 
 All clients support optional AES-256-GCM encryption with HKDF-derived keys. When enabled, data is encrypted before push and decrypted after pull — the server never sees plaintext.
 
+> **Important:** The `encryptionSalt` (or `encryption_salt`) must be **deterministic** — all devices sharing the same secret must derive the same salt value. If each device generates its own salt (e.g., a random local ID), they will derive different encryption keys and will not be able to decrypt each other's data. A safe pattern is to derive the salt from the secret itself (e.g., `hash(secret).slice(0, 16)`).
+
 You can also use the encryptor standalone:
 
 ```ts
@@ -848,6 +850,13 @@ store = S3ObjectStore(S3StorageOptions(
 
 With `"delegated"` mode, the server never encrypts or decrypts — it stores whatever the client sends as-is. The user generates a secret key and encrypts client-side using their public key as salt. They can share the secret + public key with a third party to grant decryption access.
 
+> **The salt must be deterministic across all devices.** Since HKDF derives the encryption key from both `secret` and `salt`, every device that needs to read or write the same data must use the exact same values for both. Never use a value that varies per device (e.g., a local database ID, random UUID, or device identifier) as the salt — this will cause each device to derive a different key, making cross-device sync silently fail (data is encrypted with one key and cannot be decrypted with another).
+>
+> Safe salt choices:
+> - A value derived from the secret itself: `hash(secret).slice(0, N)`
+> - A shared public key or user identifier that is the same on all devices
+> - A constant string (if only one user accesses the data)
+
 ```json
 {
   "name": "vault",
@@ -867,7 +876,7 @@ sync = SyncManager(
     pull_path="/pull/users/abc/vault",
     push_path="/push/users/abc/vault",
     encryption_secret="my-secret-key",       # user-generated secret
-    encryption_salt="my-public-key-abc123",   # user's public key
+    encryption_salt="my-public-key-abc123",   # user's public key (same on all devices)
 )
 
 await sync.push({"balance": 1000})
