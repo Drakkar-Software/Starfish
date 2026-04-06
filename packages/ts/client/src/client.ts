@@ -5,6 +5,18 @@ import type {
 } from "./types.js"
 import { ConflictError, StarfishHttpError } from "./types.js"
 
+/** Result of pulling a binary blob from the server. */
+export interface BlobPullResult {
+  data: ArrayBuffer
+  hash: string
+  contentType: string
+}
+
+/** Result of pushing a binary blob to the server. */
+export interface BlobPushResult {
+  hash: string
+}
+
 /**
  * Low-level HTTP client for the Starfish sync protocol.
  * Handles auth headers and response parsing.
@@ -85,5 +97,59 @@ export class StarfishClient {
       throw new StarfishHttpError(res.status, await res.text())
     }
     return res.json() as Promise<PushSuccess>
+  }
+
+  /**
+   * Pull binary data from a blob collection.
+   * Returns raw bytes with the content hash from the ETag header.
+   */
+  async pullBlob(path: string): Promise<BlobPullResult> {
+    const authHeaders = this.auth
+      ? await this.auth({ method: "GET", path, body: null })
+      : {}
+
+    const res = await this.fetch(`${this.baseUrl}${path}`, {
+      method: "GET",
+      headers: { Accept: "*/*", ...authHeaders },
+    })
+    if (!res.ok) {
+      throw new StarfishHttpError(res.status, await res.text())
+    }
+
+    const etag = res.headers.get("ETag")?.replace(/"/g, "") ?? ""
+    const contentType = res.headers.get("Content-Type") ?? "application/octet-stream"
+    const data = await res.arrayBuffer()
+
+    return { data, hash: etag, contentType }
+  }
+
+  /**
+   * Push binary data to a blob collection.
+   * Binary collections use last-write-wins (no conflict detection).
+   */
+  async pushBlob(
+    path: string,
+    data: ArrayBuffer | Uint8Array | Blob,
+    contentType: string,
+  ): Promise<BlobPushResult> {
+    const authHeaders = this.auth
+      ? await this.auth({ method: "POST", path, body: null })
+      : {}
+
+    const res = await this.fetch(`${this.baseUrl}${path}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": contentType,
+        Accept: "application/json",
+        ...authHeaders,
+      },
+      body: (data instanceof Uint8Array
+        ? data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength)
+        : data) as BodyInit,
+    })
+    if (!res.ok) {
+      throw new StarfishHttpError(res.status, await res.text())
+    }
+    return res.json() as Promise<BlobPushResult>
   }
 }

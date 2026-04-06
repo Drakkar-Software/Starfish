@@ -5,6 +5,9 @@ import { ConflictError } from "./types.js"
 import { StarfishClient } from "./client.js"
 import type { Encryptor } from "./crypto.js"
 import { createEncryptor } from "./crypto.js"
+import type { SyncLogger } from "./logger.js"
+import type { Validator } from "./validate.js"
+import { ValidationError } from "./validate.js"
 
 
 export interface SyncManagerOptions {
@@ -19,6 +22,12 @@ export interface SyncManagerOptions {
   encryptionSalt?: string
   encryptionInfo?: string
   signData?: (data: string) => Promise<string>
+  /** Structured logger for sync events. */
+  logger?: SyncLogger
+  /** Store name passed to logger (default: derived from pullPath). */
+  name?: string
+  /** Validate data before push. Throws ValidationError on failure. */
+  validate?: Validator
 }
 
 export class SyncManager {
@@ -29,6 +38,9 @@ export class SyncManager {
   private readonly maxRetries: number
   private readonly encryptor: Encryptor | null
   private readonly signData?: (data: string) => Promise<string>
+  private readonly logger?: SyncLogger
+  private readonly name: string
+  private readonly validate?: Validator
 
   private lastHash: string | null = null
   private lastCheckpoint: number = 0
@@ -41,6 +53,9 @@ export class SyncManager {
     this.onConflict = options.onConflict ?? deepMerge
     this.maxRetries = options.maxRetries ?? 3
     this.signData = options.signData
+    this.logger = options.logger
+    this.name = options.name ?? options.pullPath.split("/").filter(Boolean).pop() ?? options.pullPath
+    this.validate = options.validate
     this.encryptor =
       options.encryptionSecret && options.encryptionSalt
         ? createEncryptor(options.encryptionSecret, options.encryptionSalt, options.encryptionInfo)
@@ -60,24 +75,38 @@ export class SyncManager {
   }
 
   async pull(): Promise<PullResult> {
-    const result = await this.client.pull(this.pullPath, this.lastCheckpoint)
+    this.logger?.pullStart(this.name)
+    const start = performance.now()
+    try {
+      const result = await this.client.pull(this.pullPath, this.lastCheckpoint)
 
-    if (this.encryptor) {
-      const decrypted = await this.encryptor.decrypt(result.data)
-      this.localData = decrypted
-      result.data = decrypted
-    } else if (this.lastCheckpoint > 0) {
-      this.localData = deepMerge(this.localData, result.data)
-    } else {
-      this.localData = result.data
+      if (this.encryptor) {
+        const decrypted = await this.encryptor.decrypt(result.data)
+        this.localData = decrypted
+        result.data = decrypted
+      } else if (this.lastCheckpoint > 0) {
+        this.localData = deepMerge(this.localData, result.data)
+      } else {
+        this.localData = result.data
+      }
+
+      this.lastHash = result.hash
+      this.lastCheckpoint = result.timestamp
+      this.logger?.pullSuccess(this.name, Math.round(performance.now() - start))
+      return result
+    } catch (err) {
+      this.logger?.pullError(this.name, (err as Error).message)
+      throw err
     }
-
-    this.lastHash = result.hash
-    this.lastCheckpoint = result.timestamp
-    return result
   }
 
   async push(data: Record<string, unknown>): Promise<{ hash: string; timestamp: number }> {
+    if (this.validate) {
+      const result = this.validate(data)
+      if (result !== true) throw new ValidationError(result)
+    }
+    this.logger?.pushStart(this.name)
+    const start = performance.now()
     let attempt = 0
     let pendingData = data
 
@@ -100,11 +129,14 @@ export class SyncManager {
         this.lastHash = result.hash
         this.lastCheckpoint = result.timestamp
         this.localData = pendingData
+        this.logger?.pushSuccess(this.name, Math.round(performance.now() - start))
         return result
       } catch (err) {
         if (!(err instanceof ConflictError) || attempt >= this.maxRetries) {
+          this.logger?.pushError(this.name, (err as Error).message)
           throw err
         }
+        this.logger?.conflict(this.name, attempt + 1)
         const remote = await this.client.pull(this.pullPath)
         this.lastHash = remote.hash
         this.lastCheckpoint = remote.timestamp

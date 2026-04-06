@@ -1,6 +1,6 @@
 {
   "name": "@drakkar.software/starfish-client",
-  "version": "1.3.2",
+  "version": "1.4.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/Drakkar-Software/starfish.git",
@@ -25,12 +25,25 @@
     "./legend": {
       "types": "./dist/bindings/legend.d.ts",
       "import": "./dist/bindings/legend.js"
+    },
+    "./fetch": {
+      "types": "./dist/fetch.d.ts",
+      "import": "./dist/fetch.js"
+    },
+    "./broadcast": {
+      "types": "./dist/bindings/broadcast.d.ts",
+      "import": "./dist/bindings/broadcast.js"
+    },
+    "./react": {
+      "types": "./dist/bindings/react.d.ts",
+      "import": "./dist/bindings/react.js"
     }
   },
   "peerDependencies": {
-    "zustand": ">=4.0.0",
+    "@legendapp/state": ">=2.0.0",
     "immer": ">=9.0.0",
-    "@legendapp/state": ">=2.0.0"
+    "react": ">=18.0.0",
+    "zustand": ">=4.0.0"
   },
   "peerDependenciesMeta": {
     "zustand": {
@@ -40,6 +53,9 @@
       "optional": true
     },
     "@legendapp/state": {
+      "optional": true
+    },
+    "react": {
       "optional": true
     }
   },
@@ -53,8 +69,14 @@
   },
   "devDependencies": {
     "@legendapp/state": "^2.0.0",
+    "@testing-library/react": "^16.3.2",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
     "hono": "^4.12.7",
     "immer": "^11.1.4",
+    "jsdom": "^29.0.1",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
     "typescript": "^5.5.0",
     "vitest": "^3.0.0",
     "zustand": "^5.0.11"
