@@ -350,6 +350,8 @@ Adding a `remote` block makes the collection a replica that syncs from a primary
 
 `delegated` implies `clientEncrypted` behavior (full-fetch only, no incremental sync).
 
+> **Note:** For `delegated` and client-side encryption, the `encryptionSalt` must be deterministic — the same value on every device that shares the secret. Using a per-device value (random UUID, local DB ID) will cause each device to derive a different encryption key, silently breaking cross-device sync. See [Delegated encryption](README.md#delegated-encryption) for safe salt choices.
+
 ## Full example
 
 ```json
