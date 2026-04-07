@@ -24,8 +24,8 @@ export interface SyncManagerOptions {
   signData?: (data: string) => Promise<string>
   /** Structured logger for sync events. */
   logger?: SyncLogger
-  /** Store name passed to logger (default: derived from pullPath). */
-  name?: string
+  /** Name passed to logger methods (default: derived from pullPath). */
+  loggerName?: string
   /** Validate data before push. Throws ValidationError on failure. */
   validate?: Validator
 }
@@ -39,7 +39,7 @@ export class SyncManager {
   private readonly encryptor: Encryptor | null
   private readonly signData?: (data: string) => Promise<string>
   private readonly logger?: SyncLogger
-  private readonly name: string
+  private readonly loggerName: string
   private readonly validate?: Validator
 
   private lastHash: string | null = null
@@ -54,7 +54,7 @@ export class SyncManager {
     this.maxRetries = options.maxRetries ?? 3
     this.signData = options.signData
     this.logger = options.logger
-    this.name = options.name ?? options.pullPath.split("/").filter(Boolean).pop() ?? options.pullPath
+    this.loggerName = options.loggerName ?? options.pullPath.split("/").filter(Boolean).pop() ?? options.pullPath
     this.validate = options.validate
     this.encryptor =
       options.encryptionSecret && options.encryptionSalt
@@ -75,7 +75,7 @@ export class SyncManager {
   }
 
   async pull(): Promise<PullResult> {
-    this.logger?.pullStart(this.name)
+    this.logger?.pullStart(this.loggerName)
     const start = performance.now()
     try {
       const result = await this.client.pull(this.pullPath, this.lastCheckpoint)
@@ -92,10 +92,10 @@ export class SyncManager {
 
       this.lastHash = result.hash
       this.lastCheckpoint = result.timestamp
-      this.logger?.pullSuccess(this.name, Math.round(performance.now() - start))
+      this.logger?.pullSuccess(this.loggerName, Math.round(performance.now() - start))
       return result
     } catch (err) {
-      this.logger?.pullError(this.name, (err as Error).message)
+      this.logger?.pullError(this.loggerName, (err as Error).message)
       throw err
     }
   }
@@ -105,7 +105,7 @@ export class SyncManager {
       const result = this.validate(data)
       if (result !== true) throw new ValidationError(result)
     }
-    this.logger?.pushStart(this.name)
+    this.logger?.pushStart(this.loggerName)
     const start = performance.now()
     let attempt = 0
     let pendingData = data
@@ -129,14 +129,14 @@ export class SyncManager {
         this.lastHash = result.hash
         this.lastCheckpoint = result.timestamp
         this.localData = pendingData
-        this.logger?.pushSuccess(this.name, Math.round(performance.now() - start))
+        this.logger?.pushSuccess(this.loggerName, Math.round(performance.now() - start))
         return result
       } catch (err) {
         if (!(err instanceof ConflictError) || attempt >= this.maxRetries) {
-          this.logger?.pushError(this.name, (err as Error).message)
+          this.logger?.pushError(this.loggerName, (err as Error).message)
           throw err
         }
-        this.logger?.conflict(this.name, attempt + 1)
+        this.logger?.conflict(this.loggerName, attempt + 1)
         const remote = await this.client.pull(this.pullPath)
         this.lastHash = remote.hash
         this.lastCheckpoint = remote.timestamp

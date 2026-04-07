@@ -1,4 +1,5 @@
 import { createStore, type StoreApi } from "zustand/vanilla"
+import { useStore } from "zustand"
 import {
   persist,
   devtools,
@@ -7,7 +8,12 @@ import {
   type StateStorage,
   type DevtoolsOptions,
 } from "zustand/middleware"
-import type { SyncManager } from "../sync.js"
+import { useEffect, useRef, useState } from "react"
+import { StarfishClient } from "../client.js"
+import { SyncManager } from "../sync.js"
+import type { AuthProvider, ConflictResolver } from "../types.js"
+import type { SyncLogger } from "../logger.js"
+import type { Validator } from "../validate.js"
 
 export interface StarfishState {
   data: Record<string, unknown>
@@ -20,6 +26,8 @@ export interface StarfishState {
 export interface StarfishActions {
   pull: () => Promise<void>
   set: (modifier: (current: Record<string, unknown>) => Record<string, unknown>) => void
+  /** Update data without marking dirty or triggering flush. Use for restoring pulled data into the store. */
+  restore: (data: Record<string, unknown>) => void
   flush: () => Promise<void>
   setOnline: (online: boolean) => void
 }
@@ -82,6 +90,10 @@ export function createStarfishStore(
       }
     },
 
+    restore: (data) => {
+      set({ data }, false, "restore")
+    },
+
     flush: async () => {
       if (get().syncing || !get().dirty) return
       set({ syncing: true, error: null }, false, "flush/start")
@@ -121,4 +133,135 @@ export function createStarfishStore(
   }
 
   return createStore<StarfishStore>()(withSelector)
+}
+
+// ── React hooks ──────────────────────────────────────────────────────
+
+/** Derived sync status for UI display. */
+export type SyncStatus = "synced" | "syncing" | "pending" | "error" | "offline"
+
+/** Derive a single sync status from store state. */
+export function deriveSyncStatus(state: StarfishState): SyncStatus {
+  if (!state.online) return "offline"
+  if (state.error) return "error"
+  if (state.syncing) return "syncing"
+  if (state.dirty) return "pending"
+  return "synced"
+}
+
+/** Use the full Starfish store state and actions. */
+export function useStarfish(store: StoreApi<StarfishStore>): StarfishStore {
+  return useStore(store)
+}
+
+/** Use only the synced data, with an optional selector for fine-grained subscriptions. */
+export function useStarfishData<T = Record<string, unknown>>(
+  store: StoreApi<StarfishStore>,
+  selector?: (data: Record<string, unknown>) => T,
+): T {
+  return useStore(store, (state) =>
+    selector ? selector(state.data) : (state.data as unknown as T),
+  )
+}
+
+/** Use the derived sync status (synced | syncing | pending | error | offline). */
+export function useSyncStatus(store: StoreApi<StarfishStore>): SyncStatus {
+  return useStore(store, deriveSyncStatus)
+}
+
+// ── SyncInitializer hook ─────────────────────────────────────────────
+
+export interface SyncInitConfig {
+  serverUrl: string
+  auth?: AuthProvider
+  pullPath: string
+  pushPath: string
+  encryptionSecret?: string
+  encryptionSalt?: string
+  onConflict?: ConflictResolver
+  /** Called when pulled data arrives. Use to restore domain stores. */
+  onData?: (data: Record<string, unknown>) => void
+  storeName?: string
+  storage?: StateStorage | false
+  fetch?: typeof globalThis.fetch
+  logger?: SyncLogger
+  validate?: Validator
+}
+
+/**
+ * React hook that manages the full Starfish sync lifecycle.
+ *
+ * Creates StarfishClient → SyncManager → Zustand store, pulls on mount,
+ * calls `onData` when remote data arrives, and tears down on unmount or
+ * config change.
+ *
+ * Pass `null` to disable sync (returns `null`).
+ */
+export function useSyncInit(config: SyncInitConfig | null): StoreApi<StarfishStore> | null {
+  const [store, setStore] = useState<StoreApi<StarfishStore> | null>(null)
+  const onDataRef = useRef(config?.onData)
+  onDataRef.current = config?.onData
+
+  useEffect(() => {
+    if (!config) {
+      setStore(null)
+      return
+    }
+
+    const client = new StarfishClient({
+      baseUrl: config.serverUrl,
+      auth: config.auth,
+      fetch: config.fetch,
+    })
+
+    const syncManager = new SyncManager({
+      client,
+      pullPath: config.pullPath,
+      pushPath: config.pushPath,
+      encryptionSecret: config.encryptionSecret,
+      encryptionSalt: config.encryptionSalt,
+      onConflict: config.onConflict,
+      logger: config.logger,
+      validate: config.validate,
+    })
+
+    const newStore = createStarfishStore({
+      name: config.storeName ?? "sync",
+      syncManager,
+      storage: config.storage,
+    })
+
+    // Subscribe to data changes from pulls (not local sets)
+    let lastDataRef = newStore.getState().data
+    const unsub = newStore.subscribe((state) => {
+      const data = state.data
+      // Only call onData when data changes and store is not dirty
+      // (dirty = false means data came from a pull, not a local set)
+      if (data !== lastDataRef && !state.dirty) {
+        onDataRef.current?.(data)
+      }
+      lastDataRef = data
+    })
+
+    setStore(newStore)
+
+    // Initial pull (fire-and-forget)
+    newStore.getState().pull().catch(() => {})
+
+    return () => {
+      unsub()
+      setStore(null)
+    }
+    // Intentionally depend on serializable config values, not the object reference
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    config?.serverUrl,
+    config?.pullPath,
+    config?.pushPath,
+    config?.encryptionSecret,
+    config?.encryptionSalt,
+    config?.storeName,
+  ])
+
+  return store
 }

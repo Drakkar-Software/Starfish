@@ -183,6 +183,35 @@ describe("createStarfishStore", () => {
     expect(state.dirty).toBe(false)
   })
 
+  it("restore updates data without marking dirty or flushing", async () => {
+    const pushFn = vi.fn(async () => ({ hash: "h1", timestamp: 100 }))
+    const { store } = createTestStore({ push: pushFn })
+
+    store.getState().restore({ restored: true })
+
+    const state = store.getState()
+    expect(state.data).toEqual({ restored: true })
+    expect(state.dirty).toBe(false)
+
+    // Give it a tick to ensure no async flush
+    await new Promise((r) => setTimeout(r, 10))
+    expect(pushFn).not.toHaveBeenCalled()
+  })
+
+  it("restore does not clear existing error", () => {
+    const { store } = createTestStore({
+      pull: async () => { throw new Error("pull failed") },
+    })
+
+    // Manually set an error state
+    store.setState({ error: "something" })
+
+    store.getState().restore({ data: "from pull" })
+
+    // restore only sets data, doesn't touch error
+    expect(store.getState().data).toEqual({ data: "from pull" })
+  })
+
   it("subscribe reacts to state changes", async () => {
     const { store } = createTestStore()
     const values: unknown[] = []

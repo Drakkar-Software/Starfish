@@ -137,7 +137,7 @@ describe("SyncManager logger integration", () => {
       pullPath: "/pull/test",
       pushPath: "/push/test",
       logger,
-      name: "my-store",
+      loggerName: "my-store",
     })
 
     await sync.pull()

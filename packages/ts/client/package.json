@@ -33,10 +33,6 @@
     "./broadcast": {
       "types": "./dist/bindings/broadcast.d.ts",
       "import": "./dist/bindings/broadcast.js"
-    },
-    "./react": {
-      "types": "./dist/bindings/react.d.ts",
-      "import": "./dist/bindings/react.js"
     }
   },
   "peerDependencies": {
