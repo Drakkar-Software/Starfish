@@ -481,16 +481,41 @@ Each store exposes the following state and actions:
 | `error` | `string \| null` | Last sync error message |
 | `pull()` | `() => Promise<void>` | Pull remote state and merge into local |
 | `set(modifier)` | `(fn) => void` | Optimistic local write — instant, no network roundtrip |
+| `restore(data)` | `(data) => void` | Update data without marking dirty or triggering flush |
 | `flush()` | `() => Promise<void>` | Push pending local changes to the server |
 | `setOnline(online)` | `(boolean) => void` | Update connectivity; auto-flushes when going online |
 
-#### Usage in React components
+#### React hooks
+
+The `./zustand` subpath exports hooks that wrap common patterns:
 
 ```tsx
-import { useStore } from "zustand"
+import {
+  useStarfish,
+  useStarfishData,
+  useSyncStatus,
+  useConnectivity,
+  useCrossTabSync,
+  useLastSynced,
+  useSyncInit,
+  aggregateSyncStatus,
+} from "@drakkar.software/starfish-client/zustand"
+```
 
+| Hook | Returns | Description |
+|------|---------|-------------|
+| `useStarfish(store)` | `StarfishStore` | Full store state and actions |
+| `useStarfishData(store, selector?)` | `T` | Just the data, with optional selector for fine-grained subscriptions |
+| `useSyncStatus(store)` | `SyncStatus` | Derived status: `"synced"` \| `"syncing"` \| `"pending"` \| `"error"` \| `"offline"` |
+| `useConnectivity(store)` | `void` | Binds browser online/offline events to `setOnline` |
+| `useCrossTabSync(store, name)` | `void` | Sets up cross-tab sync with automatic cleanup |
+| `useLastSynced(store)` | `string` | Human-readable label: "Just now", "15s ago", "2m ago" |
+| `useSyncInit(config \| null)` | `StoreApi \| null` | Full lifecycle: create client/manager/store, pull on mount, teardown on unmount |
+| `aggregateSyncStatus(statuses)` | `SyncStatus` | Combine multiple statuses (worst wins: error > syncing > pending > offline > synced) |
+
+```tsx
 function Settings() {
-  const { data, syncing, pull, set } = useStore(settingsStore)
+  const { data, syncing, pull, set } = useStarfish(settingsStore)
   useEffect(() => { pull() }, [])
 
   return (
@@ -503,48 +528,33 @@ function Settings() {
   )
 }
 
-function Notes() {
-  const { data, pull, set } = useStore(notesStore)
-  useEffect(() => { pull() }, [])
-
-  const notes = (data.items ?? []) as string[]
-  return (
-    <>
-      <ul>{notes.map((n, i) => <li key={i}>{n}</li>)}</ul>
-      <button onClick={() => set((d) => ({
-        ...d,
-        items: [...(d.items as string[] ?? []), "new note"],
-      }))}>
-        Add note
-      </button>
-    </>
-  )
+// Fine-grained: only re-renders when theme changes
+function ThemeBadge() {
+  const theme = useStarfishData(settingsStore, (d) => d.theme as string)
+  return <span>{theme}</span>
 }
 
-// Selectors — subscribe to specific fields to avoid re-renders
-function ThemeBadge() {
-  const theme = useStore(settingsStore, (s) => s.data.theme)
-  return <span>{theme as string}</span>
+// Sync status indicator
+function SyncBadge() {
+  const status = useSyncStatus(settingsStore)
+  const lastSynced = useLastSynced(settingsStore)
+  return <span>{status} — {lastSynced}</span>
 }
 ```
 
-#### Connectivity listener
+#### Connectivity & cross-tab sync
 
-```ts
-// Browser
-useEffect(() => {
-  const stores = [settingsStore, notesStore]
-  const on = () => stores.forEach((s) => s.getState().setOnline(true))
-  const off = () => stores.forEach((s) => s.getState().setOnline(false))
-  window.addEventListener("online", on)
-  window.addEventListener("offline", off)
-  return () => {
-    window.removeEventListener("online", on)
-    window.removeEventListener("offline", off)
-  }
-}, [])
+```tsx
+function App() {
+  // Binds browser online/offline events
+  useConnectivity(settingsStore)
+  // Syncs store across browser tabs via BroadcastChannel
+  useCrossTabSync(settingsStore, "settings")
 
-// React Native: use @react-native-community/netinfo instead
+  return <Settings />
+}
+
+// React Native: use @react-native-community/netinfo instead of useConnectivity
 ```
 
 #### Middleware options
@@ -653,6 +663,7 @@ Each store returns `{ state, pull, set, flush, setOnline }`. The `state` field i
 | `state.error` | `Observable<string \| null>` | Last sync error message |
 | `pull()` | `() => Promise<void>` | Pull remote state |
 | `set(modifier)` | `(fn) => void` | Optimistic local write — instant, no network roundtrip |
+| `restore(data)` | `(data) => void` | Update data without marking dirty or triggering flush |
 | `flush()` | `() => Promise<void>` | Push pending local changes to the server |
 | `setOnline(online)` | `(boolean) => void` | Update connectivity; auto-flushes when going online |
 
@@ -710,6 +721,42 @@ const store = createStarfishObservable({ name: "settings", syncManager, produce 
 store.set((draft) => { draft.theme = "dark" })
 ```
 
+### Additional Client Features
+
+The TypeScript client ships additional utilities via subpath exports:
+
+| Subpath | Exports | Description |
+|---------|---------|-------------|
+| `./fetch` | `createRetryFetch`, `CircuitBreaker`, `createResilientFetch`, `createCompressedFetch` | Retry with exponential backoff, circuit breaker, gzip compression |
+| `./broadcast` | `setupBroadcastSync`, `setupStorageFallback`, `setupCrossTabSync` | Cross-tab sync via BroadcastChannel or localStorage fallback |
+| `./testing` | `createMockClient`, `createMockFetch`, `createConflictFetch` | Mock utilities for unit and integration tests |
+
+The main entrypoint also exports:
+
+- **Logging** — `consoleSyncLogger`, `noopSyncLogger` for `SyncManager` lifecycle events
+- **Error classification** — `classifyError(err)` categorizes into `network`, `auth`, `conflict`, `rate-limited`, `server`, `client`, `unknown`
+- **Schema migration** — `createMigrator(config)` for versioned migration chains with eager validation
+- **Validation** — `createSchemaValidator(ajv, schema)` for pre-push Ajv validation
+- **Conflict resolvers** — `createUnionMerge()`, `createSoftDeleteResolver()`, `timestampWinner()`, `pruneTombstones()`
+- **Snapshot history** — `SnapshotHistory` class for undo/restore with optional localStorage persistence
+- **Polling** — `startPolling()`, `startAdaptivePolling()` with network-quality adaptation and pause/resume
+
+```ts
+import { createRetryFetch, createResilientFetch } from "@drakkar.software/starfish-client/fetch"
+import { setupCrossTabSync } from "@drakkar.software/starfish-client/broadcast"
+import { createMockClient } from "@drakkar.software/starfish-client/testing"
+import {
+  consoleSyncLogger,
+  createMigrator,
+  createUnionMerge,
+  classifyError,
+  SnapshotHistory,
+  startPolling,
+} from "@drakkar.software/starfish-client"
+```
+
+See the [CHANGELOG](CHANGELOG.md) for full details.
+
 ## Project Structure
 
 ```
@@ -722,7 +769,7 @@ starfish/
 │   └── ts/
 │       ├── protocol/      # Shared protocol primitives (hash, merge, crypto, types)
 │       ├── server/        # TypeScript server (Hono router, encryption, config, CF Workers)
-│       └── client/        # TypeScript client SDK + Zustand binding
+│       └── client/        # TypeScript client SDK + Zustand/Legend bindings
 ├── tests/
 │   └── test-vectors/      # Cross-language hash/crypto/protocol test vectors
 ├── package.json           # pnpm workspace root
@@ -758,7 +805,7 @@ pytest -v
 
 TypeScript tests use [Vitest](https://vitest.dev/). Python tests use [pytest](https://docs.pytest.org/).
 
-The TypeScript client includes end-to-end tests that wire a real `StarfishClient` + `SyncManager` + Zustand store against an in-memory server backend — no mocks. The TypeScript server has 92 tests covering config, protocol, encryption, router, queue, replica, and storage.
+The TypeScript client has 200 tests across 16 test files covering sync, crypto, bindings, React hooks, broadcast, retry/circuit breaker, resolvers, migration, validation, polling, history, and more. The TypeScript server has 92 tests covering config, protocol, encryption, router, queue, replica, and storage.
 
 Cross-language test vectors in `tests/test-vectors/` ensure identical behavior across all TypeScript and Python implementations:
 - `crypto.json` / `hash.json` — encryption and hashing parity
