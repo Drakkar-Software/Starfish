@@ -85,6 +85,29 @@ describe("createUnionMerge", () => {
     expect(result.b).toBe(2)
   })
 
+  it("handles numeric timestamps correctly", () => {
+    const merge = createUnionMerge({
+      timestampKey: "ts",
+      documentTimestampKey: "docTs",
+    })
+
+    const local = {
+      docTs: 1000,
+      items: [{ id: "1", val: "local", ts: 999 }],
+    }
+    const remote = {
+      docTs: 900,
+      items: [{ id: "1", val: "remote", ts: 1000 }],
+    }
+
+    const result = merge(local, remote)
+    const items = result.items as Array<{ id: string; val: string }>
+    // Remote item has ts=1000 > local ts=999, so remote wins per-item
+    expect(items[0].val).toBe("remote")
+    // But local docTs=1000 > remote docTs=900, so local wins for scalars
+    expect(result.docTs).toBe(1000)
+  })
+
   it("supports custom keys", () => {
     const merge = createUnionMerge({
       idKey: "uid",

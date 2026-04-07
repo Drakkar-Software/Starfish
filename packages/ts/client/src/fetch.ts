@@ -36,7 +36,7 @@ export interface RetryOptions {
  * (network failures, 429, 5xx). Respects Retry-After headers.
  */
 export function createRetryFetch(options?: RetryOptions): typeof globalThis.fetch {
-  const maxRetries = options?.maxRetries ?? 3
+  const maxRetries = Math.max(0, options?.maxRetries ?? 3)
   const initialDelay = options?.initialDelayMs ?? 500
   const maxDelay = options?.maxDelayMs ?? 10_000
 
@@ -117,7 +117,7 @@ export class CircuitBreaker {
 
   recordFailure(): void {
     this.failures++
-    if (this.failures >= this.threshold) {
+    if (this.state === "half-open" || this.failures >= this.threshold) {
       this.state = "open"
       this.openedAt = Date.now()
     }

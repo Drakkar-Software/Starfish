@@ -1,5 +1,11 @@
 import type { ConflictResolver } from "./types.js"
 
+/** Compare two timestamp values. Handles both numeric (epoch) and string (ISO-8601) timestamps. */
+function compareTimestamps(a: unknown, b: unknown): boolean {
+  if (typeof a === "number" && typeof b === "number") return a >= b
+  return String(a ?? "") >= String(b ?? "")
+}
+
 /**
  * Creates a conflict resolver that merges arrays by ID with per-item
  * timestamp comparison, and uses document-level timestamp for scalars.
@@ -28,7 +34,7 @@ export function createUnionMerge(options?: {
 
   return (local, remote) => {
     const result: Record<string, unknown> = {}
-    const localNewer = String(local[docTsKey] ?? "") >= String(remote[docTsKey] ?? "")
+    const localNewer = compareTimestamps(local[docTsKey], remote[docTsKey])
     const allKeys = new Set([...Object.keys(local), ...Object.keys(remote)])
 
     for (const key of allKeys) {
@@ -57,9 +63,7 @@ export function createUnionMerge(options?: {
             if (!remoteItem) {
               map.set(id, localItem)
             } else {
-              const localTs = String(localItem[tsKey] ?? "")
-              const remoteTs = String(remoteItem[tsKey] ?? "")
-              if (localTs >= remoteTs) {
+              if (compareTimestamps(localItem[tsKey], remoteItem[tsKey])) {
                 map.set(id, localItem)
               }
             }
@@ -138,8 +142,7 @@ export function createSoftDeleteResolver(options?: {
         // Keep the item if it has a deletedAt (it's the tombstone itself)
         if (rec[deletedAtKey] != null) return true
         // Filter out alive items that have a newer tombstone
-        const itemTs = String(rec[tsKey] ?? "")
-        return itemTs > String(deletedAt)
+        return compareTimestamps(rec[tsKey], deletedAt) && rec[tsKey] !== deletedAt
       })
     }
 
@@ -155,7 +158,7 @@ export function timestampWinner(
   timestampKey = "timestamp",
 ): ConflictResolver {
   return (local, remote) => {
-    return String(local[timestampKey] ?? "") >= String(remote[timestampKey] ?? "")
+    return compareTimestamps(local[timestampKey], remote[timestampKey])
       ? local
       : remote
   }

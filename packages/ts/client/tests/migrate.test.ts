@@ -69,7 +69,9 @@ describe("createMigrator", () => {
   it("throws on forward-incompatible version", () => {
     const migrate = createMigrator({
       currentVersion: 2,
-      migrations: {},
+      migrations: {
+        1: (d) => ({ ...d }),
+      },
     })
 
     expect(() => migrate({ _schemaVersion: 5 })).toThrow(
@@ -77,16 +79,14 @@ describe("createMigrator", () => {
     )
   })
 
-  it("throws on missing migration step", () => {
-    const migrate = createMigrator({
+  it("throws on missing migration step at creation time", () => {
+    expect(() => createMigrator({
       currentVersion: 3,
       migrations: {
         // Missing migration for version 1 -> 2
         2: (d) => ({ ...d, v3: true }),
       },
-    })
-
-    expect(() => migrate({ _schemaVersion: 1 })).toThrow(
+    })).toThrow(
       "Missing migration for version 1 -> 2",
     )
   })

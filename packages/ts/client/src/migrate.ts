@@ -18,6 +18,13 @@ export interface MigrationConfig {
 export function createMigrator(
   config: MigrationConfig,
 ): (data: Record<string, unknown>) => Record<string, unknown> {
+  // Eagerly validate the migration chain
+  for (let v = 1; v < config.currentVersion; v++) {
+    if (!config.migrations[v]) {
+      throw new Error(`Missing migration for version ${v} -> ${v + 1}`)
+    }
+  }
+
   return (data) => {
     const version = typeof data._schemaVersion === "number" ? data._schemaVersion : 1
 
