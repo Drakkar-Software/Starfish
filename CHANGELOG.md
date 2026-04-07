@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.4.1
+
+### Added
+
+- **Snapshot history** — `SnapshotHistory` class for maintaining labeled snapshots of document state with optional `localStorage` persistence. Methods: `take(label, data)`, `restore(index)`, `list()`, `clear()`. Configurable `maxSnapshots` (default 20).
+- **Polling utilities** — `startPolling(pullFn, getState, intervalMs?)` for periodic sync with cleanup. `startAdaptivePolling(pullFn, getState, options?)` adapts interval to `navigator.connection.effectiveType` with `pause`/`resume`/`stop` controls. Framework-agnostic via `PollableState` interface.
+- **React hooks** (in `./zustand` subpath) — `useCrossTabSync(store, name)` wraps `setupCrossTabSync` with React lifecycle. `useConnectivity(store)` binds browser online/offline events to `setOnline`. `useLastSynced(store)` returns a human-readable label ("Just now", "15s ago", "2m ago") that auto-updates.
+- **`aggregateSyncStatus(statuses)`** — Pure function to combine multiple `SyncStatus` values into a worst-case aggregate (error > syncing > pending > offline > synced).
+
+### Fixed
+
+- **`pruneTombstones` silently dropped string timestamps** — Now handles both numeric epoch and ISO-8601 string `_deletedAt` values, consistent with the rest of the resolvers module.
+- **`createSoftDeleteResolver` rejected string `_deletedAt`** — Now accepts both numeric and string timestamps for tombstone detection.
+- **`SyncManager.pull()` returned delta on incremental pulls** — Now returns the full merged document in `result.data`, not just the server's delta.
+- **Conflict resolution state corruption** — `lastHash`/`lastCheckpoint` are now updated after successful decryption, preventing inconsistent state if decryption fails during conflict retry.
+- **`classifyError` did not handle `status: 0`** — Now classifies as `"network"`. Also validates that `status` is a number before comparing.
+- **`BlobPullResult.hash` was empty string for missing ETag** — Now `string | null` to make the absence explicit.
+- **Empty `Retry-After` header caused tight retry loop** — `Retry-After: ""` now falls back to exponential backoff instead of 0ms delay.
+- **Circuit breaker stuck in half-open on 4xx** — Non-5xx responses now record success (server is reachable), preventing the breaker from staying in half-open permanently.
+- **Compression fallback on stream errors** — `createCompressedFetch` now catches compression errors and falls back to uncompressed request.
+- **Unhandled promise rejections** — Fire-and-forget `flush()` calls in Zustand and Legend `set()`/`setOnline()` actions, and `pullFn()` in polling utilities, now have `.catch()` handlers.
+- **Unsafe error casts** — All `(err as Error).message` patterns replaced with `err instanceof Error ? err.message : String(err)` across Zustand, Legend, and SyncManager.
+- **Migration errors lacked context** — Migration function failures now include the version step that failed (e.g., "Migration from version 2 to 3 failed: ...").
+- **`SnapshotHistory` corrupted data handling** — Constructor validates parsed localStorage is an array. `restore()` catches JSON parse errors and returns `undefined`.
+- **Broadcast storage fallback payload validation** — `setupStorageFallback` now validates the shape of parsed JSON before applying it to the store.
+
 ## 1.4.0
 
 ### Added

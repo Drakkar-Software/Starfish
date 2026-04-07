@@ -23,7 +23,10 @@ export class SnapshotHistory {
     if (this.storageKey) {
       try {
         const raw = localStorage.getItem(this.storageKey)
-        if (raw) this.snapshots = JSON.parse(raw)
+        if (raw) {
+          const parsed = JSON.parse(raw)
+          if (Array.isArray(parsed)) this.snapshots = parsed
+        }
       } catch { /* corrupted or unavailable — start fresh */ }
     }
   }

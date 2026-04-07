@@ -62,8 +62,9 @@ export function setupStorageFallback(
     } catch {
       return
     }
+    if (!payload || typeof payload !== "object" || !payload.data || typeof payload.data !== "object") return
     lastReceivedData = payload.data
-    store.setState({ data: payload.data, dirty: payload.dirty })
+    store.setState({ data: payload.data, dirty: !!payload.dirty })
   }
 
   globalThis.addEventListener("storage", onStorage)

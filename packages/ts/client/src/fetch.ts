@@ -147,17 +147,21 @@ export function createCompressedFetch(inner?: typeof globalThis.fetch): typeof g
     const bodyText = typeof init.body === "string" ? init.body : null
     if (!bodyText) return baseFetch(input, init)
 
-    const stream = new Blob([bodyText]).stream().pipeThrough(new CompressionStream("gzip"))
-    const compressed = await new Response(stream).arrayBuffer()
+    try {
+      const stream = new Blob([bodyText]).stream().pipeThrough(new CompressionStream("gzip"))
+      const compressed = await new Response(stream).arrayBuffer()
 
-    const normalized = Object.fromEntries(new Headers(init.headers as HeadersInit).entries())
-    normalized["content-encoding"] = "gzip"
+      const normalized = Object.fromEntries(new Headers(init.headers as HeadersInit).entries())
+      normalized["content-encoding"] = "gzip"
 
-    return baseFetch(input, {
-      ...init,
-      body: compressed,
-      headers: normalized,
-    })
+      return baseFetch(input, {
+        ...init,
+        body: compressed,
+        headers: normalized,
+      })
+    } catch {
+      return baseFetch(input, init)
+    }
   }
 }
 
@@ -180,10 +184,10 @@ export function createResilientFetch(
 
     try {
       const res = await retryFetch(input, init)
-      if (res.ok) {
-        breaker.recordSuccess()
-      } else if (res.status >= 500) {
+      if (res.status >= 500) {
         breaker.recordFailure()
+      } else {
+        breaker.recordSuccess()
       }
       return res
     } catch (err) {
