@@ -1,5 +1,9 @@
-import type { StoreApi } from "zustand/vanilla"
-import type { StarfishStore } from "./zustand.js"
+/** Minimal store interface for cross-tab sync. Works with both Zustand and Legend bindings. */
+export interface BroadcastableStore {
+  getState(): { data: Record<string, unknown>; dirty: boolean }
+  setState(partial: { data: Record<string, unknown>; dirty: boolean }): void
+  subscribe(listener: (state: { data: Record<string, unknown>; dirty: boolean }, prev: { data: Record<string, unknown>; dirty: boolean }) => void): () => void
+}
 
 interface BroadcastPayload {
   data: Record<string, unknown>
@@ -7,11 +11,12 @@ interface BroadcastPayload {
 }
 
 /**
- * Syncs a Zustand Starfish store across browser tabs using BroadcastChannel.
+ * Syncs a Starfish store across browser tabs using BroadcastChannel.
+ * Works with any store that has getState/setState/subscribe (Zustand, Legend adapters, etc.).
  * Returns a cleanup function that closes the channel.
  */
 export function setupBroadcastSync(
-  store: StoreApi<StarfishStore>,
+  store: BroadcastableStore,
   name: string,
 ): () => void {
   const channel = new BroadcastChannel(`starfish-${name}`)
@@ -36,12 +41,12 @@ export function setupBroadcastSync(
 }
 
 /**
- * Syncs a Zustand Starfish store across browser tabs using storage events.
+ * Syncs a Starfish store across browser tabs using storage events.
  * Fallback for environments without BroadcastChannel.
  * Returns a cleanup function.
  */
 export function setupStorageFallback(
-  store: StoreApi<StarfishStore>,
+  store: BroadcastableStore,
   name: string,
 ): () => void {
   const storageKey = `starfish-broadcast-${name}`
@@ -78,7 +83,7 @@ export function setupStorageFallback(
  * Returns a cleanup function.
  */
 export function setupCrossTabSync(
-  store: StoreApi<StarfishStore>,
+  store: BroadcastableStore,
   name: string,
 ): () => void {
   if (typeof BroadcastChannel !== "undefined") {

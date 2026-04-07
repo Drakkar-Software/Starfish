@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { createStore } from "zustand/vanilla"
-import type { StarfishStore } from "../src/bindings/zustand.js"
-import { setupBroadcastSync, setupCrossTabSync } from "../src/bindings/broadcast.js"
+import type { BroadcastableStore } from "../src/broadcast.js"
+import { setupBroadcastSync, setupCrossTabSync } from "../src/broadcast.js"
 
 type Listener = (event: MessageEvent) => void
 
@@ -17,7 +16,6 @@ class MockBroadcastChannel {
   }
 
   postMessage(data: unknown) {
-    // Deliver to other instances with the same name
     for (const inst of MockBroadcastChannel.instances) {
       if (inst !== this && inst.name === this.name && !inst.closed && inst.onmessage) {
         inst.onmessage(new MessageEvent("message", { data }))
@@ -31,19 +29,26 @@ class MockBroadcastChannel {
   }
 }
 
-function createMockStore(initial?: Partial<StarfishStore>): ReturnType<typeof createStore<StarfishStore>> {
-  return createStore<StarfishStore>()((set) => ({
-    data: {},
-    syncing: false,
-    online: true,
-    dirty: false,
-    error: null,
-    pull: async () => {},
-    set: () => {},
-    flush: async () => {},
-    setOnline: () => {},
-    ...initial,
-  }))
+/** Framework-agnostic mock store implementing BroadcastableStore */
+function createMockStore(initial?: Partial<{ data: Record<string, unknown>; dirty: boolean }>): BroadcastableStore {
+  let state = {
+    data: initial?.data ?? {} as Record<string, unknown>,
+    dirty: initial?.dirty ?? false,
+  }
+  const listeners = new Set<(s: typeof state, prev: typeof state) => void>()
+
+  return {
+    getState: () => state,
+    setState: (partial) => {
+      const prev = state
+      state = { ...state, ...partial }
+      for (const fn of listeners) fn(state, prev)
+    },
+    subscribe: (listener) => {
+      listeners.add(listener)
+      return () => { listeners.delete(listener) }
+    },
+  }
 }
 
 beforeEach(() => {
@@ -63,10 +68,8 @@ describe("setupBroadcastSync", () => {
     setupBroadcastSync(store1, "test")
     setupBroadcastSync(store2, "test")
 
-    // Simulate a data change in store1
     store1.setState({ data: { theme: "dark" }, dirty: true })
 
-    // Store2 should have received the update
     expect(store2.getState().data).toEqual({ theme: "dark" })
     expect(store2.getState().dirty).toBe(true)
   })
@@ -78,13 +81,10 @@ describe("setupBroadcastSync", () => {
     setupBroadcastSync(store1, "echo-test")
     setupBroadcastSync(store2, "echo-test")
 
-    // Track setState calls on store1
     const setStateSpy = vi.spyOn(store1, "setState")
 
-    // Change store2 — should update store1 once
     store2.setState({ data: { x: 1 }, dirty: false })
 
-    // store1.setState should have been called once (from broadcast), not recursively
     const broadcastCalls = setStateSpy.mock.calls.filter(
       (call) => call[0] && typeof call[0] === "object" && "data" in (call[0] as object),
     )
@@ -96,9 +96,7 @@ describe("setupBroadcastSync", () => {
     const cleanup = setupBroadcastSync(store, "cleanup-test")
 
     expect(MockBroadcastChannel.instances.length).toBe(1)
-
     cleanup()
-
     expect(MockBroadcastChannel.instances.length).toBe(0)
   })
 
@@ -111,10 +109,10 @@ describe("setupBroadcastSync", () => {
 
     const setStateSpy = vi.spyOn(store2, "setState")
 
-    // Change something other than data/dirty
-    store1.setState({ syncing: true })
+    // setState with same data reference — should not broadcast
+    const sameData = store1.getState().data
+    store1.setState({ data: sameData, dirty: false })
 
-    // Should not have broadcast to store2
     expect(setStateSpy).not.toHaveBeenCalled()
   })
 })
@@ -130,7 +128,6 @@ describe("setupCrossTabSync", () => {
 
   it("returns noop cleanup when no mechanism is available", () => {
     vi.unstubAllGlobals()
-    // Remove BroadcastChannel and localStorage
     const origBC = globalThis.BroadcastChannel
     const origLS = globalThis.localStorage
     // @ts-expect-error - removing for test
@@ -142,7 +139,7 @@ describe("setupCrossTabSync", () => {
     const cleanup = setupCrossTabSync(store, "none")
 
     expect(cleanup).toBeTypeOf("function")
-    cleanup() // should not throw
+    cleanup()
 
     globalThis.BroadcastChannel = origBC
     // @ts-expect-error - restoring for test

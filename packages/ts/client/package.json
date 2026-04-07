@@ -31,8 +31,12 @@
       "import": "./dist/fetch.js"
     },
     "./broadcast": {
-      "types": "./dist/bindings/broadcast.d.ts",
-      "import": "./dist/bindings/broadcast.js"
+      "types": "./dist/broadcast.d.ts",
+      "import": "./dist/broadcast.js"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "import": "./dist/testing.js"
     }
   },
   "peerDependencies": {
