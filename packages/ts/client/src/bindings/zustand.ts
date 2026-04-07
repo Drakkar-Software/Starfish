@@ -314,7 +314,13 @@ export function useSyncInit(config: SyncInitConfig | null): StoreApi<StarfishSto
       // Only call onData when data changes and store is not dirty
       // (dirty = false means data came from a pull, not a local set)
       if (data !== lastDataRef && !state.dirty) {
-        onDataRef.current?.(data)
+        try {
+          onDataRef.current?.(data)
+        } catch (err) {
+          newStore.setState({
+            error: `onData failed: ${err instanceof Error ? err.message : String(err)}`,
+          })
+        }
       }
       lastDataRef = data
     })

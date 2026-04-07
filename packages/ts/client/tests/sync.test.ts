@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest"
 import { stableStringify } from "@drakkar.software/starfish-protocol"
 import { StarfishClient } from "../src/client.js"
 import { SyncManager } from "../src/sync.js"
+import { ConflictError } from "../src/types.js"
 import type { PullResponse, PushSuccess } from "../src/types.js"
 
 function mockClient(overrides: {
@@ -167,6 +168,104 @@ describe("SyncManager", () => {
     expect(signedStrings).toHaveLength(1)
     // Without encryption, payload == plaintext
     expect(signedStrings[0]).toBe(stableStringify(plaintext))
+  })
+
+  it("push retries on conflict, merges via onConflict, and succeeds", async () => {
+    let pushCount = 0
+    const pushFn = vi.fn(async () => {
+      pushCount++
+      if (pushCount === 1) throw new ConflictError()
+      return { hash: "merged-hash", timestamp: 3000 }
+    })
+    let pullCount = 0
+    const pullFn = vi.fn(async () => {
+      pullCount++
+      if (pullCount === 1) return { data: { a: 1 }, hash: "h1", timestamp: 100 }
+      // Re-pull during conflict resolution
+      return { data: { a: 1, remote: true }, hash: "h2", timestamp: 200 }
+    })
+    const onConflict = vi.fn((local: Record<string, unknown>, remote: Record<string, unknown>) => ({
+      ...remote,
+      ...local,
+    }))
+
+    const client = mockClient({ pull: pullFn as any, push: pushFn as any })
+    const sync = new SyncManager({
+      client,
+      pullPath: "/pull/test",
+      pushPath: "/push/test",
+      onConflict,
+    })
+
+    await sync.pull()
+    const result = await sync.push({ a: 1, local: true })
+
+    expect(result.hash).toBe("merged-hash")
+    expect(onConflict).toHaveBeenCalledWith(
+      { a: 1, local: true },
+      { a: 1, remote: true },
+    )
+    expect(pushFn).toHaveBeenCalledTimes(2)
+    expect(sync.getHash()).toBe("merged-hash")
+  })
+
+  it("push throws ConflictError after exhausting maxRetries", async () => {
+    const pushFn = vi.fn(async () => { throw new ConflictError() })
+    const pullFn = vi.fn(async () => ({
+      data: { remote: true },
+      hash: "h-remote",
+      timestamp: 100,
+    }))
+
+    const client = mockClient({ pull: pullFn as any, push: pushFn as any })
+    const sync = new SyncManager({
+      client,
+      pullPath: "/pull/test",
+      pushPath: "/push/test",
+      maxRetries: 1,
+    })
+
+    await sync.pull()
+    await expect(sync.push({ local: true })).rejects.toThrow("hash_mismatch")
+    // 1 initial + 1 retry = 2 attempts
+    expect(pushFn).toHaveBeenCalledTimes(2)
+  })
+
+  it("push logs conflict resolution failure when re-pull fails", async () => {
+    let pushCount = 0
+    const pushFn = vi.fn(async () => {
+      pushCount++
+      if (pushCount === 1) throw new ConflictError()
+      return { hash: "h", timestamp: 1 }
+    })
+    const pullFn = vi.fn(async () => {
+      if (pullFn.mock.calls.length > 1) throw new Error("network down")
+      return { data: {}, hash: "h1", timestamp: 100 }
+    })
+    const pushError = vi.fn()
+
+    const client = mockClient({ pull: pullFn as any, push: pushFn as any })
+    const sync = new SyncManager({
+      client,
+      pullPath: "/pull/test",
+      pushPath: "/push/test",
+      logger: {
+        pullStart: () => {},
+        pullSuccess: () => {},
+        pullError: () => {},
+        pushStart: () => {},
+        pushSuccess: () => {},
+        pushError,
+        conflict: () => {},
+      },
+    })
+
+    await sync.pull()
+    await expect(sync.push({ x: 1 })).rejects.toThrow("network down")
+    expect(pushError).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.stringContaining("Conflict resolution failed"),
+    )
   })
 
   it("push forwards the signature to client.push()", async () => {

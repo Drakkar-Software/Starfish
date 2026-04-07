@@ -138,13 +138,19 @@ export class SyncManager {
           throw err
         }
         this.logger?.conflict(this.loggerName, attempt + 1)
-        const remote = await this.client.pull(this.pullPath)
-        const remoteData = this.encryptor
-          ? await this.encryptor.decrypt(remote.data)
-          : remote.data
-        this.lastHash = remote.hash
-        this.lastCheckpoint = remote.timestamp
-        pendingData = this.onConflict(pendingData, remoteData)
+        try {
+          const remote = await this.client.pull(this.pullPath)
+          const remoteData = this.encryptor
+            ? await this.encryptor.decrypt(remote.data)
+            : remote.data
+          this.lastHash = remote.hash
+          this.lastCheckpoint = remote.timestamp
+          pendingData = this.onConflict(pendingData, remoteData)
+        } catch (resolveErr) {
+          const msg = resolveErr instanceof Error ? resolveErr.message : String(resolveErr)
+          this.logger?.pushError(this.loggerName, `Conflict resolution failed (attempt ${attempt + 1}): ${msg}`)
+          throw resolveErr
+        }
         await new Promise<void>(resolve => setTimeout(resolve, Math.min(100 * Math.pow(2, attempt), 2000) + Math.random() * 100))
         attempt++
       }
