@@ -52,6 +52,12 @@ describe("classifyError", () => {
   it("classifies status 0 as network", () => {
     expect(classifyError({ status: 0 })).toBe("network")
   })
+
+  it("returns unknown for non-numeric status", () => {
+    expect(classifyError({ status: "error" })).toBe("unknown")
+    expect(classifyError({ status: NaN })).toBe("unknown")
+    expect(classifyError({ status: undefined })).toBe("unknown")
+  })
 })
 
 describe("createRetryFetch", () => {
@@ -103,6 +109,36 @@ describe("createRetryFetch", () => {
     const res = await promise
     expect(res.status).toBe(200)
     expect(mockFetch).toHaveBeenCalledTimes(2)
+    vi.unstubAllGlobals()
+  })
+
+  it("does not retry non-network thrown errors", async () => {
+    const mockFetch = vi.fn().mockRejectedValue(new Error("something random"))
+    vi.stubGlobal("fetch", mockFetch)
+
+    const retryFetch = createRetryFetch({ maxRetries: 3 })
+    await expect(retryFetch("https://example.com")).rejects.toThrow("something random")
+    expect(mockFetch).toHaveBeenCalledTimes(1)
+    vi.unstubAllGlobals()
+  })
+
+  it("falls back to exponential backoff on empty Retry-After", async () => {
+    const headers = new Headers({ "Retry-After": "" })
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce(new Response("rate limited", { status: 429, headers }))
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }))
+    vi.stubGlobal("fetch", mockFetch)
+
+    const retryFetch = createRetryFetch({ maxRetries: 3, initialDelayMs: 500 })
+    const promise = retryFetch("https://example.com")
+
+    // Should use exponential backoff (500ms), not 0ms
+    await vi.advanceTimersByTimeAsync(100)
+    expect(mockFetch).toHaveBeenCalledTimes(1) // not yet retried
+
+    await vi.advanceTimersByTimeAsync(500)
+    const res = await promise
+    expect(res.status).toBe(200)
     vi.unstubAllGlobals()
   })
 
@@ -246,6 +282,32 @@ describe("createResilientFetch", () => {
     expect(breaker.isOpen()).toBe(true)
 
     await expect(resilientFetch("https://example.com")).rejects.toThrow(/too many consecutive failures/)
+    vi.unstubAllGlobals()
+  })
+
+  it("recovers after circuit breaker cooldown", async () => {
+    const mockFetch = vi.fn().mockResolvedValue(new Response("ok", { status: 200 }))
+    vi.stubGlobal("fetch", mockFetch)
+
+    const { fetch: resilientFetch, breaker } = createResilientFetch(
+      { maxRetries: 0 },
+      { threshold: 1, cooldownMs: 1000 },
+    )
+
+    // Trip the breaker
+    breaker.recordFailure()
+    expect(breaker.isOpen()).toBe(true)
+
+    // Blocked
+    await expect(resilientFetch("https://example.com")).rejects.toThrow(/too many consecutive failures/)
+
+    // Wait for cooldown
+    vi.advanceTimersByTime(1000)
+
+    // Should succeed and reset breaker
+    const res = await resilientFetch("https://example.com")
+    expect(res.status).toBe(200)
+    expect(breaker.getState()).toBe("closed")
     vi.unstubAllGlobals()
   })
 

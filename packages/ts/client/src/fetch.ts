@@ -11,7 +11,8 @@ export type ErrorCategory =
 /** Classify an error from a fetch response or network failure. */
 export function classifyError(err: unknown): ErrorCategory {
   if (err instanceof Response || (err && typeof err === "object" && "status" in err)) {
-    const status = (err as { status: number }).status
+    const status = (err as { status: unknown }).status
+    if (typeof status !== "number" || isNaN(status)) return "unknown"
     if (status === 0) return "network"
     if (status === 401 || status === 403) return "auth"
     if (status === 409) return "conflict"
@@ -51,11 +52,11 @@ export function createRetryFetch(options?: RetryOptions): typeof globalThis.fetc
         const category = classifyError(res)
         if (category !== "rate-limited" && category !== "server") return res
 
-        const retryAfter = res.headers.get("Retry-After")
+        const retryAfter = res.headers.get("Retry-After")?.trim()
         let delay: number
         if (retryAfter) {
           const seconds = Number(retryAfter)
-          if (!isNaN(seconds)) {
+          if (retryAfter !== "" && !isNaN(seconds)) {
             delay = Math.min(seconds * 1000, maxDelay)
           } else {
             const date = Date.parse(retryAfter)

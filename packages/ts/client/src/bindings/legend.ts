@@ -47,7 +47,7 @@ export function createStarfishObservable(
       state.data.set(options.syncManager.getData())
       state.dirty.set(false)
     } catch (err) {
-      state.error.set((err as Error).message)
+      state.error.set(err instanceof Error ? err.message : String(err))
     } finally {
       state.syncing.set(false)
     }
@@ -60,7 +60,7 @@ export function createStarfishObservable(
       await options.syncManager.pull()
       state.data.set(options.syncManager.getData())
     } catch (err) {
-      state.error.set((err as Error).message)
+      state.error.set(err instanceof Error ? err.message : String(err))
     } finally {
       state.syncing.set(false)
     }
@@ -80,15 +80,15 @@ export function createStarfishObservable(
       state.data.set(next)
       state.dirty.set(true)
       state.error.set(null)
-      if (state.online.get()) flush()
+      if (state.online.get()) flush().catch(() => {})
     } catch (err) {
-      state.error.set((err as Error).message)
+      state.error.set(err instanceof Error ? err.message : String(err))
     }
   }
 
   const setOnline = (online: boolean): void => {
     state.online.set(online)
-    if (online && state.dirty.get()) flush()
+    if (online && state.dirty.get()) flush().catch(() => {})
   }
 
   return { state, pull, set, flush, setOnline }

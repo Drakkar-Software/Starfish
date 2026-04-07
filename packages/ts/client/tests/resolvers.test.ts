@@ -236,4 +236,16 @@ describe("pruneTombstones", () => {
     ]
     expect(pruneTombstones(items, undefined, "removedAt")).toHaveLength(0)
   })
+
+  it("handles string ISO-8601 timestamps for deletedAt", () => {
+    const recent = new Date(Date.now() - 1000).toISOString()
+    const expired = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString()
+    const items = [
+      { id: "1", _deletedAt: recent },
+      { id: "2", _deletedAt: expired },
+    ]
+    const result = pruneTombstones(items)
+    expect(result).toHaveLength(1)
+    expect(result[0].id).toBe("1")
+  })
 })

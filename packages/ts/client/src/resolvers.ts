@@ -181,6 +181,8 @@ export function pruneTombstones<T extends Record<string, unknown>>(
   return items.filter((item) => {
     const deletedAt = item[deletedAtKey]
     if (deletedAt == null) return true
-    return typeof deletedAt === "number" && deletedAt > cutoff
+    if (typeof deletedAt === "number") return deletedAt > cutoff
+    if (typeof deletedAt === "string") return new Date(deletedAt).getTime() > cutoff
+    return false
   })
 }

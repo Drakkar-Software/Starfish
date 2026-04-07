@@ -86,6 +86,7 @@ export class SyncManager {
         result.data = decrypted
       } else if (this.lastCheckpoint > 0) {
         this.localData = deepMerge(this.localData, result.data)
+        result.data = this.localData
       } else {
         this.localData = result.data
       }
@@ -138,12 +139,11 @@ export class SyncManager {
         }
         this.logger?.conflict(this.loggerName, attempt + 1)
         const remote = await this.client.pull(this.pullPath)
-        this.lastHash = remote.hash
-        this.lastCheckpoint = remote.timestamp
-
         const remoteData = this.encryptor
           ? await this.encryptor.decrypt(remote.data)
           : remote.data
+        this.lastHash = remote.hash
+        this.lastCheckpoint = remote.timestamp
         pendingData = this.onConflict(pendingData, remoteData)
         await new Promise<void>(resolve => setTimeout(resolve, Math.min(100 * Math.pow(2, attempt), 2000) + Math.random() * 100))
         attempt++
