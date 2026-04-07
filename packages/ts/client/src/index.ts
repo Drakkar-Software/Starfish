@@ -32,3 +32,7 @@ export {
   timestampWinner,
   pruneTombstones,
 } from "./resolvers.js"
+export { SnapshotHistory } from "./history.js"
+export type { Snapshot, SnapshotHistoryOptions } from "./history.js"
+export { startPolling, startAdaptivePolling } from "./polling.js"
+export type { PollableState, AdaptivePollingOptions, AdaptivePollingControls } from "./polling.js"

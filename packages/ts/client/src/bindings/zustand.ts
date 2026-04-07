@@ -8,9 +8,10 @@ import {
   type StateStorage,
   type DevtoolsOptions,
 } from "zustand/middleware"
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useRef, useState, useCallback } from "react"
 import { StarfishClient } from "../client.js"
 import { SyncManager } from "../sync.js"
+import { setupCrossTabSync, type BroadcastableStore } from "../broadcast.js"
 import type { AuthProvider, ConflictResolver } from "../types.js"
 import type { SyncLogger } from "../logger.js"
 import type { Validator } from "../validate.js"
@@ -149,6 +150,18 @@ export function deriveSyncStatus(state: StarfishState): SyncStatus {
   return "synced"
 }
 
+/**
+ * Aggregate multiple sync statuses into a single worst-case status.
+ * Priority (worst first): error > syncing > pending > offline > synced.
+ */
+export function aggregateSyncStatus(statuses: SyncStatus[]): SyncStatus {
+  if (statuses.includes("error")) return "error"
+  if (statuses.includes("syncing")) return "syncing"
+  if (statuses.includes("pending")) return "pending"
+  if (statuses.includes("offline")) return "offline"
+  return "synced"
+}
+
 /** Use the full Starfish store state and actions. */
 export function useStarfish(store: StoreApi<StarfishStore>): StarfishStore {
   return useStore(store)
@@ -167,6 +180,69 @@ export function useStarfishData<T = Record<string, unknown>>(
 /** Use the derived sync status (synced | syncing | pending | error | offline). */
 export function useSyncStatus(store: StoreApi<StarfishStore>): SyncStatus {
   return useStore(store, deriveSyncStatus)
+}
+
+/** Sets up cross-tab sync for a Starfish store. Cleans up on unmount. */
+export function useCrossTabSync(
+  store: StoreApi<StarfishStore>,
+  name: string,
+): void {
+  useEffect(() => {
+    return setupCrossTabSync(store as unknown as BroadcastableStore, name)
+  }, [store, name])
+}
+
+/** Binds browser online/offline events to the store's setOnline action. Cleans up on unmount. */
+export function useConnectivity(store: StoreApi<StarfishStore>): void {
+  useEffect(() => {
+    const handleOnline = () => store.getState().setOnline(true)
+    const handleOffline = () => store.getState().setOnline(false)
+
+    window.addEventListener("online", handleOnline)
+    window.addEventListener("offline", handleOffline)
+
+    return () => {
+      window.removeEventListener("online", handleOnline)
+      window.removeEventListener("offline", handleOffline)
+    }
+  }, [store])
+}
+
+/** Returns a human-readable "last synced" label that updates every 5 seconds. */
+export function useLastSynced(store: StoreApi<StarfishStore>): string {
+  const lastSyncedAt = useRef<number | null>(null)
+  const [label, setLabel] = useState("Never synced")
+
+  const computeLabel = useCallback(() => {
+    if (lastSyncedAt.current === null) return "Never synced"
+    const seconds = Math.floor((Date.now() - lastSyncedAt.current) / 1000)
+    if (seconds < 10) return "Just now"
+    if (seconds < 60) return `${seconds}s ago`
+    return `${Math.floor(seconds / 60)}m ago`
+  }, [])
+
+  // Track sync completion
+  useEffect(() => {
+    let prevSyncing = store.getState().syncing
+    const unsub = store.subscribe((state) => {
+      if (prevSyncing && !state.syncing && !state.error) {
+        lastSyncedAt.current = Date.now()
+        setLabel(computeLabel())
+      }
+      prevSyncing = state.syncing
+    })
+    return unsub
+  }, [store, computeLabel])
+
+  // Update label periodically
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setLabel(computeLabel())
+    }, 5000)
+    return () => clearInterval(timer)
+  }, [computeLabel])
+
+  return label
 }
 
 // ── SyncInitializer hook ─────────────────────────────────────────────

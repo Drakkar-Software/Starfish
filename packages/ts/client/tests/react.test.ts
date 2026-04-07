@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi } from "vitest"
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, act, waitFor } from "@testing-library/react"
 import { createStore } from "zustand/vanilla"
 import type { StarfishStore } from "../src/bindings/zustand.js"
@@ -9,6 +9,10 @@ import {
   useSyncStatus,
   useSyncInit,
   deriveSyncStatus,
+  aggregateSyncStatus,
+  useCrossTabSync,
+  useConnectivity,
+  useLastSynced,
 } from "../src/bindings/zustand.js"
 
 function createMockStore(initial?: Partial<StarfishStore>) {
@@ -50,6 +54,32 @@ describe("deriveSyncStatus", () => {
 
   it("offline takes priority over error", () => {
     expect(deriveSyncStatus({ data: {}, syncing: false, online: false, dirty: false, error: "fail" })).toBe("offline")
+  })
+})
+
+describe("aggregateSyncStatus", () => {
+  it("returns synced when all synced", () => {
+    expect(aggregateSyncStatus(["synced", "synced"])).toBe("synced")
+  })
+
+  it("returns synced for empty array", () => {
+    expect(aggregateSyncStatus([])).toBe("synced")
+  })
+
+  it("error takes priority over everything", () => {
+    expect(aggregateSyncStatus(["synced", "syncing", "error", "pending"])).toBe("error")
+  })
+
+  it("syncing takes priority over pending", () => {
+    expect(aggregateSyncStatus(["synced", "syncing", "pending"])).toBe("syncing")
+  })
+
+  it("pending takes priority over offline", () => {
+    expect(aggregateSyncStatus(["synced", "pending", "offline"])).toBe("pending")
+  })
+
+  it("offline takes priority over synced", () => {
+    expect(aggregateSyncStatus(["synced", "offline"])).toBe("offline")
   })
 })
 
@@ -214,5 +244,115 @@ describe("useSyncInit", () => {
     await waitFor(() => {
       expect(onData).toHaveBeenCalledWith({ from: "server" })
     })
+  })
+})
+
+describe("useCrossTabSync", () => {
+  it("sets up and tears down cross-tab sync", () => {
+    const closeFn = vi.fn()
+    const mockChannel = {
+      onmessage: null as unknown,
+      postMessage: vi.fn(),
+      close: closeFn,
+    }
+    vi.stubGlobal("BroadcastChannel", vi.fn(() => mockChannel))
+
+    const store = createMockStore()
+    const { unmount } = renderHook(() => useCrossTabSync(store, "test-sync"))
+
+    // BroadcastChannel should have been created
+    expect(BroadcastChannel).toHaveBeenCalledWith("starfish-test-sync")
+
+    unmount()
+    expect(closeFn).toHaveBeenCalled()
+
+    vi.unstubAllGlobals()
+  })
+})
+
+describe("useConnectivity", () => {
+  it("sets online true on online event", () => {
+    const setOnline = vi.fn()
+    const store = createMockStore({ setOnline })
+
+    renderHook(() => useConnectivity(store))
+
+    window.dispatchEvent(new Event("online"))
+    expect(setOnline).toHaveBeenCalledWith(true)
+  })
+
+  it("sets online false on offline event", () => {
+    const setOnline = vi.fn()
+    const store = createMockStore({ setOnline })
+
+    renderHook(() => useConnectivity(store))
+
+    window.dispatchEvent(new Event("offline"))
+    expect(setOnline).toHaveBeenCalledWith(false)
+  })
+
+  it("cleans up listeners on unmount", () => {
+    const setOnline = vi.fn()
+    const store = createMockStore({ setOnline })
+
+    const { unmount } = renderHook(() => useConnectivity(store))
+    unmount()
+
+    window.dispatchEvent(new Event("online"))
+    window.dispatchEvent(new Event("offline"))
+    expect(setOnline).not.toHaveBeenCalled()
+  })
+})
+
+describe("useLastSynced", () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  it("returns 'Never synced' initially", () => {
+    const store = createMockStore()
+    const { result } = renderHook(() => useLastSynced(store))
+    expect(result.current).toBe("Never synced")
+  })
+
+  it("returns 'Just now' after sync completes", () => {
+    const store = createMockStore({ syncing: true })
+    const { result } = renderHook(() => useLastSynced(store))
+
+    act(() => {
+      store.setState({ syncing: false })
+    })
+
+    expect(result.current).toBe("Just now")
+  })
+
+  it("does not update when sync completes with error", () => {
+    const store = createMockStore({ syncing: true })
+    const { result } = renderHook(() => useLastSynced(store))
+
+    act(() => {
+      store.setState({ syncing: false, error: "network error" })
+    })
+
+    expect(result.current).toBe("Never synced")
+  })
+
+  it("updates label over time", () => {
+    const store = createMockStore({ syncing: true })
+    const { result } = renderHook(() => useLastSynced(store))
+
+    act(() => {
+      store.setState({ syncing: false })
+    })
+    expect(result.current).toBe("Just now")
+
+    act(() => {
+      vi.advanceTimersByTime(15_000)
+    })
+    expect(result.current).toBe("15s ago")
+
+    act(() => {
+      vi.advanceTimersByTime(50_000) // total 65s
+    })
+    expect(result.current).toBe("1m ago")
   })
 })
