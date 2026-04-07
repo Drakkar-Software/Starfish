@@ -805,7 +805,7 @@ pytest -v
 
 TypeScript tests use [Vitest](https://vitest.dev/). Python tests use [pytest](https://docs.pytest.org/).
 
-The TypeScript client has 200 tests across 16 test files covering sync, crypto, bindings, React hooks, broadcast, retry/circuit breaker, resolvers, migration, validation, polling, history, and more. The TypeScript server has 92 tests covering config, protocol, encryption, router, queue, replica, and storage.
+The TypeScript client has 218 tests across 16 test files covering sync, crypto, bindings, React hooks, broadcast, retry/circuit breaker, resolvers, migration, validation, polling, history, and more. The TypeScript server has 92 tests covering config, protocol, encryption, router, queue, replica, and storage.
 
 Cross-language test vectors in `tests/test-vectors/` ensure identical behavior across all TypeScript and Python implementations:
 - `crypto.json` / `hash.json` — encryption and hashing parity
