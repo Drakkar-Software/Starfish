@@ -22,9 +22,11 @@ export function setupBroadcastSync(
   const channel = new BroadcastChannel(`starfish-${name}`)
   let lastReceivedData: Record<string, unknown> | null = null
 
-  channel.onmessage = (event: MessageEvent<BroadcastPayload>) => {
-    lastReceivedData = event.data.data
-    store.setState({ data: event.data.data, dirty: event.data.dirty })
+  channel.onmessage = (event: MessageEvent<unknown>) => {
+    const payload = event.data as BroadcastPayload | undefined
+    if (!payload || typeof payload !== "object" || !payload.data || typeof payload.data !== "object") return
+    lastReceivedData = payload.data
+    store.setState({ data: payload.data, dirty: !!payload.dirty })
   }
 
   const unsub = store.subscribe((state, prev) => {

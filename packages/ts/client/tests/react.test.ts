@@ -245,6 +245,37 @@ describe("useSyncInit", () => {
       expect(onData).toHaveBeenCalledWith({ from: "server" })
     })
   })
+
+  it("stores error when onData callback throws", async () => {
+    const onData = vi.fn(() => { throw new Error("parse failed") })
+    const mockFetch = vi.fn(async () =>
+      new Response(JSON.stringify({
+        data: { value: 1 },
+        hash: "h1",
+        timestamp: 100,
+      }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    )
+
+    const { result } = renderHook(() =>
+      useSyncInit({
+        serverUrl: "https://example.com",
+        pullPath: "/pull/test",
+        pushPath: "/push/test",
+        storeName: "ondata-error-test",
+        storage: false,
+        fetch: mockFetch as unknown as typeof fetch,
+        onData,
+      }),
+    )
+
+    await waitFor(() => {
+      expect(result.current).not.toBeNull()
+    })
+
+    await waitFor(() => {
+      expect(result.current!.getState().error).toBe("onData failed: parse failed")
+    })
+  })
 })
 
 describe("useCrossTabSync", () => {
