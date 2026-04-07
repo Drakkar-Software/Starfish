@@ -91,6 +91,20 @@ describe("createMigrator", () => {
     )
   })
 
+  it("wraps migration function errors with version context", () => {
+    const migrate = createMigrator({
+      currentVersion: 3,
+      migrations: {
+        1: (d) => ({ ...d, v2: true }),
+        2: () => { throw new Error("field missing") },
+      },
+    })
+
+    expect(() => migrate({ _schemaVersion: 1 })).toThrow(
+      "Migration from version 2 to 3 failed: field missing",
+    )
+  })
+
   it("each migration receives the output of the previous one", () => {
     const migrate = createMigrator({
       currentVersion: 3,

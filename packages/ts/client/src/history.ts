@@ -41,11 +41,15 @@ export class SnapshotHistory {
     this.persist()
   }
 
-  /** Restore data from a snapshot at the given index. Returns undefined if index is invalid. */
+  /** Restore data from a snapshot at the given index. Returns undefined if index is invalid or data is corrupt. */
   restore(index: number): Record<string, unknown> | undefined {
     const snapshot = this.snapshots[index]
     if (!snapshot) return undefined
-    return JSON.parse(snapshot.data)
+    try {
+      return JSON.parse(snapshot.data)
+    } catch {
+      return undefined
+    }
   }
 
   /** List available snapshots (metadata only, no data payload). */

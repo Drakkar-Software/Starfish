@@ -48,6 +48,10 @@ describe("classifyError", () => {
   it("does not classify unrelated TypeError as network", () => {
     expect(classifyError(new TypeError("Cannot read properties of null"))).toBe("unknown")
   })
+
+  it("classifies status 0 as network", () => {
+    expect(classifyError({ status: 0 })).toBe("network")
+  })
 })
 
 describe("createRetryFetch", () => {
@@ -195,6 +199,21 @@ describe("CircuitBreaker", () => {
     breaker.recordFailure()
     expect(breaker.getState()).toBe("closed")
   })
+
+  it("re-opens immediately on failure during half-open", () => {
+    vi.useFakeTimers()
+    const breaker = new CircuitBreaker({ threshold: 2, cooldownMs: 1000 })
+    breaker.recordFailure()
+    breaker.recordFailure()
+    expect(breaker.getState()).toBe("open")
+
+    vi.advanceTimersByTime(1000)
+    expect(breaker.getState()).toBe("half-open")
+
+    breaker.recordFailure()
+    expect(breaker.getState()).toBe("open")
+    vi.useRealTimers()
+  })
 })
 
 describe("createResilientFetch", () => {
@@ -226,7 +245,25 @@ describe("createResilientFetch", () => {
     breaker.recordFailure()
     expect(breaker.isOpen()).toBe(true)
 
-    await expect(resilientFetch("https://example.com")).rejects.toThrow(/Circuit breaker is open/)
+    await expect(resilientFetch("https://example.com")).rejects.toThrow(/too many consecutive failures/)
+    vi.unstubAllGlobals()
+  })
+
+  it("trips breaker after enough 5xx responses", async () => {
+    const mockFetch = vi.fn().mockResolvedValue(new Response("error", { status: 500 }))
+    vi.stubGlobal("fetch", mockFetch)
+
+    const { fetch: resilientFetch } = createResilientFetch(
+      { maxRetries: 0 },
+      { threshold: 2 },
+    )
+
+    // Two 500s should trip the breaker
+    await resilientFetch("https://example.com")
+    await resilientFetch("https://example.com")
+
+    // Third call should be blocked by the breaker
+    await expect(resilientFetch("https://example.com")).rejects.toThrow(/too many consecutive failures/)
     vi.unstubAllGlobals()
   })
 })

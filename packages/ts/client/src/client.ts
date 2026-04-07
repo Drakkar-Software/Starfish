@@ -8,7 +8,8 @@ import { ConflictError, StarfishHttpError } from "./types.js"
 /** Result of pulling a binary blob from the server. */
 export interface BlobPullResult {
   data: ArrayBuffer
-  hash: string
+  /** Content hash from the ETag header. Null if the server didn't include an ETag. */
+  hash: string | null
   contentType: string
 }
 
@@ -116,7 +117,7 @@ export class StarfishClient {
       throw new StarfishHttpError(res.status, await res.text())
     }
 
-    const etag = res.headers.get("ETag")?.replace(/"/g, "") ?? ""
+    const etag = res.headers.get("ETag")?.replace(/"/g, "") ?? null
     const contentType = res.headers.get("Content-Type") ?? "application/octet-stream"
     const data = await res.arrayBuffer()
 

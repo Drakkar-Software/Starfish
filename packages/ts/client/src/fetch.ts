@@ -12,6 +12,7 @@ export type ErrorCategory =
 export function classifyError(err: unknown): ErrorCategory {
   if (err instanceof Response || (err && typeof err === "object" && "status" in err)) {
     const status = (err as { status: number }).status
+    if (status === 0) return "network"
     if (status === 401 || status === 403) return "auth"
     if (status === 409) return "conflict"
     if (status === 429) return "rate-limited"
@@ -172,7 +173,8 @@ export function createResilientFetch(
 
   const resilientFetch: typeof globalThis.fetch = async (input, init?) => {
     if (breaker.isOpen()) {
-      throw new Error(`Circuit breaker is open (${breaker.getState()}, cooldown ${breakerOptions?.cooldownMs ?? 30_000}ms)`)
+      const cooldown = Math.ceil((breakerOptions?.cooldownMs ?? 30_000) / 1000)
+      throw new Error(`Request blocked: too many consecutive failures. Retry in ${cooldown}s.`)
     }
 
     try {

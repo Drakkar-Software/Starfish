@@ -75,7 +75,7 @@ export function createStarfishStore(
         await syncManager.pull()
         set({ data: syncManager.getData(), syncing: false }, false, "pull/success")
       } catch (err) {
-        set({ syncing: false, error: (err as Error).message }, false, "pull/error")
+        set({ syncing: false, error: err instanceof Error ? err.message : String(err) }, false, "pull/error")
       }
     },
 
@@ -85,9 +85,9 @@ export function createStarfishStore(
           ? options.produce(get().data, modifier as (draft: Record<string, unknown>) => Record<string, unknown> | void)
           : modifier(get().data)
         set({ data: next, dirty: true, error: null }, false, "set")
-        if (get().online) get().flush()
+        if (get().online) get().flush().catch(() => {})
       } catch (err) {
-        set({ error: (err as Error).message }, false, "set/error")
+        set({ error: err instanceof Error ? err.message : String(err) }, false, "set/error")
       }
     },
 
@@ -102,13 +102,13 @@ export function createStarfishStore(
         await syncManager.push(get().data)
         set({ data: syncManager.getData(), syncing: false, dirty: false }, false, "flush/success")
       } catch (err) {
-        set({ syncing: false, error: (err as Error).message }, false, "flush/error")
+        set({ syncing: false, error: err instanceof Error ? err.message : String(err) }, false, "flush/error")
       }
     },
 
     setOnline: (online) => {
       set({ online }, false, "setOnline")
-      if (online && get().dirty) get().flush()
+      if (online && get().dirty) get().flush().catch(() => {})
     },
   }}
 
@@ -321,10 +321,8 @@ export function useSyncInit(config: SyncInitConfig | null): StoreApi<StarfishSto
 
     setStore(newStore)
 
-    // Initial pull — errors are stored in state.error; log if logger provided
-    newStore.getState().pull().catch((err) => {
-      config.logger?.pullError(config.storeName ?? "sync", (err as Error).message)
-    })
+    // Initial pull — errors are stored in state.error by the pull() action
+    newStore.getState().pull()
 
     return () => {
       unsub()

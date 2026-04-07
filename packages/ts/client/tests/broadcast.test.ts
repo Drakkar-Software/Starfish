@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import type { BroadcastableStore } from "../src/broadcast.js"
-import { setupBroadcastSync, setupCrossTabSync } from "../src/broadcast.js"
+import { setupBroadcastSync, setupStorageFallback, setupCrossTabSync } from "../src/broadcast.js"
 
 type Listener = (event: MessageEvent) => void
 
@@ -114,6 +114,79 @@ describe("setupBroadcastSync", () => {
     store1.setState({ data: sameData, dirty: false })
 
     expect(setStateSpy).not.toHaveBeenCalled()
+  })
+})
+
+describe("setupStorageFallback", () => {
+  let storage: Record<string, string>
+  let storageListeners: Array<(e: StorageEvent) => void>
+
+  beforeEach(() => {
+    vi.unstubAllGlobals()
+    storage = {}
+    storageListeners = []
+
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => storage[key] ?? null,
+      setItem: (key: string, value: string) => { storage[key] = value },
+    })
+
+    // Mock addEventListener/removeEventListener for storage events
+    const origAdd = globalThis.addEventListener
+    const origRemove = globalThis.removeEventListener
+    vi.stubGlobal("addEventListener", (type: string, fn: EventListener) => {
+      if (type === "storage") storageListeners.push(fn as (e: StorageEvent) => void)
+      else origAdd(type, fn)
+    })
+    vi.stubGlobal("removeEventListener", (type: string, fn: EventListener) => {
+      if (type === "storage") storageListeners = storageListeners.filter((l) => l !== fn)
+      else origRemove(type, fn)
+    })
+
+    // Remove BroadcastChannel so setupCrossTabSync uses storage fallback
+    // @ts-expect-error - removing for test
+    delete globalThis.BroadcastChannel
+  })
+
+  it("writes store changes to localStorage", () => {
+    const store = createMockStore()
+    setupStorageFallback(store, "test")
+
+    store.setState({ data: { theme: "dark" }, dirty: false })
+
+    const stored = JSON.parse(storage["starfish-broadcast-test"])
+    expect(stored.data).toEqual({ theme: "dark" })
+  })
+
+  it("receives storage events from other tabs", () => {
+    const store = createMockStore()
+    setupStorageFallback(store, "test")
+
+    // Simulate storage event from another tab (plain object, no StorageEvent constructor needed)
+    const event = { key: "starfish-broadcast-test", newValue: JSON.stringify({ data: { from: "other-tab" }, dirty: true }) }
+    for (const fn of storageListeners) fn(event as StorageEvent)
+
+    expect(store.getState().data).toEqual({ from: "other-tab" })
+    expect(store.getState().dirty).toBe(true)
+  })
+
+  it("ignores corrupt JSON in storage events", () => {
+    const store = createMockStore({ data: { original: true } })
+    setupStorageFallback(store, "test")
+
+    const event = { key: "starfish-broadcast-test", newValue: "not valid json" }
+    for (const fn of storageListeners) fn(event as StorageEvent)
+
+    expect(store.getState().data).toEqual({ original: true })
+  })
+
+  it("cleanup removes storage listener", () => {
+    const store = createMockStore()
+    const cleanup = setupStorageFallback(store, "test")
+
+    expect(storageListeners.length).toBe(1)
+    cleanup()
+    expect(storageListeners.length).toBe(0)
   })
 })
 

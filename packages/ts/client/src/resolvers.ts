@@ -108,7 +108,7 @@ export function createSoftDeleteResolver(options?: {
     const merged = baseMerge(local, remote)
 
     // Build a tombstone map from both sides: id → deletedAt timestamp
-    const tombstones = new Map<unknown, number>()
+    const tombstones = new Map<unknown, unknown>()
     for (const source of [local, remote]) {
       for (const key of Object.keys(source)) {
         const arr = source[key]
@@ -118,9 +118,9 @@ export function createSoftDeleteResolver(options?: {
             const rec = item as Record<string, unknown>
             const id = rec[idKey]
             const deletedAt = rec[deletedAtKey]
-            if (typeof deletedAt === "number") {
-              const existing = tombstones.get(id) ?? 0
-              if (deletedAt > existing) tombstones.set(id, deletedAt)
+            if (typeof deletedAt === "number" || typeof deletedAt === "string") {
+              const existing = tombstones.get(id)
+              if (existing == null || compareTimestamps(deletedAt, existing)) tombstones.set(id, deletedAt)
             }
           }
         }

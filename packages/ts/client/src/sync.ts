@@ -95,7 +95,7 @@ export class SyncManager {
       this.logger?.pullSuccess(this.loggerName, Math.round(performance.now() - start))
       return result
     } catch (err) {
-      this.logger?.pullError(this.loggerName, (err as Error).message)
+      this.logger?.pullError(this.loggerName, err instanceof Error ? err.message : String(err))
       throw err
     }
   }
@@ -133,7 +133,7 @@ export class SyncManager {
         return result
       } catch (err) {
         if (!(err instanceof ConflictError) || attempt >= this.maxRetries) {
-          this.logger?.pushError(this.loggerName, (err as Error).message)
+          this.logger?.pushError(this.loggerName, err instanceof Error ? err.message : String(err))
           throw err
         }
         this.logger?.conflict(this.loggerName, attempt + 1)

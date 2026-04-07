@@ -29,6 +29,22 @@ describe("SnapshotHistory", () => {
     expect(history.restore(999)).toBeUndefined()
   })
 
+  it("restore returns undefined for corrupt snapshot data", () => {
+    const storage: Record<string, string> = {}
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => storage[key] ?? null,
+      setItem: (key: string, value: string) => { storage[key] = value },
+    })
+
+    // Load a snapshot with corrupt data directly into storage
+    storage["test-corrupt"] = JSON.stringify([
+      { timestamp: 1000, label: "bad", data: "not valid json{{{" },
+    ])
+
+    const history = new SnapshotHistory({ storageKey: "test-corrupt" })
+    expect(history.restore(0)).toBeUndefined()
+  })
+
   it("trims oldest snapshots when exceeding maxSnapshots", () => {
     const history = new SnapshotHistory({ maxSnapshots: 3 })
     history.take("a", { v: 1 })

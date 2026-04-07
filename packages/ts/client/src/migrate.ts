@@ -42,7 +42,14 @@ export function createMigrator(
       if (!fn) {
         throw new Error(`Missing migration for version ${v} -> ${v + 1}`)
       }
-      result = fn(result)
+      try {
+        result = fn(result)
+      } catch (err) {
+        throw new Error(
+          `Migration from version ${v} to ${v + 1} failed: ${err instanceof Error ? err.message : String(err)}`,
+          { cause: err },
+        )
+      }
     }
     result._schemaVersion = config.currentVersion
     return result
