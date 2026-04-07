@@ -1,7 +1,5 @@
 import type { PullResult, PushSuccess } from "@drakkar.software/starfish-protocol"
 import { StarfishClient } from "./client.js"
-import type { StarfishClientOptions } from "./types.js"
-import { ConflictError, StarfishHttpError } from "./types.js"
 
 type PullFn = (path: string, checkpoint?: number) => Promise<PullResult>
 type PushFn = (path: string, data: Record<string, unknown>, baseHash: string | null, sig?: string) => Promise<PushSuccess>
