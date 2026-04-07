@@ -18,8 +18,7 @@ export function classifyError(err: unknown): ErrorCategory {
     if (status >= 500) return "server"
     if (status >= 400) return "client"
   }
-  if (err instanceof TypeError) return "network"
-  if (err instanceof Error && (err.message === "Failed to fetch" || err.message === "fetch failed")) return "network"
+  if (err instanceof Error && /failed to fetch|fetch failed|network|load failed|ECONNREFUSED|ENOTFOUND/i.test(err.message)) return "network"
   return "unknown"
 }
 
@@ -173,7 +172,7 @@ export function createResilientFetch(
 
   const resilientFetch: typeof globalThis.fetch = async (input, init?) => {
     if (breaker.isOpen()) {
-      throw new Error("Circuit breaker is open")
+      throw new Error(`Circuit breaker is open (${breaker.getState()}, cooldown ${breakerOptions?.cooldownMs ?? 30_000}ms)`)
     }
 
     try {

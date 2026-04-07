@@ -2,13 +2,19 @@
  * Starfish + Legend State React example.
  *
  * Install:
- *   npm install starfish-client @legendapp/state
+ *   npm install @drakkar.software/starfish-client @legendapp/state
  */
 
 import { useEffect } from "react"
 import { observer, useSelector } from "@legendapp/state/react"
-import { StarfishClient, SyncManager } from "@drakkar.software/starfish-client"
-import { createStarfishObservable } from "starfish-client/legend"
+import {
+  StarfishClient,
+  SyncManager,
+  consoleSyncLogger,
+} from "@drakkar.software/starfish-client"
+import { createStarfishObservable } from "@drakkar.software/starfish-client/legend"
+import { createRetryFetch } from "@drakkar.software/starfish-client/fetch"
+import { setupCrossTabSync } from "@drakkar.software/starfish-client/broadcast"
 
 // ---------------------------------------------------------------------------
 // Setup (run once at app startup)
@@ -17,6 +23,7 @@ import { createStarfishObservable } from "starfish-client/legend"
 const client = new StarfishClient({
   baseUrl: "https://api.example.com/v1",
   auth: async () => ({ Authorization: `Bearer ${await getToken()}` }),
+  fetch: createRetryFetch({ maxRetries: 3 }),
 })
 
 // One observable per collection — each syncs independently
@@ -26,6 +33,7 @@ const settingsStore = createStarfishObservable({
     client,
     pullPath: "/pull/users/abc/settings",
     pushPath: "/push/users/abc/settings",
+    logger: consoleSyncLogger,
   }),
 })
 
@@ -37,8 +45,13 @@ const notesStore = createStarfishObservable({
     pushPath: "/push/users/abc/notes",
     encryptionSecret: "user-secret",
     encryptionSalt: "user-abc",
+    logger: consoleSyncLogger,
   }),
 })
+
+// Cross-tab sync — works with Legend stores via the BroadcastableStore interface
+// Legend stores need a thin adapter since they use observables, not getState/setState
+// For Legend, use BroadcastChannel directly or wrap with an adapter
 
 // ---------------------------------------------------------------------------
 // Components — wrap with observer() to auto-subscribe to observables
@@ -59,7 +72,7 @@ export const Settings = observer(function Settings() {
       disabled={syncing}
       onClick={() => set((d) => ({ ...d, theme: "dark" }))}
     >
-      Theme: {data.theme as string ?? "default"}
+      Theme: {(data.theme as string) ?? "default"}
     </button>
   )
 })

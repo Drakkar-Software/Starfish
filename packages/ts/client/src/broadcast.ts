@@ -30,7 +30,9 @@ export function setupBroadcastSync(
   const unsub = store.subscribe((state, prev) => {
     if (state.data === lastReceivedData) return
     if (state.data !== prev.data || state.dirty !== prev.dirty) {
-      channel.postMessage({ data: state.data, dirty: state.dirty } satisfies BroadcastPayload)
+      try {
+        channel.postMessage({ data: state.data, dirty: state.dirty } satisfies BroadcastPayload)
+      } catch { /* non-serializable data — skip broadcast */ }
     }
   })
 
@@ -54,7 +56,12 @@ export function setupStorageFallback(
 
   const onStorage = (e: StorageEvent) => {
     if (e.key !== storageKey || !e.newValue) return
-    const payload: BroadcastPayload = JSON.parse(e.newValue)
+    let payload: BroadcastPayload
+    try {
+      payload = JSON.parse(e.newValue)
+    } catch {
+      return
+    }
     lastReceivedData = payload.data
     store.setState({ data: payload.data, dirty: payload.dirty })
   }
@@ -64,10 +71,12 @@ export function setupStorageFallback(
   const unsub = store.subscribe((state, prev) => {
     if (state.data === lastReceivedData) return
     if (state.data !== prev.data || state.dirty !== prev.dirty) {
-      localStorage.setItem(
-        storageKey,
-        JSON.stringify({ data: state.data, dirty: state.dirty } satisfies BroadcastPayload),
-      )
+      try {
+        localStorage.setItem(
+          storageKey,
+          JSON.stringify({ data: state.data, dirty: state.dirty } satisfies BroadcastPayload),
+        )
+      } catch { /* quota exceeded or non-serializable — skip */ }
     }
   })
 

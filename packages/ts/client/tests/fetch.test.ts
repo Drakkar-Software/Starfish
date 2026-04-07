@@ -35,8 +35,18 @@ describe("classifyError", () => {
     expect(classifyError(new TypeError("Failed to fetch"))).toBe("network")
   })
 
+  it("classifies fetch failed errors as network", () => {
+    expect(classifyError(new Error("fetch failed"))).toBe("network")
+    expect(classifyError(new Error("Load failed"))).toBe("network")
+    expect(classifyError(new Error("NetworkError when attempting to fetch"))).toBe("network")
+  })
+
   it("classifies unknown errors", () => {
     expect(classifyError(new Error("something"))).toBe("unknown")
+  })
+
+  it("does not classify unrelated TypeError as network", () => {
+    expect(classifyError(new TypeError("Cannot read properties of null"))).toBe("unknown")
   })
 })
 
@@ -216,7 +226,7 @@ describe("createResilientFetch", () => {
     breaker.recordFailure()
     expect(breaker.isOpen()).toBe(true)
 
-    await expect(resilientFetch("https://example.com")).rejects.toThrow("Circuit breaker is open")
+    await expect(resilientFetch("https://example.com")).rejects.toThrow(/Circuit breaker is open/)
     vi.unstubAllGlobals()
   })
 })

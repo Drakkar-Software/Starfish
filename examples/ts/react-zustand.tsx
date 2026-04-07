@@ -2,51 +2,52 @@
  * Starfish + Zustand React example.
  *
  * Install:
- *   npm install starfish-client zustand
+ *   npm install @drakkar.software/starfish-client zustand
  *   npm install immer  # optional, for draft-based mutations
  */
 
 import { useEffect } from "react"
-import { useStore } from "zustand"
-import { StarfishClient, SyncManager } from "@drakkar.software/starfish-client"
-import { createStarfishStore } from "starfish-client/zustand"
+import {
+  StarfishClient,
+  SyncManager,
+  createUnionMerge,
+  consoleSyncLogger,
+} from "@drakkar.software/starfish-client"
+import {
+  createStarfishStore,
+  useStarfish,
+  useStarfishData,
+  useSyncStatus,
+  useSyncInit,
+} from "@drakkar.software/starfish-client/zustand"
+import { createRetryFetch } from "@drakkar.software/starfish-client/fetch"
+import { setupCrossTabSync } from "@drakkar.software/starfish-client/broadcast"
 
 // ---------------------------------------------------------------------------
-// Setup (run once at app startup)
+// Example 1: Manual setup (one store per collection)
 // ---------------------------------------------------------------------------
 
 const client = new StarfishClient({
   baseUrl: "https://api.example.com/v1",
   auth: async () => ({ Authorization: `Bearer ${await getToken()}` }),
+  fetch: createRetryFetch({ maxRetries: 3 }),
 })
 
-// One store per collection — each syncs independently
 const settingsStore = createStarfishStore({
   name: "settings",
   syncManager: new SyncManager({
     client,
     pullPath: "/pull/users/abc/settings",
     pushPath: "/push/users/abc/settings",
+    logger: consoleSyncLogger,
   }),
 })
 
-const notesStore = createStarfishStore({
-  name: "notes",
-  syncManager: new SyncManager({
-    client,
-    pullPath: "/pull/users/abc/notes",
-    pushPath: "/push/users/abc/notes",
-    encryptionSecret: "user-secret",
-    encryptionSalt: "user-abc",
-  }),
-})
-
-// ---------------------------------------------------------------------------
-// Components
-// ---------------------------------------------------------------------------
+// Cross-tab sync (returns cleanup function)
+const cleanupBroadcast = setupCrossTabSync(settingsStore, "settings")
 
 export function Settings() {
-  const { data, syncing, pull, set } = useStore(settingsStore)
+  const { data, syncing, pull, set } = useStarfish(settingsStore)
 
   useEffect(() => {
     pull()
@@ -57,49 +58,88 @@ export function Settings() {
       disabled={syncing}
       onClick={() => set((d) => ({ ...d, theme: "dark" }))}
     >
-      Theme: {data.theme as string ?? "default"}
+      Theme: {(data.theme as string) ?? "default"}
     </button>
   )
 }
 
-export function Notes() {
-  const { data, syncing, error, pull, set, flush } = useStore(notesStore)
+// Fine-grained: only re-renders when theme changes
+export function ThemeBadge() {
+  const theme = useStarfishData(settingsStore, (d) => d.theme as string)
+  return <span>{theme}</span>
+}
 
-  useEffect(() => {
-    pull()
-  }, [])
+// Sync status indicator
+export function SyncBadge() {
+  const status = useSyncStatus(settingsStore)
+  return <span>{status}</span>
+}
 
-  const notes = (data.items ?? []) as string[]
+// ---------------------------------------------------------------------------
+// Example 2: useSyncInit — full lifecycle hook
+// ---------------------------------------------------------------------------
+
+export function SyncedApp({ userId }: { userId: string | null }) {
+  // Pass null to disable sync — returns null
+  const store = useSyncInit(
+    userId
+      ? {
+          serverUrl: "https://api.example.com/v1",
+          auth: async () => ({ Authorization: `Bearer ${await getToken()}` }),
+          pullPath: `/pull/users/${userId}/data`,
+          pushPath: `/push/users/${userId}/data`,
+          storeName: "user-data",
+          storage: false,
+          onConflict: createUnionMerge(),
+          logger: consoleSyncLogger,
+          // Called when pulled data arrives — restore into domain stores
+          onData: (data) => {
+            console.log("Received data from server:", data)
+          },
+        }
+      : null,
+  )
+
+  if (!store) return <p>Sync disabled</p>
+
+  return <DataView store={store} />
+}
+
+function DataView({ store }: { store: NonNullable<ReturnType<typeof useSyncInit>> }) {
+  const { data } = useStarfish(store)
+  const status = useSyncStatus(store)
 
   return (
     <div>
-      {error && <p style={{ color: "red" }}>{error}</p>}
-      <ul>
-        {notes.map((note, i) => (
-          <li key={i}>{note}</li>
-        ))}
-      </ul>
-      <button
-        onClick={() =>
-          set((d) => ({
-            ...d,
-            items: [...((d.items as string[]) ?? []), "new note"],
-          }))
-        }
-      >
-        Add note
-      </button>
-      <button disabled={syncing} onClick={flush}>
-        {syncing ? "Syncing…" : "Save"}
-      </button>
+      <p>Status: {status}</p>
+      <pre>{JSON.stringify(data, null, 2)}</pre>
     </div>
   )
 }
 
-// Subscribe to specific fields to avoid re-renders
-export function ThemeBadge() {
-  const theme = useStore(settingsStore, (s) => s.data.theme)
-  return <span>{theme as string}</span>
+// ---------------------------------------------------------------------------
+// Example 3: restore() — update store without triggering push
+// ---------------------------------------------------------------------------
+
+export function RestoreExample() {
+  const { data, set, pull } = useStarfish(settingsStore)
+
+  const handlePull = async () => {
+    await pull()
+    // After pull, use restore() to update domain stores without re-pushing
+    const serverData = settingsStore.getState().data
+    settingsStore.getState().restore(serverData)
+  }
+
+  return (
+    <div>
+      <button onClick={handlePull}>Pull & Restore</button>
+      <button onClick={() => set((d) => ({ ...d, updated: true }))}>
+        Local Edit (will push)
+      </button>
+      <pre>{JSON.stringify(data, null, 2)}</pre>
+    </div>
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -108,9 +148,8 @@ export function ThemeBadge() {
 
 export function useConnectivity() {
   useEffect(() => {
-    const stores = [settingsStore, notesStore]
     const setOnline = (online: boolean) =>
-      stores.forEach((s) => s.getState().setOnline(online))
+      settingsStore.getState().setOnline(online)
 
     window.addEventListener("online", () => setOnline(true))
     window.addEventListener("offline", () => setOnline(false))

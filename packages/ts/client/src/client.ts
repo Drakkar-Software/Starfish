@@ -143,9 +143,7 @@ export class StarfishClient {
         Accept: "application/json",
         ...authHeaders,
       },
-      body: (data instanceof Uint8Array
-        ? data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength)
-        : data) as BodyInit,
+      body: data as BodyInit,
     })
     if (!res.ok) {
       throw new StarfishHttpError(res.status, await res.text())

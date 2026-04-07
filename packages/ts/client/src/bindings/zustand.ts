@@ -245,8 +245,10 @@ export function useSyncInit(config: SyncInitConfig | null): StoreApi<StarfishSto
 
     setStore(newStore)
 
-    // Initial pull (fire-and-forget)
-    newStore.getState().pull().catch(() => {})
+    // Initial pull — errors are stored in state.error; log if logger provided
+    newStore.getState().pull().catch((err) => {
+      config.logger?.pullError(config.storeName ?? "sync", (err as Error).message)
+    })
 
     return () => {
       unsub()

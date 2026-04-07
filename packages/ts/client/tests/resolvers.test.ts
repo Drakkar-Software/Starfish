@@ -107,6 +107,54 @@ describe("createUnionMerge", () => {
   })
 })
 
+describe("createSoftDeleteResolver", () => {
+  const merge = createSoftDeleteResolver()
+
+  it("filters out alive items when a newer tombstone exists on the other side", () => {
+    const local = {
+      timestamp: "2026-04-07T10:00:00Z",
+      items: [
+        { id: "1", name: "Alice", updatedAt: "2026-04-06T10:00:00Z" },
+        { id: "2", name: "Bob", updatedAt: "2026-04-06T10:00:00Z" },
+      ],
+    }
+    const remote = {
+      timestamp: "2026-04-07T09:00:00Z",
+      items: [
+        // Tombstone: deleted AFTER Alice's updatedAt, with a newer updatedAt so union merge keeps it
+        { id: "1", name: "Alice", updatedAt: "2026-04-07T08:00:00Z", _deletedAt: 1712500000000 },
+      ],
+    }
+
+    const result = merge(local, remote)
+    const items = result.items as Array<Record<string, unknown>>
+
+    // Bob is preserved (no tombstone)
+    expect(items.find((i) => i.id === "2")).toBeDefined()
+    // The tombstone (with _deletedAt) should be in the result
+    const tombstone = items.find((i) => i.id === "1" && "_deletedAt" in i)
+    expect(tombstone).toBeDefined()
+    // There should be no alive Alice (without _deletedAt)
+    const aliveAlice = items.filter((i) => i.id === "1" && !("_deletedAt" in i))
+    expect(aliveAlice).toHaveLength(0)
+  })
+
+  it("keeps items without tombstones", () => {
+    const local = {
+      timestamp: "2026-04-07T10:00:00Z",
+      items: [{ id: "1", name: "Alice", updatedAt: "2026-04-07T10:00:00Z" }],
+    }
+    const remote = {
+      timestamp: "2026-04-07T09:00:00Z",
+      items: [{ id: "2", name: "Bob", updatedAt: "2026-04-07T09:00:00Z" }],
+    }
+
+    const result = merge(local, remote)
+    const items = result.items as Array<{ id: string }>
+    expect(items).toHaveLength(2)
+  })
+})
+
 describe("timestampWinner", () => {
   const resolve = timestampWinner()
 

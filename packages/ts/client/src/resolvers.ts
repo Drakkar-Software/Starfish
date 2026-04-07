@@ -84,8 +84,9 @@ export function createUnionMerge(options?: {
 
 /**
  * Creates a conflict resolver that handles soft-deleted items (tombstones).
- * Extends union merge: items with a `deletedAtKey` are preserved as tombstones
- * so deletions propagate across devices.
+ * Extends union merge with tombstone awareness: if an item exists on one side
+ * with a `deletedAtKey` set, that deletion is respected even if the other side
+ * still has the item alive — as long as the deletion timestamp is newer.
  */
 export function createSoftDeleteResolver(options?: {
   idKey?: string
@@ -94,21 +95,52 @@ export function createSoftDeleteResolver(options?: {
   /** Key marking an item as deleted (default: "_deletedAt"). */
   deletedAtKey?: string
 }): ConflictResolver {
+  const idKey = options?.idKey ?? "id"
+  const tsKey = options?.timestampKey ?? "updatedAt"
   const deletedAtKey = options?.deletedAtKey ?? "_deletedAt"
   const baseMerge = createUnionMerge(options)
 
   return (local, remote) => {
     const merged = baseMerge(local, remote)
 
-    // Keep tombstones — don't let union merge "resurrect" deleted items
-    // An item is a tombstone if it has the deletedAt key set
+    // Build a tombstone map from both sides: id → deletedAt timestamp
+    const tombstones = new Map<unknown, number>()
+    for (const source of [local, remote]) {
+      for (const key of Object.keys(source)) {
+        const arr = source[key]
+        if (!Array.isArray(arr)) continue
+        for (const item of arr) {
+          if (item && typeof item === "object" && idKey in item && deletedAtKey in item) {
+            const rec = item as Record<string, unknown>
+            const id = rec[idKey]
+            const deletedAt = rec[deletedAtKey]
+            if (typeof deletedAt === "number") {
+              const existing = tombstones.get(id) ?? 0
+              if (deletedAt > existing) tombstones.set(id, deletedAt)
+            }
+          }
+        }
+      }
+    }
+
+    // For merged arrays, ensure tombstoned items stay deleted
+    // (don't resurrect an item if its tombstone is newer than its updatedAt)
     for (const key of Object.keys(merged)) {
       const value = merged[key]
       if (!Array.isArray(value)) continue
 
-      // No filtering needed — tombstones are preserved by the union merge
-      // because they have IDs and timestamps like any other item.
-      // The deletedAt field is just data that the app interprets.
+      merged[key] = value.filter((item) => {
+        if (!item || typeof item !== "object" || !(idKey in item)) return true
+        const rec = item as Record<string, unknown>
+        const id = rec[idKey]
+        const deletedAt = tombstones.get(id)
+        if (deletedAt == null) return true
+        // Keep the item if it has a deletedAt (it's the tombstone itself)
+        if (rec[deletedAtKey] != null) return true
+        // Filter out alive items that have a newer tombstone
+        const itemTs = String(rec[tsKey] ?? "")
+        return itemTs > String(deletedAt)
+      })
     }
 
     return merged
