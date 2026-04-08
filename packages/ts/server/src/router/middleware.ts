@@ -23,11 +23,13 @@ interface BucketEntry {
 export class RateLimiter {
   private _windowMs: number
   private _maxRequests: number
+  private _maxBuckets: number
   private _buckets = new Map<string, BucketEntry>()
 
-  constructor(windowMs: number = 60_000, maxRequests: number = 100) {
+  constructor(windowMs: number = 60_000, maxRequests: number = 100, maxBuckets: number = 10_000) {
     this._windowMs = windowMs
     this._maxRequests = maxRequests
+    this._maxBuckets = maxBuckets
   }
 
   check(
@@ -52,6 +54,11 @@ export class RateLimiter {
       // Clean up expired entries
       for (const [k, v] of this._buckets) {
         if (v.resetAt <= now) this._buckets.delete(k)
+      }
+      // Evict oldest if at capacity to prevent unbounded memory growth
+      if (this._buckets.size >= this._maxBuckets) {
+        const firstKey = this._buckets.keys().next().value
+        if (firstKey !== undefined) this._buckets.delete(firstKey)
       }
       entry = { count: 0, resetAt: now + this._windowMs }
       this._buckets.set(bucketKey, entry)
@@ -85,6 +92,11 @@ export function corsMiddleware(config: CorsConfig = {}): MiddlewareHandler {
   const exposeHeaders = config.exposeHeaders?.join(", ") ?? ""
   const maxAge = config.maxAge ?? 86400
   const credentials = config.credentials ?? false
+
+  // CORS spec: credentials cannot be used with wildcard origin
+  if (credentials && origin === "*") {
+    throw new Error("CORS misconfiguration: credentials cannot be used with wildcard origin '*'. Specify explicit origins.")
+  }
 
   function resolveOrigin(requestOrigin: string | undefined): string {
     if (Array.isArray(origin)) {

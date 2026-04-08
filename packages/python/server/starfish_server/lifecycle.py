@@ -72,7 +72,7 @@ class GracefulShutdown:
         """Register signal handlers for graceful shutdown."""
         _loop = loop or asyncio.get_event_loop()
         for sig in self._opts.signals:
-            _loop.add_signal_handler(sig, lambda: asyncio.ensure_future(self.shutdown()))
+            _loop.add_signal_handler(sig, lambda s=sig: asyncio.ensure_future(self.shutdown()))
             self._handlers.append((sig, None))
 
     def unregister(self, loop: asyncio.AbstractEventLoop | None = None) -> None:

@@ -80,7 +80,7 @@ export { createConsoleLogger, createJsonLogger, createNoopLogger, type LogLevel,
 export { createConsoleAuditLogger, createCallbackAuditLogger, createNoopAuditLogger, type AuditEntry, type AuditLogger } from "./audit.js"
 
 // TTL
-export { isExpired, createTtlCleanup } from "./ttl.js"
+export { isExpired } from "./ttl.js"
 
 // OpenAPI
 export { generateOpenApiSpec } from "./openapi.js"

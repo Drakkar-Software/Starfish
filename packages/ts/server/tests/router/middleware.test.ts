@@ -42,13 +42,17 @@ describe("corsMiddleware", () => {
     expect(res.headers.get("access-control-allow-origin")).toBe("https://b.com")
   })
 
-  it("sets credentials header when enabled", async () => {
+  it("sets credentials header when enabled with specific origin", async () => {
     const app = new Hono()
-    app.use("*", corsMiddleware({ credentials: true }))
+    app.use("*", corsMiddleware({ origin: "https://example.com", credentials: true }))
     app.get("/test", (c) => c.json({ ok: true }))
 
     const res = await app.request("/test")
     expect(res.headers.get("access-control-allow-credentials")).toBe("true")
+  })
+
+  it("throws when credentials + wildcard origin", () => {
+    expect(() => corsMiddleware({ credentials: true })).toThrow("credentials cannot be used with wildcard")
   })
 })
 

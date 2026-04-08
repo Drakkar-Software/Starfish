@@ -47,7 +47,10 @@ export function createIndexedDBStorage(
 
   function getDB(): Promise<IDBDatabase> {
     if (!dbPromise) {
-      dbPromise = openDB(dbName, storeName)
+      dbPromise = openDB(dbName, storeName).catch((err) => {
+        dbPromise = null // Reset so next call retries
+        throw err
+      })
     }
     return dbPromise
   }

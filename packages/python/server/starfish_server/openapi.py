@@ -48,7 +48,7 @@ def generate_openapi_spec(
             pull_path = f"/{ACTION_PULL}/{col.storage_path}"
             paths[pull_path] = {"get": _build_pull_operation(col)}
 
-        if not col.pull_only:
+        if not col.push_only:
             push_path = f"/{ACTION_PUSH}/{col.storage_path}"
             paths[push_path] = {"post": _build_push_operation(col)}
 

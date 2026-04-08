@@ -16,6 +16,27 @@ export type ConflictResolverWithMeta = (
   remote: Record<string, unknown>,
 ) => { data: Record<string, unknown>; meta: ConflictMeta }
 
+/** Shallow structural comparison of two values. Handles objects, arrays, and primitives. */
+function shallowEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true
+  if (a == null || b == null) return a === b
+  if (typeof a !== typeof b) return false
+  if (typeof a !== "object") return false
+
+  if (Array.isArray(a) !== Array.isArray(b)) return false
+  if (Array.isArray(a) && Array.isArray(b)) {
+    if (a.length !== b.length) return false
+    return a.every((v, i) => shallowEqual(v, b[i]))
+  }
+
+  const aObj = a as Record<string, unknown>
+  const bObj = b as Record<string, unknown>
+  const aKeys = Object.keys(aObj)
+  const bKeys = Object.keys(bObj)
+  if (aKeys.length !== bKeys.length) return false
+  return aKeys.every((k) => shallowEqual(aObj[k], bObj[k]))
+}
+
 /**
  * Wrap a standard ConflictResolver to also return metadata about which fields conflicted.
  * Compares local and remote keys to detect differing fields.
@@ -27,21 +48,17 @@ export function withConflictMeta(resolver: ConflictResolver): ConflictResolverWi
     for (const key of allKeys) {
       const lv = local[key]
       const rv = remote[key]
-      if (lv === undefined && rv !== undefined) {
-        conflictedFields.push(key)
-      } else if (lv !== undefined && rv === undefined) {
-        conflictedFields.push(key)
-      } else if (JSON.stringify(lv) !== JSON.stringify(rv)) {
+      if (!shallowEqual(lv, rv)) {
         conflictedFields.push(key)
       }
     }
 
     const data = resolver(local, remote)
 
-    // Determine how it was resolved
+    // Determine how it was resolved using structural comparison
     let resolvedBy: "local" | "remote" | "merged" = "merged"
-    if (JSON.stringify(data) === JSON.stringify(local)) resolvedBy = "local"
-    else if (JSON.stringify(data) === JSON.stringify(remote)) resolvedBy = "remote"
+    if (shallowEqual(data, local)) resolvedBy = "local"
+    else if (shallowEqual(data, remote)) resolvedBy = "remote"
 
     return {
       data,

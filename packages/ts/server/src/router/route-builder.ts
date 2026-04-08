@@ -137,11 +137,11 @@ async function checkAuth(
   c: Context,
   params: Record<string, string>,
   opts: SyncRouterOptions,
-): Promise<{ identity: string | null; error: Response | null }> {
+): Promise<{ identity: string | null; roles: string[]; error: Response | null }> {
   const requiredRoles = operation === OP_READ ? col.readRoles : col.writeRoles
 
   if (requiredRoles.includes(ROLE_PUBLIC)) {
-    return { identity: null, error: null }
+    return { identity: null, roles: [], error: null }
   }
 
   let auth: AuthResult
@@ -155,10 +155,10 @@ async function checkAuth(
     ])
   } catch (e) {
     if (e instanceof Error && e.message === "timeout") {
-      return { identity: null, error: c.json({ error: "Unauthorized" }, 503) }
+      return { identity: null, roles: [], error: c.json({ error: "Unauthorized" }, 503) }
     }
     console.error("[Starfish] roleResolver failed:", e)
-    return { identity: null, error: c.json({ error: "Unauthorized" }, 401) }
+    return { identity: null, roles: [], error: c.json({ error: "Unauthorized" }, 401) }
   }
 
   const effectiveRoles = new Set(auth.roles)
@@ -175,16 +175,17 @@ async function checkAuth(
       for (const r of extra) effectiveRoles.add(r)
     } catch (e) {
       console.error("[Starfish] roleEnricher failed:", e)
-      return { identity: auth.identity, error: c.json({ error: "Authorization error" }, 500) }
+      return { identity: auth.identity, roles: [...effectiveRoles], error: c.json({ error: "Authorization error" }, 500) }
     }
   }
 
+  const effectiveRolesArray = [...effectiveRoles]
   const hasAccess = requiredRoles.some((r) => effectiveRoles.has(r))
   if (!hasAccess) {
-    return { identity: auth.identity, error: c.json({ error: "Forbidden" }, 403) }
+    return { identity: auth.identity, roles: effectiveRolesArray, error: c.json({ error: "Forbidden" }, 403) }
   }
 
-  return { identity: auth.identity, error: null }
+  return { identity: auth.identity, roles: effectiveRolesArray, error: null }
 }
 
 function resolveStore(
@@ -507,7 +508,7 @@ function addCollectionRoutes(
         return c.json({ error: "Invalid path parameter" }, 400)
       }
 
-      const { identity, error } = await checkAuth(col, OP_READ, c, params, opts)
+      const { identity, roles, error } = await checkAuth(col, OP_READ, c, params, opts)
       if (error) return error
 
       if (col.remote?.writeMode === "push_only") {
@@ -587,12 +588,10 @@ function addCollectionRoutes(
       if (col.fieldPermissions && pullResult.status === 200) {
         const data = pullResult.body["data"] as Record<string, unknown> | undefined
         if (data && typeof data === "object") {
-          const { identity: authedId } = await checkAuth(col, OP_READ, c, params, opts)
+          const userRoles = new Set(roles)
           for (const [field, perm] of Object.entries(col.fieldPermissions)) {
             if (perm.readRoles && perm.readRoles.length > 0) {
-              // Check if user has any of the required read roles
-              const userRoles = authedId ? (await opts.roleResolver(c)).roles : []
-              const hasAccess = perm.readRoles.some((r) => userRoles.includes(r) || r === ROLE_PUBLIC)
+              const hasAccess = perm.readRoles.some((r) => userRoles.has(r) || r === ROLE_PUBLIC)
               if (!hasAccess) {
                 delete data[field]
               }
@@ -649,7 +648,7 @@ function addCollectionRoutes(
         return c.json({ error: "Invalid path parameter" }, 400)
       }
 
-      const { identity, error } = await checkAuth(col, OP_WRITE, c, params, opts)
+      const { identity, roles, error } = await checkAuth(col, OP_WRITE, c, params, opts)
       if (error) return error
 
       if (col.remote?.writeMode === "push_through" && opts.replicaManager) {
@@ -661,6 +660,27 @@ function addCollectionRoutes(
           { error: "This collection is read-only on this server" },
           405,
         )
+      }
+
+      // Field-level write permissions: reject writes to restricted fields
+      if (col.fieldPermissions && isJsonCollection(col.allowedMimeTypes)) {
+        try {
+          const rawBody = await c.req.json() as Record<string, unknown>
+          const pushData = rawBody["data"] as Record<string, unknown> | undefined
+          if (pushData && typeof pushData === "object") {
+            const userRoles = new Set(roles)
+            for (const [field, perm] of Object.entries(col.fieldPermissions)) {
+              if (perm.writeRoles && perm.writeRoles.length > 0 && field in pushData) {
+                const hasAccess = perm.writeRoles.some((r) => userRoles.has(r) || r === ROLE_PUBLIC)
+                if (!hasAccess) {
+                  return c.json({ error: `Field '${field}' is not writable with your roles` }, 403)
+                }
+              }
+            }
+          }
+        } catch {
+          // Body parsing will be handled by the push handler
+        }
       }
 
       const documentKey = resolveDocumentKey(col.storagePath, params)
@@ -822,7 +842,15 @@ export function createSyncRouter(opts: SyncRouterOptions): Hono {
         results[name] = { error: "Collection not found" }
         continue
       }
-      const store = resolveStore(col, opts.store, {}, null, opts)
+
+      // Auth check per collection
+      const { identity, error: authError } = await checkAuth(col, OP_READ, c, {}, opts)
+      if (authError) {
+        results[name] = { error: "Forbidden" }
+        continue
+      }
+
+      const store = resolveStore(col, opts.store, {}, identity, opts)
       const key = col.storagePath.replace(/\{[^}]+\}/g, "_batch_")
       const pullResult = await pull(store, key, 0)
       results[name] = { data: pullResult.data, hash: pullResult.hash, timestamp: pullResult.timestamp }

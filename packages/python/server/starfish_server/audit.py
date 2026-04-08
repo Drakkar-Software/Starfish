@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Awaitable, Literal
@@ -23,14 +25,14 @@ class AuditEntry:
 class AuditLogger:
     """Audit logger interface."""
 
-    def record(self, entry: AuditEntry) -> None:
+    async def record(self, entry: AuditEntry) -> None:
         raise NotImplementedError
 
 
 class ConsoleAuditLogger(AuditLogger):
     """Audit logger that writes to console."""
 
-    def record(self, entry: AuditEntry) -> None:
+    async def record(self, entry: AuditEntry) -> None:
         status = "OK" if entry.success else "FAIL"
         identity = entry.identity or "anonymous"
         print(
@@ -40,17 +42,19 @@ class ConsoleAuditLogger(AuditLogger):
 
 
 class CallbackAuditLogger(AuditLogger):
-    """Audit logger that delegates to a callback."""
+    """Audit logger that delegates to a sync or async callback."""
 
-    def __init__(self, callback: Callable[[AuditEntry], None]) -> None:
+    def __init__(self, callback: Callable[[AuditEntry], None | Awaitable[None]]) -> None:
         self._callback = callback
 
-    def record(self, entry: AuditEntry) -> None:
-        self._callback(entry)
+    async def record(self, entry: AuditEntry) -> None:
+        result = self._callback(entry)
+        if inspect.isawaitable(result):
+            await result
 
 
 class NoopAuditLogger(AuditLogger):
     """No-op audit logger (discards entries)."""
 
-    def record(self, entry: AuditEntry) -> None:
+    async def record(self, entry: AuditEntry) -> None:
         pass
