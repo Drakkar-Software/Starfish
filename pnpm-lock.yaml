@@ -31,8 +31,8 @@ importers:
         specifier: ^19.2.3
         version: 19.2.3(@types/react@19.2.14)
       hono:
-        specifier: ^4.12.7
-        version: 4.12.7
+        specifier: ^4.12.12
+        version: 4.12.12
       immer:
         specifier: ^11.1.4
         version: 11.1.4
@@ -70,8 +70,8 @@ importers:
         specifier: workspace:*
         version: link:../protocol
       hono:
-        specifier: ^4.12.7
-        version: 4.12.7
+        specifier: ^4.12.12
+        version: 4.12.12
     devDependencies:
       '@types/node':
         specifier: ^25.5.2
@@ -629,8 +629,8 @@ packages:
     engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
     os: [darwin]
 
-  hono@4.12.7:
-    resolution: {integrity: sha512-jq9l1DM0zVIvsm3lv9Nw9nlJnMNPOcAtsbsgiUhWcFzPE99Gvo6yRTlszSLLYacMeQ6quHD6hMfId8crVHvexw==}
+  hono@4.12.12:
+    resolution: {integrity: sha512-p1JfQMKaceuCbpJKAPKVqyqviZdS0eUxH9v82oWo1kb9xjQ5wA6iP3FNVAPDFlz5/p7d45lO+BpSk1tuSZMF4Q==}
     engines: {node: '>=16.9.0'}
 
   html-encoding-sniffer@6.0.0:
@@ -1349,7 +1349,7 @@ snapshots:
   fsevents@2.3.3:
     optional: true
 
-  hono@4.12.7: {}
+  hono@4.12.12: {}
 
   html-encoding-sniffer@6.0.0:
     dependencies:
