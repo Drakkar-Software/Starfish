@@ -107,6 +107,85 @@ app.route("/v1", sync)
 export default app // Works as a Cloudflare Worker
 ```
 
+### Server Middleware
+
+Both servers support optional middleware for production hardening. TypeScript uses `SyncRouterOptions`; Python uses `configure_middleware()`.
+
+```ts
+// TypeScript — pass options to createSyncRouter
+const sync = createSyncRouter({
+  store, config, roleResolver,
+  cors: { origin: "https://app.example.com", credentials: true },
+  securityHeaders: true,
+  requestTimeoutMs: 30_000,
+})
+```
+
+```python
+# Python — configure middleware on the FastAPI app
+from starfish_server.router.middleware import configure_middleware
+
+app = FastAPI()
+app.include_router(router, prefix="/v1")
+configure_middleware(
+    app,
+    cors=True,
+    security_headers=True,
+    compression=True,
+    request_timeout_ms=30_000,
+)
+```
+
+Available middleware:
+
+| Middleware | Description |
+|-----------|-------------|
+| CORS | Configurable origins, methods, headers, credentials |
+| Security headers | X-Content-Type-Options, X-Frame-Options, HSTS, Referrer-Policy |
+| Compression | GZip response compression (Python) |
+| Request timeout | Returns 408 after configured timeout |
+| ETag / 304 | Conditional requests via `If-None-Match` (automatic) |
+
+### Graceful Shutdown
+
+```ts
+import { createGracefulShutdown } from "@drakkar.software/starfish-server"
+
+const handle = createGracefulShutdown({
+  replicaManager,
+  queue,
+  onShutdown: async () => { /* close DB connections */ },
+})
+// Registers SIGTERM/SIGINT handlers automatically
+```
+
+### Structured Logging & Audit
+
+```ts
+import { createJsonLogger, createCallbackAuditLogger } from "@drakkar.software/starfish-server"
+
+const sync = createSyncRouter({
+  store, config, roleResolver,
+  logger: createJsonLogger(),
+  auditLogger: createCallbackAuditLogger((entry) => {
+    // { action: "push", collection: "settings", identity: "user-1", ... }
+    writeToAuditDB(entry)
+  }),
+})
+```
+
+### OpenAPI Spec
+
+```ts
+import { generateOpenApiSpec } from "@drakkar.software/starfish-server"
+
+const spec = generateOpenApiSpec(config, {
+  title: "My Sync API",
+  serverUrl: "https://api.example.com/v1",
+})
+// Serve at GET /openapi.json
+```
+
 ## Protocol
 
 Documents are synced using a pull/push model with hash-based optimistic concurrency.
@@ -805,7 +884,7 @@ pytest -v
 
 TypeScript tests use [Vitest](https://vitest.dev/). Python tests use [pytest](https://docs.pytest.org/).
 
-The TypeScript client has 218 tests across 16 test files covering sync, crypto, bindings, React hooks, broadcast, retry/circuit breaker, resolvers, migration, validation, polling, history, and more. The TypeScript server has 92 tests covering config, protocol, encryption, router, queue, replica, and storage.
+The TypeScript client has 259 tests across 23 test files covering sync, crypto, bindings, React hooks, broadcast, retry/circuit breaker, resolvers, migration, validation, polling, history, dedup, export, metrics, Suspense, and more. The TypeScript server has 149 tests across 17 test files covering config, protocol, encryption, router, queue, replica, storage, middleware (CORS, security headers, timeout), ETag, batch pull, field permissions, audit logging, TTL, OpenAPI, and lifecycle. The Python server has 246 tests.
 
 Cross-language test vectors in `tests/test-vectors/` ensure identical behavior across all TypeScript and Python implementations:
 - `crypto.json` / `hash.json` — encryption and hashing parity

@@ -183,9 +183,44 @@ const store = createStarfishStore({ name: "settings", syncManager })
 attachSyncLogging(store, consoleSyncLogger, "settings")
 ```
 
-## Performance Metrics
+## Built-In Metrics Collector
 
-Collect sync metrics over time for dashboards or analytics:
+Since v1.5.0, the SDK ships a built-in `MetricsCollector` that accumulates per-store statistics:
+
+```ts
+import { createMetricsCollector } from "@drakkar.software/starfish-client"
+import type { SyncMetrics } from "@drakkar.software/starfish-client"
+
+const collector = createMetricsCollector()
+
+// Record metrics from your sync logger or manually
+collector.recordPull("settings", 145, { bytesTransferred: 2048 })
+collector.recordPush("settings", 210, { bytesTransferred: 512 })
+collector.recordConflict("settings")
+
+// Get summary for all stores
+const summary = collector.getSummary()
+// { settings: { totalPulls: 1, totalPushes: 1, avgDurationMs: 178, totalBytes: 2560, totalConflicts: 1 } }
+
+collector.reset() // Clear all accumulated data
+```
+
+The `SyncLogger` interface also accepts optional `SyncMetrics` on `pullSuccess` and `pushSuccess`:
+
+```ts
+import { consoleSyncLogger } from "@drakkar.software/starfish-client"
+
+// Metrics are logged alongside timing data
+consoleSyncLogger.pullSuccess("settings", 145, {
+  bytesTransferred: 2048,
+  cacheHit: true,
+})
+// → [starfish:settings] pull OK (145ms) 2048B (cache hit)
+```
+
+## Custom Performance Metrics
+
+For more control, implement your own collector:
 
 ```ts
 class SyncMetrics {

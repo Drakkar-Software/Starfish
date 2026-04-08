@@ -4,6 +4,32 @@ Export synced data for backups, GDPR compliance, or account migration. Import da
 
 > **Prerequisites:** [SyncManager](03-sync-manager.md), [Encryption](04-encryption.md), [Integration Patterns](09-integration-patterns.md)
 
+## Built-In Export/Import Helpers
+
+Since v1.5.0, the SDK ships built-in export/import utilities:
+
+```ts
+import { exportData, importData, exportToBlob } from "@drakkar.software/starfish-client"
+
+// Export to JSON string
+const json = exportData(data, { format: "json", pretty: true })
+
+// Export to CSV (top-level keys become columns)
+const csv = exportData(data, { format: "csv" })
+
+// Export to downloadable Blob
+const blob = exportToBlob(data, { format: "json" })
+const url = URL.createObjectURL(blob)
+
+// Import from JSON string
+const imported = importData(jsonString)
+
+// Import from CSV
+const importedCsv = importData(csvString, "csv")
+```
+
+> **Note:** CSV export flattens top-level keys into a single row. Nested objects/arrays are JSON-encoded in their cells. CSV import only reads the first data row after the header.
+
 ## Exporting Data
 
 ### From a Zustand store

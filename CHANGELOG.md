@@ -1,5 +1,40 @@
 # Changelog
 
+## 1.5.0
+
+### Added
+
+#### Server (TypeScript + Python)
+
+- **CORS middleware** — Configurable CORS with origin whitelist, credentials, methods, headers, and max-age. Pass `cors: true` (permissive) or `cors: { origin: "https://app.example.com", credentials: true }` to `SyncRouterOptions`. Rejects `credentials: true` with wildcard origin at startup (CORS spec violation). Python: `configure_middleware(app, cors=CorsConfig(...))`.
+- **Security headers** — Adds `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Strict-Transport-Security`, `X-XSS-Protection`, and `Referrer-Policy` to all responses. Pass `securityHeaders: true` or customize per-header. Python: `SecurityHeadersMiddleware`.
+- **Response compression** — GZip middleware for Python via `configure_middleware(app, compression=True)`.
+- **ETag / conditional requests** — Pull responses include an `ETag` header with the document hash. Clients sending `If-None-Match` receive `304 Not Modified` when the hash matches, avoiding redundant data transfer. Works for both JSON and binary collections.
+- **Request timeout** — Per-request timeout middleware (returns `408` on expiry). Pass `requestTimeoutMs` to `SyncRouterOptions`. Python: `RequestTimeoutMiddleware`.
+- **Graceful shutdown** — `createGracefulShutdown({ replicaManager, queue, onShutdown })` registers SIGTERM/SIGINT handlers and cleanly stops replicas, queues, and custom resources. Python: `GracefulShutdown` class with `register()`/`unregister()`.
+- **Structured server logging** — `ServerLogger` interface with `createConsoleLogger()`, `createJsonLogger()`, and `createNoopLogger()`. Pass `logger` to `SyncRouterOptions`. Python: `ConsoleLogger`, `JsonLogger`, `NoopLogger`.
+- **Audit logging** — `AuditLogger` interface records who pulled/pushed which collection, when, and whether it succeeded. Pass `auditLogger` to `SyncRouterOptions`. Built-in: `createConsoleAuditLogger()`, `createCallbackAuditLogger(cb)`. Python: async-compatible `ConsoleAuditLogger`, `CallbackAuditLogger` (accepts sync or async callbacks).
+- **Field-level permissions** — Optional `fieldPermissions` on collections: per-field `readRoles` (strip fields on pull) and `writeRoles` (reject push if user modifies restricted fields). Example: `fieldPermissions: { email: { readRoles: ["admin"], writeRoles: ["admin"] } }`.
+- **Batch pull endpoint** — `GET /batch/pull?collections=col1,col2` pulls multiple collections in one request. Enforces per-collection auth; unauthorized collections return `{ error: "Forbidden" }`.
+- **TTL / document expiration** — Optional `ttlMs` on collections. Expired documents return empty data on pull. TTL is check-on-read only (no background cleanup). `isExpired(timestamp, ttlMs)` utility exported.
+- **OpenAPI spec generation** — `generateOpenApiSpec(config, { title, version, serverUrl })` produces an OpenAPI 3.0.3 spec from `SyncConfig`. Python: `generate_openapi_spec()`.
+- **Docker support** — Dockerfiles for both TS and Python servers, `docker-compose.yml` for local development, and `.dockerignore`.
+
+#### Client (TypeScript)
+
+- **Request deduplication** — `createDedupFetch(baseFetch?)` wraps fetch to deduplicate concurrent identical GET requests. Multiple callers awaiting the same URL share one network request.
+- **IndexedDB storage adapter** — `createIndexedDBStorage({ dbName, storeName })` implements Zustand's `StateStorage` interface backed by IndexedDB for data larger than localStorage's 5-10MB limit. Retries on DB open failure.
+- **Extended performance metrics** — `SyncMetrics` interface adds `bytesTransferred`, `compressedSize`, `conflictCount`, `retryCount`, `cacheHit` to `pullSuccess`/`pushSuccess` logger calls (backward compatible). `createMetricsCollector()` accumulates per-store totals/averages with `getSummary()` and `reset()`.
+- **Conflict field indicators** — `withConflictMeta(resolver)` wraps any `ConflictResolver` to return `ConflictMeta` alongside merged data: `{ conflictedFields: string[], resolvedBy: "local" | "remote" | "merged", timestamp }`. Uses structural comparison (not JSON.stringify).
+- **Background Sync API** — `registerBackgroundSync({ tag })` registers a sync tag with the service worker. `isBackgroundSyncSupported()` checks browser support. Note: actual sync event handling must be implemented in your service worker.
+- **React Suspense integration** — `createSuspenseResource(fetcher)` creates a resource that throws a Promise while loading (Suspense protocol). After resolution, `read()` returns data synchronously.
+- **Data export/import** — `exportData(data, { format, pretty })` and `importData(raw, format)` for JSON and CSV. `exportToBlob(data, opts)` creates a downloadable Blob.
+- **Service Worker utilities** — `registerServiceWorker(scriptUrl, { scope, onUpdate })`, `unregisterServiceWorkers()`, and `isServiceWorkerSupported()`.
+
+### Fixed
+
+- **Rate limiter unbounded memory** — `RateLimiter` now caps bucket count at `maxBuckets` (default 10,000), evicting oldest entries when full. Prevents memory exhaustion via `X-Forwarded-For` header spoofing.
+
 ## 1.4.1
 
 ### Added

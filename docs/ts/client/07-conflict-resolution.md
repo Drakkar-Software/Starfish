@@ -274,6 +274,30 @@ Set `maxRetries: 0` to disable automatic retry — the first conflict will throw
 
 For most apps with array-heavy documents, **ID + `updatedAt` with soft-delete awareness** provides the best balance of correctness and simplicity.
 
+## Conflict Metadata
+
+Since v1.5.0, wrap any resolver with `withConflictMeta()` to get information about which fields conflicted and how the conflict was resolved:
+
+```ts
+import { createUnionMerge, withConflictMeta } from "@drakkar.software/starfish-client"
+
+const merge = withConflictMeta(createUnionMerge())
+
+const result = merge(
+  { items: [{ id: 1, name: "A", updatedAt: 100 }], timestamp: 100 },
+  { items: [{ id: 1, name: "B", updatedAt: 200 }], timestamp: 200 },
+)
+
+console.log(result.meta)
+// {
+//   conflictedFields: ["items", "timestamp"],
+//   resolvedBy: "merged",  // or "local" or "remote"
+//   timestamp: 1712345678000
+// }
+```
+
+This is useful for showing users what changed during a conflict resolution, or for analytics.
+
 ## Next Steps
 
 - [Integration Patterns](09-integration-patterns.md) — soft delete, local history, and more

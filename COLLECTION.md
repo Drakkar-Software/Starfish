@@ -207,6 +207,63 @@ This is useful when pull responses can be cached by a CDN, reverse proxy, or HTT
 { "cacheDurationMs": 300000 }
 ```
 
+### Document expiration (TTL)
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `ttlMs` | `integer` | `null` | Document time-to-live in milliseconds. Expired documents return empty data `{}` on pull. |
+
+TTL is enforced on read (check-on-pull). When a document's last-modified timestamp + `ttlMs` < current time, the server returns `{ "data": {}, "hash": "", "timestamp": <original> }`. There is no background cleanup — expired data remains in storage until overwritten by a new push.
+
+```jsonc
+// Documents expire after 1 hour
+{ "ttlMs": 3600000 }
+
+// Documents expire after 7 days
+{ "ttlMs": 604800000 }
+```
+
+### Field-level permissions
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `fieldPermissions` | `object` | `null` | Per-field read/write role restrictions. Keys are top-level field names in the document data. |
+
+Each field entry can specify:
+
+| Key | Type | Description |
+|---|---|---|
+| `readRoles` | `string[]` | Roles allowed to see this field on pull. Fields are stripped from the response for users without matching roles. |
+| `writeRoles` | `string[]` | Roles allowed to modify this field on push. Push is rejected with `403` if the user modifies a restricted field. |
+
+Fields not listed in `fieldPermissions` inherit the collection-level `readRoles`/`writeRoles` (no restriction beyond collection access).
+
+```jsonc
+{
+  "name": "profiles",
+  "storagePath": "users/{identity}/profiles",
+  "readRoles": ["self"],
+  "writeRoles": ["self"],
+  "encryption": "none",
+  "maxBodyBytes": 65536,
+  "fieldPermissions": {
+    "email": {
+      "readRoles": ["admin"],
+      "writeRoles": ["admin"]
+    },
+    "name": {
+      "readRoles": ["self", "admin"]
+    }
+  }
+}
+```
+
+In this example:
+- All users with `self` role can read/write `name` and any unlisted fields
+- Only `admin` users can see or modify the `email` field
+- Non-admin users pulling this document will receive `{ "name": "Alice" }` without `email`
+- Non-admin users pushing `{ "name": "Alice", "email": "..." }` will get `403`
+
 ### Sync behavior
 
 | Parameter | Type | Default | Description |
