@@ -94,13 +94,18 @@ async def handle_sync_pull(
     if result.author_signature:
         body["authorSignature"] = result.author_signature
 
-    headers: dict[str, str] | None = None
+    headers: dict[str, str] = {}
     if cache_duration_ms is not None:
         max_age = cache_duration_ms // 1000
         directive = f"max-age={max_age}" if is_public else f"private, max-age={max_age}"
-        headers = {"Cache-Control": directive}
+        headers["Cache-Control"] = directive
 
-    return JSONResponse(body, headers=headers)
+    # ETag support
+    doc_hash = result.hash
+    if doc_hash:
+        headers["ETag"] = f'"{doc_hash}"'
+
+    return JSONResponse(body, headers=headers if headers else None)
 
 
 async def handle_sync_push(

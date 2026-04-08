@@ -1,3 +1,5 @@
+import type { Context, MiddlewareHandler } from "hono"
+
 export function checkBodyLimit(
   contentLength: string | null | undefined,
   maxBytes: number,
@@ -62,5 +64,115 @@ export class RateLimiter {
     }
 
     return null
+  }
+}
+
+// --- CORS ---
+
+export interface CorsConfig {
+  origin?: string | string[]
+  allowMethods?: string[]
+  allowHeaders?: string[]
+  exposeHeaders?: string[]
+  maxAge?: number
+  credentials?: boolean
+}
+
+export function corsMiddleware(config: CorsConfig = {}): MiddlewareHandler {
+  const origin = config.origin ?? "*"
+  const methods = (config.allowMethods ?? ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"]).join(", ")
+  const allowHeaders = (config.allowHeaders ?? ["Content-Type", "Authorization", "Accept"]).join(", ")
+  const exposeHeaders = config.exposeHeaders?.join(", ") ?? ""
+  const maxAge = config.maxAge ?? 86400
+  const credentials = config.credentials ?? false
+
+  function resolveOrigin(requestOrigin: string | undefined): string {
+    if (Array.isArray(origin)) {
+      return requestOrigin && origin.includes(requestOrigin) ? requestOrigin : origin[0] ?? ""
+    }
+    return origin
+  }
+
+  return async (c: Context, next: () => Promise<void>): Promise<Response | void> => {
+    const requestOrigin = c.req.header("origin")
+    const resolvedOrigin = resolveOrigin(requestOrigin)
+
+    if (c.req.method === "OPTIONS") {
+      const res = new Response(null, { status: 204 })
+      res.headers.set("Access-Control-Allow-Origin", resolvedOrigin)
+      res.headers.set("Access-Control-Allow-Methods", methods)
+      res.headers.set("Access-Control-Allow-Headers", allowHeaders)
+      res.headers.set("Access-Control-Max-Age", String(maxAge))
+      if (credentials) res.headers.set("Access-Control-Allow-Credentials", "true")
+      return res
+    }
+
+    await next()
+
+    c.res.headers.set("Access-Control-Allow-Origin", resolvedOrigin)
+    if (exposeHeaders) c.res.headers.set("Access-Control-Expose-Headers", exposeHeaders)
+    if (credentials) c.res.headers.set("Access-Control-Allow-Credentials", "true")
+  }
+}
+
+// --- Security Headers ---
+
+export interface SecurityHeadersConfig {
+  /** Set to false to disable X-Content-Type-Options. Default: "nosniff" */
+  contentTypeOptions?: string | false
+  /** Set to false to disable X-Frame-Options. Default: "DENY" */
+  frameOptions?: string | false
+  /** Set to false to disable Strict-Transport-Security. Default: "max-age=31536000; includeSubDomains" */
+  strictTransportSecurity?: string | false
+  /** Set to false to disable X-XSS-Protection. Default: "1; mode=block" */
+  xssProtection?: string | false
+  /** Set to false to disable Referrer-Policy. Default: "strict-origin-when-cross-origin" */
+  referrerPolicy?: string | false
+}
+
+export function securityHeadersMiddleware(config: SecurityHeadersConfig = {}): MiddlewareHandler {
+  const headers: [string, string][] = []
+
+  const cto = config.contentTypeOptions ?? "nosniff"
+  if (cto !== false) headers.push(["X-Content-Type-Options", cto])
+
+  const fo = config.frameOptions ?? "DENY"
+  if (fo !== false) headers.push(["X-Frame-Options", fo])
+
+  const hsts = config.strictTransportSecurity ?? "max-age=31536000; includeSubDomains"
+  if (hsts !== false) headers.push(["Strict-Transport-Security", hsts])
+
+  const xss = config.xssProtection ?? "1; mode=block"
+  if (xss !== false) headers.push(["X-XSS-Protection", xss])
+
+  const rp = config.referrerPolicy ?? "strict-origin-when-cross-origin"
+  if (rp !== false) headers.push(["Referrer-Policy", rp])
+
+  return async (_c: Context, next: () => Promise<void>) => {
+    await next()
+    for (const [k, v] of headers) {
+      _c.res.headers.set(k, v)
+    }
+  }
+}
+
+// --- Request Timeout ---
+
+export function requestTimeoutMiddleware(timeoutMs: number): MiddlewareHandler {
+  return async (c: Context, next: () => Promise<void>) => {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("__starfish_timeout__")), timeoutMs)
+    })
+    try {
+      await Promise.race([next(), timeoutPromise])
+    } catch (e) {
+      if (e instanceof Error && e.message === "__starfish_timeout__") {
+        return c.json({ error: "Request timeout" }, 408)
+      }
+      throw e
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
   }
 }

@@ -443,7 +443,11 @@ def _add_collection_routes(
                     return Response(status_code=404)
                 raw_bytes, stored_content_type = result
                 headers: dict[str, str] = {}
-                headers["ETag"] = f'"{hashlib.sha256(raw_bytes).hexdigest()}"'
+                binary_etag = f'"{hashlib.sha256(raw_bytes).hexdigest()}"'
+                headers["ETag"] = binary_etag
+                if_none_match = request.headers.get("if-none-match")
+                if if_none_match == binary_etag:
+                    return Response(status_code=304)
                 if col.cache_duration_ms is not None:
                     max_age = col.cache_duration_ms // 1000
                     directive = (
@@ -457,12 +461,21 @@ def _add_collection_routes(
             store = _resolve_store(col, opts.store, params, identity, opts)
             checkpoint_param = request.query_params.get(QUERY_CHECKPOINT)
             is_client_encrypted = bool(col.client_encrypted) or col.encryption == ENCRYPTION_DELEGATED
-            return await handle_sync_pull(
+            response = await handle_sync_pull(
                 document_key, store, checkpoint_param,
                 bool(col.force_full_fetch), is_client_encrypted,
                 col.cache_duration_ms,
                 is_public=ROLE_PUBLIC in col.read_roles,
             )
+
+            # ETag conditional request support
+            etag = response.headers.get("ETag")
+            if etag:
+                if_none_match = request.headers.get("if-none-match")
+                if if_none_match == etag:
+                    return Response(status_code=304)
+
+            return response
 
         router.add_api_route(pull_path, pull_handler, methods=["GET"])
 

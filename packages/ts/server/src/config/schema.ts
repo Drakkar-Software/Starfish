@@ -25,6 +25,11 @@ export interface CollectionRateLimitConfig {
   maxRequests?: number
 }
 
+export interface FieldPermission {
+  readRoles?: string[]
+  writeRoles?: string[]
+}
+
 export interface CollectionConfig {
   name: string
   storagePath: string
@@ -43,6 +48,10 @@ export interface CollectionConfig {
   bundle?: string
   remote?: RemoteConfig
   queue?: QueueConfig
+  /** Document time-to-live in milliseconds. Expired documents return empty data on pull. */
+  ttlMs?: number
+  /** Per-field read/write permissions. Keys are top-level field names. */
+  fieldPermissions?: Record<string, FieldPermission>
 }
 
 export interface RateLimitConfig {

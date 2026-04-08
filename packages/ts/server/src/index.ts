@@ -9,6 +9,7 @@ export type {
   EncryptionMode,
   WriteMode,
   SyncTrigger,
+  FieldPermission,
 } from "./config/schema.js"
 export { validateConfig } from "./config/validate.js"
 export { parseConfigJson, loadConfig, saveConfig } from "./config/loader.js"
@@ -51,7 +52,15 @@ export {
   validateUrlNotPrivate,
   deepSanitize,
 } from "./router/helpers.js"
-export { checkBodyLimit, RateLimiter } from "./router/middleware.js"
+export {
+  checkBodyLimit,
+  RateLimiter,
+  corsMiddleware,
+  securityHeadersMiddleware,
+  requestTimeoutMiddleware,
+  type CorsConfig,
+  type SecurityHeadersConfig,
+} from "./router/middleware.js"
 export { matchesAllowedMime, isJsonCollection } from "./router/mime.js"
 
 // Queue
@@ -60,6 +69,21 @@ export { MemoryQueue, CustomQueue } from "./queue/memory.js"
 
 // Replica
 export { ReplicaManager } from "./replica/manager.js"
+
+// Lifecycle
+export { createGracefulShutdown, type GracefulShutdownOptions, type ShutdownHandle } from "./lifecycle.js"
+
+// Logger
+export { createConsoleLogger, createJsonLogger, createNoopLogger, type LogLevel, type LogEntry, type ServerLogger } from "./logger.js"
+
+// Audit
+export { createConsoleAuditLogger, createCallbackAuditLogger, createNoopAuditLogger, type AuditEntry, type AuditLogger } from "./audit.js"
+
+// TTL
+export { isExpired, createTtlCleanup } from "./ttl.js"
+
+// OpenAPI
+export { generateOpenApiSpec } from "./openapi.js"
 
 // Errors
 export { StartupError, AuthError, ConflictError, NotFoundError } from "./errors.js"

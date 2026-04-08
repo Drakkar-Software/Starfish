@@ -1,5 +1,59 @@
 import type { ConflictResolver } from "./types.js"
 
+/** Metadata about which fields were affected during conflict resolution. */
+export interface ConflictMeta {
+  /** Field names that differed between local and remote. */
+  conflictedFields: string[]
+  /** How the conflict was resolved. */
+  resolvedBy: "local" | "remote" | "merged"
+  /** Timestamp of resolution. */
+  timestamp: number
+}
+
+/** Conflict resolver that also returns metadata about the resolution. */
+export type ConflictResolverWithMeta = (
+  local: Record<string, unknown>,
+  remote: Record<string, unknown>,
+) => { data: Record<string, unknown>; meta: ConflictMeta }
+
+/**
+ * Wrap a standard ConflictResolver to also return metadata about which fields conflicted.
+ * Compares local and remote keys to detect differing fields.
+ */
+export function withConflictMeta(resolver: ConflictResolver): ConflictResolverWithMeta {
+  return (local, remote) => {
+    const conflictedFields: string[] = []
+    const allKeys = new Set([...Object.keys(local), ...Object.keys(remote)])
+    for (const key of allKeys) {
+      const lv = local[key]
+      const rv = remote[key]
+      if (lv === undefined && rv !== undefined) {
+        conflictedFields.push(key)
+      } else if (lv !== undefined && rv === undefined) {
+        conflictedFields.push(key)
+      } else if (JSON.stringify(lv) !== JSON.stringify(rv)) {
+        conflictedFields.push(key)
+      }
+    }
+
+    const data = resolver(local, remote)
+
+    // Determine how it was resolved
+    let resolvedBy: "local" | "remote" | "merged" = "merged"
+    if (JSON.stringify(data) === JSON.stringify(local)) resolvedBy = "local"
+    else if (JSON.stringify(data) === JSON.stringify(remote)) resolvedBy = "remote"
+
+    return {
+      data,
+      meta: {
+        conflictedFields,
+        resolvedBy,
+        timestamp: Date.now(),
+      },
+    }
+  }
+}
+
 /** Compare two timestamp values. Handles both numeric (epoch) and string (ISO-8601) timestamps. */
 function compareTimestamps(a: unknown, b: unknown): boolean {
   if (typeof a === "number" && typeof b === "number") return a >= b

@@ -18,8 +18,8 @@ export type {
   AuthProvider,
   ConflictResolver,
 } from "./types.js"
-export { consoleSyncLogger, noopSyncLogger } from "./logger.js"
-export type { SyncLogger } from "./logger.js"
+export { consoleSyncLogger, noopSyncLogger, createMetricsCollector } from "./logger.js"
+export type { SyncLogger, SyncMetrics, MetricsCollector } from "./logger.js"
 export { createMigrator } from "./migrate.js"
 export type { MigrationFn, MigrationConfig } from "./migrate.js"
 export { ValidationError, createSchemaValidator } from "./validate.js"
@@ -31,8 +31,20 @@ export {
   createSoftDeleteResolver,
   timestampWinner,
   pruneTombstones,
+  withConflictMeta,
 } from "./resolvers.js"
+export type { ConflictMeta, ConflictResolverWithMeta } from "./resolvers.js"
 export { SnapshotHistory } from "./history.js"
 export type { Snapshot, SnapshotHistoryOptions } from "./history.js"
 export { startPolling, startAdaptivePolling } from "./polling.js"
 export type { PollableState, AdaptivePollingOptions, AdaptivePollingControls } from "./polling.js"
+export { createDedupFetch } from "./dedup.js"
+export { createIndexedDBStorage } from "./storage/indexeddb.js"
+export type { IndexedDBStorageOptions, AsyncStateStorage } from "./storage/indexeddb.js"
+export { exportData, importData, exportToBlob } from "./export.js"
+export type { ExportOptions } from "./export.js"
+export { isBackgroundSyncSupported, registerBackgroundSync } from "./background-sync.js"
+export type { BackgroundSyncOptions } from "./background-sync.js"
+export { isServiceWorkerSupported, registerServiceWorker, unregisterServiceWorkers } from "./service-worker.js"
+export type { ServiceWorkerOptions } from "./service-worker.js"
+export { createSuspenseResource } from "./bindings/suspense.js"

@@ -6,6 +6,7 @@ import type {
   SyncConfig,
   CollectionConfig,
   CollectionRateLimitConfig,
+  FieldPermission,
 } from "../config/schema.js"
 import { EncryptedObjectStore } from "../encryption/encrypted-store.js"
 import { pull } from "../protocol/pull.js"
@@ -16,7 +17,15 @@ import {
   deepSanitize,
   type SignatureVerifier,
 } from "./helpers.js"
-import { checkBodyLimit, RateLimiter } from "./middleware.js"
+import {
+  checkBodyLimit,
+  RateLimiter,
+  corsMiddleware,
+  securityHeadersMiddleware,
+  requestTimeoutMiddleware,
+  type CorsConfig,
+  type SecurityHeadersConfig,
+} from "./middleware.js"
 import { matchesAllowedMime, isJsonCollection } from "./mime.js"
 import {
   ROLE_PUBLIC,
@@ -36,6 +45,9 @@ import {
 } from "../constants.js"
 import type { ReplicaManager } from "../replica/manager.js"
 import type { Queue } from "../queue/base.js"
+import type { ServerLogger } from "../logger.js"
+import type { AuditLogger, AuditEntry } from "../audit.js"
+import { isExpired } from "../ttl.js"
 
 export interface AuthResult {
   identity: string
@@ -62,6 +74,19 @@ export interface SyncRouterOptions {
   replicaManager?: ReplicaManager
   queue?: Queue
   roleResolverTimeout?: number
+  /** Enable CORS. Pass true for permissive defaults, or a CorsConfig for fine-grained control. */
+  cors?: boolean | CorsConfig
+  /** Enable security headers (X-Content-Type-Options, X-Frame-Options, HSTS, etc.).
+   *  Defaults to false. Pass true for defaults, or a SecurityHeadersConfig to customise. */
+  securityHeaders?: boolean | SecurityHeadersConfig
+  /** Enable gzip response compression via CompressionStream. */
+  compression?: boolean
+  /** Per-request timeout in milliseconds. Requests exceeding this return 408. */
+  requestTimeoutMs?: number
+  /** Structured server logger. */
+  logger?: ServerLogger
+  /** Audit logger for recording access events. */
+  auditLogger?: AuditLogger
 }
 
 function toRoutePath(action: string, storagePath: string): string {
@@ -519,6 +544,12 @@ function addCollectionRoutes(
           .join("")
         headers.set("ETag", `"${etag}"`)
 
+        // ETag conditional request for binary collections
+        const ifNoneMatch = c.req.header("if-none-match")
+        if (ifNoneMatch === `"${etag}"`) {
+          return new Response(null, { status: 304 })
+        }
+
         if (col.cacheDurationMs != null) {
           const maxAge = Math.floor(col.cacheDurationMs / 1000)
           const directive = col.readRoles.includes(ROLE_PUBLIC)
@@ -543,6 +574,59 @@ function addCollectionRoutes(
         col.cacheDurationMs,
         col.readRoles.includes(ROLE_PUBLIC),
       )
+
+      // TTL check: return empty data for expired documents
+      if (col.ttlMs != null && pullResult.status === 200) {
+        const ts = pullResult.body["timestamp"] as number | undefined
+        if (ts && isExpired(ts, col.ttlMs)) {
+          pullResult.body = { data: {}, hash: "", timestamp: ts }
+        }
+      }
+
+      // Field-level read permissions: strip fields the user can't read
+      if (col.fieldPermissions && pullResult.status === 200) {
+        const data = pullResult.body["data"] as Record<string, unknown> | undefined
+        if (data && typeof data === "object") {
+          const { identity: authedId } = await checkAuth(col, OP_READ, c, params, opts)
+          for (const [field, perm] of Object.entries(col.fieldPermissions)) {
+            if (perm.readRoles && perm.readRoles.length > 0) {
+              // Check if user has any of the required read roles
+              const userRoles = authedId ? (await opts.roleResolver(c)).roles : []
+              const hasAccess = perm.readRoles.some((r) => userRoles.includes(r) || r === ROLE_PUBLIC)
+              if (!hasAccess) {
+                delete data[field]
+              }
+            }
+          }
+        }
+      }
+
+      // ETag conditional request support
+      const hash = pullResult.body["hash"] as string | undefined
+      if (hash) {
+        const etag = `"${hash}"`
+        const ifNoneMatch = c.req.header("if-none-match")
+        if (ifNoneMatch === etag) {
+          return new Response(null, { status: 304 })
+        }
+        if (!pullResult.headers) pullResult.headers = {}
+        pullResult.headers["ETag"] = etag
+      }
+
+      // Audit logging
+      if (opts.auditLogger) {
+        opts.auditLogger.record({
+          timestamp: Date.now(),
+          action: "pull",
+          collection: col.name,
+          identity,
+          documentKey,
+          success: pullResult.status === 200,
+          statusCode: pullResult.status,
+          params,
+        })
+      }
+
       if (pullResult.headers) {
         const res = c.json(pullResult.body, pullResult.status as any)
         for (const [k, v] of Object.entries(pullResult.headers)) {
@@ -584,11 +668,17 @@ function addCollectionRoutes(
       if (!isJsonCollection(col.allowedMimeTypes)) {
         const response = await runBinaryPush(c, col, documentKey, identity, rateLimiter, opts)
         await safePublishEvent(opts, col, response, params)
+        if (opts.auditLogger) {
+          opts.auditLogger.record({ timestamp: Date.now(), action: "push", collection: col.name, identity, documentKey, success: response.status === 200, statusCode: response.status, params })
+        }
         return response
       }
 
       const response = await runPush(c, col, params, documentKey, identity, rateLimiter, opts)
       await safePublishEvent(opts, col, response, params)
+      if (opts.auditLogger) {
+        opts.auditLogger.record({ timestamp: Date.now(), action: "push", collection: col.name, identity, documentKey, success: response.status === 200, statusCode: response.status, params })
+      }
       return response
     })
   }
@@ -680,6 +770,19 @@ export function createSyncRouter(opts: SyncRouterOptions): Hono {
   const app = new Hono()
   const config = opts.config
 
+  // Apply middleware
+  if (opts.cors) {
+    const corsConfig = typeof opts.cors === "boolean" ? {} : opts.cors
+    app.use("*", corsMiddleware(corsConfig))
+  }
+  if (opts.securityHeaders) {
+    const shConfig = typeof opts.securityHeaders === "boolean" ? {} : opts.securityHeaders
+    app.use("*", securityHeadersMiddleware(shConfig))
+  }
+  if (opts.requestTimeoutMs) {
+    app.use("*", requestTimeoutMiddleware(opts.requestTimeoutMs))
+  }
+
   app.get("/health", (c) => {
     return c.json({ ok: true, ts: Date.now() })
   })
@@ -704,6 +807,29 @@ export function createSyncRouter(opts: SyncRouterOptions): Hono {
   for (const [bundleName, bundleCollections] of bundles) {
     addBundledRoutes(app, bundleName, bundleCollections, opts)
   }
+
+  // Batch pull endpoint: GET /batch/pull?collections=col1,col2
+  app.get("/batch/pull", async (c) => {
+    const colNames = c.req.query("collections")?.split(",").map((s) => s.trim()) ?? []
+    if (colNames.length === 0) {
+      return c.json({ error: "Missing collections parameter" }, 400)
+    }
+
+    const results: Record<string, Record<string, unknown>> = {}
+    for (const name of colNames) {
+      const col = config.collections.find((cc) => cc.name === name)
+      if (!col) {
+        results[name] = { error: "Collection not found" }
+        continue
+      }
+      const store = resolveStore(col, opts.store, {}, null, opts)
+      const key = col.storagePath.replace(/\{[^}]+\}/g, "_batch_")
+      const pullResult = await pull(store, key, 0)
+      results[name] = { data: pullResult.data, hash: pullResult.hash, timestamp: pullResult.timestamp }
+    }
+
+    return c.json({ collections: results })
+  })
 
   return app
 }
