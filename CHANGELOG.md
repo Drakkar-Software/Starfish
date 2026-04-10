@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.7.0
+
+### Added
+
+#### Client (TypeScript)
+
+- **`createDebouncedPush(syncManager, options)`** — Store-less debounced push for one-way publishing workflows (public pages, derived snapshots). Calls `syncManager.push(doc)` directly without requiring a Zustand store. Options: `serialize` (required), `delayMs`, `warnBytes`, `maxBytes`, `onSizeWarning`, `onSizeExceeded`, `onError`. Includes the same encrypted payload size guard as `createDebouncedSync`. `onError` defaults to `console.warn` on push failure.
+- **`createMobileLifecycle(store, deps, options?)`** — Wires React Native `AppState` and `NetInfo` events to a Starfish store. Uses dependency injection (pass `AppState` from `react-native` and optionally `NetInfo` from `@react-native-community/netinfo`) so no React Native imports are needed in this package. Background → flush dirty data; foreground → pull remote changes (only if online + not syncing); NetInfo → `setOnline()`. Returns a cleanup function. Options: `pullOnForeground` (default `true`), `flushOnBackground` (default `true`).
+
 ## 1.6.0
 
 ### Added

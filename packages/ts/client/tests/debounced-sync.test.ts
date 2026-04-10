@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { StarfishClient } from "../src/client.js"
 import { SyncManager } from "../src/sync.js"
 import { createStarfishStore } from "../src/bindings/zustand.js"
-import { createDebouncedSync } from "../src/debounced-sync.js"
+import { createDebouncedSync, createDebouncedPush } from "../src/debounced-sync.js"
 import type { PullResponse, PushSuccess } from "../src/types.js"
 
 beforeEach(() => {
@@ -159,6 +159,208 @@ describe("createDebouncedSync", () => {
     expect(pushFn).not.toHaveBeenCalled()
 
     await vi.advanceTimersByTimeAsync(1)
+    expect(pushFn).toHaveBeenCalledTimes(1)
+  })
+})
+
+// ── createDebouncedPush ───────────────────────────────────────────────────────
+
+function makeSyncManagerPushFn() {
+  return vi.fn<(data: Record<string, unknown>) => Promise<PushSuccess>>(
+    async () => ({ hash: "h1", timestamp: 100 }),
+  )
+}
+
+function createMockSyncManager(pushFn = makeSyncManagerPushFn()) {
+  const client = {
+    pull: vi.fn<(path: string, checkpoint?: number) => Promise<PullResponse>>(async () => ({
+      data: {},
+      hash: "h0",
+      timestamp: 0,
+    })),
+    push: pushFn,
+  } as unknown as StarfishClient
+
+  const syncManager = new SyncManager({ client, pullPath: "/pull/test", pushPath: "/push/test" })
+  // Intercept push at the SyncManager level so tests don't need a real server
+  vi.spyOn(syncManager, "push").mockImplementation(pushFn as unknown as typeof syncManager.push)
+  return { syncManager, pushFn }
+}
+
+describe("createDebouncedPush", () => {
+  it("does not push immediately after notify()", () => {
+    const { syncManager, pushFn } = createMockSyncManager()
+    const { notify } = createDebouncedPush(syncManager, { serialize: () => ({ x: 1 }) })
+
+    notify()
+    expect(pushFn).not.toHaveBeenCalled()
+  })
+
+  it("pushes after the debounce delay", async () => {
+    const { syncManager, pushFn } = createMockSyncManager()
+    const { notify } = createDebouncedPush(syncManager, {
+      delayMs: 1000,
+      serialize: () => ({ x: 1 }),
+    })
+
+    notify()
+    await vi.advanceTimersByTimeAsync(1000)
+
+    expect(pushFn).toHaveBeenCalledTimes(1)
+  })
+
+  it("resets timer on repeated notify() calls", async () => {
+    const { syncManager, pushFn } = createMockSyncManager()
+    const { notify } = createDebouncedPush(syncManager, {
+      delayMs: 1000,
+      serialize: () => ({ x: 1 }),
+    })
+
+    notify()
+    await vi.advanceTimersByTimeAsync(500)
+    notify()  // reset timer
+    await vi.advanceTimersByTimeAsync(500)  // only 500ms since last notify
+    expect(pushFn).not.toHaveBeenCalled()
+
+    await vi.advanceTimersByTimeAsync(500)  // now 1000ms since last notify
+    expect(pushFn).toHaveBeenCalledTimes(1)
+  })
+
+  it("cancel() prevents pending push", async () => {
+    const { syncManager, pushFn } = createMockSyncManager()
+    const { notify, cancel } = createDebouncedPush(syncManager, {
+      delayMs: 1000,
+      serialize: () => ({ x: 1 }),
+    })
+
+    notify()
+    cancel()
+    await vi.advanceTimersByTimeAsync(2000)
+
+    expect(pushFn).not.toHaveBeenCalled()
+  })
+
+  it("calls serialize() at push time (not notify time)", async () => {
+    const { syncManager, pushFn } = createMockSyncManager()
+    let counter = 0
+    const serialize = vi.fn(() => ({ count: ++counter }))
+    const { notify } = createDebouncedPush(syncManager, { delayMs: 100, serialize })
+
+    notify()
+    // serialize should not have been called yet
+    expect(serialize).not.toHaveBeenCalled()
+
+    await vi.advanceTimersByTimeAsync(100)
+
+    expect(serialize).toHaveBeenCalledTimes(1)
+    expect(pushFn).toHaveBeenCalledWith({ count: 1 })
+  })
+
+  it("calls syncManager.push() with the serialized document", async () => {
+    const { syncManager, pushFn } = createMockSyncManager()
+    const doc = { hello: "world", nested: { a: 1 } }
+    const { notify } = createDebouncedPush(syncManager, {
+      delayMs: 100,
+      serialize: () => doc,
+    })
+
+    notify()
+    await vi.advanceTimersByTimeAsync(100)
+
+    expect(pushFn).toHaveBeenCalledWith(doc)
+  })
+
+  it("calls onError when push fails", async () => {
+    const { syncManager } = createMockSyncManager()
+    const error = new Error("network error")
+    vi.spyOn(syncManager, "push").mockRejectedValue(error)
+
+    const onError = vi.fn()
+    const { notify } = createDebouncedPush(syncManager, {
+      delayMs: 100,
+      serialize: () => ({ x: 1 }),
+      onError,
+    })
+
+    notify()
+    await vi.advanceTimersByTimeAsync(100)
+
+    expect(onError).toHaveBeenCalledWith(error)
+  })
+
+  it("defaults to console.warn on push failure when no onError provided", async () => {
+    const { syncManager } = createMockSyncManager()
+    vi.spyOn(syncManager, "push").mockRejectedValue(new Error("fail"))
+
+    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    const { notify } = createDebouncedPush(syncManager, { delayMs: 100, serialize: () => ({ x: 1 }) })
+
+    notify()
+    await vi.advanceTimersByTimeAsync(100)
+
+    expect(consoleWarn).toHaveBeenCalledWith(expect.stringContaining("Push failed"), expect.any(Error))
+    consoleWarn.mockRestore()
+  })
+
+  it("calls onSizeWarning when payload exceeds warnBytes", async () => {
+    const { syncManager } = createMockSyncManager()
+    const onSizeWarning = vi.fn()
+    const { notify } = createDebouncedPush(syncManager, {
+      delayMs: 100,
+      warnBytes: 10,
+      maxBytes: Infinity,
+      serialize: () => ({ blob: "x".repeat(500) }),
+      onSizeWarning,
+    })
+
+    notify()
+    await vi.advanceTimersByTimeAsync(100)
+
+    expect(onSizeWarning).toHaveBeenCalledWith(expect.any(Number))
+  })
+
+  it("calls onSizeExceeded and blocks push when payload exceeds maxBytes", async () => {
+    const { syncManager, pushFn } = createMockSyncManager()
+    const onSizeExceeded = vi.fn()
+    const { notify } = createDebouncedPush(syncManager, {
+      delayMs: 100,
+      maxBytes: 10,
+      serialize: () => ({ blob: "x".repeat(500) }),
+      onSizeExceeded,
+    })
+
+    notify()
+    await vi.advanceTimersByTimeAsync(100)
+
+    expect(onSizeExceeded).toHaveBeenCalledWith(expect.any(Number))
+    expect(pushFn).not.toHaveBeenCalled()
+  })
+
+  it("defaults to 2000ms debounce delay", async () => {
+    const { syncManager, pushFn } = createMockSyncManager()
+    const { notify } = createDebouncedPush(syncManager, { serialize: () => ({ x: 1 }) })
+
+    notify()
+    await vi.advanceTimersByTimeAsync(1999)
+    expect(pushFn).not.toHaveBeenCalled()
+
+    await vi.advanceTimersByTimeAsync(1)
+    expect(pushFn).toHaveBeenCalledTimes(1)
+  })
+
+  it("multiple rapid notify() calls produce exactly one push", async () => {
+    const { syncManager, pushFn } = createMockSyncManager()
+    const { notify } = createDebouncedPush(syncManager, {
+      delayMs: 500,
+      serialize: () => ({ x: 1 }),
+    })
+
+    for (let i = 0; i < 5; i++) {
+      notify()
+      await vi.advanceTimersByTimeAsync(100)
+    }
+
+    await vi.advanceTimersByTimeAsync(500)
     expect(pushFn).toHaveBeenCalledTimes(1)
   })
 })

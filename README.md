@@ -950,6 +950,54 @@ const unsub = subscribeSyncStatus(store, (status) => {
 unsub()
 ```
 
+#### Store-less Debounced Push (`createDebouncedPush`)
+
+For one-way publishing workflows (public pages, derived snapshots) where you push directly via `SyncManager` without a Zustand store:
+
+```ts
+import { createDebouncedPush } from "@drakkar.software/starfish-client"
+
+const syncManager = new SyncManager({ client, pullPath, pushPath })
+
+const { notify, cancel } = createDebouncedPush(syncManager, {
+  serialize: () => buildPublicPageDocument(),  // called at push time
+  onError: (err) => console.warn("Push failed:", err),
+})
+
+// Call after every relevant store mutation:
+planningStore.subscribe(() => notify())
+
+// Teardown:
+cancel()
+```
+
+Includes the same payload size guard as `createDebouncedSync` (warn at 900 KB, block at 1 MB).
+
+#### React Native Lifecycle (`createMobileLifecycle`)
+
+Wires React Native `AppState` and `NetInfo` events to a Starfish store. Uses dependency injection — no `react-native` import in this package:
+
+```ts
+import { AppState } from "react-native"
+import NetInfo from "@react-native-community/netinfo"
+import { createMobileLifecycle } from "@drakkar.software/starfish-client"
+
+// Call once after the store is created:
+const cleanup = createMobileLifecycle(
+  store,
+  { appState: AppState, netInfo: NetInfo },
+)
+
+// In a React component root (e.g. _layout.tsx):
+useEffect(() => cleanup, [])
+```
+
+- **Background** → flushes dirty data before the OS suspends the app
+- **Foreground** → pulls remote changes (only if online and not already syncing)
+- **NetInfo** → forwards connectivity changes to `store.getState().setOnline()`
+
+`netInfo` is optional. Both behaviors can be disabled individually via `{ pullOnForeground: false, flushOnBackground: false }`.
+
 ```ts
 import { createRetryFetch, createResilientFetch } from "@drakkar.software/starfish-client/fetch"
 import { setupCrossTabSync } from "@drakkar.software/starfish-client/broadcast"
