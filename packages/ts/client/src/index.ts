@@ -54,7 +54,7 @@ export { createMultiStoreSync } from "./multi-store.js"
 export type {
   StoreSlice,
   BackupDocument,
-  MigrationFn,
+  MultiStoreMigrationFn,
   MultiStoreSyncOptions,
   MultiStoreSync,
 } from "./multi-store.js"

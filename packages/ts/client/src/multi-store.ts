@@ -37,7 +37,7 @@ export interface BackupDocument<T = Record<string, unknown>> {
  * Receives the full `data` object and must return an updated `data` object.
  * Only the `data` field is passed; `version` and `timestamp` are managed automatically.
  */
-export type MigrationFn = (data: Record<string, unknown>) => Record<string, unknown>
+export type MultiStoreMigrationFn = (data: Record<string, unknown>) => Record<string, unknown>
 
 export interface MultiStoreSyncOptions<T extends Record<string, unknown>> {
   /**
@@ -78,7 +78,7 @@ export interface MultiStoreSyncOptions<T extends Record<string, unknown>> {
    * }
    * ```
    */
-  migrations?: Record<number, MigrationFn>
+  migrations?: Record<number, MultiStoreMigrationFn>
 }
 
 /**
