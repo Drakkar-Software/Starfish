@@ -45,6 +45,26 @@ export interface CreateStarfishStoreOptions {
   devtools?: boolean | DevtoolsOptions
   /** Pass `produce` from `immer` to enable draft-based mutations in `set()`. */
   produce?: <T>(base: T, recipe: (draft: T) => T | void) => T
+  /**
+   * Called when remote data arrives via `pull()` — **not** called for local `set()` writes.
+   *
+   * Use this to restore domain stores after a pull without worrying about feedback loops.
+   * The callback fires **after** the Starfish store state is updated, so the store already
+   * reflects the new data when this runs.
+   *
+   * Replaces the manual `isRestoring` flag pattern:
+   * ```ts
+   * createStarfishStore({
+   *   name: "app",
+   *   syncManager,
+   *   onRemoteUpdate: (data) => {
+   *     taskStore.setState({ tasks: data.tasks as Task[] })
+   *     settingsStore.setState({ settings: data.settings as Settings })
+   *   },
+   * })
+   * ```
+   */
+  onRemoteUpdate?: (data: Record<string, unknown>) => void
 }
 
 // Re-export DevtoolsOptions for convenience
@@ -73,7 +93,11 @@ export function createStarfishStore(
       set({ syncing: true, error: null }, false, "pull/start")
       try {
         await syncManager.pull()
-        set({ data: syncManager.getData(), syncing: false }, false, "pull/success")
+        const newData = syncManager.getData()
+        set({ data: newData, syncing: false }, false, "pull/success")
+        // Fire after state update so domain stores can read the updated Starfish state if needed.
+        // Calling set() inside onRemoteUpdate does NOT re-enter pull(), so no feedback loop.
+        options.onRemoteUpdate?.(newData)
       } catch (err) {
         set({ syncing: false, error: err instanceof Error ? err.message : String(err) }, false, "pull/error")
       }
@@ -180,6 +204,36 @@ export function useStarfishData<T = Record<string, unknown>>(
 /** Use the derived sync status (synced | syncing | pending | error | offline). */
 export function useSyncStatus(store: StoreApi<StarfishStore>): SyncStatus {
   return useStore(store, deriveSyncStatus)
+}
+
+/**
+ * Subscribe to sync status changes outside of React.
+ *
+ * Framework-agnostic — works in React Native, Node.js, or anywhere hooks are unavailable.
+ * The callback is invoked immediately with the current status and then on every change.
+ *
+ * ```ts
+ * const unsub = subscribeSyncStatus(store, (status) => {
+ *   updateStatusBar(status)
+ * })
+ *
+ * // Later, to stop listening:
+ * unsub()
+ * ```
+ */
+export function subscribeSyncStatus(
+  store: StoreApi<StarfishStore>,
+  callback: (status: SyncStatus) => void,
+): () => void {
+  let prev = deriveSyncStatus(store.getState())
+  callback(prev)
+  return store.subscribe((state) => {
+    const next = deriveSyncStatus(state)
+    if (next !== prev) {
+      prev = next
+      callback(next)
+    }
+  })
 }
 
 /** Sets up cross-tab sync for a Starfish store. Cleans up on unmount. */
@@ -305,16 +359,9 @@ export function useSyncInit(config: SyncInitConfig | null): StoreApi<StarfishSto
       name: config.storeName ?? "sync",
       syncManager,
       storage: config.storage,
-    })
-
-    // Subscribe to data changes from pulls (not local sets)
-    let lastDataRef = newStore.getState().data
-    const unsub = newStore.subscribe((state) => {
-      const data = state.data
-      // Only call onData when data changes and store is not dirty
-      // (dirty = false means data came from a pull, not a local set)
-      if (data !== lastDataRef && !state.dirty) {
-        lastDataRef = data
+      // onRemoteUpdate fires only for pull() results, never for local set() writes —
+      // so no isRestoring flag is needed.
+      onRemoteUpdate: (data) => {
         try {
           onDataRef.current?.(data)
         } catch (err) {
@@ -322,9 +369,7 @@ export function useSyncInit(config: SyncInitConfig | null): StoreApi<StarfishSto
             error: `onData failed: ${err instanceof Error ? err.message : String(err)}`,
           })
         }
-      } else {
-        lastDataRef = data
-      }
+      },
     })
 
     setStore(newStore)
@@ -333,7 +378,6 @@ export function useSyncInit(config: SyncInitConfig | null): StoreApi<StarfishSto
     newStore.getState().pull().catch(() => {})
 
     return () => {
-      unsub()
       setStore(null)
     }
     // Intentionally depend on serializable config values, not the object reference

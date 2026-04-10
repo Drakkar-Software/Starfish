@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest"
 import { produce } from "immer"
 import { StarfishClient } from "../src/client.js"
 import { SyncManager } from "../src/sync.js"
-import { createStarfishStore } from "../src/bindings/zustand.js"
+import { createStarfishStore, subscribeSyncStatus } from "../src/bindings/zustand.js"
 import type { PullResponse, PushSuccess } from "../src/types.js"
 
 function mockClient(overrides: {
@@ -424,5 +424,201 @@ describe("produce option (immer)", () => {
 
     store.getState().set((d) => ({ ...d, y: 2 }))
     expect(mockProduce).toHaveBeenCalledTimes(2)
+  })
+})
+
+// ── onRemoteUpdate ────────────────────────────────────────────────────────────
+
+describe("onRemoteUpdate", () => {
+  it("is called after pull() with the pulled data", async () => {
+    const onRemoteUpdate = vi.fn()
+    const client = mockClient()
+    const syncManager = new SyncManager({ client, pullPath: "/pull/t", pushPath: "/push/t" })
+    const store = createStarfishStore({ name: "ru1", syncManager, storage: false, onRemoteUpdate })
+
+    await store.getState().pull()
+
+    expect(onRemoteUpdate).toHaveBeenCalledTimes(1)
+    expect(onRemoteUpdate).toHaveBeenCalledWith({ key: "value" })
+  })
+
+  it("is NOT called after set()", async () => {
+    const onRemoteUpdate = vi.fn()
+    const client = mockClient()
+    const syncManager = new SyncManager({ client, pullPath: "/pull/t", pushPath: "/push/t" })
+    const store = createStarfishStore({ name: "ru2", syncManager, storage: false, onRemoteUpdate })
+
+    store.getState().set((d) => ({ ...d, local: true }))
+
+    // Give flush a tick to complete — onRemoteUpdate must still not fire
+    await new Promise((r) => setTimeout(r, 20))
+    expect(onRemoteUpdate).not.toHaveBeenCalled()
+  })
+
+  it("is NOT called when pull() fails", async () => {
+    const onRemoteUpdate = vi.fn()
+    const client = mockClient({ pull: async () => { throw new Error("fail") } })
+    const syncManager = new SyncManager({ client, pullPath: "/pull/t", pushPath: "/push/t" })
+    const store = createStarfishStore({ name: "ru3", syncManager, storage: false, onRemoteUpdate })
+
+    await store.getState().pull()
+
+    expect(onRemoteUpdate).not.toHaveBeenCalled()
+    expect(store.getState().error).toBe("fail")
+  })
+
+  it("store data is already updated when onRemoteUpdate fires", async () => {
+    let dataAtCallTime: Record<string, unknown> | undefined
+    const client = mockClient()
+    const syncManager = new SyncManager({ client, pullPath: "/pull/t", pushPath: "/push/t" })
+    const store = createStarfishStore({
+      name: "ru4",
+      syncManager,
+      storage: false,
+      onRemoteUpdate: () => {
+        dataAtCallTime = store.getState().data
+      },
+    })
+
+    await store.getState().pull()
+
+    expect(dataAtCallTime).toEqual({ key: "value" })
+  })
+
+  it("calling set() inside onRemoteUpdate does not cause infinite loop", async () => {
+    let callCount = 0
+    const client = mockClient()
+    const syncManager = new SyncManager({ client, pullPath: "/pull/t", pushPath: "/push/t" })
+    const store = createStarfishStore({
+      name: "ru5",
+      syncManager,
+      storage: false,
+      onRemoteUpdate: (data) => {
+        callCount++
+        // Simulates domain store restoration that would normally re-trigger sync
+        store.getState().restore({ ...data, restored: true })
+      },
+    })
+
+    await store.getState().pull()
+
+    // onRemoteUpdate fires exactly once — restore() does not re-trigger pull()
+    expect(callCount).toBe(1)
+  })
+})
+
+// ── subscribeSyncStatus ───────────────────────────────────────────────────────
+
+describe("subscribeSyncStatus", () => {
+  it("calls callback immediately with current status", () => {
+    const { store } = createTestStore()
+    const statuses: string[] = []
+
+    const unsub = subscribeSyncStatus(store, (s) => statuses.push(s))
+    unsub()
+
+    expect(statuses).toEqual(["synced"])
+  })
+
+  it("emits 'pending' when store is dirty and online", async () => {
+    // Use a slow push so we can observe the 'pending' state before flush completes
+    let resolvePush!: () => void
+    const slowPush = vi.fn(
+      () =>
+        new Promise<PushSuccess>((resolve) => {
+          resolvePush = () => resolve({ hash: "h1", timestamp: 100 })
+        }),
+    )
+    const { store } = createTestStore({ push: slowPush })
+    const statuses: string[] = []
+
+    const unsub = subscribeSyncStatus(store, (s) => statuses.push(s))
+
+    // Go offline so set() marks dirty without triggering flush
+    store.getState().setOnline(false)
+    store.getState().set((d) => ({ ...d, x: 1 }))
+
+    // Now go back online: state is dirty+online → "pending" before flush starts
+    store.getState().setOnline(true)
+
+    // At this moment we should see "pending" (dirty=true, syncing may not have started yet)
+    expect(statuses).toContain("pending")
+
+    resolvePush()
+    await vi.waitFor(() => expect(store.getState().syncing).toBe(false))
+    unsub()
+  })
+
+  it("emits 'offline' when store goes offline", () => {
+    const { store } = createTestStore()
+    const statuses: string[] = []
+
+    const unsub = subscribeSyncStatus(store, (s) => statuses.push(s))
+    store.getState().setOnline(false)
+    unsub()
+
+    expect(statuses).toContain("offline")
+  })
+
+  it("emits 'syncing' during an in-flight push", async () => {
+    let resolvePush!: () => void
+    const pushFn = vi.fn(
+      () =>
+        new Promise<PushSuccess>((resolve) => {
+          resolvePush = () => resolve({ hash: "h1", timestamp: 100 })
+        }),
+    )
+    const { store } = createTestStore({ push: pushFn })
+    const statuses: string[] = []
+
+    const unsub = subscribeSyncStatus(store, (s) => statuses.push(s))
+    store.getState().set((d) => ({ ...d, x: 1 }))
+
+    await vi.waitFor(() => expect(statuses).toContain("syncing"))
+    resolvePush()
+    await vi.waitFor(() => expect(store.getState().syncing).toBe(false))
+    unsub()
+
+    expect(statuses).toContain("syncing")
+    expect(statuses[statuses.length - 1]).toBe("synced")
+  })
+
+  it("emits 'error' after a failed push", async () => {
+    const { store } = createTestStore({
+      push: async () => { throw new Error("push failed") },
+    })
+    const statuses: string[] = []
+
+    const unsub = subscribeSyncStatus(store, (s) => statuses.push(s))
+    store.getState().set((d) => ({ ...d, x: 1 }))
+
+    await vi.waitFor(() => expect(statuses).toContain("error"))
+    unsub()
+  })
+
+  it("does not emit duplicate statuses", () => {
+    const { store } = createTestStore()
+    const statuses: string[] = []
+
+    const unsub = subscribeSyncStatus(store, (s) => statuses.push(s))
+
+    // Trigger multiple state changes that don't change the derived status
+    store.setState({ error: null })
+    store.setState({ error: null })
+    unsub()
+
+    // Should only have the initial "synced" call
+    expect(statuses.filter((s) => s === "synced")).toHaveLength(1)
+  })
+
+  it("cleanup function stops further callbacks", () => {
+    const { store } = createTestStore()
+    const statuses: string[] = []
+
+    const unsub = subscribeSyncStatus(store, (s) => statuses.push(s))
+    unsub()  // cleanup immediately after initial call
+
+    store.getState().setOnline(false)  // would emit "offline" if still subscribed
+    expect(statuses).not.toContain("offline")
   })
 })

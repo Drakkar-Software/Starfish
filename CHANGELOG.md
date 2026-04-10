@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.6.0
+
+### Added
+
+#### Client (TypeScript)
+
+- **Passphrase identity kit** (`./identity` subpath) — Serverless/passwordless auth from a single secret. `generatePassphrase(wordCount?, wordlist?)` produces a crypto-secure BIP-39-style passphrase (default 12 words, 96 bits of entropy). `deriveCredentials(passphrase)` deterministically derives `{ authToken, userId, encryptionSecret, encryptionSalt }` — plug directly into `StarfishClient` auth header and `SyncManager` encryption options. `buildInviteUrl(baseUrl, payload)` / `parseInviteUrl(url)` encode/decode arbitrary invite payloads as URL-safe base64 tokens.
+- **`onRemoteUpdate` callback on `createStarfishStore`** — Fires only when remote data arrives via `pull()`, never on local `set()`. Eliminates the manual `isRestoring` guard pattern that prevented subscribe-triggered re-push loops. Pass `onRemoteUpdate: (data) => restore(data)` instead of wiring a store subscription that checks `!state.dirty`.
+- **`subscribeSyncStatus(store, callback)`** — Framework-agnostic (non-React) subscription to derived sync status changes. Fires immediately with current status, then on every transition. Deduplicates consecutive equal values. Returns an unsubscribe function. Complements the existing `useSyncStatus` React hook for non-React environments.
+- **`createDebouncedSync(store, options?)`** — Debounces push calls triggered by rapid user edits. Returns `{ notify, cancel }`. Default 2000ms delay; resets on each `notify()`. Pre-push size guard: estimates encrypted payload size (JSON byte count × 1.34 for base64 overhead), calls `onSizeWarning(bytes)` above `warnBytes` (default 900KB) and blocks the push with `onSizeExceeded(bytes)` above `maxBytes` (default 1MB). Falls back to `console.warn`/`console.error` when no callback is provided.
+- **`createMultiStoreSync(options)`** — Serializes multiple domain Zustand stores into a single versioned Starfish document and restores them back. Options: `slices` (map of store slice keys to `{ getState, restore }` helpers), `version` (current schema version), `migrations` (map of `fromVersion` → migration function). Migrations run sequentially on restore when the document version is behind. Useful for apps that sync more than one logical domain (guests, vendors, planning…) in one Starfish collection.
+- **Collection pattern guide** (`docs/ts/client/19-collection-patterns.md`) — Five ready-to-use server + client configuration recipes: Private Vault (self r/w + E2E encryption), Public Page (public r, owner w), Public Roster (per-record tokens), Submission Inbox (owner r, public w, TTL), and Claim Tracker. Includes a section on combining patterns, idempotent anonymous submissions with `update()`, conflict retry, and error handling.
+
 ## 1.5.0
 
 ### Added

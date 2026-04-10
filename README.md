@@ -808,6 +808,7 @@ The TypeScript client ships additional utilities via subpath exports:
 |---------|---------|-------------|
 | `./fetch` | `createRetryFetch`, `CircuitBreaker`, `createResilientFetch`, `createCompressedFetch` | Retry with exponential backoff, circuit breaker, gzip compression |
 | `./broadcast` | `setupBroadcastSync`, `setupStorageFallback`, `setupCrossTabSync` | Cross-tab sync via BroadcastChannel or localStorage fallback |
+| `./identity` | `generatePassphrase`, `deriveCredentials`, `buildInviteUrl`, `parseInviteUrl` | Passphrase-based passwordless identity and invite URLs |
 | `./testing` | `createMockClient`, `createMockFetch`, `createConflictFetch` | Mock utilities for unit and integration tests |
 
 The main entrypoint also exports:
@@ -819,6 +820,135 @@ The main entrypoint also exports:
 - **Conflict resolvers** — `createUnionMerge()`, `createSoftDeleteResolver()`, `timestampWinner()`, `pruneTombstones()`
 - **Snapshot history** — `SnapshotHistory` class for undo/restore with optional localStorage persistence
 - **Polling** — `startPolling()`, `startAdaptivePolling()` with network-quality adaptation and pause/resume
+- **Debounced sync** — `createDebouncedSync(store, opts)` wraps a Starfish store with a debounce timer and payload size guard, preventing rapid-fire pushes and protecting against server body limits
+- **Multi-store sync** — `createMultiStoreSync({ slices, version, migrations? })` serializes multiple domain stores into a single Starfish document with versioned schema migrations
+
+#### Passphrase Identity (`./identity`)
+
+Passwordless, serverless identity derived entirely from a passphrase. One passphrase → one user.
+
+```ts
+import {
+  generatePassphrase,
+  deriveCredentials,
+  buildInviteUrl,
+  parseInviteUrl,
+} from "@drakkar.software/starfish-client/identity"
+
+// Generate a cryptographically random 12-word passphrase (96 bits of entropy)
+const passphrase = generatePassphrase()
+// => "game fire loud able blue sold east rock loop dark hunt calm"
+
+// Deterministically derive auth + encryption credentials
+const creds = await deriveCredentials(passphrase)
+// => {
+//   authToken: "a3f8...",      // 64-char hex — use as Bearer token
+//   userId: "a3f8c2d1e4b0...", // 16-char hex — use in collection paths
+//   encryptionSecret: "...",   // pass to SyncManager as encryptionSecret
+//   encryptionSalt: "...",     // pass to SyncManager as encryptionSalt (= userId)
+// }
+
+// Wire to StarfishClient + SyncManager
+const client = new StarfishClient({
+  baseUrl: serverUrl,
+  auth: () => ({ Authorization: `Bearer ${creds.authToken}` }),
+})
+
+const syncManager = new SyncManager({
+  client,
+  pullPath: `/pull/${creds.userId}/wedding`,
+  pushPath: `/push/${creds.userId}/wedding`,
+  encryptionSecret: creds.encryptionSecret,
+  encryptionSalt: creds.encryptionSalt,
+})
+
+// Encode an invite link — share via QR code, link, or any channel
+const inviteUrl = buildInviteUrl("myapp://join", { name: "Alice & Bob", p: passphrase })
+
+// On the receiving device: parse the invite
+const payload = parseInviteUrl(inviteUrl)
+// => { name: "Alice & Bob", p: "game fire loud able ..." }
+// Derive the same credentials and pull the synced data
+```
+
+Sharing the passphrase (via invite URL or QR code) grants full read/write access on any device — no user database, no registration, no sessions required.
+
+#### Debounced Sync (`createDebouncedSync`)
+
+Coalesces rapid mutations into a single push and guards against oversized payloads:
+
+```ts
+import { createDebouncedSync } from "@drakkar.software/starfish-client"
+
+const { notify, cancel } = createDebouncedSync(starfishStore, {
+  delayMs: 2000,                        // default: 2000ms
+  warnBytes: 900 * 1024,                // default: 900 KB — log a warning
+  maxBytes: 1024 * 1024,                // default: 1 MB — block push, log error
+  serialize: () => buildSyncDocument(), // optional: snapshot domain stores before push
+  onSizeWarning: (bytes) => showToast(`Payload ${bytes} bytes, approaching limit`),
+  onSizeExceeded: (bytes) => showError(`Payload too large: ${bytes} bytes`),
+})
+
+// Call on every domain store mutation — timer resets each time
+taskStore.subscribe(() => notify())
+settingsStore.subscribe(() => notify())
+
+// Cancel on unmount / teardown
+onCleanup(() => cancel())
+```
+
+#### Multi-Store Sync (`createMultiStoreSync`)
+
+Serializes multiple domain stores into a single Starfish document with versioned migrations:
+
+```ts
+import { createMultiStoreSync } from "@drakkar.software/starfish-client"
+
+const multiSync = createMultiStoreSync({
+  slices: {
+    tasks: {
+      serialize: () => taskStore.getState().tasks,
+      restore: (tasks) => taskStore.setState({ tasks }),
+    },
+    settings: {
+      serialize: () => settingsStore.getState().settings,
+      restore: (settings) => settingsStore.setState({ settings }),
+    },
+  },
+  version: 2,
+  migrations: {
+    // Upgrade documents from version 1 → 2
+    1: (data) => ({ ...data, settings: { ...(data.settings as object), darkMode: false } }),
+  },
+})
+
+// Push: snapshot all domain stores → push to Starfish
+starfishStore.getState().set(() => multiSync.serialize())
+
+// Restore: when remote data arrives, restore all domain stores
+createStarfishStore({
+  name: "app",
+  syncManager,
+  onRemoteUpdate: (doc) => multiSync.restore(doc as BackupDocument),
+})
+```
+
+#### Vanilla Sync Status (`subscribeSyncStatus`)
+
+Subscribe to sync status changes outside of React — works in React Native, Node.js, or anywhere hooks are unavailable:
+
+```ts
+import { subscribeSyncStatus } from "@drakkar.software/starfish-client/zustand"
+
+// Fires immediately with current status, then on every change
+const unsub = subscribeSyncStatus(store, (status) => {
+  // status: "synced" | "syncing" | "pending" | "error" | "offline"
+  updateStatusBar(status)
+})
+
+// Stop listening
+unsub()
+```
 
 ```ts
 import { createRetryFetch, createResilientFetch } from "@drakkar.software/starfish-client/fetch"

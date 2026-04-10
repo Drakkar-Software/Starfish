@@ -48,3 +48,13 @@ export type { BackgroundSyncOptions } from "./background-sync.js"
 export { isServiceWorkerSupported, registerServiceWorker, unregisterServiceWorkers } from "./service-worker.js"
 export type { ServiceWorkerOptions } from "./service-worker.js"
 export { createSuspenseResource } from "./bindings/suspense.js"
+export { createDebouncedSync } from "./debounced-sync.js"
+export type { DebouncedSyncOptions, DebouncedSync } from "./debounced-sync.js"
+export { createMultiStoreSync } from "./multi-store.js"
+export type {
+  StoreSlice,
+  BackupDocument,
+  MigrationFn,
+  MultiStoreSyncOptions,
+  MultiStoreSync,
+} from "./multi-store.js"
