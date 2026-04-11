@@ -46,6 +46,7 @@ from starfish_server.config.validate import validate_config
 from starfish_server.config.loader import load_config, save_config, parse_config_json, load_config_file
 from starfish_server.replica import ReplicaManager
 from starfish_server.queue import AbstractQueue, MemoryQueue, CustomQueue
+from starfish_server.queue.message import QueueMessage
 from starfish_server.storage.base import AbstractObjectStore
 from starfish_server.storage.filesystem import FilesystemObjectStore, FilesystemStorageOptions
 from starfish_server.storage.memory import MemoryObjectStore, CustomObjectStore
@@ -117,6 +118,7 @@ __all__ = [
     "AbstractQueue",
     "MemoryQueue",
     "CustomQueue",
+    "QueueMessage",
     "AbstractObjectStore",
     "FilesystemObjectStore",
     "FilesystemStorageOptions",

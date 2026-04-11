@@ -46,6 +46,7 @@ import {
 } from "../constants.js"
 import type { ReplicaManager } from "../replica/manager.js"
 import type { Queue } from "../queue/base.js"
+import type { QueueMessage } from "../queue/message.js"
 import type { ServerLogger } from "../logger.js"
 import type { AuditLogger, AuditEntry } from "../audit.js"
 import { isExpired } from "../ttl.js"
@@ -243,22 +244,26 @@ async function publishChangeEvent(
   responseBody: Record<string, unknown>,
   responseStatus: number,
   params: Record<string, string>,
+  bodyData?: Record<string, unknown>,
 ): Promise<void> {
   if (!opts.queue || !col.queue || responseStatus !== 200) return
   try {
     const subject = col.queue.topic ?? col.name
-    const msg: Record<string, unknown> = {
+    const msg: QueueMessage = {
       collection: col.name,
-      hash: responseBody["hash"] ?? "",
-      timestamp: responseBody["timestamp"] ?? 0,
+      hash: (responseBody["hash"] as string) ?? "",
+      timestamp: (responseBody["timestamp"] as number) ?? 0,
     }
     if (col.queue.includeParams && Object.keys(params).length > 0) {
-      msg["params"] = params
+      msg.params = params
+    }
+    if (col.queue.includeBody && bodyData !== undefined) {
+      msg.body = bodyData
     }
     await opts.queue.publish(subject, new TextEncoder().encode(JSON.stringify(msg)))
   } catch (e) {
     // Queue errors must not break client writes, but must be visible to operators
-    console.error(`[Starfish] Failed to publish queue event for "${col.name}":`, e)
+    console.warn(`[Starfish] Failed to publish queue event for "${col.name}":`, e)
   }
 }
 
@@ -267,6 +272,7 @@ async function safePublishEvent(
   col: CollectionConfig,
   response: Response,
   params: Record<string, string>,
+  bodyData?: Record<string, unknown>,
 ): Promise<void> {
   let respBody: Record<string, unknown> | null = null
   try {
@@ -275,7 +281,7 @@ async function safePublishEvent(
     console.error("[Starfish] Failed to parse push response for queue event:", e)
     return
   }
-  await publishChangeEvent(opts, col, respBody, response.status, params)
+  await publishChangeEvent(opts, col, respBody, response.status, params, bodyData)
 }
 
 async function proxyPushToPrimary(
@@ -695,8 +701,26 @@ function addCollectionRoutes(
         return response
       }
 
+      let bodyData: Record<string, unknown> | undefined
+      if (col.queue?.includeBody) {
+        try {
+          const raw = (await c.req.json()) as Record<string, unknown>
+          const d = raw["data"]
+          if (d !== null && typeof d === "object" && !Array.isArray(d)) {
+            bodyData = d as Record<string, unknown>
+          } else {
+            console.warn(`[Starfish] includeBody enabled for "${col.name}" but request data is not a plain object; body will be omitted from queue message`)
+          }
+        } catch {
+          // JSON parse failed → bodyData stays undefined.
+          // runPush will independently re-parse and reject with 400,
+          // so no queue event will be published due to the non-200 status guard.
+          console.warn(`[Starfish] includeBody: failed to parse request body for queue message on "${col.name}"`)
+        }
+      }
+
       const response = await runPush(c, col, params, documentKey, identity, rateLimiter, opts)
-      await safePublishEvent(opts, col, response, params)
+      await safePublishEvent(opts, col, response, params, bodyData)
       if (opts.auditLogger) {
         opts.auditLogger.record({ timestamp: Date.now(), action: "push", collection: col.name, identity, documentKey, success: response.status === 200, statusCode: response.status, params })
       }
@@ -780,8 +804,24 @@ function addBundledRoutes(
       if (error) return error
 
       const documentKey = `${resolveDocumentKey(storagePath, params)}/${col.name}`
+
+      let bundleBodyData: Record<string, unknown> | undefined
+      if (col.queue?.includeBody) {
+        try {
+          const raw = (await c.req.json()) as Record<string, unknown>
+          const d = raw["data"]
+          if (d !== null && typeof d === "object" && !Array.isArray(d)) {
+            bundleBodyData = d as Record<string, unknown>
+          } else {
+            console.warn(`[Starfish] includeBody enabled for "${col.name}" but request data is not a plain object; body will be omitted from queue message`)
+          }
+        } catch {
+          console.warn(`[Starfish] includeBody: failed to parse request body for queue message on "${col.name}"`)
+        }
+      }
+
       const response = await runPush(c, col, params, documentKey, identity, rateLimiter, opts)
-      await safePublishEvent(opts, col, response, params)
+      await safePublishEvent(opts, col, response, params, bundleBodyData)
       return response
     })
   }

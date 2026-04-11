@@ -18,6 +18,7 @@ export interface RemoteConfig {
 export interface QueueConfig {
   topic?: string
   includeParams: boolean
+  includeBody?: boolean
 }
 
 export interface CollectionRateLimitConfig {

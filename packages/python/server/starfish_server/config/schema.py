@@ -97,6 +97,13 @@ class QueueConfig(BaseModel):
     """Include resolved path parameters (e.g. ``{"identity": "user-1"}``) in the
     published message payload."""
 
+    include_body: bool = Field(default=False, alias="includeBody")
+    """Include the full document data in the published message payload.
+
+    Only applies to JSON collections — binary push events never include body.
+    The ``body`` field contains the ``data`` from the push request body as sent
+    by the client (before server-side sanitization of prototype-pollution keys)."""
+
 
 class CollectionRateLimitConfig(BaseModel):
     """Per-collection rate limit overrides.

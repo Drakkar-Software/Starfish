@@ -176,3 +176,120 @@ async def test_queue_config_coercion_false():
         queue=False,  # type: ignore[arg-type]
     )
     assert col.queue is None
+
+
+@pytest.mark.asyncio
+async def test_include_body():
+    col = _col_with_queue(include_body=True)
+    app, store, q = _build_app([col])
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        await _push(client, "/push/posts/my-post-id")
+
+    msg = json.loads(q.messages[0][1])
+    assert msg["body"] == {"title": "Hello"}
+
+
+@pytest.mark.asyncio
+async def test_no_include_body_by_default():
+    col = _col_with_queue()
+    app, store, q = _build_app([col])
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        await _push(client)
+
+    msg = json.loads(q.messages[0][1])
+    assert "body" not in msg
+
+
+@pytest.mark.asyncio
+async def test_include_body_and_params_together():
+    col = _col_with_queue(include_body=True, include_params=True)
+    app, store, q = _build_app([col])
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        await _push(client, "/push/posts/post-42")
+
+    msg = json.loads(q.messages[0][1])
+    assert msg["body"] == {"title": "Hello"}
+    assert msg["params"] == {"postId": "post-42"}
+
+
+@pytest.mark.asyncio
+async def test_binary_collection_include_body_never_emits_body():
+    col = CollectionConfig(
+        name="avatar",
+        storagePath="users/{userId}/avatar",
+        readRoles=["public"],
+        writeRoles=["admin"],
+        encryption="none",
+        maxBodyBytes=65536,
+        allowedMimeTypes=["image/png"],
+        queue=QueueConfig(include_body=True),
+    )
+    app, store, q = _build_app([col])
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post(
+            "/push/users/user-1/avatar",
+            content=b"\x89PNG",
+            headers={"content-type": "image/png"},
+        )
+        assert resp.status_code == 200
+
+    assert len(q.messages) == 1
+    msg = json.loads(q.messages[0][1])
+    assert "body" not in msg
+    assert msg["collection"] == "avatar"
+
+
+@pytest.mark.asyncio
+async def test_queue_failure_does_not_break_push():
+    """A queue publish error must not propagate to the client."""
+    from starfish_server.queue.base import AbstractQueue
+
+    class FailingQueue(AbstractQueue):
+        async def publish(self, subject: str, payload: bytes) -> None:
+            raise RuntimeError("NATS connection lost")
+
+    col = _col_with_queue()
+    store = MemoryObjectStore()
+    config = SyncConfig(version=1, collections=[col])
+
+    async def role_resolver(request: Request) -> AuthResult:
+        return AuthResult(identity="user-1", roles=["admin", "self"])
+
+    router = create_sync_router(
+        SyncRouterOptions(store=store, config=config, role_resolver=role_resolver, queue=FailingQueue()),
+    )
+    app = FastAPI()
+    app.include_router(router)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        push_body = await _push(client)
+
+    assert "hash" in push_body
+    assert "timestamp" in push_body
+
+
+@pytest.mark.asyncio
+async def test_bundle_collection_include_body_emits_body():
+    col = CollectionConfig(
+        name="prefs",
+        storagePath="users/{userId}/data",
+        readRoles=["public"],
+        writeRoles=["admin"],
+        encryption="none",
+        maxBodyBytes=65536,
+        bundle="userdata",
+        queue=QueueConfig(include_body=True),
+    )
+    app, store, q = _build_app([col])
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post(
+            "/push/users/user-1/data/prefs",
+            json={"data": {"theme": "dark"}, "baseHash": None},
+            headers={"content-type": "application/json"},
+        )
+        assert resp.status_code == 200
+
+    assert len(q.messages) == 1
+    msg = json.loads(q.messages[0][1])
+    assert msg["collection"] == "prefs"
+    assert msg["body"] == {"theme": "dark"}

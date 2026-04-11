@@ -66,6 +66,7 @@ export { matchesAllowedMime, isJsonCollection } from "./router/mime.js"
 
 // Queue
 export type { Queue } from "./queue/base.js"
+export type { QueueMessage } from "./queue/message.js"
 export { MemoryQueue, CustomQueue } from "./queue/memory.js"
 
 // Replica

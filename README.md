@@ -1276,8 +1276,9 @@ Queue errors never surface to clients — they are logged and the push response 
 |---|---|---|---|
 | `topic` | `string` | collection name | Topic / NATS subject to publish to |
 | `includeParams` | `boolean` | `false` | Include resolved path params in the payload |
+| `includeBody` | `boolean?` | `false` | Include push request data in the payload (JSON collections only) |
 
-Pass `true` as a shorthand for `{ includeParams: false }` (topic = collection name). Pass `false` or omit to disable.
+Pass `true` as a shorthand for defaults (topic = collection name, `includeParams: false`, `includeBody: false`). Pass `false` or omit to disable.
 
 #### Collection config
 
@@ -1287,9 +1288,9 @@ Pass `true` as a shorthand for `{ includeParams: false }` (topic = collection na
   name: "posts",
   storagePath: "posts/{postId}",
   // ...
-  queue: true,  // topic = "posts", includeParams = false
+  queue: true,  // topic = "posts", includeParams = false, includeBody = false
   // Or:
-  // queue: { topic: "data.posts.changed", includeParams: true },
+  // queue: { topic: "data.posts.changed", includeParams: true, includeBody: true },
 }
 ```
 
@@ -1299,9 +1300,9 @@ CollectionConfig(
     name="posts",
     storage_path="posts/{postId}",
     # ...
-    queue=True,  # topic = "posts", include_params = False
+    queue=True,  # topic = "posts", include_params = False, include_body = False
     # Or:
-    # queue=QueueConfig(topic="data.posts.changed", include_params=True),
+    # queue=QueueConfig(topic="data.posts.changed", include_params=True, include_body=True),
 )
 ```
 
@@ -1359,6 +1360,27 @@ app.include_router(sync_router, prefix="/v1")
   "timestamp": 1712345678000,
   "params": { "postId": "abc" }
 }
+```
+
+`body` is added when `includeBody: true` (JSON collections only):
+
+```json
+{
+  "collection": "posts",
+  "hash": "abc123...",
+  "timestamp": 1712345678000,
+  "body": { "title": "Hello world", "published": true }
+}
+```
+
+The `QueueMessage` type is exported for use in consumers:
+
+```ts
+import type { QueueMessage } from "@drakkar.software/starfish-server"
+```
+
+```python
+from starfish_server import QueueMessage
 ```
 
 ### Replicas

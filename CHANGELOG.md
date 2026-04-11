@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.12.0
+
+### Added
+
+#### Server (TypeScript + Python)
+
+- **`QueueConfig.includeBody`** — new opt-in flag on `QueueConfig`. When `includeBody: true` (TypeScript) / `include_body=True` (Python), the queue message includes a `body` field containing the full document data as written to storage. Useful for consumers that need document content without a follow-up pull (e.g. search indexers, audit logs). Only applies to JSON collections — binary push events never include body. `body` is absent when the flag is unset (default).
+- **`QueueMessage` type** — exported interface/TypedDict that describes the exact wire shape of queue messages (`collection`, `hash`, `timestamp`, optional `params`, optional `body`). TypeScript: `import type { QueueMessage } from "@drakkar.software/starfish-server"`. Python: `from starfish_server import QueueMessage`.
+
 ## 1.11.0
 
 ### Added

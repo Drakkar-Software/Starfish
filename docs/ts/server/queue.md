@@ -14,14 +14,15 @@ Queue errors never surface to clients — they are logged to `console.error` and
 
 ```ts
 interface QueueConfig {
-  topic?: string       // Topic / NATS subject to publish to. Defaults to the collection name.
+  topic?: string        // Topic / NATS subject to publish to. Defaults to the collection name.
   includeParams: boolean  // Include resolved path params in the payload (default: false)
+  includeBody?: boolean   // Include full document data in the payload (default: false, JSON only)
 }
 ```
 
 ### Shorthand
 
-Pass `true` to use defaults (topic = collection name, `includeParams: false`):
+Pass `true` to use defaults (topic = collection name, `includeParams: false`, `includeBody: false`):
 
 ```json
 { "queue": true }
@@ -61,7 +62,13 @@ const config = parseConfigJson(JSON.stringify({
 
 ## Event payload
 
-Every event is a UTF-8 JSON object:
+Every event is a UTF-8 JSON object conforming to the exported `QueueMessage` type:
+
+```ts
+import type { QueueMessage } from "@drakkar.software/starfish-server"
+```
+
+The base shape (always present):
 
 ```json
 {
@@ -81,6 +88,21 @@ When `includeParams: true`, the resolved path parameters are added:
   "params": { "postId": "post-1", "commentId": "c-42" }
 }
 ```
+
+When `includeBody: true`, the full document data is added (JSON collections only):
+
+```json
+{
+  "collection": "posts",
+  "hash": "abc123...",
+  "timestamp": 1712345678000,
+  "body": { "title": "Hello world", "published": true }
+}
+```
+
+`body` contains the `data` field from the push request body as sent by the client. It is never present for binary collections. Use it when consumers need the document content without making a follow-up pull request — for example, when indexing into a search engine or writing to an audit log.
+
+> **Note:** `body` is captured from the raw request before server-side sanitization (which removes prototype-pollution keys such as `__proto__`). In practice the difference is negligible for normal payloads, but `body` is not guaranteed to be byte-for-byte identical to what was written to storage.
 
 ## Queue interface
 
@@ -217,9 +239,9 @@ CollectionConfig(
     write_roles=["admin"],
     encryption="none",
     max_body_bytes=65536,
-    queue=True,  # topic = "posts", include_params = False
+    queue=True,  # topic = "posts", include_params = False, include_body = False
     # Or:
-    # queue=QueueConfig(topic="data.posts.changed", include_params=True),
+    # queue=QueueConfig(topic="data.posts.changed", include_params=True, include_body=True),
 )
 ```
 

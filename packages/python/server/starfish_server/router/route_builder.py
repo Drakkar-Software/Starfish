@@ -28,6 +28,7 @@ from starfish_server.router.helpers import (
 )
 from starfish_server.router.middleware import check_body_limit, RateLimiter
 from starfish_server.router.mime import matches_allowed_mime, is_json_collection
+from starfish_server.queue.message import QueueMessage
 from starfish_server.ttl import is_expired as _is_expired
 from starfish_server.constants import (
     ROLE_PUBLIC,
@@ -355,6 +356,7 @@ async def _publish_change_event(
     col: CollectionConfig,
     response: JSONResponse | Response,
     params: dict[str, str],
+    body_data: dict[str, Any] | None = None,
 ) -> None:
     """Publish a queue event after a successful push.
 
@@ -366,13 +368,15 @@ async def _publish_change_event(
     try:
         resp_body = json.loads(response.body)
         subject = col.queue.topic or col.name
-        msg: dict[str, Any] = {
+        msg: QueueMessage = {
             "collection": col.name,
             "hash": resp_body.get("hash", ""),
             "timestamp": resp_body.get("timestamp", 0),
         }
         if col.queue.include_params and params:
             msg["params"] = params
+        if col.queue.include_body and body_data is not None:
+            msg["body"] = body_data
         await opts.queue.publish(subject, json.dumps(msg).encode())
     except Exception:
         logging.getLogger(__name__).warning(
@@ -417,8 +421,26 @@ def _make_push_handler(
             await _publish_change_event(opts, col, response, params)
             return response
 
+        body_data: dict[str, Any] | None = None
+        if col.queue is not None and col.queue.include_body:
+            try:
+                raw = await request.json()  # Safe: Starlette.Request caches body in self._json after first read
+                if isinstance(raw, dict) and isinstance(raw.get("data"), dict):
+                    body_data = raw["data"]
+                else:
+                    logging.getLogger(__name__).warning(
+                        "includeBody enabled for %r but request data is not a dict; omitting body from queue message",
+                        col.name,
+                    )
+            except Exception:
+                logging.getLogger(__name__).warning(
+                    "includeBody: failed to extract body for queue message on collection %r",
+                    col.name,
+                    exc_info=True,
+                )
+
         response = await _run_push(request, col, params, document_key, identity, effective_roles, rate_limiter, opts)
-        await _publish_change_event(opts, col, response, params)
+        await _publish_change_event(opts, col, response, params, body_data)
         return response
 
     return push_handler
@@ -624,8 +646,27 @@ def _add_bundled_routes(
                     return error
 
                 document_key = f"{_resolve_document_key(storage_path, params)}/{col.name}"
+
+                bundle_body_data: dict[str, Any] | None = None
+                if col.queue is not None and col.queue.include_body:
+                    try:
+                        raw = await request.json()  # Safe: Starlette.Request caches body in self._json after first read
+                        if isinstance(raw, dict) and isinstance(raw.get("data"), dict):
+                            bundle_body_data = raw["data"]
+                        else:
+                            logging.getLogger(__name__).warning(
+                                "includeBody enabled for %r but request data is not a dict; omitting body from queue message",
+                                col.name,
+                            )
+                    except Exception:
+                        logging.getLogger(__name__).warning(
+                            "includeBody: failed to extract body for queue message on collection %r",
+                            col.name,
+                            exc_info=True,
+                        )
+
                 response = await _run_push(request, col, params, document_key, identity, effective_roles, rl, opts)
-                await _publish_change_event(opts, col, response, params)
+                await _publish_change_event(opts, col, response, params, bundle_body_data)
                 return response
 
             return bundle_push_handler

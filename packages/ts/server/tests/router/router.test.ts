@@ -408,6 +408,210 @@ describe("queue events", () => {
     expect(msg.hash).toHaveLength(64)
     expect(msg.params).toEqual({ identity: "user-1" })
   })
+
+  it("includes body when includeBody is true", async () => {
+    const queue = new MemoryQueue()
+    const { app } = makeRouter({
+      queue,
+      config: {
+        version: 1,
+        collections: [
+          {
+            name: "docs",
+            storagePath: "docs/{docId}",
+            readRoles: ["self"],
+            writeRoles: ["self"],
+            encryption: "none",
+            maxBodyBytes: 1_000_000,
+            allowedMimeTypes: ["application/json"],
+            queue: { includeParams: false, includeBody: true },
+          },
+        ],
+      },
+    })
+
+    await app.request("/push/docs/doc-1", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ data: { title: "Hello", value: 42 }, baseHash: null }),
+    })
+
+    expect(queue.messages).toHaveLength(1)
+    const msg = JSON.parse(new TextDecoder().decode(queue.messages[0]![1]))
+    expect(msg.body).toEqual({ title: "Hello", value: 42 })
+    expect(msg.params).toBeUndefined()
+  })
+
+  it("omits body by default", async () => {
+    const queue = new MemoryQueue()
+    const { app } = makeRouter({
+      queue,
+      config: {
+        version: 1,
+        collections: [
+          {
+            name: "docs",
+            storagePath: "docs/{docId}",
+            readRoles: ["self"],
+            writeRoles: ["self"],
+            encryption: "none",
+            maxBodyBytes: 1_000_000,
+            allowedMimeTypes: ["application/json"],
+            queue: { includeParams: false },
+          },
+        ],
+      },
+    })
+
+    await app.request("/push/docs/doc-1", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ data: { x: 1 }, baseHash: null }),
+    })
+
+    expect(queue.messages).toHaveLength(1)
+    const msg = JSON.parse(new TextDecoder().decode(queue.messages[0]![1]))
+    expect(msg.body).toBeUndefined()
+  })
+
+  it("includes both body and params when both flags set", async () => {
+    const queue = new MemoryQueue()
+    const { app } = makeRouter({
+      queue,
+      config: {
+        version: 1,
+        collections: [
+          {
+            name: "docs",
+            storagePath: "users/{identity}/docs/{docId}",
+            readRoles: ["self"],
+            writeRoles: ["self"],
+            encryption: "none",
+            maxBodyBytes: 1_000_000,
+            allowedMimeTypes: ["application/json"],
+            queue: { includeParams: true, includeBody: true },
+          },
+        ],
+      },
+    })
+
+    await app.request("/push/users/user-1/docs/doc-99", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ data: { content: "world" }, baseHash: null }),
+    })
+
+    expect(queue.messages).toHaveLength(1)
+    const msg = JSON.parse(new TextDecoder().decode(queue.messages[0]![1]))
+    expect(msg.body).toEqual({ content: "world" })
+    expect(msg.params).toEqual({ identity: "user-1", docId: "doc-99" })
+  })
+
+  it("binary collection with includeBody never emits body", async () => {
+    const queue = new MemoryQueue()
+    const { app } = makeRouter({
+      queue,
+      config: {
+        version: 1,
+        collections: [
+          {
+            name: "avatar",
+            storagePath: "users/{identity}/avatar",
+            readRoles: ["self"],
+            writeRoles: ["self"],
+            encryption: "none",
+            maxBodyBytes: 1_000_000,
+            allowedMimeTypes: ["image/png"],
+            queue: { includeParams: false, includeBody: true },
+          },
+        ],
+      },
+    })
+
+    await app.request("/push/users/user-1/avatar", {
+      method: "POST",
+      headers: { "Content-Type": "image/png" },
+      body: new Uint8Array([137, 80, 78, 71]),
+    })
+
+    expect(queue.messages).toHaveLength(1)
+    const msg = JSON.parse(new TextDecoder().decode(queue.messages[0]![1]))
+    expect(msg.body).toBeUndefined()
+    expect(msg.collection).toBe("avatar")
+  })
+
+  it("queue publish failure does not break the push response", async () => {
+    let publishCalls = 0
+    const failingQueue = {
+      async publish() {
+        publishCalls++
+        throw new Error("NATS connection lost")
+      },
+    }
+    const { app } = makeRouter({
+      queue: failingQueue,
+      config: {
+        version: 1,
+        collections: [
+          {
+            name: "docs",
+            storagePath: "docs/{docId}",
+            readRoles: ["self"],
+            writeRoles: ["self"],
+            encryption: "none",
+            maxBodyBytes: 1_000_000,
+            allowedMimeTypes: ["application/json"],
+            queue: { includeParams: false },
+          },
+        ],
+      },
+    })
+
+    const res = await app.request("/push/docs/doc-1", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ data: { x: 1 }, baseHash: null }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(publishCalls).toBe(1)
+    const body = await res.json()
+    expect(body.hash).toHaveLength(64)
+  })
+
+  it("bundle collection with includeBody emits body", async () => {
+    const queue = new MemoryQueue()
+    const { app } = makeRouter({
+      queue,
+      config: {
+        version: 1,
+        collections: [
+          {
+            name: "prefs",
+            storagePath: "users/{identity}/data",
+            readRoles: ["self"],
+            writeRoles: ["self"],
+            encryption: "none",
+            maxBodyBytes: 1_000_000,
+            allowedMimeTypes: ["application/json"],
+            bundle: "userdata",
+            queue: { includeParams: false, includeBody: true },
+          },
+        ],
+      },
+    })
+
+    await app.request("/push/users/user-1/data/prefs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ data: { theme: "dark" }, baseHash: null }),
+    })
+
+    expect(queue.messages).toHaveLength(1)
+    const msg = JSON.parse(new TextDecoder().decode(queue.messages[0]![1]))
+    expect(msg.collection).toBe("prefs")
+    expect(msg.body).toEqual({ theme: "dark" })
+  })
 })
 
 describe("cache control", () => {
