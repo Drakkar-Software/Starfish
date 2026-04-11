@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.11.0
+
+### Added
+
+#### Server (TypeScript)
+
+- **S3ObjectStore** — new `./s3` subpath export (`@drakkar.software/starfish-server/s3`) provides an `S3ObjectStore` class that stores documents in any S3-compatible object store (AWS S3, MinIO, Cloudflare R2, Tigris, etc.). Requires `@aws-sdk/client-s3 >= 3` as an optional peer dependency. Supports `getString`, `put`, `getBytes`, `putBytes`, `listKeys`, `delete`, `deleteMany`, and a `destroy()` method to release HTTP connections. Mirrors the Python `S3ObjectStore` / `aiobotocore` implementation. See `docs/ts/server/storage.md` for configuration examples.
+
 ## 1.10.0
 
 ### Added

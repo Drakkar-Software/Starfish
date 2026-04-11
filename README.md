@@ -80,6 +80,10 @@ const store = new MemoryObjectStore(new Map())
 // import { FilesystemObjectStore } from "@drakkar.software/starfish-server/node"
 // const store = new FilesystemObjectStore({ baseDir: "./data" })
 
+// For S3-compatible storage (requires: npm install @aws-sdk/client-s3):
+// import { S3ObjectStore } from "@drakkar.software/starfish-server/s3"
+// const store = new S3ObjectStore({ accessKeyId: "...", secretAccessKey: "...", endpoint: "...", bucket: "..." })
+
 const config = parseConfigJson(JSON.stringify({
   version: 1,
   collections: [{
@@ -1169,9 +1173,10 @@ import { FilesystemObjectStore } from "@drakkar.software/starfish-server/node"
 const store = new FilesystemObjectStore({ baseDir: "./data" })
 ```
 
-**`S3ObjectStore`** (Python only) — S3-compatible object storage (AWS S3, Cloudflare R2, MinIO). Requires `pip install starfish-server[s3]`.
+**`S3ObjectStore`** — S3-compatible object storage (AWS S3, Cloudflare R2, MinIO). Python requires `pip install starfish-server[s3]`; TypeScript requires `npm install @aws-sdk/client-s3`.
 
 ```python
+# Python
 from starfish_server.storage.s3 import S3ObjectStore, S3StorageOptions
 
 store = S3ObjectStore(S3StorageOptions(
@@ -1180,6 +1185,19 @@ store = S3ObjectStore(S3StorageOptions(
     endpoint="https://s3.amazonaws.com",
     bucket="my-bucket",
 ))
+```
+
+```ts
+// TypeScript (subpath export — requires @aws-sdk/client-s3 peer dep)
+import { S3ObjectStore } from "@drakkar.software/starfish-server/s3"
+
+const store = new S3ObjectStore({
+  accessKeyId: process.env.S3_ACCESS_KEY_ID!,
+  secretAccessKey: process.env.S3_SECRET_ACCESS_KEY!,
+  endpoint: "https://s3.amazonaws.com",
+  bucket: "my-bucket",
+})
+// Call store.destroy() on shutdown to release HTTP connections
 ```
 
 ### Delegated encryption

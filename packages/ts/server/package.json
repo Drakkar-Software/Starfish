@@ -21,6 +21,10 @@
     "./node": {
       "types": "./dist/storage/filesystem.d.ts",
       "import": "./dist/storage/filesystem.js"
+    },
+    "./s3": {
+      "types": "./dist/storage/s3.d.ts",
+      "import": "./dist/storage/s3.js"
     }
   },
   "dependencies": {
@@ -28,10 +32,14 @@
     "hono": "^4.12.7"
   },
   "peerDependencies": {
-    "ajv": ">=8.0.0"
+    "ajv": ">=8.0.0",
+    "@aws-sdk/client-s3": ">=3.0.0"
   },
   "peerDependenciesMeta": {
     "ajv": {
+      "optional": true
+    },
+    "@aws-sdk/client-s3": {
       "optional": true
     }
   },
@@ -41,6 +49,7 @@
     "test": "vitest run"
   },
   "devDependencies": {
+    "@aws-sdk/client-s3": "^3",
     "@types/node": "^25.5.2",
     "ajv": "^8.17.0",
     "typescript": "^5.5.0",
