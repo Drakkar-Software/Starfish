@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.10.0
+
+### Added
+
+#### Infrastructure
+
+- **Ansible role** — `infra/ansible/roles/starfish` deploys a Starfish sync server on any Debian/Ubuntu or RedHat/CentOS host. Supports both `python` (FastAPI + uvicorn) and `typescript` (Hono + Node.js) variants via a single `starfish_variant` variable. Installs the runtime, creates a dedicated system user, deploys a templated server and `config.json` (from Ansible vars), and registers a systemd service with basic hardening. Includes an example playbook (`playbooks/deploy.yml`) and inventory template (`inventory/hosts.example`).
+
 ## 1.9.0
 
 ### Added

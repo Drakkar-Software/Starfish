@@ -1,0 +1,51 @@
+---
+# Variant to deploy: "python" or "typescript"
+starfish_variant: python
+
+# Deployment paths
+starfish_app_dir: /opt/starfish
+starfish_data_dir: /var/lib/starfish/data
+starfish_user: starfish
+starfish_group: starfish
+
+# Listening port
+starfish_port: 8000
+
+# API prefix mounted on the app (e.g. "/v1")
+starfish_api_prefix: /v1
+
+# Encryption secret — MUST be overridden in production (use ansible-vault)
+starfish_encryption_secret: "change-me"
+
+# ---- SyncConfig --------------------------------------------------------
+# Define root-level collections (list of CollectionConfig dicts).
+# Keys use camelCase as required by the Starfish JSON config schema.
+# Example:
+#   starfish_config_collections:
+#     - name: posts
+#       storagePath: "posts/{postId}"
+#       readRoles: [public]
+#       writeRoles: [admin]
+#       encryption: none
+#       maxBodyBytes: 65536
+starfish_config_collections: []
+
+# Define namespaced collections (dict of namespace name → NamespaceConfig).
+# Example:
+#   starfish_config_namespaces:
+#     acme:
+#       collections:
+#         - name: settings
+#           storagePath: "acme/users/{identity}/settings"
+#           readRoles: [self]
+#           writeRoles: [self]
+#           encryption: none
+#           maxBodyBytes: 65536
+starfish_config_namespaces: {}
+
+# ---- Python-specific ---------------------------------------------------
+starfish_python_version: "3.11"
+
+# ---- TypeScript-specific -----------------------------------------------
+starfish_node_version: "20"
+starfish_ts_server_version: "^1"

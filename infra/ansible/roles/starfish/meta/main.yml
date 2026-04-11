@@ -1,0 +1,21 @@
+---
+galaxy_info:
+  author: Drakkar-Software
+  description: Deploy a Starfish sync server (Python/FastAPI or TypeScript/Hono)
+  license: MIT
+  min_ansible_version: "2.12"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - focal
+        - jammy
+        - noble
+    - name: Debian
+      versions:
+        - bullseye
+        - bookworm
+    - name: EL
+      versions:
+        - "8"
+        - "9"
+dependencies: []

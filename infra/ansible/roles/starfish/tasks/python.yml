@@ -1,0 +1,56 @@
+---
+- name: Install Python and pip (Debian/Ubuntu)
+  ansible.builtin.apt:
+    name:
+      - "python{{ starfish_python_version }}"
+      - "python{{ starfish_python_version }}-venv"
+      - python3-pip
+      - curl
+    state: present
+    update_cache: true
+  when: ansible_os_family == "Debian"
+
+- name: Install Python and pip (RedHat/CentOS)
+  ansible.builtin.dnf:
+    name:
+      - python3
+      - python3-pip
+      - curl
+    state: present
+  when: ansible_os_family == "RedHat"
+
+- name: Install uv
+  ansible.builtin.pip:
+    name: uv
+    executable: pip3
+    state: present
+
+- name: Create Python virtual environment
+  ansible.builtin.command:
+    cmd: >
+      uv venv
+      --python {{ starfish_python_version }}
+      {{ starfish_app_dir }}/.venv
+    creates: "{{ starfish_app_dir }}/.venv/bin/python"
+  become: true
+  become_user: "{{ starfish_user }}"
+
+- name: Install starfish-server into virtual environment
+  ansible.builtin.command:
+    cmd: >
+      uv pip install
+      --python {{ starfish_app_dir }}/.venv/bin/python
+      starfish-server
+  become: true
+  become_user: "{{ starfish_user }}"
+  register: pip_install_result
+  changed_when: '"Successfully installed" in pip_install_result.stdout'
+
+- name: Deploy server.py
+  ansible.builtin.template:
+    src: server_python.py.j2
+    dest: "{{ starfish_app_dir }}/server.py"
+    owner: "{{ starfish_user }}"
+    group: "{{ starfish_group }}"
+    mode: "0644"
+  notify: restart starfish

@@ -1,0 +1,35 @@
+[Unit]
+Description=Starfish sync server ({{ starfish_variant }})
+Documentation=https://github.com/Drakkar-Software/starfish
+After=network.target
+
+[Service]
+Type=simple
+User={{ starfish_user }}
+Group={{ starfish_group }}
+WorkingDirectory={{ starfish_app_dir }}
+EnvironmentFile={{ starfish_app_dir }}/.env
+{% if starfish_variant == "python" %}
+ExecStart={{ starfish_app_dir }}/.venv/bin/uvicorn server:app \
+    --host 0.0.0.0 \
+    --port {{ starfish_port }} \
+    --no-access-log
+{% elif starfish_variant == "typescript" %}
+ExecStart={{ starfish_app_dir }}/node_modules/.bin/tsx \
+    {{ starfish_app_dir }}/server.ts
+{% endif %}
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=starfish
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths={{ starfish_data_dir }} {{ starfish_app_dir }}
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

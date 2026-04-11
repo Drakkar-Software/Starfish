@@ -1,0 +1,69 @@
+---
+# Deploy a Starfish sync server.
+#
+# Usage:
+#   ansible-playbook playbooks/deploy.yml -i inventory/hosts.example
+#
+# Dry-run (check mode):
+#   ansible-playbook playbooks/deploy.yml -i inventory/hosts.example --check
+#
+# Limit to a single host:
+#   ansible-playbook playbooks/deploy.yml -i inventory/hosts.example -l myserver
+#
+# Secrets:
+#   Keep starfish_encryption_secret in an Ansible Vault file and pass it with
+#   --vault-password-file or --ask-vault-pass.
+#
+- name: Deploy Starfish server
+  hosts: starfish_servers
+  become: true
+  vars:
+    # --------------------------------------------------------------------
+    # Python variant example (default).
+    # Switch to "typescript" to deploy the Hono/Node.js server instead.
+    # --------------------------------------------------------------------
+    starfish_variant: python
+    starfish_port: 8000
+    starfish_api_prefix: /v1
+    starfish_app_dir: /opt/starfish
+    starfish_data_dir: /var/lib/starfish/data
+
+    # Production secret — store this in ansible-vault, not in plain text.
+    starfish_encryption_secret: "{{ vault_starfish_encryption_secret | default('change-me') }}"
+
+    # Root-level collections (accessible at /v1/pull/... and /v1/push/...)
+    starfish_config_collections:
+      - name: posts
+        storagePath: "posts/{postId}"
+        readRoles: [public]
+        writeRoles: [admin]
+        encryption: none
+        maxBodyBytes: 65536
+
+    # Namespaced collections (accessible at /v1/{namespace}/pull/... and /v1/{namespace}/push/...)
+    starfish_config_namespaces:
+      acme:
+        collections:
+          - name: settings
+            storagePath: "acme/users/{identity}/settings"
+            readRoles: [self]
+            writeRoles: [self]
+            encryption: none
+            maxBodyBytes: 65536
+          - name: notes
+            storagePath: "acme/users/{identity}/notes"
+            readRoles: [self]
+            writeRoles: [self]
+            encryption: identity
+            maxBodyBytes: 131072
+      globex:
+        collections:
+          - name: settings
+            storagePath: "globex/users/{identity}/settings"
+            readRoles: [self]
+            writeRoles: [self]
+            encryption: none
+            maxBodyBytes: 65536
+
+  roles:
+    - role: starfish

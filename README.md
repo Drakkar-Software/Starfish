@@ -1425,3 +1425,49 @@ process.on("SIGTERM", () => replicaManager.stop())
 
 // CF Workers: use syncNow()/syncAll() from Cron Triggers instead
 ```
+
+## Deployment
+
+### Ansible
+
+An Ansible role is included at `infra/ansible/roles/starfish`. It installs the runtime, creates a dedicated system user, deploys a templated server and `config.json`, and registers a systemd service.
+
+```bash
+# Deploy a Python server
+ansible-playbook infra/ansible/playbooks/deploy.yml \
+  -i infra/ansible/inventory/hosts.example
+
+# Switch to the TypeScript/Hono variant
+ansible-playbook infra/ansible/playbooks/deploy.yml \
+  -i infra/ansible/inventory/hosts.example \
+  -e starfish_variant=typescript
+```
+
+Configure collections and namespaces entirely from Ansible variables — no server code changes needed:
+
+```yaml
+# group_vars/starfish_servers.yml
+starfish_variant: python
+starfish_port: 8000
+starfish_encryption_secret: "{{ vault_starfish_encryption_secret }}"
+
+starfish_config_collections:
+  - name: posts
+    storagePath: "posts/{postId}"
+    readRoles: [public]
+    writeRoles: [admin]
+    encryption: none
+    maxBodyBytes: 65536
+
+starfish_config_namespaces:
+  acme:
+    collections:
+      - name: settings
+        storagePath: "acme/users/{identity}/settings"
+        readRoles: [self]
+        writeRoles: [self]
+        encryption: none
+        maxBodyBytes: 65536
+```
+
+See `infra/ansible/playbooks/deploy.yml` for a full example with namespaces and vault usage.

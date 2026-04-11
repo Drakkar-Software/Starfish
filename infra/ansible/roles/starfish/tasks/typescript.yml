@@ -1,0 +1,69 @@
+---
+- name: Install curl (Debian/Ubuntu)
+  ansible.builtin.apt:
+    name: curl
+    state: present
+    update_cache: true
+  when: ansible_os_family == "Debian"
+
+- name: Install curl (RedHat/CentOS)
+  ansible.builtin.dnf:
+    name: curl
+    state: present
+  when: ansible_os_family == "RedHat"
+
+- name: Add NodeSource repository (Debian/Ubuntu)
+  ansible.builtin.shell:
+    cmd: >
+      curl -fsSL https://deb.nodesource.com/setup_{{ starfish_node_version }}.x
+      | bash -
+    creates: /etc/apt/sources.list.d/nodesource.list
+  when: ansible_os_family == "Debian"
+
+- name: Install Node.js (Debian/Ubuntu)
+  ansible.builtin.apt:
+    name: nodejs
+    state: present
+    update_cache: true
+  when: ansible_os_family == "Debian"
+
+- name: Add NodeSource repository (RedHat/CentOS)
+  ansible.builtin.shell:
+    cmd: >
+      curl -fsSL https://rpm.nodesource.com/setup_{{ starfish_node_version }}.x
+      | bash -
+    creates: /etc/yum.repos.d/nodesource.repo
+  when: ansible_os_family == "RedHat"
+
+- name: Install Node.js (RedHat/CentOS)
+  ansible.builtin.dnf:
+    name: nodejs
+    state: present
+  when: ansible_os_family == "RedHat"
+
+- name: Deploy package.json
+  ansible.builtin.template:
+    src: package.json.j2
+    dest: "{{ starfish_app_dir }}/package.json"
+    owner: "{{ starfish_user }}"
+    group: "{{ starfish_group }}"
+    mode: "0644"
+  notify: restart starfish
+
+- name: Install Node.js dependencies
+  ansible.builtin.command:
+    cmd: npm install --omit=dev
+    chdir: "{{ starfish_app_dir }}"
+  become: true
+  become_user: "{{ starfish_user }}"
+  register: npm_install_result
+  changed_when: '"added" in npm_install_result.stdout or "updated" in npm_install_result.stdout'
+
+- name: Deploy server.ts
+  ansible.builtin.template:
+    src: server_typescript.ts.j2
+    dest: "{{ starfish_app_dir }}/server.ts"
+    owner: "{{ starfish_user }}"
+    group: "{{ starfish_group }}"
+    mode: "0644"
+  notify: restart starfish

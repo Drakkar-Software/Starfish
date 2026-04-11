@@ -1,0 +1,74 @@
+---
+- name: Create starfish system group
+  ansible.builtin.group:
+    name: "{{ starfish_group }}"
+    system: true
+
+- name: Create starfish system user
+  ansible.builtin.user:
+    name: "{{ starfish_user }}"
+    group: "{{ starfish_group }}"
+    system: true
+    shell: /usr/sbin/nologin
+    home: "{{ starfish_app_dir }}"
+    create_home: false
+
+- name: Create app directory
+  ansible.builtin.file:
+    path: "{{ starfish_app_dir }}"
+    state: directory
+    owner: "{{ starfish_user }}"
+    group: "{{ starfish_group }}"
+    mode: "0750"
+
+- name: Create data directory
+  ansible.builtin.file:
+    path: "{{ starfish_data_dir }}"
+    state: directory
+    owner: "{{ starfish_user }}"
+    group: "{{ starfish_group }}"
+    mode: "0750"
+
+- name: Deploy environment file
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ starfish_app_dir }}/.env"
+    owner: "{{ starfish_user }}"
+    group: "{{ starfish_group }}"
+    mode: "0640"
+  notify: restart starfish
+
+- name: Deploy config.json
+  ansible.builtin.template:
+    src: config.json.j2
+    dest: "{{ starfish_app_dir }}/config.json"
+    owner: "{{ starfish_user }}"
+    group: "{{ starfish_group }}"
+    mode: "0640"
+  notify: restart starfish
+
+- name: Include Python tasks
+  ansible.builtin.include_tasks: python.yml
+  when: starfish_variant == "python"
+
+- name: Include TypeScript tasks
+  ansible.builtin.include_tasks: typescript.yml
+  when: starfish_variant == "typescript"
+
+- name: Deploy systemd service unit
+  ansible.builtin.template:
+    src: starfish.service.j2
+    dest: /etc/systemd/system/starfish.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - reload systemd
+    - restart starfish
+
+- name: Enable and start starfish service
+  ansible.builtin.systemd:
+    name: starfish
+    enabled: true
+    state: started
+    daemon_reload: false
