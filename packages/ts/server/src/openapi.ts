@@ -45,16 +45,59 @@ export function generateOpenApiSpec(
     if (col.bundle) continue // Bundled collections share paths
 
     if (!col.pushOnly) {
-      const pullPath = `/${ACTION_PULL}/${col.storagePath}`
-      paths[pullPath] = {
+      paths[`/${ACTION_PULL}/${col.storagePath}`] = {
         get: buildPullOperation(col),
       }
     }
 
     if (!col.pullOnly) {
-      const pushPath = `/${ACTION_PUSH}/${col.storagePath}`
-      paths[pushPath] = {
+      paths[`/${ACTION_PUSH}/${col.storagePath}`] = {
         post: buildPushOperation(col),
+      }
+    }
+  }
+
+  if (config.namespaces) {
+    for (const [nsName, nsConfig] of Object.entries(config.namespaces)) {
+      // Namespace-scoped batch pull
+      paths[`/${nsName}/batch/pull`] = {
+        get: {
+          summary: `Batch pull (${nsName})`,
+          operationId: `batch_pull--${nsName}`,
+          parameters: [
+            {
+              name: "collections",
+              in: "query",
+              required: true,
+              schema: { type: "string" },
+              description: `Comma-separated list of collection names in namespace "${nsName}"`,
+            },
+          ],
+          responses: {
+            "200": {
+              description: "Batch pull results",
+              content: { "application/json": { schema: { type: "object" } } },
+            },
+            "400": { description: "Missing collections parameter" },
+          },
+          security: [{ bearerAuth: [] }],
+        },
+      }
+
+      for (const col of nsConfig.collections) {
+        if (col.bundle) continue
+
+        if (!col.pushOnly) {
+          paths[`/${nsName}/${ACTION_PULL}/${col.storagePath}`] = {
+            get: buildPullOperation(col, nsName),
+          }
+        }
+
+        if (!col.pullOnly) {
+          paths[`/${nsName}/${ACTION_PUSH}/${col.storagePath}`] = {
+            post: buildPushOperation(col, nsName),
+          }
+        }
       }
     }
   }
@@ -109,13 +152,14 @@ export function generateOpenApiSpec(
   return spec
 }
 
-function buildPullOperation(col: CollectionConfig): Record<string, unknown> {
+function buildPullOperation(col: CollectionConfig, nsName?: string): Record<string, unknown> {
   const isPublic = col.readRoles.includes(ROLE_PUBLIC)
   const params = extractPathParams(col.storagePath)
+  const operationId = nsName ? `pull--${nsName}--${col.name}` : `pull_${col.name}`
 
   const operation: Record<string, unknown> = {
-    summary: `Pull ${col.name}`,
-    operationId: `pull_${col.name}`,
+    summary: nsName ? `Pull ${col.name} (${nsName})` : `Pull ${col.name}`,
+    operationId,
     parameters: [
       ...params,
       {
@@ -144,12 +188,13 @@ function buildPullOperation(col: CollectionConfig): Record<string, unknown> {
   return operation
 }
 
-function buildPushOperation(col: CollectionConfig): Record<string, unknown> {
+function buildPushOperation(col: CollectionConfig, nsName?: string): Record<string, unknown> {
   const params = extractPathParams(col.storagePath)
+  const operationId = nsName ? `push--${nsName}--${col.name}` : `push_${col.name}`
 
   return {
-    summary: `Push ${col.name}`,
-    operationId: `push_${col.name}`,
+    summary: nsName ? `Push ${col.name} (${nsName})` : `Push ${col.name}`,
+    operationId,
     parameters: params,
     requestBody: {
       required: true,

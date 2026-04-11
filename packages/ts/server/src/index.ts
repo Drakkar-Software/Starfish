@@ -2,6 +2,7 @@
 export type {
   SyncConfig,
   CollectionConfig,
+  NamespaceConfig,
   RemoteConfig,
   QueueConfig,
   CollectionRateLimitConfig,

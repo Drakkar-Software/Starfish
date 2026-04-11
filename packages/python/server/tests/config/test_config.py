@@ -164,6 +164,177 @@ class TestParseConfigJson:
             parse_config_json(bad)
 
 
+class TestValidateConfigNamespaces:
+    def _ns_col(self, **kwargs) -> CollectionConfig:
+        base: dict = {
+            "name": "settings",
+            "storagePath": "users/{identity}/settings",
+            "readRoles": ["self"],
+            "writeRoles": ["self"],
+            "encryption": "none",
+            "maxBodyBytes": 1_000_000,
+        }
+        base.update(kwargs)
+        return CollectionConfig(**base)
+
+    def test_valid_config_with_namespaces(self):
+        from starfish_server.config.schema import NamespaceConfig
+        config = SyncConfig(
+            version=1, collections=[],
+            namespaces={
+                "tenantA": NamespaceConfig(collections=[self._ns_col()]),
+                "tenantB": NamespaceConfig(collections=[self._ns_col()]),
+            },
+        )
+        assert validate_config(config) == []
+
+    def test_same_name_in_different_namespaces_is_valid(self):
+        from starfish_server.config.schema import NamespaceConfig
+        config = SyncConfig(
+            version=1, collections=[],
+            namespaces={
+                "tenantA": NamespaceConfig(collections=[self._ns_col(name="settings")]),
+                "tenantB": NamespaceConfig(collections=[self._ns_col(name="settings")]),
+            },
+        )
+        assert validate_config(config) == []
+
+    def test_same_name_in_root_and_namespace_is_valid(self):
+        from starfish_server.config.schema import NamespaceConfig
+        config = SyncConfig(
+            version=1,
+            collections=[self._ns_col(name="settings")],
+            namespaces={"tenantA": NamespaceConfig(collections=[self._ns_col(name="settings")])},
+        )
+        assert validate_config(config) == []
+
+    def test_duplicate_name_within_namespace_produces_error(self):
+        from starfish_server.config.schema import NamespaceConfig
+        config = SyncConfig(
+            version=1, collections=[],
+            namespaces={"tenantA": NamespaceConfig(collections=[self._ns_col(), self._ns_col()])},
+        )
+        errors = validate_config(config)
+        assert len(errors) == 1
+        assert 'Namespace "tenantA"' in errors[0]
+        assert "Duplicate" in errors[0]
+
+    def test_invalid_namespace_name_characters(self):
+        from starfish_server.config.schema import NamespaceConfig
+        config = SyncConfig(
+            version=1, collections=[],
+            namespaces={"bad name!": NamespaceConfig(collections=[self._ns_col()])},
+        )
+        errors = validate_config(config)
+        assert any("letters, digits, hyphens" in e for e in errors)
+
+    def test_reserved_namespace_names(self):
+        from starfish_server.config.schema import NamespaceConfig
+        for name in ("pull", "push", "health", "batch"):
+            config = SyncConfig(
+                version=1, collections=[],
+                namespaces={name: NamespaceConfig(collections=[self._ns_col()])},
+            )
+            errors = validate_config(config)
+            assert any("reserved" in e for e in errors), f"Expected reserved error for {name!r}"
+
+    def test_collection_errors_scoped_to_namespace(self):
+        from starfish_server.config.schema import NamespaceConfig
+        config = SyncConfig(
+            version=1, collections=[],
+            namespaces={"tenantA": NamespaceConfig(collections=[self._ns_col(storagePath="/bad")])},
+        )
+        errors = validate_config(config)
+        assert any('Namespace "tenantA"' in e for e in errors)
+        assert any("must not start with /" in e for e in errors)
+
+    def test_hyphens_and_underscores_valid_namespace_names(self):
+        from starfish_server.config.schema import NamespaceConfig
+        config = SyncConfig(
+            version=1, collections=[],
+            namespaces={
+                "tenant-a": NamespaceConfig(collections=[self._ns_col()]),
+                "tenant_b": NamespaceConfig(collections=[self._ns_col()]),
+            },
+        )
+        assert validate_config(config) == []
+
+    def test_empty_namespace_collections_produces_error(self):
+        from starfish_server.config.schema import NamespaceConfig
+        config = SyncConfig(
+            version=1, collections=[],
+            namespaces={"tenantA": NamespaceConfig(collections=[])},
+        )
+        errors = validate_config(config)
+        assert any("at least one collection" in e for e in errors)
+
+
+class TestParseConfigJsonNamespaces:
+    def test_parses_config_with_namespaces(self):
+        raw = json.dumps({
+            "version": 1,
+            "collections": [],
+            "namespaces": {
+                "tenantA": {
+                    "collections": [{
+                        "name": "settings",
+                        "storagePath": "users/{identity}/settings",
+                        "readRoles": ["self"],
+                        "writeRoles": ["self"],
+                        "encryption": "none",
+                        "maxBodyBytes": 1_000_000,
+                    }]
+                }
+            },
+        })
+        config = parse_config_json(raw)
+        assert config.namespaces is not None
+        assert config.namespaces["tenantA"].collections[0].name == "settings"
+
+    def test_throws_on_reserved_namespace_name(self):
+        raw = json.dumps({
+            "version": 1, "collections": [],
+            "namespaces": {
+                "push": {
+                    "collections": [{
+                        "name": "settings",
+                        "storagePath": "users/{identity}/settings",
+                        "readRoles": ["self"],
+                        "writeRoles": ["self"],
+                        "encryption": "none",
+                        "maxBodyBytes": 1_000_000,
+                    }]
+                }
+            },
+        })
+        with pytest.raises(StartupError):
+            parse_config_json(raw)
+
+    @pytest.mark.asyncio
+    async def test_round_trips_namespace_config(self):
+        from starfish_server.config.schema import NamespaceConfig
+        from starfish_server.config.loader import save_config, load_config
+        store = MemoryObjectStore()
+        config = SyncConfig(
+            version=1, collections=[],
+            namespaces={"tenantA": NamespaceConfig(collections=[
+                CollectionConfig(
+                    name="settings",
+                    storagePath="users/{identity}/settings",
+                    readRoles=["self"],
+                    writeRoles=["self"],
+                    encryption="none",
+                    maxBodyBytes=1_000_000,
+                )
+            ])},
+        )
+        await save_config(store, config)
+        loaded = await load_config(store)
+        assert loaded is not None
+        assert loaded.namespaces is not None
+        assert loaded.namespaces["tenantA"].collections[0].name == "settings"
+
+
 class TestLoadConfigFile:
     def test_loads_config_from_json_file(self, tmp_path: Path):
         config_file = tmp_path / "config.json"

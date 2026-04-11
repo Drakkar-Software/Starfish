@@ -254,6 +254,38 @@ Collection configuration is stored **inside the storage** at `__sync__/config.js
 }
 ```
 
+### Namespaces
+
+Group collections under a URL prefix for multi-tenant isolation or logical organisation. Collections without a namespace remain at `/pull/...` and `/push/...`.
+
+```ts
+const config: SyncConfig = {
+  version: 1,
+  collections: [
+    // Root-level: /pull/announcements/global
+    { name: "announcements", storagePath: "announcements/global", readRoles: ["public"], ... },
+  ],
+  namespaces: {
+    tenantA: {
+      collections: [
+        // /tenantA/pull/tenantA/users/{identity}/settings
+        { name: "settings", storagePath: "tenantA/users/{identity}/settings", readRoles: ["self"], ... },
+      ],
+    },
+    tenantB: {
+      collections: [
+        // /tenantB/pull/tenantB/users/{identity}/settings
+        { name: "settings", storagePath: "tenantB/users/{identity}/settings", readRoles: ["self"], ... },
+      ],
+    },
+  },
+}
+```
+
+> **Storage isolation**: The namespace is a URL prefix only. Use distinct `storagePath` values per namespace (e.g. prefix with the tenant name) to ensure data is stored separately.
+
+See the [namespaces guide](docs/ts/client/20-namespaces.md) for full details.
+
 ### Conflict handling
 
 A push returns `409` when the `baseHash` doesn't match the server's current hash — someone else wrote in between. The `SyncManager` handles this automatically:
@@ -1214,41 +1246,70 @@ Collections with the same `bundle` value share a storage path and expose a combi
 
 ### Queue (change events)
 
-Publish data-change events to a message queue after every successful push. The queue system uses the same abstraction pattern as storage: an abstract base class with pluggable implementations.
+Publish a lightweight change event to a message queue after every successful push. Built-in backends: `MemoryQueue` (testing), `CustomQueue` (callback-based), `NatsQueue` (Python/NATS — `pip install starfish-server[nats]`).
 
-Built-in backends: `MemoryQueue` (testing), `CustomQueue` (callback-based), `NatsQueue` (NATS). Install NATS support: `pip install starfish-server[nats]`.
+Queue errors never surface to clients — they are logged and the push response is returned normally.
+
+> Full reference: [`docs/ts/server/queue.md`](docs/ts/server/queue.md)
+
+#### QueueConfig
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `topic` | `string` | collection name | Topic / NATS subject to publish to |
+| `includeParams` | `boolean` | `false` | Include resolved path params in the payload |
+
+Pass `true` as a shorthand for `{ includeParams: false }` (topic = collection name). Pass `false` or omit to disable.
 
 #### Collection config
 
-Enable queue events per collection:
+```ts
+// TypeScript
+{
+  name: "posts",
+  storagePath: "posts/{postId}",
+  // ...
+  queue: true,  // topic = "posts", includeParams = false
+  // Or:
+  // queue: { topic: "data.posts.changed", includeParams: true },
+}
+```
 
 ```python
+# Python
 CollectionConfig(
     name="posts",
     storage_path="posts/{postId}",
-    read_roles=["public"],
-    write_roles=["admin"],
-    encryption="none",
-    max_body_bytes=65536,
-    queue=True,  # publish to topic "posts" (= collection name)
-    # Or with custom settings:
+    # ...
+    queue=True,  # topic = "posts", include_params = False
+    # Or:
     # queue=QueueConfig(topic="data.posts.changed", include_params=True),
 )
 ```
 
 #### Server setup
 
+```ts
+// TypeScript — CustomQueue (any backend via callback)
+import { CustomQueue } from "@drakkar.software/starfish-server"
+
+const queue = new CustomQueue({
+  onPublish: async (subject, payload) => {
+    await natsClient.publish(subject, payload)
+  },
+})
+
+const sync = createSyncRouter({ store, config, roleResolver, queue })
+```
+
 ```python
-from contextlib import asynccontextmanager
+# Python — NatsQueue
 from starfish_server.queue.nats import NatsQueue, NatsQueueOptions
 
 queue = NatsQueue(NatsQueueOptions(servers="nats://localhost:4222"))
 
 sync_router = create_sync_router(SyncRouterOptions(
-    store=store,
-    config=config,
-    role_resolver=role_resolver,
-    queue=queue,
+    store=store, config=config, role_resolver=role_resolver, queue=queue,
 ))
 
 @asynccontextmanager
@@ -1267,12 +1328,20 @@ app.include_router(sync_router, prefix="/v1")
 {
   "collection": "posts",
   "hash": "abc123...",
-  "timestamp": 1712345678000,
-  "params": {"postId": "abc"}
+  "timestamp": 1712345678000
 }
 ```
 
-`params` is only included when `includeParams: true` in the queue config.
+`params` is added when `includeParams: true`:
+
+```json
+{
+  "collection": "posts",
+  "hash": "abc123...",
+  "timestamp": 1712345678000,
+  "params": { "postId": "abc" }
+}
+```
 
 ### Replicas
 

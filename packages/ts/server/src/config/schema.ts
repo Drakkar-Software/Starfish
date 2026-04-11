@@ -59,8 +59,18 @@ export interface RateLimitConfig {
   maxRequests: number
 }
 
+export interface NamespaceConfig {
+  collections: CollectionConfig[]
+}
+
 export interface SyncConfig {
   version: 1
   collections: CollectionConfig[]
+  /**
+   * Named sub-routers. Each key becomes a URL prefix: `/{name}/pull/...` and `/{name}/push/...`.
+   * Keys must match `[a-zA-Z0-9_-]+` and must not be `pull`, `push`, `health`, or `batch`.
+   * Each namespace must contain at least one collection.
+   */
+  namespaces?: Record<string, NamespaceConfig>
   rateLimit?: RateLimitConfig
 }

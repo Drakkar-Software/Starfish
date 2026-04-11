@@ -7,6 +7,7 @@ import type {
   CollectionConfig,
   CollectionRateLimitConfig,
   FieldPermission,
+  NamespaceConfig,
 } from "../config/schema.js"
 import { EncryptedObjectStore } from "../encryption/encrypted-store.js"
 import { pull } from "../protocol/pull.js"
@@ -786,6 +787,84 @@ function addBundledRoutes(
   }
 }
 
+function registerCollectionsOnApp(
+  app: Hono,
+  collections: CollectionConfig[],
+  opts: SyncRouterOptions,
+): void {
+  const bundles = new Map<string, CollectionConfig[]>()
+  const standalone: CollectionConfig[] = []
+
+  for (const col of collections) {
+    if (col.bundle) {
+      const existing = bundles.get(col.bundle) ?? []
+      existing.push(col)
+      bundles.set(col.bundle, existing)
+    } else {
+      standalone.push(col)
+    }
+  }
+
+  for (const col of standalone) {
+    addCollectionRoutes(app, col, opts)
+  }
+
+  for (const [bundleName, bundleCollections] of bundles) {
+    addBundledRoutes(app, bundleName, bundleCollections, opts)
+  }
+}
+
+function createBatchPullHandler(
+  collections: CollectionConfig[],
+  opts: SyncRouterOptions,
+) {
+  return async (c: Context) => {
+    const colNames = c.req.query("collections")?.split(",").map((s) => s.trim()) ?? []
+    if (colNames.length === 0) {
+      return c.json({ error: "Missing collections parameter" }, 400)
+    }
+
+    const results: Record<string, Record<string, unknown>> = {}
+    for (const name of colNames) {
+      const col = collections.find((cc) => cc.name === name)
+      if (!col) {
+        results[name] = { error: "Collection not found" }
+        continue
+      }
+
+      const { identity, error: authError } = await checkAuth(col, OP_READ, c, {}, opts)
+      if (authError) {
+        results[name] = { error: "Forbidden" }
+        continue
+      }
+
+      try {
+        const store = resolveStore(col, opts.store, {}, identity, opts)
+        const key = col.storagePath.replace(/\{[^}]+\}/g, "_batch_")
+        const pullResult = await pull(store, key, 0)
+        results[name] = { data: pullResult.data, hash: pullResult.hash, timestamp: pullResult.timestamp }
+      } catch (e) {
+        console.error(`[Starfish] Batch pull failed for collection "${name}":`, e)
+        results[name] = { error: "Internal error" }
+      }
+    }
+
+    return c.json({ collections: results })
+  }
+}
+
+function mountNamespace(
+  app: Hono,
+  nsName: string,
+  nsConfig: NamespaceConfig,
+  opts: SyncRouterOptions,
+): void {
+  const nsApp = new Hono()
+  registerCollectionsOnApp(nsApp, nsConfig.collections, opts)
+  nsApp.get("/batch/pull", createBatchPullHandler(nsConfig.collections, opts))
+  app.route(`/${nsName}`, nsApp)
+}
+
 export function createSyncRouter(opts: SyncRouterOptions): Hono {
   const app = new Hono()
   const config = opts.config
@@ -807,57 +886,17 @@ export function createSyncRouter(opts: SyncRouterOptions): Hono {
     return c.json({ ok: true, ts: Date.now() })
   })
 
-  const bundles = new Map<string, CollectionConfig[]>()
-  const standalone: CollectionConfig[] = []
-
-  for (const col of config.collections) {
-    if (col.bundle) {
-      const existing = bundles.get(col.bundle) ?? []
-      existing.push(col)
-      bundles.set(col.bundle, existing)
-    } else {
-      standalone.push(col)
-    }
-  }
-
-  for (const col of standalone) {
-    addCollectionRoutes(app, col, opts)
-  }
-
-  for (const [bundleName, bundleCollections] of bundles) {
-    addBundledRoutes(app, bundleName, bundleCollections, opts)
-  }
+  registerCollectionsOnApp(app, config.collections, opts)
 
   // Batch pull endpoint: GET /batch/pull?collections=col1,col2
-  app.get("/batch/pull", async (c) => {
-    const colNames = c.req.query("collections")?.split(",").map((s) => s.trim()) ?? []
-    if (colNames.length === 0) {
-      return c.json({ error: "Missing collections parameter" }, 400)
+  app.get("/batch/pull", createBatchPullHandler(config.collections, opts))
+
+  // Namespace sub-routers: GET /{ns}/pull/... and POST /{ns}/push/...
+  if (config.namespaces) {
+    for (const [nsName, nsConfig] of Object.entries(config.namespaces)) {
+      mountNamespace(app, nsName, nsConfig, opts)
     }
-
-    const results: Record<string, Record<string, unknown>> = {}
-    for (const name of colNames) {
-      const col = config.collections.find((cc) => cc.name === name)
-      if (!col) {
-        results[name] = { error: "Collection not found" }
-        continue
-      }
-
-      // Auth check per collection
-      const { identity, error: authError } = await checkAuth(col, OP_READ, c, {}, opts)
-      if (authError) {
-        results[name] = { error: "Forbidden" }
-        continue
-      }
-
-      const store = resolveStore(col, opts.store, {}, identity, opts)
-      const key = col.storagePath.replace(/\{[^}]+\}/g, "_batch_")
-      const pullResult = await pull(store, key, 0)
-      results[name] = { data: pullResult.data, hash: pullResult.hash, timestamp: pullResult.timestamp }
-    }
-
-    return c.json({ collections: results })
-  })
+  }
 
   return app
 }

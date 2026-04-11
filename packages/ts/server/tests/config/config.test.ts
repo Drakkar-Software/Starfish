@@ -4,6 +4,19 @@ import { parseConfigJson, loadConfig, saveConfig } from "../../src/config/loader
 import { createIsolatedStore } from "../helpers.js"
 import type { SyncConfig, CollectionConfig } from "../../src/config/schema.js"
 
+function makeNsCol(overrides: Partial<CollectionConfig> = {}): CollectionConfig {
+  return {
+    name: "settings",
+    storagePath: "users/{identity}/settings",
+    readRoles: ["self"],
+    writeRoles: ["self"],
+    encryption: "none",
+    maxBodyBytes: 1_000_000,
+    allowedMimeTypes: ["application/json"],
+    ...overrides,
+  }
+}
+
 function makeCol(overrides: Partial<CollectionConfig> = {}): CollectionConfig {
   return {
     name: "test",
@@ -107,6 +120,118 @@ describe("validateConfig", () => {
   })
 })
 
+describe("validateConfig — namespaces", () => {
+  it("valid config with namespaces returns no errors", () => {
+    const config: SyncConfig = {
+      version: 1,
+      collections: [],
+      namespaces: {
+        tenantA: { collections: [makeNsCol()] },
+        tenantB: { collections: [makeNsCol()] },
+      },
+    }
+    expect(validateConfig(config)).toEqual([])
+  })
+
+  it("same collection name in different namespaces is valid", () => {
+    const config: SyncConfig = {
+      version: 1,
+      collections: [],
+      namespaces: {
+        tenantA: { collections: [makeNsCol({ name: "settings" })] },
+        tenantB: { collections: [makeNsCol({ name: "settings" })] },
+      },
+    }
+    expect(validateConfig(config)).toEqual([])
+  })
+
+  it("same collection name in root and namespace is valid", () => {
+    const config: SyncConfig = {
+      version: 1,
+      collections: [makeNsCol({ name: "settings" })],
+      namespaces: {
+        tenantA: { collections: [makeNsCol({ name: "settings" })] },
+      },
+    }
+    expect(validateConfig(config)).toEqual([])
+  })
+
+  it("duplicate name within a namespace produces error", () => {
+    const config: SyncConfig = {
+      version: 1,
+      collections: [],
+      namespaces: {
+        tenantA: { collections: [makeNsCol(), makeNsCol()] },
+      },
+    }
+    const errors = validateConfig(config)
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toContain("Namespace \"tenantA\"")
+    expect(errors[0]).toContain("Duplicate")
+  })
+
+  it("detects invalid namespace name characters", () => {
+    const config: SyncConfig = {
+      version: 1,
+      collections: [],
+      namespaces: {
+        "bad name!": { collections: [makeNsCol()] },
+      },
+    }
+    const errors = validateConfig(config)
+    expect(errors.some((e) => e.includes("letters, digits, hyphens"))).toBe(true)
+  })
+
+  it("detects reserved namespace names", () => {
+    for (const name of ["pull", "push", "health", "batch"]) {
+      const config: SyncConfig = {
+        version: 1,
+        collections: [],
+        namespaces: {
+          [name]: { collections: [makeNsCol()] },
+        },
+      }
+      const errors = validateConfig(config)
+      expect(errors.some((e) => e.includes("reserved"))).toBe(true)
+    }
+  })
+
+  it("propagates collection errors with namespace scope label", () => {
+    const config: SyncConfig = {
+      version: 1,
+      collections: [],
+      namespaces: {
+        tenantA: { collections: [makeNsCol({ storagePath: "/bad" })] },
+      },
+    }
+    const errors = validateConfig(config)
+    expect(errors.some((e) => e.includes("Namespace \"tenantA\""))).toBe(true)
+    expect(errors.some((e) => e.includes("must not start with /"))).toBe(true)
+  })
+
+  it("hyphens and underscores are valid namespace names", () => {
+    const config: SyncConfig = {
+      version: 1,
+      collections: [],
+      namespaces: {
+        "tenant-a": { collections: [makeNsCol()] },
+        tenant_b: { collections: [makeNsCol()] },
+      },
+    }
+    expect(validateConfig(config)).toEqual([])
+  })
+
+  it("empty namespace collections produces error", () => {
+    const config: SyncConfig = {
+      version: 1,
+      collections: [],
+      namespaces: { tenantA: { collections: [] } },
+    }
+    const errors = validateConfig(config)
+    expect(errors.some((e) => e.includes("at least one collection"))).toBe(true)
+  })
+})
+
 describe("parseConfigJson", () => {
   it("parses valid config", () => {
     const raw = JSON.stringify({
@@ -129,6 +254,29 @@ describe("parseConfigJson", () => {
     expect(config.collections[0]!.allowedMimeTypes).toEqual(["application/json"])
   })
 
+  it("parses config with namespaces", () => {
+    const raw = JSON.stringify({
+      version: 1,
+      collections: [],
+      namespaces: {
+        tenantA: {
+          collections: [
+            {
+              name: "settings",
+              storagePath: "users/{identity}/settings",
+              readRoles: ["self"],
+              writeRoles: ["self"],
+              encryption: "none",
+              maxBodyBytes: 1000000,
+            },
+          ],
+        },
+      },
+    })
+    const config = parseConfigJson(raw)
+    expect(config.namespaces?.["tenantA"]?.collections[0]?.name).toBe("settings")
+  })
+
   it("throws on invalid config", () => {
     const raw = JSON.stringify({
       version: 1,
@@ -145,6 +293,95 @@ describe("parseConfigJson", () => {
     })
     expect(() => parseConfigJson(raw)).toThrow("Invalid sync config")
   })
+
+  it("throws on reserved namespace name", () => {
+    const raw = JSON.stringify({
+      version: 1,
+      collections: [],
+      namespaces: {
+        push: {
+          collections: [
+            {
+              name: "settings",
+              storagePath: "users/{identity}/settings",
+              readRoles: ["self"],
+              writeRoles: ["self"],
+              encryption: "none",
+              maxBodyBytes: 1000000,
+            },
+          ],
+        },
+      },
+    })
+    expect(() => parseConfigJson(raw)).toThrow("Invalid sync config")
+  })
+
+  it("throws with StartupError when namespace value is null", () => {
+    const raw = JSON.stringify({
+      version: 1,
+      collections: [],
+      namespaces: { tenantA: null },
+    })
+    expect(() => parseConfigJson(raw)).toThrow("Invalid sync config")
+  })
+
+  it("throws with StartupError when namespace value is a non-object", () => {
+    const raw = JSON.stringify({
+      version: 1,
+      collections: [],
+      namespaces: { tenantA: "oops" },
+    })
+    // Non-object namespace silently becomes empty collections, caught by empty-namespace validation
+    expect(() => parseConfigJson(raw)).toThrow("Invalid sync config")
+  })
+
+  it("parses ttlMs and fieldPermissions from collection JSON", () => {
+    const raw = JSON.stringify({
+      version: 1,
+      collections: [
+        {
+          name: "settings",
+          storagePath: "users/{identity}/settings",
+          readRoles: ["self"],
+          writeRoles: ["self"],
+          encryption: "none",
+          maxBodyBytes: 1000000,
+          ttlMs: 86400000,
+          fieldPermissions: { email: { readRoles: ["admin"] } },
+        },
+      ],
+    })
+    const config = parseConfigJson(raw)
+    expect(config.collections[0]!.ttlMs).toBe(86400000)
+    expect(config.collections[0]!.fieldPermissions?.["email"]?.readRoles).toEqual(["admin"])
+  })
+
+  it("parses ttlMs and fieldPermissions in namespace collections", () => {
+    const raw = JSON.stringify({
+      version: 1,
+      collections: [],
+      namespaces: {
+        tenantA: {
+          collections: [
+            {
+              name: "settings",
+              storagePath: "users/{identity}/settings",
+              readRoles: ["self"],
+              writeRoles: ["self"],
+              encryption: "none",
+              maxBodyBytes: 1000000,
+              ttlMs: 3600000,
+              fieldPermissions: { secret: { writeRoles: ["admin"] } },
+            },
+          ],
+        },
+      },
+    })
+    const config = parseConfigJson(raw)
+    const col = config.namespaces?.["tenantA"]?.collections[0]
+    expect(col?.ttlMs).toBe(3600000)
+    expect(col?.fieldPermissions?.["secret"]?.writeRoles).toEqual(["admin"])
+  })
 })
 
 describe("loadConfig / saveConfig", () => {
@@ -160,5 +397,20 @@ describe("loadConfig / saveConfig", () => {
   it("returns null for missing config", async () => {
     const store = createIsolatedStore()
     expect(await loadConfig(store)).toBeNull()
+  })
+
+  it("round-trips namespace config", async () => {
+    const store = createIsolatedStore()
+    const config: SyncConfig = {
+      version: 1,
+      collections: [],
+      namespaces: {
+        tenantA: { collections: [makeNsCol()] },
+      },
+    }
+    await saveConfig(store, config)
+    const loaded = await loadConfig(store)
+    expect(loaded).not.toBeNull()
+    expect(loaded!.namespaces?.["tenantA"]?.collections[0]?.name).toBe("settings")
   })
 })

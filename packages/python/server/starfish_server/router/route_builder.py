@@ -17,7 +17,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 
 from starfish_server.storage.base import AbstractObjectStore
-from starfish_server.config.schema import SyncConfig, CollectionConfig, SyncTrigger, WriteMode, CollectionRateLimitConfig
+from starfish_server.config.schema import SyncConfig, CollectionConfig, SyncTrigger, WriteMode, CollectionRateLimitConfig, NamespaceConfig
 from starfish_server.encryption.encrypted_store import EncryptedObjectStore
 from starfish_server.protocol.pull import pull
 from starfish_server.router.helpers import (
@@ -28,6 +28,7 @@ from starfish_server.router.helpers import (
 )
 from starfish_server.router.middleware import check_body_limit, RateLimiter
 from starfish_server.router.mime import matches_allowed_mime, is_json_collection
+from starfish_server.ttl import is_expired as _is_expired
 from starfish_server.constants import (
     ROLE_PUBLIC,
     ROLE_SELF,
@@ -77,6 +78,20 @@ class SyncRouterOptions:
     replica_manager: "ReplicaManager | None" = None
     queue: "AbstractQueue | None" = None
     role_resolver_timeout: float = 5.0
+
+
+def _max_stored_timestamp(timestamps: Any) -> int:
+    """Recursively find the maximum leaf timestamp in a timestamps tree.
+
+    The stored ``timestamps`` dict maps field names to either an integer
+    (leaf timestamp) or a nested dict (sub-object timestamps).  The document's
+    last-modified time is the maximum of all leaf timestamps.
+    """
+    if isinstance(timestamps, int):
+        return timestamps
+    if isinstance(timestamps, dict):
+        return max((_max_stored_timestamp(v) for v in timestamps.values()), default=0)
+    return 0
 
 
 def _validate_object_schema(data: dict, schema: dict) -> JSONResponse | None:
@@ -144,23 +159,23 @@ async def _check_auth(
     request: Request,
     params: dict[str, str],
     opts: SyncRouterOptions,
-) -> tuple[str | None, JSONResponse | None]:
-    """Check authorization. Returns (identity, error_response)."""
+) -> tuple[str | None, frozenset[str], JSONResponse | None]:
+    """Check authorization. Returns (identity, effective_roles, error_response)."""
     required_roles = col.read_roles if operation == OP_READ else col.write_roles
 
     if ROLE_PUBLIC in required_roles:
-        return None, None
+        return None, frozenset(), None
 
     try:
         auth = await asyncio.wait_for(
             opts.role_resolver(request), timeout=opts.role_resolver_timeout
         )
     except asyncio.TimeoutError:
-        return None, JSONResponse({"error": "Unauthorized"}, status_code=503)
+        return None, frozenset(), JSONResponse({"error": "Unauthorized"}, status_code=503)
     except Exception:
-        return None, JSONResponse({"error": "Unauthorized"}, status_code=401)
+        return None, frozenset(), JSONResponse({"error": "Unauthorized"}, status_code=401)
 
-    effective_roles = set(auth.roles)
+    effective_roles: set[str] = set(auth.roles)
 
     if IDENTITY_PARAM in col.storage_path:
         if params.get(IDENTITY_KEY) == auth.identity:
@@ -172,9 +187,9 @@ async def _check_auth(
 
     has_access = any(r in effective_roles for r in required_roles)
     if not has_access:
-        return auth.identity, JSONResponse({"error": "Forbidden"}, status_code=403)
+        return auth.identity, frozenset(effective_roles), JSONResponse({"error": "Forbidden"}, status_code=403)
 
-    return auth.identity, None
+    return auth.identity, frozenset(effective_roles), None
 
 
 def _resolve_store(
@@ -251,6 +266,7 @@ async def _run_push(
     params: dict[str, str],
     document_key: str,
     identity: str | None,
+    effective_roles: frozenset[str],
     rate_limiter: RateLimiter | None,
     opts: SyncRouterOptions,
 ) -> JSONResponse:
@@ -271,6 +287,16 @@ async def _run_push(
     body = await request.json()
     if not isinstance(body, dict):
         return JSONResponse({"error": "Body must be a JSON object"}, status_code=400)
+
+    # Field-level write permission check
+    if col.field_permissions and isinstance(body.get("data"), dict):
+        for field_name, fp in col.field_permissions.items():
+            if fp.write_roles and field_name in body["data"]:
+                if not any(r in effective_roles for r in fp.write_roles):
+                    return JSONResponse(
+                        {"error": f'Forbidden: field "{field_name}" requires roles: {", ".join(fp.write_roles)}'},
+                        status_code=403,
+                    )
 
     if col.object_schema is not None:
         data = body.get("data")
@@ -359,18 +385,13 @@ def _make_push_handler(
     rate_limiter: RateLimiter | None,
     opts: SyncRouterOptions,
 ) -> Callable:
-    """Create a push handler with *col* and *rate_limiter* captured in a closure.
-
-    Returning the handler from a factory avoids exposing these as function
-    parameters, which would cause FastAPI's dependency injection to re-create
-    the instances on every request.
-    """
+    """Create a push handler with *col* and *rate_limiter* captured in a closure."""
     async def push_handler(request: Request) -> JSONResponse:
         params = request.path_params
         if not _validate_all_params(params):
             return JSONResponse({"error": "Invalid path parameter"}, status_code=400)
 
-        identity, error = await _check_auth(col, OP_WRITE, request, params, opts)
+        identity, effective_roles, error = await _check_auth(col, OP_WRITE, request, params, opts)
         if error:
             return error
 
@@ -396,7 +417,7 @@ def _make_push_handler(
             await _publish_change_event(opts, col, response, params)
             return response
 
-        response = await _run_push(request, col, params, document_key, identity, rate_limiter, opts)
+        response = await _run_push(request, col, params, document_key, identity, effective_roles, rate_limiter, opts)
         await _publish_change_event(opts, col, response, params)
         return response
 
@@ -416,7 +437,7 @@ def _add_collection_routes(
             if not _validate_all_params(params):
                 return JSONResponse({"error": "Invalid path parameter"}, status_code=400)
 
-            identity, error = await _check_auth(col, OP_READ, request, params, opts)
+            identity, effective_roles, error = await _check_auth(col, OP_READ, request, params, opts)
             if error:
                 return error
 
@@ -437,7 +458,6 @@ def _add_collection_routes(
 
             # Binary collection: return raw bytes
             if not is_json_collection(col.allowed_mime_types):
-            
                 result = await opts.store.get_bytes(document_key)
                 if result is None:
                     return Response(status_code=404)
@@ -467,6 +487,47 @@ def _add_collection_routes(
                 col.cache_duration_ms,
                 is_public=ROLE_PUBLIC in col.read_roles,
             )
+
+            # TTL: if the document has expired, return empty data.
+            # Python pull() returns the current time, not the stored timestamp,
+            # so read the stored timestamps directly to check expiry.
+            if col.ttl_ms is not None and response.status_code == 200:
+                try:
+                    raw_doc = await opts.store.get_string(document_key)
+                    if raw_doc:
+                        stored = json.loads(raw_doc)
+                        doc_timestamp = _max_stored_timestamp(stored.get("timestamps", {}))
+                        if _is_expired(doc_timestamp, col.ttl_ms):
+                            resp_body = json.loads(response.body)
+                            resp_body["data"] = {}
+                            response = JSONResponse(resp_body, status_code=200)
+                            if col.cache_duration_ms is not None:
+                                max_age = col.cache_duration_ms // 1000
+                                directive = (
+                                    f"max-age={max_age}"
+                                    if ROLE_PUBLIC in col.read_roles
+                                    else f"private, max-age={max_age}"
+                                )
+                                response.headers["Cache-Control"] = directive
+                except Exception:
+                    pass
+
+            # Field-level read permission filtering
+            if col.field_permissions and response.status_code == 200:
+                try:
+                    resp_body = json.loads(response.body)
+                    if isinstance(resp_body.get("data"), dict):
+                        data = dict(resp_body["data"])
+                        for field_name, fp in col.field_permissions.items():
+                            if fp.read_roles and field_name in data:
+                                if not any(r in effective_roles for r in fp.read_roles):
+                                    del data[field_name]
+                        resp_body["data"] = data
+                        response = JSONResponse(resp_body, status_code=200)
+                        if "Cache-Control" in response.headers:
+                            pass  # already set above; re-apply if needed
+                except Exception:
+                    pass
 
             # ETag conditional request support
             etag = response.headers.get("ETag")
@@ -504,7 +565,7 @@ def _add_bundled_routes(
             return JSONResponse({"error": "Invalid path parameter"}, status_code=400)
 
         if not is_any_public:
-            identity, error = await _check_auth(collections[0], OP_READ, request, params, opts)
+            identity, _roles, error = await _check_auth(collections[0], OP_READ, request, params, opts)
             if error:
                 return error
         else:
@@ -558,18 +619,125 @@ def _add_bundled_routes(
                 if not _validate_all_params(params):
                     return JSONResponse({"error": "Invalid path parameter"}, status_code=400)
 
-                identity, error = await _check_auth(col, OP_WRITE, request, params, opts)
+                identity, effective_roles, error = await _check_auth(col, OP_WRITE, request, params, opts)
                 if error:
                     return error
 
                 document_key = f"{_resolve_document_key(storage_path, params)}/{col.name}"
-                response = await _run_push(request, col, params, document_key, identity, rl, opts)
+                response = await _run_push(request, col, params, document_key, identity, effective_roles, rl, opts)
                 await _publish_change_event(opts, col, response, params)
                 return response
 
             return bundle_push_handler
 
         router.add_api_route(push_path, _make_bundle_push(col, rate_limiter), methods=["POST"])
+
+
+def _register_collections_on_router(
+    router: APIRouter,
+    collections: list[CollectionConfig],
+    opts: SyncRouterOptions,
+) -> None:
+    """Register standalone and bundled collection routes on *router*."""
+    bundles: dict[str, list[CollectionConfig]] = {}
+    standalone: list[CollectionConfig] = []
+
+    for col in collections:
+        if col.bundle:
+            bundles.setdefault(col.bundle, []).append(col)
+        else:
+            standalone.append(col)
+
+    for col in standalone:
+        _add_collection_routes(router, col, opts)
+
+    for bundle_name, bundle_collections in bundles.items():
+        _add_bundled_routes(router, bundle_name, bundle_collections, opts)
+
+
+def _make_batch_pull_handler(
+    collections_by_name: dict[str, CollectionConfig],
+    opts: SyncRouterOptions,
+) -> Callable:
+    """Create a ``/batch/pull`` handler scoped to *collections_by_name*."""
+    async def batch_pull_handler(request: Request) -> JSONResponse:
+        raw_param = request.query_params.get("collections")
+        if not raw_param:
+            return JSONResponse(
+                {"error": "Missing required query parameter: collections"},
+                status_code=400,
+            )
+
+        names = [n.strip() for n in raw_param.split(",") if n.strip()]
+        results: dict[str, Any] = {}
+
+        for name in names:
+            col = collections_by_name.get(name)
+            if col is None:
+                results[name] = {"error": "Collection not found"}
+                continue
+
+            try:
+                identity, effective_roles, error = await _check_auth(col, OP_READ, request, {}, opts)
+                if error:
+                    results[name] = {"error": "Forbidden"}
+                    continue
+
+                store = _resolve_store(col, opts.store, {}, identity, opts)
+                pull_result = await pull(store, col.storage_path, 0)
+                data = pull_result.data
+
+                # TTL check: use stored timestamps (Python pull() returns current time)
+                if col.ttl_ms is not None:
+                    raw_doc = await opts.store.get_string(col.storage_path)
+                    if raw_doc:
+                        stored = json.loads(raw_doc)
+                        doc_timestamp = _max_stored_timestamp(stored.get("timestamps", {}))
+                        if _is_expired(doc_timestamp, col.ttl_ms):
+                            data = {}
+
+                # Field-level read filtering
+                if col.field_permissions and isinstance(data, dict):
+                    data = dict(data)
+                    for field_name, fp in col.field_permissions.items():
+                        if fp.read_roles and field_name in data:
+                            if not any(r in effective_roles for r in fp.read_roles):
+                                del data[field_name]
+
+                results[name] = {
+                    "data": data,
+                    "hash": pull_result.hash,
+                    "timestamp": pull_result.timestamp,
+                }
+            except Exception as exc:
+                logging.getLogger(__name__).error(
+                    "Batch pull failed for collection %r: %s", name, exc, exc_info=True,
+                )
+                results[name] = {"error": "Internal error"}
+
+        return JSONResponse({"collections": results})
+
+    return batch_pull_handler
+
+
+def _mount_namespace(
+    router: APIRouter,
+    ns_name: str,
+    ns_config: NamespaceConfig,
+    opts: SyncRouterOptions,
+) -> None:
+    """Create a sub-router for *ns_name* and mount it on *router*."""
+    ns_router = APIRouter()
+    _register_collections_on_router(ns_router, ns_config.collections, opts)
+
+    collections_by_name = {col.name: col for col in ns_config.collections if not col.bundle}
+    ns_router.add_api_route(
+        "/batch/pull",
+        _make_batch_pull_handler(collections_by_name, opts),
+        methods=["GET"],
+    )
+
+    router.include_router(ns_router, prefix=f"/{ns_name}")
 
 
 def create_sync_router(opts: SyncRouterOptions) -> APIRouter:
@@ -585,19 +753,17 @@ def create_sync_router(opts: SyncRouterOptions) -> APIRouter:
     async def health() -> dict:
         return {"ok": True, "ts": int(time.time() * 1000)}
 
-    bundles: dict[str, list[CollectionConfig]] = {}
-    standalone: list[CollectionConfig] = []
+    _register_collections_on_router(router, config.collections, opts)
 
-    for col in config.collections:
-        if col.bundle:
-            bundles.setdefault(col.bundle, []).append(col)
-        else:
-            standalone.append(col)
+    root_collections_by_name = {col.name: col for col in config.collections if not col.bundle}
+    router.add_api_route(
+        "/batch/pull",
+        _make_batch_pull_handler(root_collections_by_name, opts),
+        methods=["GET"],
+    )
 
-    for col in standalone:
-        _add_collection_routes(router, col, opts)
-
-    for bundle_name, bundle_collections in bundles.items():
-        _add_bundled_routes(router, bundle_name, bundle_collections, opts)
+    if config.namespaces:
+        for ns_name, ns_config in config.namespaces.items():
+            _mount_namespace(router, ns_name, ns_config, opts)
 
     return router

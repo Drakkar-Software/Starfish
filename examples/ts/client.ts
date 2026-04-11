@@ -139,4 +139,30 @@ async function conflictExample() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Namespaced collections (multi-tenant servers)
+// ---------------------------------------------------------------------------
+
+async function namespacedExample() {
+  const TENANT = "acme"
+
+  const client = new StarfishClient({
+    baseUrl: BASE_URL,
+    auth: async () => ({ Authorization: `Bearer my-token-${USER_ID}` }),
+  })
+
+  // Include the namespace prefix in the path.
+  // The storagePath on the server uses the tenant as a prefix too,
+  // e.g. storagePath: "acme/users/{identity}/settings"
+  const sync = new SyncManager({
+    client,
+    pullPath: `/${TENANT}/pull/${TENANT}/users/${USER_ID}/settings`,
+    pushPath: `/${TENANT}/push/${TENANT}/users/${USER_ID}/settings`,
+  })
+
+  await sync.pull()
+  await sync.push({ theme: "dark" })
+  console.log("namespaced push done, hash:", sync.getHash())
+}
+
 syncManagerExample()

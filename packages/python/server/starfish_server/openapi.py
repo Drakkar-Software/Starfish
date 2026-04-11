@@ -40,17 +40,38 @@ def generate_openapi_spec(
         }
     }
 
+    # Root collection paths
     for col in config.collections:
         if col.bundle:
             continue
 
-        if not col.pull_only:
+        if not col.push_only:
             pull_path = f"/{ACTION_PULL}/{col.storage_path}"
             paths[pull_path] = {"get": _build_pull_operation(col)}
 
-        if not col.push_only:
+        if not col.pull_only:
             push_path = f"/{ACTION_PUSH}/{col.storage_path}"
             paths[push_path] = {"post": _build_push_operation(col)}
+
+    # Root batch/pull
+    paths["/batch/pull"] = _build_batch_pull_operation()
+
+    # Namespace paths
+    if config.namespaces:
+        for ns_name, ns_config in config.namespaces.items():
+            for col in ns_config.collections:
+                if col.bundle:
+                    continue
+
+                if not col.push_only:
+                    pull_path = f"/{ns_name}/{ACTION_PULL}/{col.storage_path}"
+                    paths[pull_path] = {"get": _build_pull_operation(col, ns_name=ns_name)}
+
+                if not col.pull_only:
+                    push_path = f"/{ns_name}/{ACTION_PUSH}/{col.storage_path}"
+                    paths[push_path] = {"post": _build_push_operation(col, ns_name=ns_name)}
+
+            paths[f"/{ns_name}/batch/pull"] = _build_batch_pull_operation(ns_name=ns_name)
 
     spec: dict[str, Any] = {
         "openapi": "3.0.3",
@@ -106,7 +127,7 @@ def _extract_path_params(storage_path: str) -> list[dict[str, Any]]:
     ]
 
 
-def _build_pull_operation(col: CollectionConfig) -> dict[str, Any]:
+def _build_pull_operation(col: CollectionConfig, *, ns_name: str | None = None) -> dict[str, Any]:
     is_public = ROLE_PUBLIC in col.read_roles
     params = _extract_path_params(col.storage_path)
     params.append({
@@ -115,9 +136,14 @@ def _build_pull_operation(col: CollectionConfig) -> dict[str, Any]:
         "description": "Only return data updated after this timestamp",
     })
 
+    if ns_name is not None:
+        operation_id = f"pull--{ns_name}--{col.name}"
+    else:
+        operation_id = f"pull_{col.name}"
+
     op: dict[str, Any] = {
         "summary": f"Pull {col.name}",
-        "operationId": f"pull_{col.name}",
+        "operationId": operation_id,
         "parameters": params,
         "responses": {
             "200": {
@@ -135,11 +161,17 @@ def _build_pull_operation(col: CollectionConfig) -> dict[str, Any]:
     return op
 
 
-def _build_push_operation(col: CollectionConfig) -> dict[str, Any]:
+def _build_push_operation(col: CollectionConfig, *, ns_name: str | None = None) -> dict[str, Any]:
     params = _extract_path_params(col.storage_path)
+
+    if ns_name is not None:
+        operation_id = f"push--{ns_name}--{col.name}"
+    else:
+        operation_id = f"push_{col.name}"
+
     return {
         "summary": f"Push {col.name}",
-        "operationId": f"push_{col.name}",
+        "operationId": operation_id,
         "parameters": params,
         "requestBody": {
             "required": True,
@@ -159,4 +191,48 @@ def _build_push_operation(col: CollectionConfig) -> dict[str, Any]:
             "429": {"description": "Rate limit exceeded"},
         },
         "security": [{"bearerAuth": []}],
+    }
+
+
+def _build_batch_pull_operation(*, ns_name: str | None = None) -> dict[str, Any]:
+    if ns_name is not None:
+        operation_id = f"batch_pull--{ns_name}"
+        summary = f"Batch pull ({ns_name})"
+    else:
+        operation_id = "batch_pull"
+        summary = "Batch pull"
+
+    return {
+        "get": {
+            "summary": summary,
+            "operationId": operation_id,
+            "parameters": [
+                {
+                    "name": "collections",
+                    "in": "query",
+                    "required": True,
+                    "schema": {"type": "string"},
+                    "description": "Comma-separated list of collection names to pull",
+                }
+            ],
+            "responses": {
+                "200": {
+                    "description": "Batch pull results",
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "collections": {
+                                        "type": "object",
+                                        "additionalProperties": {"$ref": "#/components/schemas/PullResponse"},
+                                    }
+                                },
+                            }
+                        }
+                    },
+                },
+                "400": {"description": "Missing collections parameter"},
+            },
+        }
     }

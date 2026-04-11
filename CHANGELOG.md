@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.9.0
+
+### Added
+
+#### Server (TypeScript)
+
+- **Version bump to 1.6.0** — reflects the namespace feature added in 1.8.0 (package version was not bumped at that time).
+
+#### Server (Python)
+
+- **Version bump to 1.4.0** — brings the Python server to feature parity with TypeScript 1.6.0.
+- **Collection namespaces** — Optional `namespaces` field on `SyncConfig` mirrors the TypeScript feature: collections grouped under `/{namespace}/pull/...` and `/{namespace}/push/...`, each with its own `/{namespace}/batch/pull` endpoint. `NamespaceConfig` type exported from the package. Namespace names must match `[a-zA-Z0-9_-]+` and cannot use reserved names (`pull`, `push`, `health`, `batch`).
+- **TTL enforcement in router** — `ttlMs` field added to `CollectionConfig` (Python snake_case alias: `ttl_ms`). Expired documents return empty data on pull. The utility `is_expired()` was already exported; it is now wired into the pull and batch-pull handlers.
+- **Field-level permissions** — `fieldPermissions` field added to `CollectionConfig` (alias: `field_permissions`). New `FieldPermission` model with `readRoles`/`writeRoles`. Restricted fields are stripped from pull responses and rejected on push. `FieldPermission` exported from the package.
+- **Batch pull endpoint** — `GET /batch/pull?collections=col1,col2` endpoint added at root and per-namespace, matching the TypeScript API.
+
+## 1.8.0
+
+### Added
+
+#### Server (TypeScript)
+
+- **Queue documentation** — Added `docs/ts/server/queue.md` covering `QueueConfig` fields (`topic`, `includeParams`), the `Queue` interface, `MemoryQueue` / `CustomQueue` built-in implementations, server wiring, custom backend guide, and Python equivalents. Updated README queue section with TypeScript examples alongside the existing Python ones.
+
+#### Server (TypeScript)
+
+- **Collection namespaces** — Optional `namespaces` field on `SyncConfig` groups collections under a URL prefix: `/{namespace}/pull/...` and `/{namespace}/push/...`. Each namespace has its own `/{namespace}/batch/pull` endpoint that only searches within that namespace. Root-level collections (under `collections`) are unaffected and continue to work at `/pull/...` and `/push/...`. Collection names must be unique within each scope (root or a given namespace), but the same name may appear in different namespaces — enabling multi-tenant configs where every tenant has a `"settings"` collection. Namespace names must match `[a-zA-Z0-9_-]+` and cannot use reserved names (`pull`, `push`, `health`, `batch`). New `NamespaceConfig` type exported from the package. See `docs/ts/client/20-namespaces.md` for the full guide.
+
 ## 1.7.0
 
 ### Added

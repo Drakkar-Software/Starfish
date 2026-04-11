@@ -1,4 +1,4 @@
-import type { SyncConfig, CollectionConfig, RemoteConfig, QueueConfig, CollectionRateLimitConfig } from "./schema.js"
+import type { SyncConfig, CollectionConfig, RemoteConfig, QueueConfig, CollectionRateLimitConfig, NamespaceConfig, FieldPermission } from "./schema.js"
 import { validateConfig } from "./validate.js"
 import { StartupError } from "../errors.js"
 import { DEFAULT_CONFIG_KEY, CONTENT_TYPE_JSON } from "../constants.js"
@@ -48,6 +48,8 @@ function parseCollection(raw: Record<string, unknown>): CollectionConfig {
     bundle: (raw["bundle"] as string) ?? undefined,
     remote: raw["remote"] ? parseRemote(raw["remote"] as Record<string, unknown>) : undefined,
     queue: coerceQueue(raw["queue"]),
+    ttlMs: (raw["ttlMs"] as number) ?? undefined,
+    fieldPermissions: (raw["fieldPermissions"] as Record<string, FieldPermission>) ?? undefined,
   }
 }
 
@@ -60,11 +62,44 @@ export function parseConfigJson(raw: string): SyncConfig {
       `Failed to parse sync config as JSON: ${e instanceof Error ? e.message : String(e)}`,
     )
   }
+  const rawNamespaces = parsed["namespaces"] as Record<string, unknown> | undefined
+  let namespaces: Record<string, NamespaceConfig> | undefined
+  if (rawNamespaces != null) {
+    if (typeof rawNamespaces !== "object" || Array.isArray(rawNamespaces)) {
+      throw new StartupError(`Invalid sync config: "namespaces" must be an object`)
+    }
+    try {
+      namespaces = Object.fromEntries(
+        Object.entries(rawNamespaces).map(([name, ns]) => {
+          if (ns == null || typeof ns !== "object" || Array.isArray(ns)) {
+            throw new StartupError(
+              `Invalid sync config: namespace "${name}" must be an object, got ${ns === null ? "null" : typeof ns}`,
+            )
+          }
+          return [
+            name,
+            {
+              collections: (((ns as Record<string, unknown>)["collections"] as unknown[]) ?? []).map(
+                (c) => parseCollection(c as Record<string, unknown>),
+              ),
+            },
+          ]
+        }),
+      )
+    } catch (e) {
+      if (e instanceof StartupError) throw e
+      throw new StartupError(
+        `Failed to parse namespaces: ${e instanceof Error ? e.message : String(e)}`,
+      )
+    }
+  }
+
   const config: SyncConfig = {
     version: parsed["version"] as 1,
     collections: ((parsed["collections"] as unknown[]) ?? []).map((c) =>
       parseCollection(c as Record<string, unknown>),
     ),
+    namespaces,
     rateLimit: parsed["rateLimit"]
       ? (parsed["rateLimit"] as SyncConfig["rateLimit"])
       : undefined,

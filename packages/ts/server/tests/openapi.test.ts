@@ -78,6 +78,96 @@ describe("generateOpenApiSpec", () => {
     expect((spec["servers"] as any)[0].url).toBe("https://api.example.com")
   })
 
+  const nsConfig: SyncConfig = {
+    version: 1,
+    collections: [],
+    namespaces: {
+      tenantA: {
+        collections: [
+          {
+            name: "settings",
+            storagePath: "users/{identity}/settings",
+            readRoles: ["self"],
+            writeRoles: ["self"],
+            encryption: "none",
+            maxBodyBytes: 1000,
+            allowedMimeTypes: ["application/json"],
+          },
+        ],
+      },
+    },
+  }
+
+  it("generates namespaced paths", () => {
+    const spec = generateOpenApiSpec(nsConfig)
+    const paths = spec["paths"] as Record<string, unknown>
+    expect(paths["/tenantA/pull/users/{identity}/settings"]).toBeDefined()
+    expect(paths["/tenantA/push/users/{identity}/settings"]).toBeDefined()
+  })
+
+  it("includes namespace batch/pull path in spec", () => {
+    const spec = generateOpenApiSpec(nsConfig)
+    const paths = spec["paths"] as Record<string, unknown>
+    expect(paths["/tenantA/batch/pull"]).toBeDefined()
+  })
+
+  it("uses -- separator in operationIds to avoid collisions with underscore-named namespaces", () => {
+    // Without the -- separator, namespace "a_b" + collection "c" would produce "pull_a_b_c",
+    // which is the same as namespace "a" + collection "b_c". The -- separator prevents this.
+    const spec = generateOpenApiSpec({
+      version: 1,
+      collections: [
+        {
+          name: "settings",
+          storagePath: "app/settings",
+          readRoles: ["public"],
+          writeRoles: ["admin"],
+          encryption: "none",
+          maxBodyBytes: 1000,
+          allowedMimeTypes: ["application/json"],
+        },
+      ],
+      namespaces: {
+        tenant_a: {
+          collections: [
+            {
+              name: "b_settings",
+              storagePath: "users/{identity}/settings",
+              readRoles: ["self"],
+              writeRoles: ["self"],
+              encryption: "none",
+              maxBodyBytes: 1000,
+              allowedMimeTypes: ["application/json"],
+            },
+          ],
+        },
+        tenant: {
+          collections: [
+            {
+              name: "a_b_settings",
+              storagePath: "users/{identity}/other",
+              readRoles: ["self"],
+              writeRoles: ["self"],
+              encryption: "none",
+              maxBodyBytes: 1000,
+              allowedMimeTypes: ["application/json"],
+            },
+          ],
+        },
+      },
+    })
+    const paths = spec["paths"] as Record<string, any>
+    const id1 = paths["/tenant_a/pull/users/{identity}/settings"]["get"].operationId
+    const id2 = paths["/tenant/pull/users/{identity}/other"]["get"].operationId
+    // Both would collide under underscore separator: "pull_tenant_a_b_settings"
+    expect(id1).toBe("pull--tenant_a--b_settings")
+    expect(id2).toBe("pull--tenant--a_b_settings")
+    // They must be distinct
+    expect(id1).not.toBe(id2)
+    // Root collection uses legacy _ format for backward compatibility
+    expect(paths["/pull/app/settings"]["get"].operationId).toBe("pull_settings")
+  })
+
   it("respects pullOnly/pushOnly", () => {
     const spec = generateOpenApiSpec({
       version: 1,

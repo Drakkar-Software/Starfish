@@ -115,6 +115,18 @@ class CollectionRateLimitConfig(BaseModel):
     """Override the global max requests per window for this collection."""
 
 
+class FieldPermission(BaseModel):
+    """Per-field access control within a collection document."""
+
+    model_config = {"populate_by_name": True}
+
+    read_roles: list[str] | None = Field(default=None, alias="readRoles")
+    """Roles required to read this field.  ``None`` means no restriction."""
+
+    write_roles: list[str] | None = Field(default=None, alias="writeRoles")
+    """Roles required to write this field.  ``None`` means no restriction."""
+
+
 class CollectionConfig(BaseModel):
     """Configuration for a single synced collection."""
 
@@ -179,6 +191,24 @@ class CollectionConfig(BaseModel):
     ``false``/``null`` (disabled), or an object ``{"topic": …, "includeParams": …}``
     to customise."""
 
+    ttl_ms: int | None = Field(default=None, gt=0, alias="ttlMs")
+    """Document time-to-live in milliseconds.
+
+    When set, documents whose last-modified timestamp is older than ``ttl_ms``
+    are treated as empty on pull — the server returns ``{"data": {}, "hash": …}``
+    as if the document were never written."""
+
+    field_permissions: dict[str, "FieldPermission"] | None = Field(default=None, alias="fieldPermissions")
+    """Per-field read/write permissions.
+
+    Keys are top-level field names in the document data.  Only fields listed
+    here are access-controlled; unlisted fields inherit the collection's roles.
+
+    Example::
+
+        field_permissions={"secret": FieldPermission(write_roles=["admin"])}
+    """
+
     @field_validator("rate_limit", mode="before")
     @classmethod
     def _coerce_rate_limit(cls, v: object) -> object:
@@ -207,6 +237,18 @@ class RateLimitConfig(BaseModel):
     max_requests: int = Field(gt=0, alias="maxRequests")
 
 
+class NamespaceConfig(BaseModel):
+    """A named sub-router that groups collections under a URL prefix.
+
+    Each key in ``SyncConfig.namespaces`` becomes a URL prefix so that
+    collections are mounted at ``/{name}/pull/…`` and ``/{name}/push/…``.
+    """
+
+    model_config = {"populate_by_name": True}
+
+    collections: list[CollectionConfig]
+
+
 class SyncConfig(BaseModel):
     """Top-level sync configuration."""
 
@@ -214,4 +256,18 @@ class SyncConfig(BaseModel):
 
     version: Literal[1]
     collections: list[CollectionConfig]
+    namespaces: dict[str, NamespaceConfig] | None = Field(default=None)
+    """Named sub-routers for multi-tenant isolation.
+
+    Keys must match ``[a-zA-Z0-9_-]+`` and must not be the reserved names
+    ``pull``, ``push``, ``health``, or ``batch``.
+    Each namespace must contain at least one collection.
+
+    Example::
+
+        namespaces={
+            "acme": NamespaceConfig(collections=[settings_col]),
+            "globex": NamespaceConfig(collections=[settings_col]),
+        }
+    """
     rate_limit: RateLimitConfig | None = Field(default=None, alias="rateLimit")
