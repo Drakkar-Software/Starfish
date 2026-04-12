@@ -40,6 +40,18 @@ def _validate_collections(collections: list[CollectionConfig], scope_label: str)
         if col.pull_only and col.push_only:
             errors.append(f'{prefix}Collection "{col.name}": cannot be both pullOnly and pushOnly')
 
+        # queueOnly cannot be used with binary collections (no JSON hash for raw bytes)
+        if col.queue_only and _is_binary_collection(col.allowed_mime_types):
+            errors.append(f'{prefix}Collection "{col.name}": queueOnly cannot be used with binary collections')
+
+        # queueOnly + pullOnly: push is disabled so queueOnly has no effect
+        if col.queue_only and col.pull_only:
+            errors.append(f'{prefix}Collection "{col.name}": queueOnly cannot be used with pullOnly (push routes are disabled)')
+
+        # queueOnly + remote: nothing stored locally, replication has nothing to read
+        if col.queue_only and col.remote:
+            errors.append(f'{prefix}Collection "{col.name}": queueOnly cannot be used with remote replication (no data is stored locally to replicate)')
+
         # Public collections must not use identity-based encryption
         if ROLE_PUBLIC in col.read_roles and col.encryption == ENCRYPTION_IDENTITY:
             errors.append(

@@ -311,6 +311,7 @@ async def _run_push(
     return await handle_sync_push(
         document_key, store, body, identity,
         opts.signature_verifier, is_client_encrypted,
+        bool(col.queue_only),
     )
 
 

@@ -34,6 +34,18 @@ function validateCollections(collections: CollectionConfig[], scopeLabel: string
       errors.push(`${scopeLabel}Collection "${col.name}": cannot be both pullOnly and pushOnly`)
     }
 
+    if (col.queueOnly && isBinaryCollection(col.allowedMimeTypes)) {
+      errors.push(`${scopeLabel}Collection "${col.name}": queueOnly cannot be used with binary collections`)
+    }
+
+    if (col.queueOnly && col.pullOnly) {
+      errors.push(`${scopeLabel}Collection "${col.name}": queueOnly cannot be used with pullOnly (push routes are disabled)`)
+    }
+
+    if (col.queueOnly && col.remote) {
+      errors.push(`${scopeLabel}Collection "${col.name}": queueOnly cannot be used with remote replication (no data is stored locally to replicate)`)
+    }
+
     if (col.readRoles.includes(ROLE_PUBLIC) && col.encryption === ENCRYPTION_IDENTITY) {
       errors.push(
         `${scopeLabel}Collection "${col.name}": public collections must not use "${ENCRYPTION_IDENTITY}" encryption (key would be derived from empty identity)`,

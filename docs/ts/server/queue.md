@@ -190,6 +190,36 @@ class RedisQueue implements Queue {
 }
 ```
 
+## Queue-only collections
+
+Set `queueOnly: true` on a collection to publish change events without writing anything to storage. Pushes are accepted and return a `{hash, timestamp}` response like normal, but no document is ever persisted.
+
+This is useful for event-only or ephemeral use cases — audit streams, analytics pipelines, or anything where you only need the queue consumer and never need to pull the data back.
+
+```ts
+{
+  name: "events",
+  storagePath: "events/{eventId}",  // still required, but unused
+  readRoles: ["public"],
+  writeRoles: ["admin"],
+  encryption: "none",
+  maxBodyBytes: 65536,
+  queueOnly: true,
+  queue: { topic: "analytics.events", includeParams: true },
+}
+```
+
+**Behaviour differences from a normal collection:**
+
+| | Normal | `queueOnly` |
+|---|---|---|
+| Storage write | Yes | No |
+| Hash conflict check | Yes (`baseHash` validated) | No (any `baseHash` accepted) |
+| Pull response | Returns stored data | Returns empty (`{}`) |
+| Queue event | If `queue` configured | If `queue` configured |
+
+`queueOnly` cannot be used with binary collections (there is no JSON hash function for raw bytes). The config validator will reject this combination.
+
 ## Python
 
 The Python server exposes the same abstraction under `starfish_server.queue`.
@@ -242,6 +272,23 @@ CollectionConfig(
     queue=True,  # topic = "posts", include_params = False, include_body = False
     # Or:
     # queue=QueueConfig(topic="data.posts.changed", include_params=True, include_body=True),
+)
+```
+
+### Queue-only collections (Python)
+
+Pass `queue_only=True` (or `queueOnly: true` in JSON) to skip storage entirely:
+
+```python
+CollectionConfig(
+    name="events",
+    storage_path="events/{eventId}",  # required but unused
+    read_roles=["public"],
+    write_roles=["admin"],
+    encryption="none",
+    max_body_bytes=65536,
+    queue_only=True,
+    queue=QueueConfig(topic="analytics.events", include_params=True),
 )
 ```
 

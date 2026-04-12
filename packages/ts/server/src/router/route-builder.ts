@@ -381,6 +381,7 @@ async function runPush(
     identity,
     opts.signatureVerifier,
     isClientEncrypted,
+    col.queueOnly ?? false,
   )
   return c.json(result.body, result.status as any)
 }

@@ -115,6 +115,7 @@ async def handle_sync_push(
     identity: str | None = None,
     verify_signature: SignatureVerifier | None = None,
     skip_timestamps: bool = False,
+    skip_storage: bool = False,
 ) -> JSONResponse:
     if UNSAFE_KEY.search(document_key):
         return JSONResponse({"error": "Invalid path parameter"}, status_code=400)
@@ -143,7 +144,7 @@ async def handle_sync_push(
     elif isinstance(author_signature, str) and identity:
         author = Author(pubkey=identity, signature=author_signature)
 
-    result = await push(store, document_key, sanitized, base_hash, author, skip_timestamps)
+    result = await push(store, document_key, sanitized, base_hash, author, skip_timestamps, skip_storage)
 
     if not isinstance(result, PushSuccess):
         return JSONResponse({"error": ERROR_HASH_MISMATCH}, status_code=409)

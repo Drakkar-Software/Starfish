@@ -49,6 +49,8 @@ export interface CollectionConfig {
   bundle?: string
   remote?: RemoteConfig
   queue?: QueueConfig
+  /** When true, pushes compute and return a hash but do not write to storage. Use for event-only collections where only the queue consumer matters. */
+  queueOnly?: boolean
   /** Document time-to-live in milliseconds. Expired documents return empty data on pull. */
   ttlMs?: number
   /** Per-field read/write permissions. Keys are top-level field names. */

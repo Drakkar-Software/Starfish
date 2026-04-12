@@ -1280,6 +1280,22 @@ Queue errors never surface to clients — they are logged and the push response 
 
 Pass `true` as a shorthand for defaults (topic = collection name, `includeParams: false`, `includeBody: false`). Pass `false` or omit to disable.
 
+#### Queue-only collections
+
+Set `queueOnly: true` (`queue_only=True` in Python) on a collection to skip storage entirely. Pushes are accepted and return a `{hash, timestamp}`, but nothing is stored. Pull always returns empty. `baseHash` conflict detection is disabled.
+
+Use for event-only streams where only the queue consumer matters:
+
+```ts
+// TypeScript
+{ name: "events", storagePath: "events/{eventId}", /* ... */, queueOnly: true, queue: { topic: "analytics.events" } }
+```
+
+```python
+# Python
+CollectionConfig(name="events", storage_path="events/{eventId}", ..., queue_only=True, queue=QueueConfig(topic="analytics.events"))
+```
+
 #### Collection config
 
 ```ts

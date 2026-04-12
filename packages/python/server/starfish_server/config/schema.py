@@ -198,6 +198,14 @@ class CollectionConfig(BaseModel):
     ``false``/``null`` (disabled), or an object ``{"topic": …, "includeParams": …}``
     to customise."""
 
+    queue_only: bool | None = Field(default=None, alias="queueOnly")
+    """When ``True``, pushes compute and return a hash but do not write to storage.
+
+    Use for event-only or ephemeral collections where only the queue consumer
+    matters and no stored state is needed.  ``baseHash`` from the client is
+    ignored — there is no conflict detection.  Cannot be used with binary
+    collections."""
+
     ttl_ms: int | None = Field(default=None, gt=0, alias="ttlMs")
     """Document time-to-live in milliseconds.
 

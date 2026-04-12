@@ -34,6 +34,7 @@ async def push(
     base_hash: str | None,
     author: Author | None = None,
     skip_timestamps: bool = False,
+    skip_storage: bool = False,
 ) -> PushResult:
     """Push a new full document.
 
@@ -41,7 +42,13 @@ async def push(
     - Match -> accept, compute timestamp diffs, store
     - Mismatch -> reject with hash_mismatch
     - base_hash: None for first push (no existing document expected)
+    - skip_storage: when True, skip storage read/write and return hash+timestamp directly
     """
+    if skip_storage:
+        now = time.time_ns() // 1_000_000
+        new_hash = compute_hash(new_data)
+        return PushSuccess(hash=new_hash, timestamp=now)
+
     raw = await store.get_string(document_key)
 
     old_data: dict[str, Any] | None = None

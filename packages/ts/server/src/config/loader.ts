@@ -48,6 +48,7 @@ function parseCollection(raw: Record<string, unknown>): CollectionConfig {
     bundle: (raw["bundle"] as string) ?? undefined,
     remote: raw["remote"] ? parseRemote(raw["remote"] as Record<string, unknown>) : undefined,
     queue: coerceQueue(raw["queue"]),
+    queueOnly: (raw["queueOnly"] as boolean) ?? undefined,
     ttlMs: (raw["ttlMs"] as number) ?? undefined,
     fieldPermissions: (raw["fieldPermissions"] as Record<string, FieldPermission>) ?? undefined,
   }

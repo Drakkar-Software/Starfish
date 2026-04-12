@@ -141,6 +141,7 @@ export async function handleSyncPush(
   identity?: string | null,
   verifySignature?: SignatureVerifier,
   skipTimestamps: boolean = false,
+  skipStorage: boolean = false,
 ): Promise<PushResponse> {
   if (UNSAFE_KEY.test(documentKey)) {
     return { body: { error: "Invalid path parameter" }, status: 400 }
@@ -182,6 +183,7 @@ export async function handleSyncPush(
     baseHash ?? null,
     author,
     skipTimestamps,
+    skipStorage,
   )
 
   if (!("hash" in result) || !("timestamp" in result)) {

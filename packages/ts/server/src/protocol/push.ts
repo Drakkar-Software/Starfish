@@ -17,7 +17,14 @@ export async function push(
   baseHash: string | null,
   author?: Author,
   skipTimestamps: boolean = false,
+  skipStorage: boolean = false,
 ): Promise<PushResult> {
+  if (skipStorage) {
+    const now = Date.now()
+    const newHash = await computeHash(newData)
+    return { hash: newHash, timestamp: now } as PushSuccess
+  }
+
   const raw = await store.getString(documentKey)
 
   let oldData: Record<string, unknown> | null = null

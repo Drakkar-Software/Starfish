@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.13.0
+
+### Added
+
+#### Server (TypeScript + Python)
+
+- **`queueOnly` collection flag** — new boolean field on `CollectionConfig` (`queueOnly` in TypeScript/JSON, `queue_only` in Python). When `true`, pushes compute and return a hash but skip all storage reads and writes. `baseHash` from the client is ignored — there is no conflict detection. Pull endpoints return empty data. Use for event-only or ephemeral collections where only the queue consumer matters. Cannot be combined with binary collections (config validation error).
+
 ## 1.12.0
 
 ### Added
