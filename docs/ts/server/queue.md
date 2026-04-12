@@ -220,6 +220,8 @@ This is useful for event-only or ephemeral use cases — audit streams, analytic
 
 `queueOnly` cannot be used with binary collections (there is no JSON hash function for raw bytes). The config validator will reject this combination.
 
+**Client usage:** Use `push()` directly — never `update()`. The client already uses optimistic concurrency (no pull before push in the normal path), so there is no wasted round-trip. `update()` pulls first by design; for a `queueOnly` collection it would always receive empty data, merge into it, then push — which is almost certainly not what you want.
+
 ## Python
 
 The Python server exposes the same abstraction under `starfish_server.queue`.
@@ -291,6 +293,8 @@ CollectionConfig(
     queue=QueueConfig(topic="analytics.events", include_params=True),
 )
 ```
+
+Use `push()` directly on the client — never `update()`. Pull always returns empty for `queueOnly` collections, so `update()` would merge your data into `{}` before pushing.
 
 ### Implementing a custom Queue (Python)
 
