@@ -55,6 +55,8 @@ export interface CollectionConfig {
   ttlMs?: number
   /** Per-field read/write permissions. Keys are top-level field names. */
   fieldPermissions?: Record<string, FieldPermission>
+  /** Base64-encoded public key exposed via the /config endpoint for client-side encryption. */
+  publicKey?: string
 }
 
 export interface RateLimitConfig {

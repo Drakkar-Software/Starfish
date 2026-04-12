@@ -4,6 +4,7 @@ from starfish_sdk.types import ConflictError, StarfishHttpError
 from starfish_sdk.crypto import Encryptor, create_encryptor, ENCRYPTED_KEY
 from starfish_sdk.client import StarfishClient
 from starfish_sdk.sync import SyncManager
+from starfish_sdk.config import fetch_server_config, ConfigResponse, CollectionClientInfo, NamespaceClientConfig
 
 __all__ = [
     "stable_stringify",
@@ -17,4 +18,8 @@ __all__ = [
     "ENCRYPTED_KEY",
     "StarfishClient",
     "SyncManager",
+    "fetch_server_config",
+    "ConfigResponse",
+    "CollectionClientInfo",
+    "NamespaceClientConfig",
 ]

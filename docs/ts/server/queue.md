@@ -222,6 +222,8 @@ This is useful for event-only or ephemeral use cases — audit streams, analytic
 
 **Client usage:** Use `push()` directly — never `update()`. The client already uses optimistic concurrency (no pull before push in the normal path), so there is no wasted round-trip. `update()` pulls first by design; for a `queueOnly` collection it would always receive empty data, merge into it, then push — which is almost certainly not what you want.
 
+> **Tip:** The [`GET /config` endpoint](config-endpoint.md) exposes the `queueOnly` flag so clients can discover it at runtime rather than hardcoding it.
+
 ## Python
 
 The Python server exposes the same abstraction under `starfish_server.queue`.

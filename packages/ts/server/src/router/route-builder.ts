@@ -6,6 +6,7 @@ import type {
   SyncConfig,
   CollectionConfig,
   CollectionRateLimitConfig,
+  EncryptionMode,
   FieldPermission,
   NamespaceConfig,
 } from "../config/schema.js"
@@ -62,6 +63,36 @@ export type RoleEnricher = (
   params: Record<string, string>,
 ) => Promise<string[]>
 
+/** Controls how the GET /config endpoint authenticates callers. */
+export interface ConfigEndpointOptions {
+  /** `"public"` — no auth, all collections returned.
+   *  `"role-filtered"` — roleResolver runs; caller sees only collections
+   *  whose readRoles or writeRoles intersect the caller's roles. */
+  auth: "public" | "role-filtered"
+}
+
+/** Per-collection metadata returned by GET /config. */
+export interface CollectionClientInfo {
+  name: string
+  maxBodyBytes: number
+  encryption: EncryptionMode
+  allowedMimeTypes: string[]
+  pullOnly?: boolean
+  pushOnly?: boolean
+  queueOnly?: boolean
+  clientEncrypted?: boolean
+  /** Base64-encoded public key for client-side encryption, if configured. */
+  publicKey?: string
+  ttlMs?: number
+  forceFullFetch?: boolean
+}
+
+/** Response shape of GET /config. */
+export interface ConfigResponse {
+  collections: CollectionClientInfo[]
+  namespaces?: Record<string, { collections: CollectionClientInfo[] }>
+}
+
 export interface SyncRouterOptions {
   store: ObjectStore
   config: SyncConfig
@@ -89,6 +120,9 @@ export interface SyncRouterOptions {
   logger?: ServerLogger
   /** Audit logger for recording access events. */
   auditLogger?: AuditLogger
+  /** When set, exposes a GET /config endpoint returning per-collection client metadata.
+   *  Omit to disable the endpoint entirely (default). */
+  configEndpoint?: ConfigEndpointOptions
 }
 
 function toRoutePath(action: string, storagePath: string): string {
@@ -906,6 +940,23 @@ function mountNamespace(
   app.route(`/${nsName}`, nsApp)
 }
 
+function toCollectionClientInfo(col: CollectionConfig): CollectionClientInfo {
+  const info: CollectionClientInfo = {
+    name: col.name,
+    maxBodyBytes: col.maxBodyBytes,
+    encryption: col.encryption,
+    allowedMimeTypes: col.allowedMimeTypes,
+  }
+  if (col.pullOnly) info.pullOnly = true
+  if (col.pushOnly) info.pushOnly = true
+  if (col.queueOnly) info.queueOnly = true
+  if (col.clientEncrypted) info.clientEncrypted = true
+  if (col.publicKey) info.publicKey = col.publicKey
+  if (col.ttlMs != null) info.ttlMs = col.ttlMs
+  if (col.forceFullFetch) info.forceFullFetch = true
+  return info
+}
+
 export function createSyncRouter(opts: SyncRouterOptions): Hono {
   const app = new Hono()
   const config = opts.config
@@ -925,6 +976,42 @@ export function createSyncRouter(opts: SyncRouterOptions): Hono {
 
   app.get("/health", (c) => {
     return c.json({ ok: true, ts: Date.now() })
+  })
+
+  app.get("/config", async (c) => {
+    const cfg = opts.configEndpoint
+    if (!cfg) return c.notFound()
+
+    let callerRoles: string[] = []
+    if (cfg.auth === "role-filtered") {
+      try {
+        const result = await opts.roleResolver(c)
+        callerRoles = result.roles
+      } catch {
+        // roleResolver failed — return empty collections rather than 5xx
+      }
+    }
+
+    const isVisible = (col: CollectionConfig): boolean => {
+      if (cfg.auth === "public") return true
+      return (
+        col.readRoles.some((r) => callerRoles.includes(r)) ||
+        col.writeRoles.some((r) => callerRoles.includes(r))
+      )
+    }
+
+    const response: ConfigResponse = {
+      collections: config.collections.filter(isVisible).map(toCollectionClientInfo),
+    }
+    if (config.namespaces) {
+      response.namespaces = Object.fromEntries(
+        Object.entries(config.namespaces).map(([ns, nsCfg]) => [
+          ns,
+          { collections: nsCfg.collections.filter(isVisible).map(toCollectionClientInfo) },
+        ]),
+      )
+    }
+    return c.json(response)
   })
 
   registerCollectionsOnApp(app, config.collections, opts)

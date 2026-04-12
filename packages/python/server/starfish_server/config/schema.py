@@ -224,6 +224,12 @@ class CollectionConfig(BaseModel):
         field_permissions={"secret": FieldPermission(write_roles=["admin"])}
     """
 
+    public_key: str | None = Field(default=None, alias="publicKey")
+    """Base64-encoded public key exposed via the ``GET /config`` endpoint for client-side encryption.
+
+    Clients that call ``fetch_server_config()`` receive this value and can use it to
+    encrypt data before pushing — without requiring a pre-shared secret."""
+
     @field_validator("rate_limit", mode="before")
     @classmethod
     def _coerce_rate_limit(cls, v: object) -> object:
@@ -241,6 +247,23 @@ class CollectionConfig(BaseModel):
         if v is False:
             return None
         return v
+
+
+class ConfigEndpointOptions(BaseModel):
+    """Controls authentication for the ``GET /config`` endpoint.
+
+    Pass an instance to :attr:`SyncRouterOptions.config_endpoint` to enable the
+    endpoint.  Omit (``None``) to disable it entirely (default).
+    """
+
+    model_config = {"populate_by_name": True}
+
+    auth: Literal["public", "role-filtered"]
+    """``"public"`` — no auth check, all collections returned.
+
+    ``"role-filtered"`` — ``role_resolver`` runs; the caller sees only collections
+    whose ``read_roles`` or ``write_roles`` intersect the caller's roles.
+    On resolver error an empty collection list is returned (no 5xx surfaced)."""
 
 
 class RateLimitConfig(BaseModel):

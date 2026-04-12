@@ -17,7 +17,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 
 from starfish_server.storage.base import AbstractObjectStore
-from starfish_server.config.schema import SyncConfig, CollectionConfig, SyncTrigger, WriteMode, CollectionRateLimitConfig, NamespaceConfig
+from starfish_server.config.schema import SyncConfig, CollectionConfig, SyncTrigger, WriteMode, CollectionRateLimitConfig, NamespaceConfig, ConfigEndpointOptions
 from starfish_server.encryption.encrypted_store import EncryptedObjectStore
 from starfish_server.protocol.pull import pull
 from starfish_server.router.helpers import (
@@ -79,6 +79,55 @@ class SyncRouterOptions:
     replica_manager: "ReplicaManager | None" = None
     queue: "AbstractQueue | None" = None
     role_resolver_timeout: float = 5.0
+    config_endpoint: ConfigEndpointOptions | None = None
+
+
+from pydantic import BaseModel as _BaseModel
+
+
+class CollectionClientInfo(_BaseModel):
+    """Per-collection metadata returned by ``GET /config``."""
+
+    name: str
+    maxBodyBytes: int
+    encryption: str
+    allowedMimeTypes: list[str]
+    pullOnly: bool | None = None
+    pushOnly: bool | None = None
+    queueOnly: bool | None = None
+    clientEncrypted: bool | None = None
+    publicKey: str | None = None
+    ttlMs: int | None = None
+    forceFullFetch: bool | None = None
+
+    model_config = {"populate_by_name": True}
+
+
+class _NamespaceClientInfo(_BaseModel):
+    collections: list[CollectionClientInfo]
+
+
+class ConfigResponse(_BaseModel):
+    """Response shape of ``GET /config``."""
+
+    collections: list[CollectionClientInfo]
+    namespaces: dict[str, _NamespaceClientInfo] | None = None
+
+
+def _to_collection_client_info(col: CollectionConfig) -> CollectionClientInfo:
+    return CollectionClientInfo(
+        name=col.name,
+        maxBodyBytes=col.max_body_bytes,
+        encryption=col.encryption,
+        allowedMimeTypes=col.allowed_mime_types,
+        pullOnly=col.pull_only or None,
+        pushOnly=col.push_only or None,
+        queueOnly=col.queue_only or None,
+        clientEncrypted=col.client_encrypted or None,
+        publicKey=col.public_key,
+        ttlMs=col.ttl_ms,
+        forceFullFetch=col.force_full_fetch or None,
+    )
 
 
 def _max_stored_timestamp(timestamps: Any) -> int:
@@ -794,6 +843,42 @@ def create_sync_router(opts: SyncRouterOptions) -> APIRouter:
     @router.get("/health")
     async def health() -> dict:
         return {"ok": True, "ts": int(time.time() * 1000)}
+
+    if opts.config_endpoint is not None:
+        cfg_opts = opts.config_endpoint
+
+        @router.get("/config")
+        async def get_config(request: Request) -> ConfigResponse:
+            caller_roles: list[str] = []
+            if cfg_opts.auth == "role-filtered":
+                try:
+                    auth_result = await opts.role_resolver(request)
+                    caller_roles = auth_result.roles
+                except Exception:
+                    pass  # return empty collections rather than 5xx
+
+            def is_visible(col: CollectionConfig) -> bool:
+                if cfg_opts.auth == "public":
+                    return True
+                return bool(
+                    set(col.read_roles) & set(caller_roles)
+                    or set(col.write_roles) & set(caller_roles)
+                )
+
+            ns_info: dict[str, _NamespaceClientInfo] | None = None
+            if config.namespaces:
+                ns_info = {
+                    ns_name: _NamespaceClientInfo(
+                        collections=[_to_collection_client_info(c) for c in ns_cfg.collections if is_visible(c)]
+                    )
+                    for ns_name, ns_cfg in config.namespaces.items()
+                }
+
+            resp = ConfigResponse(
+                collections=[_to_collection_client_info(c) for c in config.collections if is_visible(c)],
+                namespaces=ns_info,
+            )
+            return JSONResponse(content=resp.model_dump(exclude_none=True))
 
     _register_collections_on_router(router, config.collections, opts)
 

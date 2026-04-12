@@ -41,7 +41,9 @@ from starfish_server.config.schema import (
     RemoteConfig,
     WriteMode,
     SyncTrigger,
+    ConfigEndpointOptions,
 )
+from starfish_server.router.route_builder import CollectionClientInfo, ConfigResponse
 from starfish_server.config.validate import validate_config
 from starfish_server.config.loader import load_config, save_config, parse_config_json, load_config_file
 from starfish_server.replica import ReplicaManager
@@ -109,6 +111,9 @@ __all__ = [
     "RemoteConfig",
     "WriteMode",
     "SyncTrigger",
+    "ConfigEndpointOptions",
+    "CollectionClientInfo",
+    "ConfigResponse",
     "validate_config",
     "load_config",
     "save_config",

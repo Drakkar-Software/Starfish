@@ -44,6 +44,9 @@ export {
   type AuthResult,
   type RoleResolver,
   type RoleEnricher,
+  type ConfigEndpointOptions,
+  type CollectionClientInfo,
+  type ConfigResponse,
 } from "./router/route-builder.js"
 export type { SignatureVerifier } from "./router/helpers.js"
 export {

@@ -51,6 +51,7 @@ function parseCollection(raw: Record<string, unknown>): CollectionConfig {
     queueOnly: (raw["queueOnly"] as boolean) ?? undefined,
     ttlMs: (raw["ttlMs"] as number) ?? undefined,
     fieldPermissions: (raw["fieldPermissions"] as Record<string, FieldPermission>) ?? undefined,
+    publicKey: (raw["publicKey"] as string) ?? undefined,
   }
 }
 

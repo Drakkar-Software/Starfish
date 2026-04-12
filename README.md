@@ -1399,6 +1399,48 @@ import type { QueueMessage } from "@drakkar.software/starfish-server"
 from starfish_server import QueueMessage
 ```
 
+### Config endpoint
+
+`GET /config` lets clients discover server capabilities at runtime — collection names, size limits, encryption modes, supported MIME types, and public keys for client-side encryption.
+
+Enable it via `configEndpoint` / `config_endpoint` on the router options:
+
+```ts
+// TypeScript
+const sync = createSyncRouter({
+  store, config, roleResolver,
+  configEndpoint: { auth: "public" },       // or "role-filtered"
+})
+```
+
+```python
+# Python
+sync_router = create_sync_router(SyncRouterOptions(
+    store=store, config=config, role_resolver=role_resolver,
+    config_endpoint=ConfigEndpointOptions(auth="public"),
+))
+```
+
+**Auth modes:** `"public"` — no auth check, all collections returned. `"role-filtered"` — caller sees only collections matching their roles.
+
+**publicKey field** — add a `publicKey` string to any collection config to expose a base64-encoded public key through `/config`. Clients can use it to encrypt data before pushing.
+
+Fetch from the client:
+
+```ts
+import { fetchServerConfig } from "@drakkar.software/starfish-client"
+const config = await fetchServerConfig("https://api.example.com/v1")
+// config.collections[0].publicKey, .maxBodyBytes, .queueOnly, …
+```
+
+```python
+from starfish_sdk import fetch_server_config
+config = await fetch_server_config("https://api.example.com/v1")
+# config.collections[0].public_key, .max_body_bytes, .queue_only, …
+```
+
+> Full reference: [`docs/ts/server/config-endpoint.md`](docs/ts/server/config-endpoint.md)
+
 ### Replicas
 
 The replica system lets you run multiple Starfish servers that stay in sync. A **primary** server holds the source of truth; **replicas** pull from it and serve reads locally.

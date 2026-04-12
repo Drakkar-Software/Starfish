@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.14.0
+
+### Added
+
+#### Server (TypeScript + Python)
+
+- **`GET /config` endpoint** — opt-in endpoint that returns a per-collection client manifest. Enable via `configEndpoint: { auth: "public" | "role-filtered" }` in `SyncRouterOptions` (TypeScript: `configEndpoint`, Python: `config_endpoint`). Response includes collection name, `maxBodyBytes`, `encryption`, `allowedMimeTypes`, and optional capability flags (`pullOnly`, `pushOnly`, `queueOnly`, `clientEncrypted`, `ttlMs`, `forceFullFetch`). Omitted when not configured. `"role-filtered"` mode runs the `roleResolver` and returns only collections whose `readRoles` or `writeRoles` intersect the caller's roles; resolver errors silently return empty collections. New types exported: `ConfigEndpointOptions`, `CollectionClientInfo`, `ConfigResponse`.
+- **`publicKey` field on `CollectionConfig`** — optional base64-encoded string exposed through `GET /config`. Clients use it to encrypt data before pushing without a pre-shared secret. Stored verbatim; encryption protocol is application-defined.
+
+#### Client (TypeScript + Python)
+
+- **`fetchServerConfig(baseUrl, options?)`** (TypeScript: `@drakkar.software/starfish-client`) — fetches `GET {baseUrl}/config` and returns a typed `ConfigResponse`. Accepts optional `headers` for auth. Throws on non-2xx.
+- **`fetch_server_config(base_url, headers?)`** (Python: `starfish-sdk`) — async equivalent. Raises `httpx.HTTPStatusError` on non-2xx. New types exported: `ConfigResponse`, `CollectionClientInfo`, `NamespaceClientConfig`.
+
 ## 1.13.0
 
 ### Added
