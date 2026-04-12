@@ -47,7 +47,7 @@ uv run pytest -v         # Run tests
 
 - **TypeScript**: strict mode, ESNext target, bundler module resolution
 - **Python**: async/await, FastAPI, Pydantic v2, asyncio_mode = "auto" for tests
-- **Versioning**: semver, tag-triggered releases (v*)
+- **Versioning**: semver, tag-triggered releases (v*). **All six packages use lockstep versioning** — every release bumps all packages to the same version number, even if a package has no changes. Packages: `packages/ts/protocol`, `packages/ts/server`, `packages/ts/client`, `packages/python/protocol`, `packages/python/server`, `packages/python/client`.
 - **CHANGELOG**: `## X.Y.Z` headers with `### Added`, `### Changed`, `### Fixed` sections
 
 ## Mandatory Post-Change Checklist
