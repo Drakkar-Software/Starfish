@@ -247,6 +247,28 @@ def test_rotate_group_key_wrong_key_pair_raises():
         rotate_group_key(keyring, wrong_kp, {"alice": alice_kp.public_key})
 
 
+def test_rotate_group_key_removed_member_encryptor_cannot_decrypt_new_epoch():
+    admin_kp = derive_group_key_pair("admin", "a")
+    alice_kp = derive_group_key_pair("alice", "a")
+    bob_kp = derive_group_key_pair("bob", "b")
+    keyring, _ = create_group_keyring(admin_kp, {"alice": alice_kp.public_key, "bob": bob_kp.public_key})
+
+    # Bob builds an encryptor from the pre-rotation keyring
+    bob_old_enc = create_group_encryptor(keyring, "bob", bob_kp.private_key)
+
+    # Rotate — bob is excluded from epoch 2
+    rotated, _ = rotate_group_key(keyring, admin_kp, {"alice": alice_kp.public_key})
+
+    # Alice encrypts a new document in epoch 2
+    alice_new_enc = create_group_encryptor(rotated, "alice", alice_kp.private_key)
+    new_doc = alice_new_enc.encrypt({"secret": "post-rotation"})
+    assert new_doc["_epoch"] == 2
+
+    # Bob's old encryptor has no epoch-2 key — must raise
+    with pytest.raises(ValueError, match="No key available for epoch"):
+        bob_old_enc.decrypt(new_doc)
+
+
 # ── create_group_encryptor ───────────────────────────────────────────────────
 
 

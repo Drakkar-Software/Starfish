@@ -121,7 +121,6 @@ The admin generates the keyring and distributes it. Each member's public key mus
 ```ts
 import {
   deriveGroupKeyPair,
-  generateGroupKey,
   createGroupKeyring,
 } from "@drakkar.software/starfish-client/group"
 
@@ -156,7 +155,7 @@ import { SyncManager } from "@drakkar.software/starfish-client"
 // Pull the keyring document
 const keyringSync = new SyncManager({ client, pullPath: `/pull/groups/${groupId}/keyring`, ... })
 await keyringSync.pull()
-const keyringData = GroupKeyring /* parse */ // cast keyringSync.getData()
+const keyringData = keyringSync.getData() as unknown as GroupKeyring
 
 const myKp = await deriveGroupKeyPair(myPassphrase, myUserId)
 const encryptor = await createGroupEncryptor(keyringData, myUserId, myKp.privateKey)

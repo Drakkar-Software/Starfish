@@ -249,6 +249,30 @@ describe("rotateGroupKey", () => {
       rotateGroupKey(keyring, wrongKp, { alice: aliceKp.publicKey }),
     ).rejects.toThrow(/does not match/)
   })
+
+  it("removed member's encryptor cannot decrypt new-epoch documents", async () => {
+    const adminKp = await deriveGroupKeyPair("admin", "a")
+    const aliceKp = await deriveGroupKeyPair("alice", "a")
+    const bobKp = await deriveGroupKeyPair("bob", "b")
+    const { keyring } = await createGroupKeyring(adminKp, {
+      alice: aliceKp.publicKey,
+      bob: bobKp.publicKey,
+    })
+
+    // Bob builds an encryptor from the pre-rotation keyring
+    const bobOldEnc = await createGroupEncryptor(keyring, "bob", bobKp.privateKey)
+
+    // Rotate — bob is excluded from epoch 2
+    const { keyring: rotated } = await rotateGroupKey(keyring, adminKp, { alice: aliceKp.publicKey })
+
+    // Alice encrypts a new document in epoch 2
+    const aliceNewEnc = await createGroupEncryptor(rotated, "alice", aliceKp.privateKey)
+    const newDoc = await aliceNewEnc.encrypt({ secret: "post-rotation" })
+    expect(newDoc["_epoch"]).toBe(2)
+
+    // Bob's old encryptor has no epoch-2 key — must throw
+    await expect(bobOldEnc.decrypt(newDoc)).rejects.toThrow(/No key available for epoch/)
+  })
 })
 
 // ── createGroupEncryptor ──────────────────────────────────────────────────────
