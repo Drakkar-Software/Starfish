@@ -37,6 +37,7 @@ import {
   ENCRYPTION_IDENTITY,
   ENCRYPTION_SERVER,
   ENCRYPTION_DELEGATED,
+  ENCRYPTION_GROUP,
   ACTION_PULL,
   ACTION_PUSH,
   ACTION_LIST,
@@ -426,7 +427,7 @@ async function runPush(
   }
 
   const store = resolveStore(col, opts.store, params, identity, opts)
-  const isClientEncrypted = Boolean(col.clientEncrypted) || col.encryption === ENCRYPTION_DELEGATED
+  const isClientEncrypted = Boolean(col.clientEncrypted) || col.encryption === ENCRYPTION_DELEGATED || col.encryption === ENCRYPTION_GROUP
   const result = await handleSyncPush(
     documentKey,
     store,
@@ -626,7 +627,7 @@ function addCollectionRoutes(
       const store = resolveStore(col, opts.store, params, identity, opts)
       const checkpointParam = c.req.query(QUERY_CHECKPOINT)
       const isClientEncrypted =
-        Boolean(col.clientEncrypted) || col.encryption === ENCRYPTION_DELEGATED
+        Boolean(col.clientEncrypted) || col.encryption === ENCRYPTION_DELEGATED || col.encryption === ENCRYPTION_GROUP
       const pullResult = await handleSyncPull(
         documentKey,
         store,
@@ -859,7 +860,7 @@ function addBundledRoutes(
     const store = resolveStore(collections[0]!, opts.store, params, identity, opts)
 
     const anyClientEncrypted = collections.some(
-      (col) => col.clientEncrypted || col.encryption === ENCRYPTION_DELEGATED,
+      (col) => col.clientEncrypted || col.encryption === ENCRYPTION_DELEGATED || col.encryption === ENCRYPTION_GROUP,
     )
     const checkpointParam = c.req.query(QUERY_CHECKPOINT)
     let checkpoint = 0

@@ -1,4 +1,5 @@
 import { getCrypto, getBase64 } from "@drakkar.software/starfish-protocol"
+import { deriveGroupKeyPair } from "./group-crypto.js"
 
 // ── Word list ─────────────────────────────────────────────────────────────────
 // 256 common English words, one per index (0-255). One byte of entropy per word.
@@ -61,6 +62,18 @@ export interface DerivedCredentials {
    * their encryption keys are different.
    */
   encryptionSalt: string
+  /**
+   * Hex-encoded X25519 public key for group encryption.
+   * Publish this so group admins can wrap the Group Encryption Key (GEK) for you.
+   * Safe to store in a public Starfish document.
+   */
+  groupPublicKey: string
+  /**
+   * Hex-encoded X25519 private key for group encryption.
+   * Used to unwrap the GEK from a keyring document.
+   * Never transmit this — keep it in memory or derive it from the passphrase.
+   */
+  groupPrivateKey: string
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -151,11 +164,19 @@ export async function deriveCredentials(passphrase: string): Promise<DerivedCred
   // Domain separation from authToken ensures they cannot be recovered from each other.
   const encryptionSecret = await sha256Hex(`${passphrase}:${userId}`)
 
+  // X25519 key pair for group encryption — deterministically derived from passphrase.
+  const { publicKey: groupPublicKey, privateKey: groupPrivateKey } = await deriveGroupKeyPair(
+    passphrase,
+    userId,
+  )
+
   return {
     authToken,
     userId,
     encryptionSecret,
     encryptionSalt: userId,
+    groupPublicKey,
+    groupPrivateKey,
   }
 }
 

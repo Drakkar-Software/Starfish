@@ -355,6 +355,102 @@ See [Group Access](../server/group-access.md) and [List Endpoint](../server/list
 
 ---
 
+## Pattern 7: Encrypted Group Chat (E2E, per-member keys)
+
+**Use case:** Same as Pattern 6 but with end-to-end encryption. Each member holds their own credentials; non-members (including the server operator) cannot read messages. Members can be added/removed without sharing a master passphrase.
+
+**Access:** group-member read/write. `encryption: "group"` — server stores opaque ciphertext.
+
+```ts
+// server/config.ts
+const config: SyncConfig = {
+  version: 1,
+  collections: [
+    // Keyring — plaintext, admin-writable, member-readable
+    {
+      name: "keyring",
+      storagePath: "groups/{groupId}/keyring",
+      readRoles: ["group-member"],
+      writeRoles: ["group-admin"],
+      encryption: "none",
+      maxBodyBytes: 65_536,
+      allowedMimeTypes: ["application/json"],
+    },
+    // Encrypted chat messages — one document per day
+    {
+      name: "chat",
+      storagePath: "chats/{groupId}/{day}",
+      readRoles: ["group-member"],
+      writeRoles: ["group-member"],
+      encryption: "group",         // client handles E2E encryption
+      maxBodyBytes: 524_288,
+      allowedMimeTypes: ["application/json"],
+      listable: true,
+      queue: { topic: "chats.updated", includeParams: true },
+    },
+    // Group membership
+    {
+      name: "group-members",
+      storagePath: "groups/{groupId}/members",
+      readRoles: ["group-admin"],
+      writeRoles: ["group-admin"],
+      encryption: "none",
+      maxBodyBytes: 65_536,
+      allowedMimeTypes: ["application/json"],
+    },
+  ],
+}
+```
+
+```ts
+// client — member reads and posts a message
+import {
+  deriveGroupKeyPair,
+  createGroupEncryptor,
+  type GroupKeyring,
+} from "@drakkar.software/starfish-client/group"
+import { SyncManager } from "@drakkar.software/starfish-client"
+
+const myKp = await deriveGroupKeyPair(myPassphrase, myUserId)
+
+// Pull keyring (plaintext)
+const keyringSync = new SyncManager({ client, pullPath: `/pull/groups/${groupId}/keyring`, ... })
+await keyringSync.pull()
+const keyringData = keyringSync.getData() as unknown as GroupKeyring
+
+// Create encryptor from keyring
+const encryptor = await createGroupEncryptor(keyringData, myUserId, myKp.privateKey)
+
+// Use encryptor for the chat collection
+const today = new Date().toISOString().slice(0, 10)
+const daySync = new SyncManager({
+  client,
+  pullPath:  `/pull/chats/${groupId}/${today}`,
+  pushPath:  `/push/chats/${groupId}/${today}`,
+  encryptor,   // replaces encryptionSecret/encryptionSalt
+})
+
+// Post a message (append-only, with conflict retry)
+await daySync.update((current) => {
+  const messages = (current["messages"] as Message[] | undefined) ?? []
+  return {
+    ...current,
+    messages: [...messages, { id: crypto.randomUUID(), text, author: myUserId, ts: Date.now() }],
+  }
+})
+```
+
+**Properties vs Pattern 6:**
+- Server operator cannot read message content — only members with their private keys can decrypt
+- Each member uses their own credentials (own `userId`, own auth token)
+- Adding a member = admin wraps current GEK for new member's public key (no passphrase sharing)
+- Removing a member = admin rotates to a new GEK epoch; removed member retains old-epoch keys but cannot read new messages
+- `_epoch` field in each encrypted document allows decrypting documents from any epoch the member had access to
+
+See [Group Encryption](21-group-encryption.md) for the full API and key lifecycle.
+
+---
+
 ## Combining Patterns
 
 Real applications often combine several patterns. A typical setup:

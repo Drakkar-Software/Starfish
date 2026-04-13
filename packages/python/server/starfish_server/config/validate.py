@@ -4,7 +4,7 @@
 import re
 
 from starfish_server.config.schema import SyncConfig, WriteMode, CollectionConfig
-from starfish_server.constants import ENCRYPTION_IDENTITY, ENCRYPTION_SERVER, ENCRYPTION_DELEGATED, IDENTITY_PARAM, ROLE_PUBLIC
+from starfish_server.constants import ENCRYPTION_IDENTITY, ENCRYPTION_SERVER, ENCRYPTION_DELEGATED, ENCRYPTION_GROUP, IDENTITY_PARAM, ROLE_PUBLIC
 
 MIME_JSON = "application/json"
 
@@ -81,6 +81,13 @@ def _validate_collections(collections: list[CollectionConfig], scope_label: str)
                 f'"{ENCRYPTION_IDENTITY}" encryption (key would be derived from empty identity)'
             )
 
+        # Public collections cannot use group encryption
+        if ROLE_PUBLIC in col.read_roles and col.encryption == ENCRYPTION_GROUP:
+            errors.append(
+                f'{prefix}Collection "{col.name}": public collections cannot use '
+                f'"{ENCRYPTION_GROUP}" encryption (group encryption requires authenticated access)'
+            )
+
         # Bundled collections must use identity encryption
         if col.bundle and col.encryption != ENCRYPTION_IDENTITY:
             errors.append(
@@ -102,7 +109,7 @@ def _validate_collections(collections: list[CollectionConfig], scope_label: str)
         # Binary collection constraints (allowedMimeTypes without application/json)
         is_binary = _is_binary_collection(col.allowed_mime_types)
         if is_binary:
-            if col.encryption in (ENCRYPTION_IDENTITY, ENCRYPTION_SERVER):
+            if col.encryption in (ENCRYPTION_IDENTITY, ENCRYPTION_SERVER, ENCRYPTION_GROUP):
                 errors.append(
                     f'{prefix}Collection "{col.name}": binary collections cannot use '
                     f'"{col.encryption}" encryption (storage layer is string-based)'
@@ -138,10 +145,11 @@ def _validate_collections(collections: list[CollectionConfig], scope_label: str)
             # Bundle support would require coordinating multiple document keys
             if col.bundle:
                 errors.append(f'{prefix}Collection "{col.name}": remote collections cannot be part of a bundle')
-            # Delegated encryption is opaque to the server — cannot replicate client-encrypted blobs
-            if col.encryption == ENCRYPTION_DELEGATED:
+            # Delegated and group encryption are opaque to the server — cannot replicate
+            if col.encryption in (ENCRYPTION_DELEGATED, ENCRYPTION_GROUP):
                 errors.append(
-                    f'{prefix}Collection "{col.name}": remote collections cannot use delegated encryption '
+                    f'{prefix}Collection "{col.name}": remote collections cannot use '
+                    f'"{col.encryption}" encryption '
                     f'(server cannot replicate opaque client-encrypted blobs)'
                 )
             # push_through and bidirectional require a push_path to forward writes to the primary

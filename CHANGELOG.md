@@ -1,5 +1,44 @@
 # Changelog
 
+## 1.16.0
+
+### Added
+
+#### Client (TypeScript + Python)
+
+- **Group encryption** — new `"group"` encryption mode for multi-user encrypted collections. Each member holds their own X25519 key pair (derived deterministically from their passphrase via SHA-256); a shared Group Encryption Key (GEK) is distributed per-member using ECDH key wrapping. Wire format: `{ _encrypted: "base64(IV || ciphertext)", _epoch: N }`. Epoch rotation revokes a removed member's access to new documents without affecting past documents.
+
+  TypeScript API (`@drakkar.software/starfish-client/group`):
+  - `deriveGroupKeyPair(passphrase, userId)` — deterministic X25519 key pair
+  - `generateGroupKey()` — random 256-bit GEK as hex string
+  - `wrapGroupKey(gek, memberPublicKey, wrapperPrivateKey)` — ECDH wrap
+  - `unwrapGroupKey(wrapped, memberPrivateKey, adminPublicKey)` — ECDH unwrap
+  - `createGroupKeyring(adminKeyPair, members, gek?)` — epoch-1 keyring
+  - `addGroupMember(keyring, adminKeyPair, currentGek, newMemberId, newMemberPublicKey)` — add to current epoch
+  - `rotateGroupKey(keyring, adminKeyPair, remainingMembers, newGek?)` — new epoch
+  - `createGroupEncryptor(keyring, myIdentity, myPrivateKey)` — returns `Encryptor` for use with `SyncManager`
+
+  Python API (`starfish_sdk.group`): identical snake_case API.
+
+- **`deriveCredentials` now includes `groupPublicKey` and `groupPrivateKey`** — the ECDH key pair is derived automatically alongside auth and encryption credentials (TypeScript). Call `derive_group_key_pair(passphrase, user_id)` separately in Python.
+
+- **`SyncManager` accepts `encryptor` option** — pass any `Encryptor` (including a `GroupEncryptor`) directly instead of `encryptionSecret`/`encryptionSalt`. TypeScript: `encryptor` option on `SyncManagerOptions`. Python: `encryptor` parameter on `SyncManager.__init__`.
+
+#### Server (TypeScript + Python)
+
+- **`encryption: "group"` collection flag** — new encryption mode identical to `"delegated"` on the server (full fetch, opaque blobs, no server-side crypto). Validation rejects `"group"` on public collections, binary collections, and remote (pull-only) collections.
+
+#### Test vectors
+
+- **`tests/test-vectors/group-crypto.json`** — cross-language compatibility vectors: fixed X25519 key pairs (derived from known passphrases), pre-generated wrapped keys. Both the TypeScript and Python test suites verify key pair derivation and GEK unwrapping against these vectors, proving ECDH+HKDF+AES-GCM compatibility across implementations.
+
+#### Documentation
+
+- New guide: `docs/ts/client/21-group-encryption.md` — full group encryption reference (key derivation, keyring lifecycle, epoch rotation, API reference, security considerations).
+- Updated: `docs/ts/client/04-encryption.md` — added group encryption overview and link.
+- Updated: `docs/ts/client/19-collection-patterns.md` — Pattern 7: encrypted group chat (E2E, per-member keys).
+- Updated: `docs/ts/server/group-access.md` — encrypted group chat section with server config and comparison table.
+
 ## 1.15.0
 
 ### Added

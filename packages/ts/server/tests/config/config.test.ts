@@ -64,6 +64,47 @@ describe("validateConfig", () => {
     expect(errors.some((e) => e.includes("public collections"))).toBe(true)
   })
 
+  it("group encryption is valid on authenticated collection", () => {
+    const errors = validateConfig(
+      makeConfig([makeCol({ readRoles: ["group-member"], writeRoles: ["group-member"], encryption: "group" })]),
+    )
+    expect(errors).toEqual([])
+  })
+
+  it("detects public + group encryption conflict", () => {
+    const errors = validateConfig(
+      makeConfig([makeCol({ readRoles: ["public"], encryption: "group" })]),
+    )
+    expect(errors.some((e) => e.includes("public collections cannot use") && e.includes("group"))).toBe(true)
+  })
+
+  it("detects binary collection with group encryption", () => {
+    const errors = validateConfig(
+      makeConfig([makeCol({ allowedMimeTypes: ["image/png"], encryption: "group" })]),
+    )
+    expect(errors.some((e) => e.includes("binary collections cannot use"))).toBe(true)
+  })
+
+  it("detects remote collection with group encryption", () => {
+    const errors = validateConfig(
+      makeConfig([
+        makeCol({
+          storagePath: "data/shared",
+          encryption: "group",
+          remote: {
+            url: "https://primary.example.com",
+            pullPath: "/pull/data",
+            intervalMs: 60000,
+            headers: {},
+            writeMode: "pull_only",
+            syncTriggers: ["scheduled"],
+          },
+        }),
+      ]),
+    )
+    expect(errors.some((e) => e.includes("group") && e.includes("remote"))).toBe(true)
+  })
+
   it("detects bundled without identity encryption", () => {
     const errors = validateConfig(
       makeConfig([makeCol({ bundle: "grp", encryption: "none" })]),

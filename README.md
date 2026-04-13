@@ -357,6 +357,7 @@ const router = createSyncRouter({
 - **`"identity"`** — encrypted per-user with HKDF(secret, identity). Only the user can read their data.
 - **`"server"`** — encrypted with a server-wide key. All server code can read; clients cannot read raw storage.
 - **`"delegated"`** — client-side encryption. The server stores opaque encrypted data without decrypting it. See [Delegated encryption](#delegated-encryption).
+- **`"group"`** — client-side encryption for multi-user collections. Each member holds their own X25519 key pair (derived deterministically from their passphrase); a shared Group Encryption Key is distributed per-member using ECDH key wrapping. Behaves identically to `"delegated"` on the server. See [Group Encryption](docs/ts/client/21-group-encryption.md).
 
 ## Client SDKs
 
@@ -504,6 +505,36 @@ const encrypted = await encryptor.encrypt({ hello: "world" })
 const decrypted = await encryptor.decrypt(encrypted)
 // => { hello: "world" }
 ```
+
+### Group Encryption
+
+For multi-user encrypted collections (group chat, collaborative documents), use `encryption: "group"` on the server and `createGroupEncryptor` on the client. Each member derives their own X25519 key pair from their passphrase — no shared secret is required.
+
+```ts
+import { deriveGroupKeyPair, createGroupKeyring, createGroupEncryptor } from "@drakkar.software/starfish-client/group"
+import { SyncManager } from "@drakkar.software/starfish-client"
+
+// Admin creates a keyring for alice and bob
+const adminKp = await deriveGroupKeyPair(adminPassphrase, adminUserId)
+const { keyring, gek } = await createGroupKeyring(adminKp, {
+  alice: alicePubKey,
+  bob:   bobPubKey,
+})
+// Push keyring to Starfish, keep gek to add future members
+
+// Member uses the keyring to create an encryptor
+const myKp = await deriveGroupKeyPair(myPassphrase, myUserId)
+const encryptor = await createGroupEncryptor(keyringData, myUserId, myKp.privateKey)
+
+const sync = new SyncManager({
+  client,
+  pullPath: "/pull/groups/g1/notes",
+  pushPath: "/push/groups/g1/notes",
+  encryptor,   // replaces encryptionSecret/encryptionSalt
+})
+```
+
+See [Group Encryption](docs/ts/client/21-group-encryption.md) for the full API including member addition and epoch rotation.
 
 ### Platform Support
 

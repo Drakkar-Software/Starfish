@@ -38,6 +38,7 @@ from starfish_server.constants import (
     ENCRYPTION_IDENTITY,
     ENCRYPTION_SERVER,
     ENCRYPTION_DELEGATED,
+    ENCRYPTION_GROUP,
     ACTION_PULL,
     ACTION_PUSH,
     ACTION_LIST,
@@ -376,7 +377,7 @@ async def _run_push(
                 return schema_error
 
     store = _resolve_store(col, opts.store, params, identity, opts)
-    is_client_encrypted = bool(col.client_encrypted) or col.encryption == ENCRYPTION_DELEGATED
+    is_client_encrypted = bool(col.client_encrypted) or col.encryption in (ENCRYPTION_DELEGATED, ENCRYPTION_GROUP)
     return await handle_sync_push(
         document_key, store, body, identity,
         opts.signature_verifier, is_client_encrypted,
@@ -572,7 +573,7 @@ def _add_collection_routes(
 
             store = _resolve_store(col, opts.store, params, identity, opts)
             checkpoint_param = request.query_params.get(QUERY_CHECKPOINT)
-            is_client_encrypted = bool(col.client_encrypted) or col.encryption == ENCRYPTION_DELEGATED
+            is_client_encrypted = bool(col.client_encrypted) or col.encryption in (ENCRYPTION_DELEGATED, ENCRYPTION_GROUP)
             response = await handle_sync_pull(
                 document_key, store, checkpoint_param,
                 bool(col.force_full_fetch), is_client_encrypted,
@@ -717,7 +718,7 @@ def _add_bundled_routes(
         store = _resolve_store(collections[0], opts.store, params, identity, opts)
 
         any_client_encrypted = any(
-            c.client_encrypted or c.encryption == ENCRYPTION_DELEGATED
+            c.client_encrypted or c.encryption in (ENCRYPTION_DELEGATED, ENCRYPTION_GROUP)
             for c in collections
         )
         checkpoint_param = request.query_params.get(QUERY_CHECKPOINT)

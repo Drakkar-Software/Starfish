@@ -5,6 +5,19 @@ from starfish_sdk.crypto import Encryptor, create_encryptor, ENCRYPTED_KEY
 from starfish_sdk.client import StarfishClient
 from starfish_sdk.sync import SyncManager
 from starfish_sdk.config import fetch_server_config, ConfigResponse, CollectionClientInfo, NamespaceClientConfig
+from starfish_sdk.group import (
+    GroupKeyPair,
+    EpochKeyring,
+    GroupKeyring,
+    derive_group_key_pair,
+    generate_group_key,
+    wrap_group_key,
+    unwrap_group_key,
+    create_group_keyring,
+    add_group_member,
+    rotate_group_key,
+    create_group_encryptor,
+)
 
 __all__ = [
     "stable_stringify",
@@ -22,4 +35,15 @@ __all__ = [
     "ConfigResponse",
     "CollectionClientInfo",
     "NamespaceClientConfig",
+    "GroupKeyPair",
+    "EpochKeyring",
+    "GroupKeyring",
+    "derive_group_key_pair",
+    "generate_group_key",
+    "wrap_group_key",
+    "unwrap_group_key",
+    "create_group_keyring",
+    "add_group_member",
+    "rotate_group_key",
+    "create_group_encryptor",
 ]

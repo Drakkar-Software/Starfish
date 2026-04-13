@@ -194,8 +194,48 @@ See [List Endpoint](list-endpoint.md) for details on discovery and pagination.
 - **High-concurrency appending** — many users posting to the same day-document causes 409 conflicts and `update()` retries. For very active groups, consider a `queueOnly` intake collection + a custom backend aggregator.
 - **Cache invalidation** — membership changes are not immediately visible to the enricher. The default 1-minute TTL is a trade-off between latency and consistency.
 
+## Encrypted group chat
+
+For end-to-end encrypted groups where the server operator cannot read messages, use `encryption: "group"` on the chat collection. This works identically to the patterns above on the server side — the enricher still grants `"group-member"` based on the membership document; the difference is that the `SyncManager` uses a `GroupEncryptor` on the client side instead of a shared passphrase.
+
+Key differences from unencrypted group chat:
+
+| | Unencrypted (Pattern 6) | Encrypted (Pattern 7) |
+|---|---|---|
+| Server sees messages | Yes | No — opaque ciphertext only |
+| Members share a secret | No | No — each member has own key pair |
+| Revocation | Remove from member list | Remove from member list **and** rotate GEK epoch |
+| Key derivation | n/a | Deterministic from passphrase via SHA-256 + X25519 |
+
+Add a `keyring` collection (plaintext, admin-write, member-read) alongside the encrypted chat collection:
+
+```ts
+{
+  name: "keyring",
+  storagePath: "groups/{groupId}/keyring",
+  readRoles: ["group-member"],
+  writeRoles: ["group-admin"],
+  encryption: "none",
+  maxBodyBytes: 65_536,
+  allowedMimeTypes: ["application/json"],
+},
+{
+  name: "chat",
+  storagePath: "chats/{groupId}/{day}",
+  readRoles: ["group-member"],
+  writeRoles: ["group-member"],
+  encryption: "group",   // <-- E2E encrypted
+  maxBodyBytes: 524_288,
+  allowedMimeTypes: ["application/json"],
+  listable: true,
+},
+```
+
+See [Group Encryption](../client/21-group-encryption.md) for the full client-side API (key pair derivation, keyring creation, member addition, epoch rotation).
+
 ## Next Steps
 
 - [List Endpoint](list-endpoint.md) — discover which documents exist
 - [Queue](queue.md) — react to pushes server-side
 - [Collection Patterns](../client/19-collection-patterns.md) — more access control patterns
+- [Group Encryption](../client/21-group-encryption.md) — E2E encrypted group collections

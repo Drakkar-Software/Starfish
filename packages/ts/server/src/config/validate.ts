@@ -3,6 +3,7 @@ import {
   ENCRYPTION_IDENTITY,
   ENCRYPTION_SERVER,
   ENCRYPTION_DELEGATED,
+  ENCRYPTION_GROUP,
   IDENTITY_PARAM,
   ROLE_PUBLIC,
 } from "../constants.js"
@@ -70,6 +71,12 @@ function validateCollections(collections: CollectionConfig[], scopeLabel: string
       )
     }
 
+    if (col.readRoles.includes(ROLE_PUBLIC) && col.encryption === ENCRYPTION_GROUP) {
+      errors.push(
+        `${scopeLabel}Collection "${col.name}": public collections cannot use "${ENCRYPTION_GROUP}" encryption (group encryption requires authenticated access)`,
+      )
+    }
+
     if (col.bundle && col.encryption !== ENCRYPTION_IDENTITY) {
       errors.push(
         `${scopeLabel}Collection "${col.name}": bundled collections must use "${ENCRYPTION_IDENTITY}" encryption`,
@@ -90,7 +97,11 @@ function validateCollections(collections: CollectionConfig[], scopeLabel: string
 
     const isBinary = isBinaryCollection(col.allowedMimeTypes)
     if (isBinary) {
-      if (col.encryption === ENCRYPTION_IDENTITY || col.encryption === ENCRYPTION_SERVER) {
+      if (
+        col.encryption === ENCRYPTION_IDENTITY ||
+        col.encryption === ENCRYPTION_SERVER ||
+        col.encryption === ENCRYPTION_GROUP
+      ) {
         errors.push(
           `${scopeLabel}Collection "${col.name}": binary collections cannot use "${col.encryption}" encryption (storage layer is string-based)`,
         )
@@ -121,9 +132,9 @@ function validateCollections(collections: CollectionConfig[], scopeLabel: string
       if (col.bundle) {
         errors.push(`${scopeLabel}Collection "${col.name}": remote collections cannot be part of a bundle`)
       }
-      if (col.encryption === ENCRYPTION_DELEGATED) {
+      if (col.encryption === ENCRYPTION_DELEGATED || col.encryption === ENCRYPTION_GROUP) {
         errors.push(
-          `${scopeLabel}Collection "${col.name}": remote collections cannot use delegated encryption (server cannot replicate opaque client-encrypted blobs)`,
+          `${scopeLabel}Collection "${col.name}": remote collections cannot use "${col.encryption}" encryption (server cannot replicate opaque client-encrypted blobs)`,
         )
       }
       if (

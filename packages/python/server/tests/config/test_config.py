@@ -93,6 +93,68 @@ class TestValidateConfig:
         errors = validate_config(bad)
         assert any("pullOnly" in e for e in errors)
 
+    def test_group_encryption_valid_on_authenticated_collection(self):
+        config = SyncConfig(
+            version=1,
+            collections=[
+                CollectionConfig(
+                    name="a", storagePath="groups/{groupId}/data",
+                    readRoles=["group-member"], writeRoles=["group-member"],
+                    encryption="group", maxBodyBytes=1024,
+                ),
+            ],
+        )
+        assert validate_config(config) == []
+
+    def test_detects_public_plus_group_encryption_conflict(self):
+        bad = SyncConfig(
+            version=1,
+            collections=[
+                CollectionConfig(
+                    name="a", storagePath="x", readRoles=["public"],
+                    writeRoles=["admin"], encryption="group", maxBodyBytes=1024,
+                ),
+            ],
+        )
+        errors = validate_config(bad)
+        assert any("public collections cannot use" in e and "group" in e for e in errors)
+
+    def test_detects_binary_collection_with_group_encryption(self):
+        bad = SyncConfig(
+            version=1,
+            collections=[
+                CollectionConfig(
+                    name="a", storagePath="x", readRoles=["self"],
+                    writeRoles=["self"], encryption="group", maxBodyBytes=1024,
+                    allowedMimeTypes=["image/png"],
+                ),
+            ],
+        )
+        errors = validate_config(bad)
+        assert any("binary collections cannot use" in e for e in errors)
+
+    def test_detects_remote_collection_with_group_encryption(self):
+        bad = SyncConfig(
+            version=1,
+            collections=[
+                CollectionConfig(
+                    name="a", storagePath="data/shared",
+                    readRoles=["group-member"], writeRoles=["group-member"],
+                    encryption="group", maxBodyBytes=1024,
+                    remote={
+                        "url": "https://primary.example.com",
+                        "pullPath": "/pull/data",
+                        "intervalMs": 60000,
+                        "headers": {},
+                        "writeMode": "pull_only",
+                        "syncTriggers": ["scheduled"],
+                    },
+                ),
+            ],
+        )
+        errors = validate_config(bad)
+        assert any("group" in e and "remote" in e for e in errors)
+
 
 class TestLoadSaveConfig:
     @pytest.mark.asyncio

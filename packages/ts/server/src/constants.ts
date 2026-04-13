@@ -11,6 +11,7 @@ export const ENCRYPTION_NONE = "none"
 export const ENCRYPTION_IDENTITY = "identity"
 export const ENCRYPTION_SERVER = "server"
 export const ENCRYPTION_DELEGATED = "delegated"
+export const ENCRYPTION_GROUP = "group"
 
 // Route actions
 export const ACTION_PULL = "pull"

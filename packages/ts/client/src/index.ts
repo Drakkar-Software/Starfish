@@ -62,3 +62,14 @@ export type {
   MultiStoreSyncOptions,
   MultiStoreSync,
 } from "./multi-store.js"
+export {
+  deriveGroupKeyPair,
+  generateGroupKey,
+  wrapGroupKey,
+  unwrapGroupKey,
+  createGroupKeyring,
+  addGroupMember,
+  rotateGroupKey,
+  createGroupEncryptor,
+} from "./group-crypto.js"
+export type { GroupKeyPair, EpochKeyring, GroupKeyring } from "./group-crypto.js"

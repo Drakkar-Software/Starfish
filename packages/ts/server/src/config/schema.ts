@@ -1,4 +1,4 @@
-export type EncryptionMode = "none" | "identity" | "server" | "delegated"
+export type EncryptionMode = "none" | "identity" | "server" | "delegated" | "group"
 
 export type WriteMode = "pull_only" | "push_through" | "bidirectional" | "push_only"
 

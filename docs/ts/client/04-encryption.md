@@ -143,7 +143,14 @@ The derived key is deterministic — same inputs always produce the same key. Th
 - **IV uniqueness**: A fresh random IV is generated for every encrypt operation — no IV reuse
 - **Tamper detection**: AES-GCM provides authenticated encryption. Tampering is detected on decryption (throws an error)
 
+## Group Encryption
+
+For multi-user encrypted collections (group chat, collaborative documents), where each member holds their own credentials and membership can be managed without sharing a passphrase, see [Group Encryption](21-group-encryption.md).
+
+Group encryption uses X25519 ECDH key wrapping to distribute a shared Group Encryption Key (GEK) per-member. The server-side collection uses `encryption: "group"`, which behaves identically to `"delegated"`. The `createGroupEncryptor` helper returns an `Encryptor` that can be passed directly to `SyncManager`.
+
 ## Next Steps
 
 - [Identity & Key Derivation](11-identity-key-derivation.md) — patterns for deriving secrets from passwords
 - [SyncManager](03-sync-manager.md) — encryption integration in the sync lifecycle
+- [Group Encryption](21-group-encryption.md) — per-member key wrapping for shared encrypted collections

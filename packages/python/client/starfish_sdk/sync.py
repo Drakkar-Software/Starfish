@@ -30,6 +30,7 @@ class SyncManager:
         encryption_secret: str | None = None,
         encryption_salt: str | None = None,
         encryption_info: str = "starfish-e2e",
+        encryptor: Encryptor | None = None,
         sign_data: DataSigner | None = None,
     ) -> None:
         self._client = client
@@ -40,11 +41,14 @@ class SyncManager:
         self._sign_data = sign_data
         if (encryption_secret is None) != (encryption_salt is None):
             raise ValueError("Both encryption_secret and encryption_salt must be provided together")
-        self._encryptor: Encryptor | None = (
-            create_encryptor(encryption_secret, encryption_salt, encryption_info)
-            if encryption_secret is not None and encryption_salt is not None
-            else None
-        )
+        if encryptor is not None:
+            self._encryptor: Encryptor | None = encryptor
+        else:
+            self._encryptor = (
+                create_encryptor(encryption_secret, encryption_salt, encryption_info)
+                if encryption_secret is not None and encryption_salt is not None
+                else None
+            )
 
         self._last_hash: str | None = None
         self._last_checkpoint: int = 0

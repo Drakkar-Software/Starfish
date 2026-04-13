@@ -13,6 +13,7 @@ ENCRYPTION_NONE = "none"
 ENCRYPTION_IDENTITY = "identity"
 ENCRYPTION_SERVER = "server"
 ENCRYPTION_DELEGATED = "delegated"
+ENCRYPTION_GROUP = "group"
 
 # Route actions
 ACTION_PULL = "pull"

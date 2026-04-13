@@ -1,6 +1,6 @@
 {
   "name": "@drakkar.software/starfish-client",
-  "version": "1.14.0",
+  "version": "1.16.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/Drakkar-Software/starfish.git",
@@ -41,6 +41,10 @@
     "./identity": {
       "types": "./dist/identity.d.ts",
       "import": "./dist/identity.js"
+    },
+    "./group": {
+      "types": "./dist/group-crypto.d.ts",
+      "import": "./dist/group-crypto.js"
     }
   },
   "peerDependencies": {
@@ -64,7 +68,8 @@
     }
   },
   "dependencies": {
-    "@drakkar.software/starfish-protocol": "workspace:*"
+    "@drakkar.software/starfish-protocol": "workspace:*",
+    "@noble/curves": "^2.2.0"
   },
   "scripts": {
     "build": "tsc --build",

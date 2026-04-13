@@ -6,9 +6,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-from starfish_server.constants import ENCRYPTION_NONE, ENCRYPTION_IDENTITY, ENCRYPTION_SERVER, ENCRYPTION_DELEGATED
+from starfish_server.constants import ENCRYPTION_NONE, ENCRYPTION_IDENTITY, ENCRYPTION_SERVER, ENCRYPTION_DELEGATED, ENCRYPTION_GROUP
 
-EncryptionMode = Literal["none", "identity", "server", "delegated"]
+EncryptionMode = Literal["none", "identity", "server", "delegated", "group"]
 
 
 class WriteMode(StrEnum):

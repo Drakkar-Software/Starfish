@@ -21,6 +21,11 @@ export interface SyncManagerOptions {
   encryptionSecret?: string
   encryptionSalt?: string
   encryptionInfo?: string
+  /**
+   * Pre-created Encryptor. Use this with `createGroupEncryptor` for group encryption.
+   * Takes precedence over `encryptionSecret` / `encryptionSalt` if both are provided.
+   */
+  encryptor?: Encryptor
   signData?: (data: string) => Promise<string>
   /** Structured logger for sync events. */
   logger?: SyncLogger
@@ -57,9 +62,10 @@ export class SyncManager {
     this.loggerName = options.loggerName ?? options.pullPath.split("/").filter(Boolean).pop() ?? options.pullPath
     this.validate = options.validate
     this.encryptor =
-      options.encryptionSecret && options.encryptionSalt
+      options.encryptor ??
+      (options.encryptionSecret && options.encryptionSalt
         ? createEncryptor(options.encryptionSecret, options.encryptionSalt, options.encryptionInfo)
-        : null
+        : null)
   }
 
   getData(): Record<string, unknown> {
