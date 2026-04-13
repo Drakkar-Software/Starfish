@@ -13,6 +13,7 @@ import { Hono } from "hono"
 import type { Context } from "hono"
 import {
   createSyncRouter,
+  createGroupRoleEnricher,
   saveConfig,
   type SyncConfig,
   type SyncRouterOptions,
@@ -30,6 +31,44 @@ const sharedCollections: SyncConfig["collections"] = [
     storagePath: "posts/{postId}",
     readRoles: ["public"],
     writeRoles: ["admin"],
+    encryption: "none",
+    maxBodyBytes: 65_536,
+    allowedMimeTypes: ["application/json"],
+  },
+
+  // Group keyring — plaintext, admin-write, member-read.
+  // Contains per-member ECDH-wrapped copies of the Group Encryption Key.
+  {
+    name: "keyring",
+    storagePath: "groups/{groupId}/keyring",
+    readRoles: ["group-member"],
+    writeRoles: ["group-admin"],
+    encryption: "none",
+    maxBodyBytes: 65_536,
+    allowedMimeTypes: ["application/json"],
+  },
+
+  // Encrypted group chat — one document per group per day.
+  // encryption: "group" means the server stores opaque ciphertext;
+  // clients use createGroupEncryptor() to encrypt/decrypt.
+  {
+    name: "chat",
+    storagePath: "groups/{groupId}/chat/{day}",
+    readRoles: ["group-member"],
+    writeRoles: ["group-member"],
+    encryption: "group",
+    maxBodyBytes: 524_288,
+    allowedMimeTypes: ["application/json"],
+    listable: true,
+  },
+
+  // Group membership roster — read/written by group admins.
+  // The roleEnricher below reads this to grant "group-member".
+  {
+    name: "group-members",
+    storagePath: "groups/{groupId}/members",
+    readRoles: ["group-admin"],
+    writeRoles: ["group-admin"],
     encryption: "none",
     maxBodyBytes: 65_536,
     allowedMimeTypes: ["application/json"],
@@ -87,6 +126,12 @@ const syncRouter = createSyncRouter({
   config,
   roleResolver,
   encryptionSecret: process.env.ENCRYPTION_SECRET ?? "change-me",
+  // Grant "group-member" to users whose identity appears in groups/{groupId}/members
+  roleEnricher: createGroupRoleEnricher({
+    store,
+    membersPath: "groups/{groupId}/members",
+    groupParam: "groupId",
+  }),
 })
 
 // Persist config to storage on startup

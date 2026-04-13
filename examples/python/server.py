@@ -18,6 +18,8 @@ from starfish_server import (
     CollectionConfig,
     NamespaceConfig,
     save_config,
+    create_group_role_enricher,
+    GroupRoleEnricherOptions,
 )
 from starfish_server.router import SyncRouterOptions, AuthResult, create_sync_router
 
@@ -61,6 +63,41 @@ config = SyncConfig(
             encryption="none",
             max_body_bytes=65_536,
         ),
+
+        # Group keyring — plaintext, admin-write, member-read.
+        # Contains per-member ECDH-wrapped copies of the Group Encryption Key.
+        CollectionConfig(
+            name="keyring",
+            storage_path="groups/{groupId}/keyring",
+            read_roles=["group-member"],
+            write_roles=["group-admin"],
+            encryption="none",
+            max_body_bytes=65_536,
+        ),
+
+        # Encrypted group chat — one document per group per day.
+        # encryption="group" means the server stores opaque ciphertext;
+        # clients use create_group_encryptor() to encrypt/decrypt.
+        CollectionConfig(
+            name="chat",
+            storage_path="groups/{groupId}/chat/{day}",
+            read_roles=["group-member"],
+            write_roles=["group-member"],
+            encryption="group",
+            max_body_bytes=524_288,
+            listable=True,
+        ),
+
+        # Group membership roster — read/written by group admins.
+        # The role_enricher below reads this to grant "group-member".
+        CollectionConfig(
+            name="group-members",
+            storage_path="groups/{groupId}/members",
+            read_roles=["group-admin"],
+            write_roles=["group-admin"],
+            encryption="none",
+            max_body_bytes=65_536,
+        ),
     ],
     # Namespaced collections are accessible at /{tenant}/pull/… and /{tenant}/push/…
     # Each tenant gets its own storagePath prefix → full storage isolation.
@@ -86,6 +123,14 @@ sync_router = create_sync_router(
         config=config,
         role_resolver=role_resolver,
         encryption_secret=os.environ.get("ENCRYPTION_SECRET", "change-me"),
+        # Grant "group-member" to users whose identity appears in groups/{groupId}/members
+        role_enricher=create_group_role_enricher(
+            GroupRoleEnricherOptions(
+                store=store,
+                members_path="groups/{groupId}/members",
+                group_param="groupId",
+            )
+        ),
     )
 )
 
