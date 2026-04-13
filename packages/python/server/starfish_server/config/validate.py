@@ -52,6 +52,28 @@ def _validate_collections(collections: list[CollectionConfig], scope_label: str)
         if col.queue_only and col.remote:
             errors.append(f'{prefix}Collection "{col.name}": queueOnly cannot be used with remote replication (no data is stored locally to replicate)')
 
+        if col.listable:
+            param_matches = re.findall(r"\{[^}]+\}", col.storage_path)
+            if not param_matches:
+                errors.append(
+                    f'{prefix}Collection "{col.name}": listable requires at least one path parameter in storagePath'
+                )
+            else:
+                last_segment = col.storage_path.rstrip("/").split("/")[-1]
+                if not re.fullmatch(r"\{[^}]+\}", last_segment):
+                    errors.append(
+                        f'{prefix}Collection "{col.name}": listable requires the last storagePath segment '
+                        f'to be a path parameter (e.g. {{day}}), got "{last_segment}"'
+                    )
+            if col.queue_only:
+                errors.append(
+                    f'{prefix}Collection "{col.name}": listable cannot be used with queueOnly (no documents are stored)'
+                )
+            if col.bundle:
+                errors.append(
+                    f'{prefix}Collection "{col.name}": listable cannot be used with bundle (bundled collections share storage paths)'
+                )
+
         # Public collections must not use identity-based encryption
         if ROLE_PUBLIC in col.read_roles and col.encryption == ENCRYPTION_IDENTITY:
             errors.append(

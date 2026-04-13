@@ -12,6 +12,7 @@ from starfish_server.constants import (
     ENCRYPTION_DELEGATED,
     ACTION_PULL,
     ACTION_PUSH,
+    ACTION_LIST,
     IDENTITY_PARAM,
     IDENTITY_KEY,
     QUERY_CHECKPOINT,
@@ -64,6 +65,10 @@ from starfish_server.logger import ServerLogger, ConsoleLogger, JsonLogger, Noop
 from starfish_server.audit import AuditLogger, AuditEntry, ConsoleAuditLogger, CallbackAuditLogger, NoopAuditLogger
 from starfish_server.ttl import is_expired
 from starfish_server.openapi import generate_openapi_spec
+from starfish_server.enrichers.group_role_enricher import (
+    GroupRoleEnricherOptions,
+    create_group_role_enricher,
+)
 
 __all__ = [
     "StartupError",
@@ -80,6 +85,7 @@ __all__ = [
     "ENCRYPTION_DELEGATED",
     "ACTION_PULL",
     "ACTION_PUSH",
+    "ACTION_LIST",
     "IDENTITY_PARAM",
     "IDENTITY_KEY",
     "QUERY_CHECKPOINT",
@@ -148,4 +154,6 @@ __all__ = [
     "NoopAuditLogger",
     "is_expired",
     "generate_openapi_spec",
+    "GroupRoleEnricherOptions",
+    "create_group_role_enricher",
 ]

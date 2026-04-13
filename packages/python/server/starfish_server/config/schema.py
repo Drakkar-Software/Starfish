@@ -230,6 +230,17 @@ class CollectionConfig(BaseModel):
     Clients that call ``fetch_server_config()`` receive this value and can use it to
     encrypt data before pushing — without requiring a pre-shared secret."""
 
+    listable: bool | None = Field(default=None)
+    """When ``True``, exposes a ``GET /list/...`` endpoint for this collection.
+
+    The endpoint returns the existing document keys under the collection's
+    prefix, allowing clients to discover which documents exist (e.g. which
+    days have chat messages for a group).
+
+    The last path parameter in ``storage_path`` is the value being
+    enumerated.  Requires at least one path parameter; incompatible with
+    ``queue_only`` and ``bundle``."""
+
     @field_validator("rate_limit", mode="before")
     @classmethod
     def _coerce_rate_limit(cls, v: object) -> object:

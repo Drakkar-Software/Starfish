@@ -67,6 +67,12 @@ export {
 } from "./router/middleware.js"
 export { matchesAllowedMime, isJsonCollection } from "./router/mime.js"
 
+// Enrichers
+export {
+  createGroupRoleEnricher,
+  type GroupRoleEnricherOptions,
+} from "./enrichers/group-role-enricher.js"
+
 // Queue
 export type { Queue } from "./queue/base.js"
 export type { QueueMessage } from "./queue/message.js"
@@ -105,6 +111,7 @@ export {
   ENCRYPTION_DELEGATED,
   ACTION_PULL,
   ACTION_PUSH,
+  ACTION_LIST,
   IDENTITY_PARAM,
   IDENTITY_KEY,
   QUERY_CHECKPOINT,

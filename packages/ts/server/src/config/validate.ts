@@ -46,6 +46,24 @@ function validateCollections(collections: CollectionConfig[], scopeLabel: string
       errors.push(`${scopeLabel}Collection "${col.name}": queueOnly cannot be used with remote replication (no data is stored locally to replicate)`)
     }
 
+    if (col.listable) {
+      const paramMatches = col.storagePath.match(/\{(\w+)\}/g) ?? []
+      if (paramMatches.length === 0) {
+        errors.push(`${scopeLabel}Collection "${col.name}": listable requires at least one path parameter in storagePath`)
+      } else {
+        const lastSegment = col.storagePath.split("/").pop() ?? ""
+        if (!/^\{[^}]+\}$/.test(lastSegment)) {
+          errors.push(`${scopeLabel}Collection "${col.name}": listable requires the last storagePath segment to be a path parameter (e.g. {day}), got "${lastSegment}"`)
+        }
+      }
+      if (col.queueOnly) {
+        errors.push(`${scopeLabel}Collection "${col.name}": listable cannot be used with queueOnly (no documents are stored)`)
+      }
+      if (col.bundle) {
+        errors.push(`${scopeLabel}Collection "${col.name}": listable cannot be used with bundle (bundled collections share storage paths)`)
+      }
+    }
+
     if (col.readRoles.includes(ROLE_PUBLIC) && col.encryption === ENCRYPTION_IDENTITY) {
       errors.push(
         `${scopeLabel}Collection "${col.name}": public collections must not use "${ENCRYPTION_IDENTITY}" encryption (key would be derived from empty identity)`,

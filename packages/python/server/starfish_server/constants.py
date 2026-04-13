@@ -17,6 +17,7 @@ ENCRYPTION_DELEGATED = "delegated"
 # Route actions
 ACTION_PULL = "pull"
 ACTION_PUSH = "push"
+ACTION_LIST = "list"
 
 # Path params
 IDENTITY_PARAM = "{identity}"

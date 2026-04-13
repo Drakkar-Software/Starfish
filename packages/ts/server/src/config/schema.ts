@@ -57,6 +57,10 @@ export interface CollectionConfig {
   fieldPermissions?: Record<string, FieldPermission>
   /** Base64-encoded public key exposed via the /config endpoint for client-side encryption. */
   publicKey?: string
+  /** When true, exposes a GET /list/... endpoint that returns the keys of existing documents
+   *  under this collection's prefix. The last path parameter in storagePath is the one being
+   *  enumerated. Requires at least one path parameter; incompatible with queueOnly and bundle. */
+  listable?: boolean
 }
 
 export interface RateLimitConfig {

@@ -270,6 +270,91 @@ await claimsManager.update((current) => {
 
 ---
 
+## Pattern 6: Group Chat (member-list access, per-day partitioning)
+
+**Use case:** A group messaging channel where access is granted to a specific set of users (not public, not owner-only), messages are stored per day to keep document size bounded, and clients can discover which days have messages.
+
+**Access:** group-member read/write. Membership stored in a separate collection. No encryption (all members can read).
+
+```ts
+// server/config.ts
+const config: SyncConfig = {
+  version: 1,
+  collections: [
+    {
+      name: "chat",
+      storagePath: "chats/{groupId}/{day}",
+      readRoles: ["group-member"],
+      writeRoles: ["group-member"],
+      encryption: "none",
+      maxBodyBytes: 524_288,   // 512 KB per day
+      allowedMimeTypes: ["application/json"],
+      listable: true,           // enables GET /list/chats/:groupId
+      queue: { topic: "chats.updated", includeParams: true }, // notify on push
+    },
+    {
+      name: "group-members",
+      storagePath: "groups/{groupId}/members",
+      readRoles: ["group-admin"],
+      writeRoles: ["group-admin"],
+      encryption: "none",
+      maxBodyBytes: 65_536,
+      allowedMimeTypes: ["application/json"],
+    },
+  ],
+}
+
+// Wire the group enricher: reads membership from the ObjectStore
+import { createGroupRoleEnricher } from "@drakkar.software/starfish-server"
+
+const router = createSyncRouter({
+  store,
+  config,
+  roleResolver: async (c) => ({ identity: await getUserId(c), roles: [] }),
+  roleEnricher: createGroupRoleEnricher({
+    store,
+    membersPath: "groups/{groupId}/members",
+    groupParam: "groupId",
+  }),
+})
+```
+
+```ts
+// client — discover available days
+const days = await fetchJson(`/list/chats/${groupId}`)
+// → { items: ["2026-04-13", "2026-04-12"], hasMore: false }
+
+// client — load today's messages
+const today = new Date().toISOString().slice(0, 10) // "2026-04-13"
+const daySync = new SyncManager({
+  client,
+  pullPath: `/pull/chats/${groupId}/${today}`,
+  pushPath: `/push/chats/${groupId}/${today}`,
+})
+
+// Post a message (append-only via update())
+await daySync.update((current) => {
+  const messages = (current["messages"] as Message[] | undefined) ?? []
+  return {
+    ...current,
+    messages: [...messages, { id: crypto.randomUUID(), text, author: userId, ts: Date.now() }],
+  }
+})
+```
+
+**Properties:**
+- One document per group per day — bounded growth, easy archiving
+- `listable: true` lets clients discover which days have messages without guessing
+- Access controlled by a member list stored in `groups/{groupId}/members`; admins manage membership with ordinary pushes
+- Queue events fire on every push — bridge these to WebSocket/SSE for near-real-time delivery
+- Membership changes propagate within the `roleEnricher` cache TTL (default 1 min)
+
+**Tip:** Under high concurrency (many users posting simultaneously), `update()` retries on 409 conflicts handle burst writes. For very active groups (hundreds of concurrent posters), consider a `queueOnly` intake collection + a backend message aggregator to eliminate contention.
+
+See [Group Access](../server/group-access.md) and [List Endpoint](../server/list-endpoint.md) for full API reference.
+
+---
+
 ## Combining Patterns
 
 Real applications often combine several patterns. A typical setup:

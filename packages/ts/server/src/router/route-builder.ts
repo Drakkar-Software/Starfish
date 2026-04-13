@@ -39,6 +39,7 @@ import {
   ENCRYPTION_DELEGATED,
   ACTION_PULL,
   ACTION_PUSH,
+  ACTION_LIST,
   IDENTITY_PARAM,
   IDENTITY_KEY,
   QUERY_CHECKPOINT,
@@ -130,6 +131,24 @@ function toRoutePath(action: string, storagePath: string): string {
   const honoPath = storagePath.replace(/\{(\w+)\}/g, ":$1")
   return `/${action}/${honoPath}`
 }
+
+/** Derives the list route path by dropping the last path segment (the enumerated param). */
+function toListRoutePath(storagePath: string): string {
+  const segments = storagePath.split("/")
+  const prefixPath = segments.slice(0, -1).join("/")
+  return toRoutePath(ACTION_LIST, prefixPath)
+}
+
+/** Derives the storage key prefix for listKeys from a storagePath with the last param removed. */
+function toListPrefix(storagePath: string, params: Record<string, string>): string {
+  const segments = storagePath.split("/")
+  const prefixTemplate = segments.slice(0, -1).join("/")
+  const resolved = resolveDocumentKey(prefixTemplate, params)
+  return resolved ? resolved + "/" : ""
+}
+
+const LIST_DEFAULT_LIMIT = 100
+const LIST_MAX_LIMIT = 1000
 
 function resolveDocumentKey(
   template: string,
@@ -676,6 +695,54 @@ function addCollectionRoutes(
         return res
       }
       return c.json(pullResult.body, pullResult.status as any)
+    })
+  }
+
+  if (col.listable) {
+    const listPath = toListRoutePath(col.storagePath)
+
+    app.get(listPath, async (c) => {
+      const rawParams = c.req.param()
+      // For the list route the last param segment is absent from the URL,
+      // so we resolve only the prefix portion of storagePath.
+      const prefixSegments = col.storagePath.split("/").slice(0, -1).join("/")
+      const params = extractPathParams(prefixSegments, rawParams)
+      if (!validateAllParams(params)) {
+        return c.json({ error: "Invalid path parameter" }, 400)
+      }
+
+      const { error } = await checkAuth(col, OP_READ, c, params, opts)
+      if (error) return error
+
+      const prefix = toListPrefix(col.storagePath, params)
+
+      // Parse pagination params
+      let limit = LIST_DEFAULT_LIMIT
+      const limitParam = c.req.query("limit")
+      if (limitParam != null) {
+        const parsed = parseInt(limitParam, 10)
+        if (isNaN(parsed) || parsed <= 0 || String(parsed) !== limitParam) {
+          return c.json({ error: "Invalid limit parameter" }, 400)
+        }
+        limit = Math.min(parsed, LIST_MAX_LIMIT)
+      }
+
+      // Reconstruct the full storage key for cursor-based pagination
+      let startAfter: string | undefined
+      const afterParam = c.req.query("after")
+      if (afterParam != null) {
+        startAfter = prefix + afterParam
+      }
+
+      // Fetch one extra to detect hasMore without an additional query
+      const keys = await opts.store.listKeys(prefix, { startAfter, limit: limit + 1 })
+      const hasMore = keys.length > limit
+      const page = hasMore ? keys.slice(0, limit) : keys
+
+      // Strip the prefix to return only the last-param values
+      const items = page.map((k) => k.slice(prefix.length))
+
+      return c.json({ items, hasMore })
     })
   }
 

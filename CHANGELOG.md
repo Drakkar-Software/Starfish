@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.15.0
+
+### Added
+
+#### Server (TypeScript + Python)
+
+- **`listable` collection flag** — new boolean field on `CollectionConfig` (`listable` in both TS/JSON and Python). When `true`, the server registers a `GET /list/...` endpoint for the collection. The list route derives from `storagePath` by dropping the last path parameter, and returns the existing values of that parameter as `{ items: string[], hasMore: boolean }`. Supports cursor-based pagination via `?limit=N` (default 100, max 1000) and `?after=<item>`. Auth uses the collection's `readRoles`. Incompatible with `queueOnly`, `bundle`, and collections whose last path segment is not a `{param}`.
+
+- **`createGroupRoleEnricher` / `create_group_role_enricher`** — new built-in `RoleEnricher` factory that grants a role to users who appear in a group membership document stored in the ObjectStore. Reads a standard Starfish document at a configurable `membersPath` template, checks the caller's identity against `data.members` (field name configurable), and returns the configured role (default `"group-member"`) if they are a member. Ships with an in-memory cache (default TTL 1 min, set `cacheTtlMs: 0` to disable). TypeScript: `import { createGroupRoleEnricher } from "@drakkar.software/starfish-server"`. Python: `from starfish_server import create_group_role_enricher, GroupRoleEnricherOptions`.
+
+#### Documentation
+
+- New guide: `docs/ts/server/list-endpoint.md` — list endpoint configuration, route patterns, pagination, and auth behaviour.
+- New guide: `docs/ts/server/group-access.md` — group-based access control with `createGroupRoleEnricher`, including a full chat collection pattern.
+- New pattern in `docs/ts/client/19-collection-patterns.md` — showing per-day partitioning, group-member access, list discovery, and queue integration.
+
 ## 1.14.0
 
 ### Added

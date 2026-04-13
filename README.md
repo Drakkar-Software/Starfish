@@ -1280,6 +1280,76 @@ Queue errors never surface to clients — they are logged and the push response 
 
 Pass `true` as a shorthand for defaults (topic = collection name, `includeParams: false`, `includeBody: false`). Pass `false` or omit to disable.
 
+### List Endpoint
+
+Set `listable: true` on a collection to expose a `GET /list/...` endpoint that returns the existing document keys under the collection's prefix. Clients use this to discover which documents exist — for example, which days have chat messages for a group.
+
+The route drops the last path parameter from `storagePath` and enumerates its values:
+
+| `storagePath` | List route | Returns |
+|---|---|---|
+| `chats/{groupId}/{day}` | `GET /list/chats/:groupId` | day values |
+| `notes/{userId}` | `GET /list/notes` | userId values |
+
+```ts
+// TypeScript
+{ name: "chat", storagePath: "chats/{groupId}/{day}", readRoles: ["group-member"], /* ... */, listable: true }
+```
+
+```python
+# Python
+CollectionConfig(name="chat", storage_path="chats/{groupId}/{day}", read_roles=["group-member"], ..., listable=True)
+```
+
+Response: `{ "items": ["2026-04-13", "2026-04-12"], "hasMore": false }`. Pagination: `?limit=N` (default 100, max 1000) and `?after=<item>`.
+
+> Full reference: [`docs/ts/server/list-endpoint.md`](docs/ts/server/list-endpoint.md)
+
+---
+
+### Group-Based Access Control
+
+Use `createGroupRoleEnricher` / `create_group_role_enricher` to grant access based on a member list stored in another Starfish collection. The enricher reads a membership document from the ObjectStore and grants a role (default `"group-member"`) to any user whose identity appears in the list.
+
+```ts
+// TypeScript
+import { createGroupRoleEnricher } from "@drakkar.software/starfish-server"
+
+const router = createSyncRouter({
+  store, config,
+  roleResolver: async (c) => ({ identity: await getUserId(c), roles: [] }),
+  roleEnricher: createGroupRoleEnricher({
+    store,
+    membersPath: "groups/{groupId}/members",  // storagePath of the members doc
+    groupParam: "groupId",                     // which URL param identifies the group
+    // membersField: "members" (default)
+    // role: "group-member" (default)
+    // cacheTtlMs: 60000 (default, 1 minute)
+  }),
+})
+```
+
+```python
+# Python
+from starfish_server import create_group_role_enricher, GroupRoleEnricherOptions
+
+enricher = create_group_role_enricher(GroupRoleEnricherOptions(
+    store=store,
+    members_path="groups/{groupId}/members",
+    group_param="groupId",
+))
+router = create_sync_router(SyncRouterOptions(..., role_enricher=enricher))
+```
+
+Members document (standard Starfish push):
+```json
+{ "members": ["alice", "bob", "charlie"] }
+```
+
+> Full reference: [`docs/ts/server/group-access.md`](docs/ts/server/group-access.md)
+
+---
+
 #### Queue-only collections
 
 Set `queueOnly: true` (`queue_only=True` in Python) on a collection to skip storage entirely. Pushes are accepted and return a `{hash, timestamp}`, but nothing is stored. Pull always returns empty. `baseHash` conflict detection is disabled.

@@ -40,6 +40,7 @@ from starfish_server.constants import (
     ENCRYPTION_DELEGATED,
     ACTION_PULL,
     ACTION_PUSH,
+    ACTION_LIST,
     IDENTITY_PARAM,
     IDENTITY_KEY,
     QUERY_CHECKPOINT,
@@ -172,8 +173,19 @@ def _build_rate_limiter(
     )
 
 
+_LIST_DEFAULT_LIMIT = 100
+_LIST_MAX_LIMIT = 1000
+
+
 def _to_route_path(action: str, storage_path: str) -> str:
     return f"/{action}/{storage_path}"
+
+
+def _to_list_route_path(storage_path: str) -> str:
+    """Derive the list route path by dropping the last path segment (the enumerated param)."""
+    segments = storage_path.split("/")
+    prefix_path = "/".join(segments[:-1])
+    return _to_route_path(ACTION_LIST, prefix_path)
 
 
 def _resolve_document_key(template: str, params: dict[str, str]) -> str:
@@ -181,6 +193,14 @@ def _resolve_document_key(template: str, params: dict[str, str]) -> str:
     for key, value in params.items():
         result = result.replace(f"{{{key}}}", value)
     return result
+
+
+def _to_list_prefix(storage_path: str, params: dict[str, str]) -> str:
+    """Resolve the storage key prefix for listKeys (storagePath without the last param)."""
+    segments = storage_path.split("/")
+    prefix_template = "/".join(segments[:-1])
+    resolved = _resolve_document_key(prefix_template, params)
+    return (resolved + "/") if resolved else ""
 
 
 def _validate_all_params(params: dict[str, str]) -> bool:
@@ -618,6 +638,56 @@ def _add_collection_routes(
         router.add_api_route(
             push_path, _make_push_handler(col, rate_limiter, opts), methods=["POST"],
         )
+
+    if col.listable:
+        list_path = _to_list_route_path(col.storage_path)
+
+        def _make_list_handler(col: CollectionConfig) -> Callable:
+            async def list_handler(request: Request) -> JSONResponse:
+                # The list route has one fewer path param than storagePath.
+                # Resolve only the prefix portion.
+                segments = col.storage_path.split("/")
+                prefix_template = "/".join(segments[:-1])
+                params = dict(request.path_params)
+
+                if not _validate_all_params(params):
+                    return JSONResponse({"error": "Invalid path parameter"}, status_code=400)
+
+                _identity, _roles, error = await _check_auth(col, OP_READ, request, params, opts)
+                if error:
+                    return error
+
+                prefix = _to_list_prefix(col.storage_path, params)
+
+                # Parse ?limit
+                limit = _LIST_DEFAULT_LIMIT
+                limit_param = request.query_params.get("limit")
+                if limit_param is not None:
+                    try:
+                        limit = int(limit_param)
+                        if limit <= 0 or str(limit) != limit_param:
+                            raise ValueError
+                    except ValueError:
+                        return JSONResponse({"error": "Invalid limit parameter"}, status_code=400)
+                    limit = min(limit, _LIST_MAX_LIMIT)
+
+                # Parse ?after for cursor pagination
+                start_after: str | None = None
+                after_param = request.query_params.get("after")
+                if after_param is not None:
+                    start_after = prefix + after_param
+
+                # Fetch one extra to detect hasMore
+                keys = await opts.store.list_keys(prefix, start_after=start_after, limit=limit + 1)
+                has_more = len(keys) > limit
+                page = keys[:limit] if has_more else keys
+
+                items = [k[len(prefix):] for k in page]
+                return JSONResponse({"items": items, "hasMore": has_more})
+
+            return list_handler
+
+        router.add_api_route(list_path, _make_list_handler(col), methods=["GET"])
 
 
 def _add_bundled_routes(

@@ -15,6 +15,7 @@ export const ENCRYPTION_DELEGATED = "delegated"
 // Route actions
 export const ACTION_PULL = "pull"
 export const ACTION_PUSH = "push"
+export const ACTION_LIST = "list"
 
 // Path params
 export const IDENTITY_PARAM = "{identity}"
