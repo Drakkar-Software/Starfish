@@ -21,9 +21,20 @@
     }
   },
   "wrapping": {
-    "comment": "admin wraps a fixed GEK for alice. Both TS and Python must unwrap it to the same GEK, proving ECDH+HKDF+AES-GCM compatibility.",
+    "comment": "admin wraps a fixed GEK for alice and bob. Both TS and Python must unwrap it to the same GEK, proving ECDH+HKDF+AES-GCM compatibility.",
     "gek": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "wrappedForAlice": "Jk6x4SW50fh853ORedfNab1XxYNHl560WrnMCmsBngtx5y6EmSjvYA8Rp8MsFtZK0HGb7GTQrkULtbpF",
     "wrappedForBob": "cX2yHzg6vjCtf5CDfDkJoPrrvAQz5YO3OHMqE4qtAvlOLMaRd8rdYWCrc/8UDp7hiGb760W42J19t4sW"
+  },
+  "dataEncryption": {
+    "comment": "A document encrypted by Python using createGroupEncryptor with the fixed GEK above. Both TS and Python must decrypt it to the same plaintext, proving the full encrypt/decrypt pipeline is cross-language compatible.",
+    "encryptedByPython": {
+      "_encrypted": "1hOFK4aM6WlF1iWTvEsdOvvl8hUpkYMFCoLWEcdiPkF4nTYgRaSwu+MU+B67lYBqbkYutW67nx/ln5xx1cio/w==",
+      "_epoch": 1
+    },
+    "plaintext": {
+      "msg": "hello cross-lang",
+      "n": 42
+    }
   }
 }

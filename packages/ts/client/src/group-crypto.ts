@@ -143,8 +143,12 @@ export async function unwrapGroupKey(
   const combined = b64.decode(wrapped)
   const iv = combined.slice(0, IV_BYTES)
   const ciphertext = combined.slice(IV_BYTES)
-  const decrypted = await c.subtle.decrypt({ name: ALGO, iv }, wrappingKey, ciphertext)
-  return bytesToHex(new Uint8Array(decrypted))
+  try {
+    const decrypted = await c.subtle.decrypt({ name: ALGO, iv }, wrappingKey, ciphertext)
+    return bytesToHex(new Uint8Array(decrypted))
+  } catch {
+    throw new Error("Failed to unwrap group key: decryption failed (wrong keys or corrupted data)")
+  }
 }
 
 // ── Keyring management ────────────────────────────────────────────────────────
@@ -229,6 +233,13 @@ export async function rotateGroupKey(
   remainingMembers: Record<string, string>,
   newGek?: string,
 ): Promise<{ keyring: GroupKeyring; gek: string }> {
+  const epochKey = String(keyring.currentEpoch)
+  const epochKeyring = keyring.epochs[epochKey]
+  if (epochKeyring && epochKeyring.adminPublicKey !== adminKeyPair.publicKey) {
+    throw new Error(
+      `Provided key pair does not match the admin public key stored in epoch ${keyring.currentEpoch}`,
+    )
+  }
   const resolvedGek = newGek ?? generateGroupKey()
   const newEpoch = keyring.currentEpoch + 1
   const wrappedKeys: Record<string, string> = {}

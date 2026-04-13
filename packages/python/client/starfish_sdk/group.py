@@ -273,6 +273,12 @@ def rotate_group_key(
     Returns:
         A tuple of (updated_keyring, new_gek).
     """
+    epoch_key = str(keyring.current_epoch)
+    epoch_keyring = keyring.epochs.get(epoch_key)
+    if epoch_keyring and epoch_keyring.admin_public_key != admin_key_pair.public_key:
+        raise ValueError(
+            f"Provided key pair does not match the admin public key stored in epoch {keyring.current_epoch}"
+        )
     resolved_gek = new_gek or generate_group_key()
     new_epoch = keyring.current_epoch + 1
     wrapped_keys: dict[str, str] = {}

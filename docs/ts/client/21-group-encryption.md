@@ -50,7 +50,8 @@ import { deriveCredentials } from "@drakkar.software/starfish-client/identity"
 
 const creds = await deriveCredentials(passphrase)
 // creds.groupPublicKey  — safe to publish
-// creds.groupPrivateKey — keep secret; never send to server
+// creds.groupPrivateKey — derived deterministically; no need to store it.
+//                         Re-derive it any time from the same passphrase.
 ```
 
 ---
@@ -92,6 +93,24 @@ const config: SyncConfig = {
 - Cannot be used on public collections (`readRoles: ["public"]`)
 - Cannot be used with binary collections (non-JSON `allowedMimeTypes`)
 - Cannot be used on remote (pull-only) collections
+
+### Granting roles
+
+`createGroupRoleEnricher` grants `"group-member"` to any user whose identity appears in the members document. The `"group-admin"` role must be granted separately — typically in your `roleResolver`:
+
+```ts
+async function roleResolver(c: Context): Promise<AuthResult> {
+  const userId = getUserIdFromToken(c)
+  const roles: string[] = ["user"]
+  // Grant group-admin to known administrators
+  if (isGroupAdmin(userId)) {
+    roles.push("group-admin")
+  }
+  return { identity: userId, roles }
+}
+```
+
+Alternatively, maintain a separate `groups/{groupId}/admins` document and read it in a custom `roleEnricher` alongside `createGroupRoleEnricher`.
 
 ---
 
@@ -208,7 +227,7 @@ const { keyring: rotatedKeyring, gek: newGek } = await rotateGroupKey(
 )
 
 // Push rotated keyring
-await adminKeyringSync.push(rotatedKeyring.to_dict?.() ?? rotatedKeyring)
+await adminKeyringSync.push(rotatedKeyring)
 
 // Save newGek securely — needed to add future members to epoch 2+
 ```

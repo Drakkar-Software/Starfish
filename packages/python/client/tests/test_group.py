@@ -237,6 +237,16 @@ def test_rotate_group_key_removed_member_has_no_entry():
     assert "bob" not in rotated.epochs["2"].wrapped_keys
 
 
+def test_rotate_group_key_wrong_key_pair_raises():
+    admin_kp = derive_group_key_pair("admin", "a")
+    wrong_kp = derive_group_key_pair("wrong", "w")
+    alice_kp = derive_group_key_pair("alice", "b")
+    keyring, _ = create_group_keyring(admin_kp, {"alice": alice_kp.public_key})
+
+    with pytest.raises(ValueError, match="does not match"):
+        rotate_group_key(keyring, wrong_kp, {"alice": alice_kp.public_key})
+
+
 # ── create_group_encryptor ───────────────────────────────────────────────────
 
 
@@ -300,6 +310,21 @@ def test_group_encryptor_unknown_epoch_raises():
     fake_doc = {"_encrypted": "not-real", "_epoch": 99}
     with pytest.raises(ValueError, match="No key available for epoch"):
         encryptor.decrypt(fake_doc)
+
+
+def test_group_encryptor_missing_epoch_falls_back_to_current():
+    admin_kp = derive_group_key_pair("admin", "a")
+    alice_kp = derive_group_key_pair("alice", "a")
+    keyring, _ = create_group_keyring(admin_kp, {"alice": alice_kp.public_key})
+
+    encryptor = create_group_encryptor(keyring, "alice", alice_kp.private_key)
+    plaintext = {"msg": "legacy doc"}
+
+    # Encrypt normally (has _epoch), then strip _epoch to simulate a legacy document
+    encrypted = encryptor.encrypt(plaintext)
+    without_epoch = {k: v for k, v in encrypted.items() if k != "_epoch"}
+    decrypted = encryptor.decrypt(without_epoch)
+    assert decrypted == plaintext
 
 
 def test_group_encryptor_cross_member_decryption():
@@ -418,3 +443,39 @@ def test_vector_keyring_all_members_can_decrypt():
 
     assert bob_enc.decrypt(encrypted) == plaintext
     assert alice_enc.decrypt(encrypted) == plaintext
+
+
+def test_vector_decrypt_python_encrypted_data():
+    """Both alice and bob must decrypt a document that was pre-encrypted by Python.
+
+    This is stored in the test vectors so TypeScript can also run the same check,
+    proving the full encrypt/decrypt pipeline is cross-language compatible.
+    """
+    kp_data = VECTORS["keypairs"]
+    w = VECTORS["wrapping"]
+    d = VECTORS["dataEncryption"]
+
+    admin_kp = GroupKeyPair(
+        private_key=kp_data["admin"]["privateKey"],
+        public_key=kp_data["admin"]["publicKey"],
+    )
+    alice_kp = GroupKeyPair(
+        private_key=kp_data["alice"]["privateKey"],
+        public_key=kp_data["alice"]["publicKey"],
+    )
+    bob_kp = GroupKeyPair(
+        private_key=kp_data["bob"]["privateKey"],
+        public_key=kp_data["bob"]["publicKey"],
+    )
+
+    keyring, _ = create_group_keyring(
+        admin_kp,
+        {"alice": alice_kp.public_key, "bob": bob_kp.public_key},
+        gek=w["gek"],
+    )
+
+    alice_enc = create_group_encryptor(keyring, "alice", alice_kp.private_key)
+    bob_enc = create_group_encryptor(keyring, "bob", bob_kp.private_key)
+
+    assert alice_enc.decrypt(d["encryptedByPython"]) == d["plaintext"]
+    assert bob_enc.decrypt(d["encryptedByPython"]) == d["plaintext"]

@@ -238,6 +238,17 @@ describe("rotateGroupKey", () => {
     // bob has no entry in epoch 2
     expect(rotated.epochs["2"].wrappedKeys["bob"]).toBeUndefined()
   })
+
+  it("throws if the key pair does not match the epoch admin public key", async () => {
+    const adminKp = await deriveGroupKeyPair("admin", "a")
+    const wrongKp = await deriveGroupKeyPair("wrong", "w")
+    const aliceKp = await deriveGroupKeyPair("alice", "b")
+    const { keyring } = await createGroupKeyring(adminKp, { alice: aliceKp.publicKey })
+
+    await expect(
+      rotateGroupKey(keyring, wrongKp, { alice: aliceKp.publicKey }),
+    ).rejects.toThrow(/does not match/)
+  })
 })
 
 // ── createGroupEncryptor ──────────────────────────────────────────────────────
@@ -309,6 +320,21 @@ describe("createGroupEncryptor", () => {
     const encryptor = await createGroupEncryptor(keyring, "alice", aliceKp.privateKey)
     const fakeDoc = { _encrypted: "not-real", _epoch: 99 }
     await expect(encryptor.decrypt(fakeDoc)).rejects.toThrow(/No key available for epoch/)
+  })
+
+  it("falls back to currentEpoch when _epoch is absent from a document", async () => {
+    const adminKp = await deriveGroupKeyPair("admin", "a")
+    const aliceKp = await deriveGroupKeyPair("alice", "a")
+    const { keyring } = await createGroupKeyring(adminKp, { alice: aliceKp.publicKey })
+
+    const encryptor = await createGroupEncryptor(keyring, "alice", aliceKp.privateKey)
+    const plaintext = { msg: "legacy doc" }
+
+    // Encrypt normally (has _epoch), then strip _epoch to simulate a legacy document
+    const encrypted = await encryptor.encrypt(plaintext)
+    const { _epoch: _removed, ...withoutEpoch } = encrypted
+    const decrypted = await encryptor.decrypt(withoutEpoch)
+    expect(decrypted).toEqual(plaintext)
   })
 
   it("two members can cross-decrypt each other's messages", async () => {
@@ -441,5 +467,28 @@ describe("cross-language test vectors", () => {
 
     expect(await bobEnc.decrypt(encrypted)).toEqual(plaintext)
     expect(await aliceEnc.decrypt(encrypted)).toEqual(plaintext)
+  })
+
+  it("decrypts a document encrypted by Python (cross-language data vector)", async () => {
+    const kpData = vectors.keypairs
+    const w = vectors.wrapping
+    const d = vectors.dataEncryption
+
+    const adminKp: GroupKeyPair = { privateKey: kpData.admin.privateKey, publicKey: kpData.admin.publicKey }
+    const aliceKp: GroupKeyPair = { privateKey: kpData.alice.privateKey, publicKey: kpData.alice.publicKey }
+    const bobKp: GroupKeyPair = { privateKey: kpData.bob.privateKey, publicKey: kpData.bob.publicKey }
+
+    const { keyring } = await createGroupKeyring(
+      adminKp,
+      { alice: aliceKp.publicKey, bob: bobKp.publicKey },
+      w.gek,
+    )
+
+    // Both alice and bob must be able to decrypt the Python-produced blob
+    const aliceEnc = await createGroupEncryptor(keyring, "alice", aliceKp.privateKey)
+    const bobEnc = await createGroupEncryptor(keyring, "bob", bobKp.privateKey)
+
+    expect(await aliceEnc.decrypt(d.encryptedByPython)).toEqual(d.plaintext)
+    expect(await bobEnc.decrypt(d.encryptedByPython)).toEqual(d.plaintext)
   })
 })
