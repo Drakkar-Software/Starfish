@@ -73,3 +73,5 @@ export {
   createGroupEncryptor,
 } from "./group-crypto.js"
 export type { GroupKeyPair, EpochKeyring, GroupKeyring } from "./group-crypto.js"
+export { pullEntitlements } from "./entitlements.js"
+export type { PullEntitlementsOptions } from "./entitlements.js"

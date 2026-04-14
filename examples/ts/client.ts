@@ -5,7 +5,7 @@
  *   npm install starfish-client
  */
 
-import { StarfishClient, SyncManager, createEncryptor, ConflictError, buildInviteUrl, parseInviteUrl, generatePassphrase, deriveCredentials } from "@drakkar.software/starfish-client"
+import { StarfishClient, SyncManager, createEncryptor, ConflictError, buildInviteUrl, parseInviteUrl, generatePassphrase, deriveCredentials, pullEntitlements } from "@drakkar.software/starfish-client"
 import {
   deriveGroupKeyPair,
   createGroupKeyring,
@@ -417,6 +417,64 @@ async function inviteLinkExample() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Entitlements: reading and granting feature access
+// ---------------------------------------------------------------------------
+
+async function entitlementsExample() {
+  // ── Client: read your own entitlements ─────────────────────────────────────
+  const userClient = new StarfishClient({
+    baseUrl: BASE_URL,
+    auth: async () => ({ Authorization: `Bearer user-token-${USER_ID}` }),
+  })
+
+  // Returns the raw feature slug list from the entitlement document.
+  // Returns [] if the document doesn't exist yet.
+  const features = await pullEntitlements(userClient, USER_ID)
+  console.log("my entitlements:", features)
+  // e.g. ["premium-package-1", "paid-cloud-sync"]
+
+  if (features.includes("premium-package-1")) {
+    // Access a premium-gated collection
+    const premiumData = await userClient.pull(`/pull/premium/latest-report`)
+    console.log("premium content:", premiumData.data)
+  }
+
+  // ── Admin: grant entitlements to a user ────────────────────────────────────
+  // Admins push to the user's entitlement document.
+  // The server's entitlement enricher picks up the change on the next request
+  // (or after the cache TTL expires, default 1 minute).
+  const adminClient = new StarfishClient({
+    baseUrl: BASE_URL,
+    auth: async () => ({ Authorization: "Bearer admin-secret-token" }),
+  })
+
+  // Grant premium-package-1 and paid-cloud-sync to a user
+  const targetUserId = USER_ID
+  const existing = await adminClient.pull(`/pull/users/${targetUserId}/entitlements`)
+  const currentFeatures: string[] = (existing.data as any)?.features ?? []
+
+  await adminClient.push(
+    `/push/users/${targetUserId}/entitlements`,
+    { features: [...new Set([...currentFeatures, "premium-package-1", "paid-cloud-sync"])] },
+    existing.hash,  // pass current hash to detect concurrent admin edits
+  )
+  console.log("entitlements updated for", targetUserId)
+
+  // Revoke a specific entitlement
+  const fresh = await adminClient.pull(`/pull/users/${targetUserId}/entitlements`)
+  const remaining = ((fresh.data as any)?.features ?? []).filter(
+    (f: string) => f !== "paid-cloud-sync",
+  )
+  await adminClient.push(
+    `/push/users/${targetUserId}/entitlements`,
+    { features: remaining },
+    fresh.hash,
+  )
+  console.log("paid-cloud-sync revoked")
+}
+
 syncManagerExample()
 binaryExample()
 inviteLinkExample()
+entitlementsExample()

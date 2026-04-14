@@ -69,6 +69,11 @@ from starfish_server.enrichers.group_role_enricher import (
     GroupRoleEnricherOptions,
     create_group_role_enricher,
 )
+from starfish_server.enrichers.entitlement_role_enricher import (
+    EntitlementRoleEnricherOptions,
+    create_entitlement_role_enricher,
+)
+from starfish_server.enrichers.compose import compose_enrichers
 
 __all__ = [
     "StartupError",
@@ -156,4 +161,7 @@ __all__ = [
     "generate_openapi_spec",
     "GroupRoleEnricherOptions",
     "create_group_role_enricher",
+    "EntitlementRoleEnricherOptions",
+    "create_entitlement_role_enricher",
+    "compose_enrichers",
 ]

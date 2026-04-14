@@ -72,6 +72,11 @@ export {
   createGroupRoleEnricher,
   type GroupRoleEnricherOptions,
 } from "./enrichers/group-role-enricher.js"
+export {
+  createEntitlementRoleEnricher,
+  type EntitlementRoleEnricherOptions,
+} from "./enrichers/entitlement-role-enricher.js"
+export { composeEnrichers } from "./enrichers/compose.js"
 
 // Queue
 export type { Queue } from "./queue/base.js"

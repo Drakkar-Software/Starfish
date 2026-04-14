@@ -18,6 +18,7 @@ from starfish_sdk.group import (
     rotate_group_key,
     create_group_encryptor,
 )
+from starfish_sdk.entitlements import pull_entitlements
 
 __all__ = [
     "stable_stringify",
@@ -48,4 +49,5 @@ __all__ = [
     "add_group_member",
     "rotate_group_key",
     "create_group_encryptor",
+    "pull_entitlements",
 ]
