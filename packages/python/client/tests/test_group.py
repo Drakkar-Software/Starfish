@@ -2,8 +2,12 @@
 
 import json
 import pathlib
+from unittest.mock import AsyncMock
 
 import pytest
+from starfish_protocol.types import PullResult, PushSuccess
+from starfish_sdk.client import StarfishClient
+from starfish_sdk.sync import SyncManager
 from starfish_sdk.group import (
     GroupKeyPair,
     GroupKeyring,
@@ -501,3 +505,102 @@ def test_vector_decrypt_python_encrypted_data():
 
     assert alice_enc.decrypt(d["encryptedByPython"]) == d["plaintext"]
     assert bob_enc.decrypt(d["encryptedByPython"]) == d["plaintext"]
+
+
+# ── SyncManager integration (single-collection group) ────────────────────────
+
+
+def _make_shared_store():
+    """Return (make_client, store) where all clients share one in-memory document."""
+    store: dict = {"data": {}, "hash": "h0"}
+
+    def make_client() -> StarfishClient:
+        client = StarfishClient.__new__(StarfishClient)
+
+        async def _pull(path: str, checkpoint: int = 0) -> PullResult:
+            return PullResult(data=dict(store["data"]), hash=store["hash"], timestamp=1000)
+
+        async def _push(path: str, data: dict, base_hash, sig=None) -> PushSuccess:
+            store["data"] = data
+            store["hash"] = "h1"
+            return PushSuccess(hash="h1", timestamp=2000)
+
+        client.pull = AsyncMock(side_effect=_pull)  # type: ignore[attr-defined]
+        client.push = AsyncMock(side_effect=_push)  # type: ignore[attr-defined]
+        return client
+
+    return make_client, store
+
+
+@pytest.mark.asyncio
+async def test_syncmanager_admin_as_member_push_pull():
+    """Admin includes themselves as a group member and can push/pull encrypted data."""
+    admin_kp = derive_group_key_pair("admin-pass", "admin")
+    # Admin adds their own public key to the members dict
+    keyring, _ = create_group_keyring(admin_kp, {"admin": admin_kp.public_key})
+    encryptor = create_group_encryptor(keyring, "admin", admin_kp.private_key)
+
+    make_client, store = _make_shared_store()
+    sync = SyncManager(make_client(), "/pull/vault", "/push/vault", encryptor=encryptor)
+
+    plaintext = {"secret": "my notes", "count": 7}
+    await sync.push(plaintext)
+
+    # Server stores encrypted wrapper — plaintext is never sent
+    assert "_encrypted" in store["data"]
+    assert "secret" not in store["data"]
+
+    # Pull decrypts automatically
+    result = await sync.pull()
+    assert result.data == plaintext
+
+
+@pytest.mark.asyncio
+async def test_syncmanager_cross_member_decryption():
+    """Two members use separate SyncManagers and can decrypt each other's pushes."""
+    admin_kp = derive_group_key_pair("admin", "adm")
+    alice_kp = derive_group_key_pair("alice", "ali")
+    bob_kp   = derive_group_key_pair("bob",   "bob")
+    keyring, _ = create_group_keyring(
+        admin_kp, {"alice": alice_kp.public_key, "bob": bob_kp.public_key}
+    )
+
+    alice_enc = create_group_encryptor(keyring, "alice", alice_kp.private_key)
+    bob_enc   = create_group_encryptor(keyring, "bob",   bob_kp.private_key)
+
+    make_client, store = _make_shared_store()
+
+    # Alice pushes
+    alice_sync = SyncManager(make_client(), "/pull/shared", "/push/shared", encryptor=alice_enc)
+    await alice_sync.push({"from": "alice", "msg": "hello group"})
+    assert "_encrypted" in store["data"]
+
+    # Bob pulls and decrypts the same encrypted blob
+    bob_sync = SyncManager(make_client(), "/pull/shared", "/push/shared", encryptor=bob_enc)
+    result = await bob_sync.pull()
+    assert result.data == {"from": "alice", "msg": "hello group"}
+
+
+@pytest.mark.asyncio
+async def test_syncmanager_new_member_can_decrypt_existing_epoch():
+    """A member added via add_group_member can decrypt documents from the same epoch."""
+    admin_kp   = derive_group_key_pair("admin",   "adm")
+    alice_kp   = derive_group_key_pair("alice",   "ali")
+    charlie_kp = derive_group_key_pair("charlie", "cha")
+    keyring, gek = create_group_keyring(admin_kp, {"alice": alice_kp.public_key})
+
+    alice_enc = create_group_encryptor(keyring, "alice", alice_kp.private_key)
+    make_client, store = _make_shared_store()
+
+    # Alice pushes a document before Charlie joins
+    alice_sync = SyncManager(make_client(), "/pull/shared", "/push/shared", encryptor=alice_enc)
+    await alice_sync.push({"msg": "for existing members"})
+
+    # Admin adds Charlie to the current epoch
+    updated_keyring = add_group_member(keyring, admin_kp, gek, "charlie", charlie_kp.public_key)
+    charlie_enc = create_group_encryptor(updated_keyring, "charlie", charlie_kp.private_key)
+
+    # Charlie can decrypt Alice's document (same epoch key)
+    charlie_sync = SyncManager(make_client(), "/pull/shared", "/push/shared", encryptor=charlie_enc)
+    result = await charlie_sync.pull()
+    assert result.data == {"msg": "for existing members"}

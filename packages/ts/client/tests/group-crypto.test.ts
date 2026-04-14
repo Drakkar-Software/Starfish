@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from "vitest"
+import { describe, it, expect, beforeAll, vi } from "vitest"
 import { configurePlatform } from "@drakkar.software/starfish-protocol"
 import {
   deriveGroupKeyPair,
@@ -12,6 +12,8 @@ import {
   type GroupKeyPair,
 } from "../src/group-crypto.js"
 import { deriveCredentials } from "../src/identity.js"
+import { SyncManager } from "../src/sync.js"
+import type { StarfishClient } from "../src/client.js"
 import vectors from "../../../../tests/test-vectors/group-crypto.json"
 
 beforeAll(() => {
@@ -514,5 +516,121 @@ describe("cross-language test vectors", () => {
 
     expect(await aliceEnc.decrypt(d.encryptedByPython)).toEqual(d.plaintext)
     expect(await bobEnc.decrypt(d.encryptedByPython)).toEqual(d.plaintext)
+  })
+})
+
+// ── SyncManager integration (single-collection group) ────────────────────────
+
+describe("SyncManager integration (single-collection group)", () => {
+  // Creates a pair of mock clients that share one in-memory document store.
+  // Each makeClient() call returns a fresh mock pointing at the same store.
+  function makeSharedStore() {
+    let stored: Record<string, unknown> = {}
+    let hash = "h0"
+    function makeClient(): StarfishClient {
+      return {
+        pull: vi.fn(async () => ({ data: stored, hash, timestamp: 1000 })),
+        push: vi.fn(async (_path: string, data: Record<string, unknown>) => {
+          stored = data
+          hash = "h1"
+          return { hash, timestamp: 2000 }
+        }),
+      } as unknown as StarfishClient
+    }
+    return { makeClient, getStored: () => stored }
+  }
+
+  it("admin-as-member can push encrypted data and pull it back", async () => {
+    const adminKp = await deriveGroupKeyPair("admin-pass", "admin")
+    // Admin includes themselves as a member so they can encrypt/decrypt too
+    const { keyring } = await createGroupKeyring(adminKp, { admin: adminKp.publicKey })
+    const encryptor = await createGroupEncryptor(keyring, "admin", adminKp.privateKey)
+
+    const store = makeSharedStore()
+    const sync = new SyncManager({
+      client: store.makeClient(),
+      pullPath: "/pull/vault",
+      pushPath: "/push/vault",
+      encryptor,
+    })
+
+    const plaintext = { secret: "my notes", count: 7 }
+    await sync.push(plaintext)
+
+    // Server stores an encrypted wrapper — plaintext is never sent
+    expect(store.getStored()).toHaveProperty("_encrypted")
+    expect(store.getStored()).not.toHaveProperty("secret")
+
+    // Pull decrypts automatically
+    const result = await sync.pull()
+    expect(result.data).toEqual(plaintext)
+  })
+
+  it("two members can cross-decrypt each other's pushes", async () => {
+    const adminKp = await deriveGroupKeyPair("admin", "adm")
+    const aliceKp = await deriveGroupKeyPair("alice", "ali")
+    const bobKp   = await deriveGroupKeyPair("bob",   "bob")
+    const { keyring } = await createGroupKeyring(adminKp, {
+      alice: aliceKp.publicKey,
+      bob:   bobKp.publicKey,
+    })
+
+    const aliceEnc = await createGroupEncryptor(keyring, "alice", aliceKp.privateKey)
+    const bobEnc   = await createGroupEncryptor(keyring, "bob",   bobKp.privateKey)
+
+    const store = makeSharedStore()
+
+    // Alice pushes a message
+    const aliceSync = new SyncManager({
+      client: store.makeClient(),
+      pullPath: "/pull/shared",
+      pushPath: "/push/shared",
+      encryptor: aliceEnc,
+    })
+    await aliceSync.push({ from: "alice", msg: "hello group" })
+    expect(store.getStored()).toHaveProperty("_encrypted")
+
+    // Bob pulls and decrypts the same encrypted blob
+    const bobSync = new SyncManager({
+      client: store.makeClient(),
+      pullPath: "/pull/shared",
+      pushPath: "/push/shared",
+      encryptor: bobEnc,
+    })
+    const result = await bobSync.pull()
+    expect(result.data).toEqual({ from: "alice", msg: "hello group" })
+  })
+
+  it("new member added via addGroupMember can decrypt existing epoch documents", async () => {
+    const adminKp   = await deriveGroupKeyPair("admin",   "adm")
+    const aliceKp   = await deriveGroupKeyPair("alice",   "ali")
+    const charlieKp = await deriveGroupKeyPair("charlie", "cha")
+    const { keyring, gek } = await createGroupKeyring(adminKp, { alice: aliceKp.publicKey })
+
+    const aliceEnc = await createGroupEncryptor(keyring, "alice", aliceKp.privateKey)
+    const store = makeSharedStore()
+
+    // Alice pushes a document before Charlie joins
+    const aliceSync = new SyncManager({
+      client: store.makeClient(),
+      pullPath: "/pull/shared",
+      pushPath: "/push/shared",
+      encryptor: aliceEnc,
+    })
+    await aliceSync.push({ msg: "for existing members" })
+
+    // Admin adds Charlie to the current epoch
+    const updatedKeyring = await addGroupMember(keyring, adminKp, gek, "charlie", charlieKp.publicKey)
+    const charlieEnc = await createGroupEncryptor(updatedKeyring, "charlie", charlieKp.privateKey)
+
+    // Charlie can decrypt Alice's document (same epoch key)
+    const charlieSync = new SyncManager({
+      client: store.makeClient(),
+      pullPath: "/pull/shared",
+      pushPath: "/push/shared",
+      encryptor: charlieEnc,
+    })
+    const result = await charlieSync.pull()
+    expect(result.data).toEqual({ msg: "for existing members" })
   })
 })
