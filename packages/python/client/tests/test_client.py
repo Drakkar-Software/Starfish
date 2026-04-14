@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from starfish_sdk.client import StarfishClient
-from starfish_sdk.types import ConflictError, StarfishHttpError
+from starfish_sdk.types import BlobPullResult, BlobPushResult, ConflictError, StarfishHttpError
 
 
 def make_response(status_code: int, data: dict | None = None, text: str = "") -> MagicMock:
@@ -142,3 +142,95 @@ async def test_base_url_trailing_slash_stripped():
 
     url = mock_http.get.call_args.args[0]
     assert url == "http://test/pull/test"
+
+
+# ---------------------------------------------------------------------------
+# pull_blob / push_blob
+# ---------------------------------------------------------------------------
+
+def make_binary_response(
+    status_code: int,
+    content: bytes = b"",
+    content_type: str = "application/octet-stream",
+    etag: str | None = None,
+) -> MagicMock:
+    resp = MagicMock()
+    resp.status_code = status_code
+    resp.content = content
+    resp.headers = {}
+    resp.text = ""
+    resp.headers["content-type"] = content_type
+    if etag:
+        resp.headers["etag"] = f'"{etag}"'
+    return resp
+
+
+@pytest.mark.asyncio
+async def test_pull_blob_returns_bytes_with_hash_and_content_type():
+    png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8
+    mock_http = AsyncMock()
+    mock_http.get.return_value = make_binary_response(
+        200, content=png_bytes, content_type="image/png", etag="abc123"
+    )
+    client = StarfishClient("http://test", client=mock_http)
+
+    result = await client.pull_blob("/pull/avatars/user1")
+
+    assert result.data == png_bytes
+    assert result.hash == "abc123"
+    assert result.content_type == "image/png"
+
+
+@pytest.mark.asyncio
+async def test_pull_blob_no_etag_returns_none_hash():
+    mock_http = AsyncMock()
+    mock_http.get.return_value = make_binary_response(200, content=b"\xff\xd8")
+    client = StarfishClient("http://test", client=mock_http)
+
+    result = await client.pull_blob("/pull/blobs/x")
+
+    assert result.hash is None
+    assert result.content_type == "application/octet-stream"
+
+
+@pytest.mark.asyncio
+async def test_pull_blob_error_raises():
+    mock_http = AsyncMock()
+    mock_http.get.return_value = make_binary_response(404, content=b"not found")
+    mock_http.get.return_value.text = "not found"
+    client = StarfishClient("http://test", client=mock_http)
+
+    with pytest.raises(StarfishHttpError) as exc_info:
+        await client.pull_blob("/pull/blobs/missing")
+    assert exc_info.value.status == 404
+
+
+@pytest.mark.asyncio
+async def test_push_blob_sends_bytes_and_returns_hash():
+    mock_http = AsyncMock()
+    mock_http.post.return_value = MagicMock(
+        status_code=200,
+        json=MagicMock(return_value={"hash": "sha256hex"}),
+    )
+    client = StarfishClient("http://test", client=mock_http)
+
+    result = await client.push_blob("/push/avatars/user1", b"\x89PNG", "image/png")
+
+    assert result.hash == "sha256hex"
+    call_kwargs = mock_http.post.call_args.kwargs
+    assert call_kwargs["headers"]["Content-Type"] == "image/png"
+    assert call_kwargs["content"] == b"\x89PNG"
+
+
+@pytest.mark.asyncio
+async def test_push_blob_error_raises():
+    mock_http = AsyncMock()
+    mock_http.post.return_value = MagicMock(
+        status_code=415,
+        text="unsupported media type",
+    )
+    client = StarfishClient("http://test", client=mock_http)
+
+    with pytest.raises(StarfishHttpError) as exc_info:
+        await client.push_blob("/push/blobs/x", b"data", "video/mp4")
+    assert exc_info.value.status == 415

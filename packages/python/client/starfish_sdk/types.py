@@ -1,9 +1,26 @@
 """Types for the Starfish client SDK."""
 
 
+from dataclasses import dataclass
 from typing import Any, Callable, Protocol
 
 from starfish_protocol.types import PullResult, PushSuccess, Timestamps
+
+
+@dataclass
+class BlobPullResult:
+    """Result of pulling a binary blob from the server."""
+
+    data: bytes
+    hash: str | None
+    content_type: str
+
+
+@dataclass
+class BlobPushResult:
+    """Result of pushing a binary blob to the server."""
+
+    hash: str
 
 
 class ConflictError(Exception):

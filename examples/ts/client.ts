@@ -5,7 +5,7 @@
  *   npm install starfish-client
  */
 
-import { StarfishClient, SyncManager, createEncryptor, ConflictError } from "@drakkar.software/starfish-client"
+import { StarfishClient, SyncManager, createEncryptor, ConflictError, buildInviteUrl, parseInviteUrl, generatePassphrase, deriveCredentials } from "@drakkar.software/starfish-client"
 import {
   deriveGroupKeyPair,
   createGroupKeyring,
@@ -365,4 +365,58 @@ async function groupSingleCollectionPull(
   return sync.getData()
 }
 
+// ---------------------------------------------------------------------------
+// Binary collections: pushBlob / pullBlob
+// ---------------------------------------------------------------------------
+
+async function binaryExample() {
+  const client = new StarfishClient({
+    baseUrl: BASE_URL,
+    auth: async () => ({ Authorization: `Bearer my-token-${USER_ID}` }),
+  })
+
+  // Push a PNG avatar (accepts ArrayBuffer, Uint8Array, or Blob)
+  const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]) // simplified PNG header
+  const pushResult = await client.pushBlob(
+    `/push/users/${USER_ID}/avatar`,
+    pngBytes,
+    "image/png",
+  )
+  console.log("avatar hash:", pushResult.hash)
+
+  // Pull it back as raw bytes
+  const blobResult = await client.pullBlob(`/pull/users/${USER_ID}/avatar`)
+  console.log("content type:", blobResult.contentType)  // "image/png"
+  console.log("etag hash:", blobResult.hash)            // SHA-256 hex or null
+  console.log("size (bytes):", blobResult.data.byteLength)
+
+  // Render in a browser:
+  // const blob = new Blob([blobResult.data], { type: blobResult.contentType })
+  // imgEl.src = URL.createObjectURL(blob)
+}
+
+// ---------------------------------------------------------------------------
+// Invite links: buildInviteUrl / parseInviteUrl
+// ---------------------------------------------------------------------------
+
+async function inviteLinkExample() {
+  // Inviting device: generate a passphrase and encode it in a deep link
+  const passphrase = generatePassphrase()
+  const inviteUrl = buildInviteUrl("myapp://join", {
+    p: passphrase,
+    name: "Alice",
+  })
+  console.log("invite URL:", inviteUrl)
+  // → "myapp://join?t=eyJwIjoiYWJsZSBhY2lkIC4uLiIsIm5hbWUiOiJBbGljZSJ9"
+
+  // Joining device: decode the URL and bootstrap credentials
+  const payload = parseInviteUrl(inviteUrl)
+  if (payload) {
+    const joinCreds = await deriveCredentials(payload.p as string)
+    console.log("joined as userId:", joinCreds.userId)
+  }
+}
+
 syncManagerExample()
+binaryExample()
+inviteLinkExample()

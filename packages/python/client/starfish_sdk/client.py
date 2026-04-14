@@ -6,7 +6,7 @@ from typing import Any
 import httpx
 
 from starfish_protocol.types import PullResult, PushSuccess
-from starfish_sdk.types import AuthProvider, ConflictError, StarfishHttpError
+from starfish_sdk.types import AuthProvider, BlobPullResult, BlobPushResult, ConflictError, StarfishHttpError
 
 
 class StarfishClient:
@@ -116,3 +116,49 @@ class StarfishClient:
 
         result = resp.json()
         return PushSuccess(hash=result["hash"], timestamp=result["timestamp"])
+
+    async def pull_blob(self, path: str) -> BlobPullResult:
+        """Pull binary data from a blob collection.
+
+        Returns raw bytes with the content hash from the ETag header.
+        Binary collections use last-write-wins (no conflict detection).
+        """
+        auth_headers = await self._auth_headers("GET", path, None)
+
+        resp = await self._client.get(
+            f"{self._base_url}{path}",
+            headers={"Accept": "*/*", **auth_headers},
+        )
+        if resp.status_code != 200:
+            raise StarfishHttpError(resp.status_code, resp.text)
+
+        etag = resp.headers.get("etag", "").strip('"') or None
+        content_type = resp.headers.get("content-type", "application/octet-stream")
+        return BlobPullResult(data=resp.content, hash=etag, content_type=content_type)
+
+    async def push_blob(
+        self,
+        path: str,
+        data: bytes,
+        content_type: str,
+    ) -> BlobPushResult:
+        """Push binary data to a blob collection.
+
+        Binary collections accept any push unconditionally (no baseHash required).
+        """
+        auth_headers = await self._auth_headers("POST", path, None)
+
+        resp = await self._client.post(
+            f"{self._base_url}{path}",
+            content=data,
+            headers={
+                "Content-Type": content_type,
+                "Accept": "application/json",
+                **auth_headers,
+            },
+        )
+        if resp.status_code != 200:
+            raise StarfishHttpError(resp.status_code, resp.text)
+
+        result = resp.json()
+        return BlobPushResult(hash=result["hash"])

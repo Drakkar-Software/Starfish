@@ -327,5 +327,35 @@ async def group_single_collection_pull(
     return result.data
 
 
+# ---------------------------------------------------------------------------
+# Binary collections: push_blob / pull_blob
+# ---------------------------------------------------------------------------
+
+async def binary_example() -> None:
+    async def auth(*, method: str, path: str, body: str | None) -> dict[str, str]:
+        return {"Authorization": f"Bearer my-token-{USER_ID}"}
+
+    async with StarfishClient(BASE_URL, auth=auth) as client:
+        # Push raw PNG bytes
+        png_bytes = bytes([0x89, 0x50, 0x4e, 0x47])  # simplified PNG header
+        push_result = await client.push_blob(
+            f"/push/users/{USER_ID}/avatar",
+            png_bytes,
+            "image/png",
+        )
+        print("avatar hash:", push_result.hash)
+
+        # Pull it back
+        blob = await client.pull_blob(f"/pull/users/{USER_ID}/avatar")
+        print("content type:", blob.content_type)  # "image/png"
+        print("etag hash:", blob.hash)             # SHA-256 hex or None
+        print("size (bytes):", len(blob.data))
+
+        # Save to disk
+        # with open("downloaded.png", "wb") as f:
+        #     f.write(blob.data)
+
+
 if __name__ == "__main__":
     asyncio.run(sync_manager_example())
+    asyncio.run(binary_example())
