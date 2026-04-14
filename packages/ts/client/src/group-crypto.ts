@@ -113,7 +113,7 @@ export async function wrapGroupKey(
   const c = getCrypto()
   const b64 = getBase64()
   const iv = c.getRandomValues(new Uint8Array(IV_BYTES))
-  const encrypted = await c.subtle.encrypt({ name: ALGO, iv }, wrappingKey, hexToBytes(gek))
+  const encrypted = await c.subtle.encrypt({ name: ALGO, iv }, wrappingKey, hexToBytes(gek).buffer as ArrayBuffer)
 
   const combined = new Uint8Array(IV_BYTES + encrypted.byteLength)
   combined.set(iv)
