@@ -468,6 +468,15 @@ async with StarfishClient(
     )
     await sync.pull()
     await sync.push({"theme": "dark", "lang": "en"})
+
+    # Binary (blob) documents
+    blob_result = await client.pull_blob("/pull/files/abc/photo.jpg")
+    await client.push_blob("/push/files/abc/photo.jpg", b"...", blob_result.hash, "image/jpeg")
+
+    # Entitlement discovery
+    from starfish_sdk import pull_entitlements
+    features = await pull_entitlements(client, "alice")
+    # e.g. ["premium-package-1", "paid-cloud-sync"]
 ```
 
 ### Auth Provider
@@ -889,6 +898,7 @@ The main entrypoint also exports:
 - **Polling** — `startPolling()`, `startAdaptivePolling()` with network-quality adaptation and pause/resume
 - **Debounced sync** — `createDebouncedSync(store, opts)` wraps a Starfish store with a debounce timer and payload size guard, preventing rapid-fire pushes and protecting against server body limits
 - **Multi-store sync** — `createMultiStoreSync({ slices, version, migrations? })` serializes multiple domain stores into a single Starfish document with versioned schema migrations
+- **Entitlement discovery** — `pullEntitlements(client, userId)` fetches the list of feature slugs from a user's entitlement document; returns `[]` on 404, re-throws all other errors
 
 #### Passphrase Identity (`./identity`)
 
@@ -1378,6 +1388,56 @@ Members document (standard Starfish push):
 ```
 
 > Full reference: [`docs/ts/server/group-access.md`](docs/ts/server/group-access.md)
+
+---
+
+### Entitlement-Based Access Control
+
+Use `createEntitlementRoleEnricher` / `create_entitlement_role_enricher` to gate collections behind per-user feature slugs. The enricher reads a per-user entitlement document from the ObjectStore and grants roles of the form `"entitlement:<slug>"`. Collections declare which slugs unlock access in `readRoles`/`writeRoles`.
+
+```ts
+// TypeScript
+import { createEntitlementRoleEnricher, composeEnrichers } from "@drakkar.software/starfish-server"
+
+const entitlementEnricher = createEntitlementRoleEnricher({ store })
+// Combine with other enrichers using composeEnrichers:
+const roleEnricher = composeEnrichers(groupEnricher, entitlementEnricher)
+
+const router = createSyncRouter({
+  store, config,
+  roleResolver: async (c) => ({ identity: await getUserId(c), roles: [] }),
+  roleEnricher,
+})
+```
+
+```python
+# Python
+from starfish_server import create_entitlement_role_enricher, EntitlementRoleEnricherOptions, compose_enrichers
+
+entitlement_enricher = create_entitlement_role_enricher(EntitlementRoleEnricherOptions(store=store))
+role_enricher = compose_enrichers(group_enricher, entitlement_enricher)
+router = create_sync_router(SyncRouterOptions(..., role_enricher=role_enricher))
+```
+
+Entitlement collection config (admin writes, user reads):
+```ts
+{ name: "entitlements", storagePath: "users/{identity}/entitlements",
+  readRoles: ["self"], writeRoles: ["admin"],
+  encryption: "none", maxBodyBytes: 4096, allowedMimeTypes: ["application/json"] }
+```
+
+Entitlement document (admin pushes):
+```json
+{ "features": ["premium-package-1", "paid-cloud-sync"] }
+```
+
+Gated collection:
+```ts
+{ name: "premium-content", storagePath: "premium/{resource}",
+  readRoles: ["entitlement:premium-package-1"], writeRoles: ["admin"] }
+```
+
+> Full reference: [`docs/ts/server/entitlements.md`](docs/ts/server/entitlements.md)
 
 ---
 

@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.17.0
+
+### Added
+
+#### Server (TypeScript + Python)
+
+- **`createEntitlementRoleEnricher` / `create_entitlement_role_enricher`** — new built-in `RoleEnricher` factory that grants roles based on a per-user entitlement document stored in the ObjectStore. Reads a standard Starfish document at a configurable `path` template (default `"users/{identity}/entitlements"`), extracts a list of feature slugs from the configured `field` (default `"features"`), and returns roles of the form `"${rolePrefix}:${slug}"` (default prefix `"entitlement"`). Collections gate access using these roles in `readRoles`/`writeRoles`. Ships with an in-memory per-user cache (default TTL 1 min, set `cacheTtlMs: 0` / `cache_ttl_ms=0` to disable). TypeScript: `import { createEntitlementRoleEnricher } from "@drakkar.software/starfish-server"`. Python: `from starfish_server import create_entitlement_role_enricher, EntitlementRoleEnricherOptions`.
+
+- **`composeEnrichers` / `compose_enrichers`** — utility that merges multiple `RoleEnricher` functions into one. Runs all enrichers in parallel and returns a flat union of their role arrays. Needed when `SyncRouterOptions.roleEnricher` must combine several enrichers (e.g. group membership + entitlement). TypeScript: `composeEnrichers(groupEnricher, entitlementEnricher)`. Python: `compose_enrichers(group_enricher, entitlement_enricher)`.
+
+#### Client (TypeScript + Python)
+
+- **`pullEntitlements` / `pull_entitlements`** — standalone helper that fetches the list of feature slugs from a user's entitlement document. Returns `[]` on 404 (document not yet created); re-throws all other errors so billing-critical failures are never silently swallowed. TypeScript: `import { pullEntitlements } from "@drakkar.software/starfish-client"`. Python: `from starfish_sdk import pull_entitlements`.
+
+- **`pull_blob` / `push_blob`** (Python `starfish-sdk`) — binary document methods for the Python client, reaching parity with the TypeScript SDK. Returns `BlobPullResult` / `BlobPushResult`. Exported from `starfish_sdk`.
+
+#### Documentation
+
+- New guide: [`docs/ts/server/entitlements.md`](docs/ts/server/entitlements.md) — entitlement system setup, `createEntitlementRoleEnricher` options, admin grant/revoke patterns with hash-based conflict safety, client-side feature discovery, self-write override.
+- New guide: [`docs/ts/client/22-binary-collections.md`](docs/ts/client/22-binary-collections.md) — server config, `allowedMimeTypes` patterns, client API, conflict model, caching, and feature constraints table.
+- New guide: [`docs/ts/server/audit.md`](docs/ts/server/audit.md) — `AuditLogger` setup, `AuditEntry` fields, three built-in loggers, custom callback logger pattern (TypeScript + Python).
+- New guide: [`docs/python/server/storage.md`](docs/python/server/storage.md) — Python storage backends: Filesystem, S3/MinIO/R2, Memory, custom store.
+- Updated [`docs/ts/server/group-access.md`](docs/ts/server/group-access.md) — added owner-managed whitelist pattern (operator-controlled per-collection member lists without full group encryption).
+- Updated [`docs/ts/client/19-collection-patterns.md`](docs/ts/client/19-collection-patterns.md) — Pattern 8: owner-managed whitelist.
+- Updated [`docs/ts/client/11-identity-key-derivation.md`](docs/ts/client/11-identity-key-derivation.md) — invite links section (`buildInviteUrl` / `parseInviteUrl`).
+- Updated [`docs/ts/client/09-integration-patterns.md`](docs/ts/client/09-integration-patterns.md) — corrected `pruneTombstones` usage to use the exported utility.
+
 ## 1.16.0
 
 ### Added
