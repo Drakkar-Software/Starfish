@@ -73,6 +73,31 @@ const sharedCollections: SyncConfig["collections"] = [
     maxBodyBytes: 65_536,
     allowedMimeTypes: ["application/json"],
   },
+
+  // Owner-managed whitelist — only the owner controls who can access the
+  // restricted collection below. "self" is auto-granted when {ownerId} in
+  // the storagePath matches the authenticated user's identity.
+  // No encryption: this is pure RBAC — group encryption is not required.
+  {
+    name: "whitelist",
+    storagePath: "owners/{ownerId}/whitelist",
+    readRoles: ["self"],   // only the owner can read their own whitelist
+    writeRoles: ["self"],  // only the owner can update their own whitelist
+    encryption: "none",
+    maxBodyBytes: 65_536,
+    allowedMimeTypes: ["application/json"],
+  },
+  // Restricted data — only users listed in the owner's whitelist can access.
+  // The whitelistEnricher below grants "whitelisted" based on that document.
+  {
+    name: "restricted",
+    storagePath: "owners/{ownerId}/restricted",
+    readRoles: ["whitelisted"],
+    writeRoles: ["whitelisted"],
+    encryption: "none",
+    maxBodyBytes: 1_048_576,
+    allowedMimeTypes: ["application/json"],
+  },
 ]
 
 // Per-tenant namespaces: /{tenant}/pull/... and /{tenant}/push/...
@@ -121,17 +146,31 @@ async function roleResolver(c: Context): Promise<AuthResult> {
   return { identity: "anonymous", roles: ["public"] }
 }
 
+// Grant "group-member" to users listed in groups/{groupId}/members
+const groupEnricher = createGroupRoleEnricher({
+  store,
+  membersPath: "groups/{groupId}/members",
+  groupParam: "groupId",
+})
+
+// Grant "whitelisted" to users listed in owners/{ownerId}/whitelist
+const whitelistEnricher = createGroupRoleEnricher({
+  store,
+  membersPath: "owners/{ownerId}/whitelist",
+  groupParam: "ownerId",
+  role: "whitelisted",
+})
+
 const syncRouter = createSyncRouter({
   store,
   config,
   roleResolver,
   encryptionSecret: process.env.ENCRYPTION_SECRET ?? "change-me",
-  // Grant "group-member" to users whose identity appears in groups/{groupId}/members
-  roleEnricher: createGroupRoleEnricher({
-    store,
-    membersPath: "groups/{groupId}/members",
-    groupParam: "groupId",
-  }),
+  // Compose both enrichers: roles from both are merged into the effective set
+  roleEnricher: async (auth, params) => [
+    ...(await groupEnricher(auth, params)),
+    ...(await whitelistEnricher(auth, params)),
+  ],
 })
 
 // Persist config to storage on startup

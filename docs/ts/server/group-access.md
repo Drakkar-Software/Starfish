@@ -145,6 +145,80 @@ Membership lookups hit the ObjectStore on every request without caching, which a
 - Cache is per-enricher-instance (not shared across server restarts)
 - Set `cacheTtlMs: 0` if you need membership changes to take effect immediately
 
+## Owner-managed whitelist
+
+The enricher is not limited to group chat. Any user can maintain a list of identities who are allowed to access their own collection — a whitelist they alone control.
+
+**Encryption is optional.** Group access control and group encryption are independent features. You can gate a collection behind a membership list without any client-side encryption.
+
+### How owner control works
+
+The `"self"` role is automatically granted when the `{identity}` path parameter in a `storagePath` matches the authenticated user's identity. Use this on the whitelist collection so only the owner can read and write it. The protected collection uses a custom role (e.g. `"whitelisted"`) that the enricher grants to anyone in the list.
+
+Your `roleResolver` does not need to return any special role — `"self"` is injected by the router automatically:
+
+```ts
+async function roleResolver(c: Context): Promise<AuthResult> {
+  const token = c.req.header("Authorization")?.replace("Bearer ", "")
+  const { userId } = await verifyToken(token)
+  return { identity: userId, roles: [] }  // "self" is added automatically by the router
+}
+```
+
+### Collection config
+
+```ts
+// W — whitelist: only the owner (ownerId == identity) can read/write
+{
+  name: "whitelist",
+  storagePath: "owners/{ownerId}/whitelist",  // {ownerId} triggers "self" check
+  readRoles: ["self"],
+  writeRoles: ["self"],
+  encryption: "none",
+  maxBodyBytes: 65_536,
+  allowedMimeTypes: ["application/json"],
+},
+// A — protected data: only users listed in W can access
+{
+  name: "restricted",
+  storagePath: "owners/{ownerId}/restricted",
+  readRoles: ["whitelisted"],
+  writeRoles: ["whitelisted"],
+  encryption: "none",
+  maxBodyBytes: 1_048_576,
+  allowedMimeTypes: ["application/json"],
+},
+```
+
+### Enricher config
+
+```ts
+const whitelistEnricher = createGroupRoleEnricher({
+  store,
+  membersPath: "owners/{ownerId}/whitelist",  // reads from collection W
+  groupParam: "ownerId",                       // URL param to resolve the path
+  role: "whitelisted",                         // role granted if identity is in the list
+})
+```
+
+If you already have a group enricher, compose both in a single `roleEnricher`:
+
+```ts
+roleEnricher: async (auth, params) => [
+  ...(await groupEnricher(auth, params)),
+  ...(await whitelistEnricher(auth, params)),
+],
+```
+
+### Access flow
+
+1. Owner pushes whitelist: `{ "members": ["alice", "bob"] }`
+2. Alice requests collection A → enricher reads W, finds "alice" → grants `"whitelisted"` → **200**
+3. Charlie requests collection A → not in W → no `"whitelisted"` role → **403**
+4. Owner removes Alice from W → after cache TTL, Alice gets **403**
+
+To make revocations take effect immediately, set `cacheTtlMs: 0`.
+
 ## Managing membership
 
 Membership documents are ordinary Starfish documents — push them with any client:

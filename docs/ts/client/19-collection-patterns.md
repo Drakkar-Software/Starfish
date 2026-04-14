@@ -451,6 +451,89 @@ See [Group Encryption](21-group-encryption.md) for the full API and key lifecycl
 
 ---
 
+## Pattern 8: Owner-managed whitelist
+
+**Use case:** An owner maintains a list of identities who can read/write their collection. The owner alone controls who is on the list. No shared passphrase, no group encryption — this is pure access control.
+
+**Access:** owner via `"self"` (whitelist), custom role `"whitelisted"` (protected data).
+
+```ts
+// server/config.ts
+const config: SyncConfig = {
+  version: 1,
+  collections: [
+    // W — whitelist: only the owner (ownerId == identity) can read/write
+    {
+      name: "whitelist",
+      storagePath: "owners/{ownerId}/whitelist",   // {ownerId} triggers "self" role
+      readRoles: ["self"],
+      writeRoles: ["self"],
+      encryption: "none",
+      maxBodyBytes: 65_536,
+      allowedMimeTypes: ["application/json"],
+    },
+    // A — protected data: only users listed in the whitelist can access
+    {
+      name: "restricted",
+      storagePath: "owners/{ownerId}/restricted",
+      readRoles: ["whitelisted"],
+      writeRoles: ["whitelisted"],
+      encryption: "none",
+      maxBodyBytes: 1_048_576,
+      allowedMimeTypes: ["application/json"],
+    },
+  ],
+}
+
+// Enrich with "whitelisted" role for users in the owner's whitelist
+const whitelistEnricher = createGroupRoleEnricher({
+  store,
+  membersPath: "owners/{ownerId}/whitelist",
+  groupParam: "ownerId",
+  role: "whitelisted",
+})
+
+createSyncRouter({ store, config, roleResolver, roleEnricher: whitelistEnricher })
+```
+
+```ts
+// Owner updates the whitelist (client side)
+const whitelistSync = new SyncManager({
+  client,
+  pullPath:  `/pull/owners/${ownerId}/whitelist`,
+  pushPath:  `/push/owners/${ownerId}/whitelist`,
+})
+// Add a user
+await whitelistSync.update((current) => {
+  const existing = (current["members"] as string[] | undefined) ?? []
+  return { ...current, members: [...new Set([...existing, newUserId])] }
+})
+// Remove a user
+await whitelistSync.update((current) => {
+  const existing = (current["members"] as string[] | undefined) ?? []
+  return { ...current, members: existing.filter((id) => id !== removedUserId) }
+})
+
+// Whitelisted user reads protected data
+const dataSync = new SyncManager({
+  client,
+  pullPath: `/pull/owners/${ownerId}/restricted`,
+  pushPath: `/push/owners/${ownerId}/restricted`,
+})
+await dataSync.pull()
+```
+
+**Properties:**
+- Owner has exclusive control over access (`writeRoles: ["self"]` on the whitelist)
+- Each member has their own identity — full per-user audit trail on the server
+- Revocation takes effect within the enricher cache TTL (default 60 s); set `cacheTtlMs: 0` for immediate effect
+- No encryption — the server can read the protected data; add `encryption: "delegated"` or `encryption: "group"` for E2E protection
+- The whitelist document format is the same as the group membership document: `{ "members": ["alice", "bob"] }`
+
+See [Group Access](../server/group-access.md#owner-managed-whitelist) for the enricher config and caching trade-offs.
+
+---
+
 ## Combining Patterns
 
 Real applications often combine several patterns. A typical setup:

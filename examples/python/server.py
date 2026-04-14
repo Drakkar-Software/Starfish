@@ -98,6 +98,29 @@ config = SyncConfig(
             encryption="none",
             max_body_bytes=65_536,
         ),
+
+        # Owner-managed whitelist — only the owner controls who can access the
+        # restricted collection below. "self" is auto-granted when {ownerId} in
+        # the storage_path matches the authenticated user's identity.
+        # No encryption: this is pure RBAC — group encryption is not required.
+        CollectionConfig(
+            name="whitelist",
+            storage_path="owners/{ownerId}/whitelist",
+            read_roles=["self"],   # only the owner can read their own whitelist
+            write_roles=["self"],  # only the owner can update their own whitelist
+            encryption="none",
+            max_body_bytes=65_536,
+        ),
+        # Restricted data — only users listed in the owner's whitelist can access.
+        # The whitelist_enricher below grants "whitelisted" based on that document.
+        CollectionConfig(
+            name="restricted",
+            storage_path="owners/{ownerId}/restricted",
+            read_roles=["whitelisted"],
+            write_roles=["whitelisted"],
+            encryption="none",
+            max_body_bytes=1_048_576,
+        ),
     ],
     # Namespaced collections are accessible at /{tenant}/pull/… and /{tenant}/push/…
     # Each tenant gets its own storagePath prefix → full storage isolation.
@@ -117,20 +140,38 @@ async def role_resolver(request: Request) -> AuthResult:
     return AuthResult(identity="anonymous", roles=["public"])
 
 
+# Grant "group-member" to users listed in groups/{groupId}/members
+group_enricher = create_group_role_enricher(
+    GroupRoleEnricherOptions(
+        store=store,
+        members_path="groups/{groupId}/members",
+        group_param="groupId",
+    )
+)
+
+# Grant "whitelisted" to users listed in owners/{ownerId}/whitelist
+whitelist_enricher = create_group_role_enricher(
+    GroupRoleEnricherOptions(
+        store=store,
+        members_path="owners/{ownerId}/whitelist",
+        group_param="ownerId",
+        role="whitelisted",
+    )
+)
+
+
+async def role_enricher(auth: AuthResult, params: dict[str, str]) -> list[str]:
+    """Compose both enrichers: roles from both are merged into the effective set."""
+    return (await group_enricher(auth, params)) + (await whitelist_enricher(auth, params))
+
+
 sync_router = create_sync_router(
     SyncRouterOptions(
         store=store,
         config=config,
         role_resolver=role_resolver,
         encryption_secret=os.environ.get("ENCRYPTION_SECRET", "change-me"),
-        # Grant "group-member" to users whose identity appears in groups/{groupId}/members
-        role_enricher=create_group_role_enricher(
-            GroupRoleEnricherOptions(
-                store=store,
-                members_path="groups/{groupId}/members",
-                group_param="groupId",
-            )
-        ),
+        role_enricher=role_enricher,
     )
 )
 

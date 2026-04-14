@@ -325,3 +325,172 @@ async def test_non_member_cannot_list():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/list/chats/group-1")
     assert resp.status_code == 403
+
+
+# ── Additional coverage ───────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_non_member_push_denied():
+    app, store = _build_integration_app("charlie")
+
+    members_doc = {"v": 1, "data": {"members": ["alice", "bob"]}, "timestamps": {"members": 1000}, "hash": "h"}
+    store._data["groups/group-1/members"] = json.dumps(members_doc)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post(
+            "/push/chats/group-1/2026-04-14",
+            json={"data": {"messages": []}, "baseHash": None},
+            headers={"content-type": "application/json"},
+        )
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_user_gains_access_after_add():
+    store = MemoryObjectStore()
+    # Start: charlie is NOT a member
+    _write_members_doc(store, "groups/group-1/members", ["alice"])
+
+    # Write a chat doc for charlie to eventually read
+    chat_doc = {"v": 1, "data": {"messages": []}, "timestamps": {"messages": 1000}, "hash": "h"}
+    store._data["chats/group-1/2026-04-14"] = json.dumps(chat_doc)
+
+    chat_col = CollectionConfig(
+        name="chat",
+        storagePath="chats/{groupId}/{day}",
+        readRoles=["group-member"],
+        writeRoles=["group-member"],
+        encryption="none",
+        maxBodyBytes=65536,
+        listable=True,
+    )
+    members_col = CollectionConfig(
+        name="group-members",
+        storagePath="groups/{groupId}/members",
+        readRoles=["group-admin"],
+        writeRoles=["group-admin"],
+        encryption="none",
+        maxBodyBytes=65536,
+    )
+    enricher = create_group_role_enricher(GroupRoleEnricherOptions(
+        store=store,
+        members_path="groups/{groupId}/members",
+        group_param="groupId",
+        cache_ttl_ms=0,  # no cache — membership changes take effect immediately
+    ))
+    config = SyncConfig(version=1, collections=[chat_col, members_col])
+
+    async def role_resolver(request: Request) -> AuthResult:
+        return AuthResult(identity="charlie", roles=[])
+
+    router = create_sync_router(SyncRouterOptions(
+        store=store, config=config, role_resolver=role_resolver, role_enricher=enricher,
+    ))
+    app = FastAPI()
+    app.include_router(router)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        # Charlie is not yet a member — pull denied
+        resp = await client.get("/pull/chats/group-1/2026-04-14")
+        assert resp.status_code == 403
+
+        # Admin adds charlie to the members doc
+        _write_members_doc(store, "groups/group-1/members", ["alice", "charlie"])
+
+        # Charlie now has access (cache disabled, enricher re-reads immediately)
+        resp = await client.get("/pull/chats/group-1/2026-04-14")
+        assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_user_loses_access_after_remove():
+    store = MemoryObjectStore()
+    # Start: alice IS a member
+    _write_members_doc(store, "groups/group-1/members", ["alice", "bob"])
+
+    chat_doc = {"v": 1, "data": {"messages": []}, "timestamps": {"messages": 1000}, "hash": "h"}
+    store._data["chats/group-1/2026-04-14"] = json.dumps(chat_doc)
+
+    chat_col = CollectionConfig(
+        name="chat",
+        storagePath="chats/{groupId}/{day}",
+        readRoles=["group-member"],
+        writeRoles=["group-member"],
+        encryption="none",
+        maxBodyBytes=65536,
+        listable=True,
+    )
+    members_col = CollectionConfig(
+        name="group-members",
+        storagePath="groups/{groupId}/members",
+        readRoles=["group-admin"],
+        writeRoles=["group-admin"],
+        encryption="none",
+        maxBodyBytes=65536,
+    )
+    enricher = create_group_role_enricher(GroupRoleEnricherOptions(
+        store=store,
+        members_path="groups/{groupId}/members",
+        group_param="groupId",
+        cache_ttl_ms=0,  # no cache — membership changes take effect immediately
+    ))
+    config = SyncConfig(version=1, collections=[chat_col, members_col])
+
+    async def role_resolver(request: Request) -> AuthResult:
+        return AuthResult(identity="alice", roles=[])
+
+    router = create_sync_router(SyncRouterOptions(
+        store=store, config=config, role_resolver=role_resolver, role_enricher=enricher,
+    ))
+    app = FastAPI()
+    app.include_router(router)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        # Alice is a member — pull succeeds
+        resp = await client.get("/pull/chats/group-1/2026-04-14")
+        assert resp.status_code == 200
+
+        # Admin removes alice from the members doc
+        _write_members_doc(store, "groups/group-1/members", ["bob"])
+
+        # Alice can no longer pull (cache is disabled)
+        resp = await client.get("/pull/chats/group-1/2026-04-14")
+        assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_cache_expires_and_rereads():
+    store = MemoryObjectStore()
+    _write_members_doc(store, "groups/group-1/members", ["alice"])
+
+    call_count = 0
+    original_get_string = store.get_string
+
+    async def counting_get_string(key: str) -> str | None:
+        nonlocal call_count
+        call_count += 1
+        return await original_get_string(key)
+
+    store.get_string = counting_get_string
+
+    enricher = create_group_role_enricher(GroupRoleEnricherOptions(
+        store=store,
+        members_path="groups/{groupId}/members",
+        group_param="groupId",
+        cache_ttl_ms=5_000,
+    ))
+
+    # Simulate time advancing: 0s → 4.999s → 5.001s
+    # time.monotonic() returns seconds; enricher multiplies by 1000 for ms comparison
+    with patch("time.monotonic", side_effect=[0.0, 4.999, 5.001]):
+        # Call 1: reads from store, populates cache
+        await enricher(AuthResult(identity="alice", roles=[]), {"groupId": "group-1"})
+        assert call_count == 1
+
+        # Call 2: within TTL (4999 ms < 5000 ms) — served from cache
+        await enricher(AuthResult(identity="alice", roles=[]), {"groupId": "group-1"})
+        assert call_count == 1
+
+        # Call 3: TTL elapsed (5001 ms > 5000 ms) — re-reads from store
+        await enricher(AuthResult(identity="alice", roles=[]), {"groupId": "group-1"})
+        assert call_count == 2
