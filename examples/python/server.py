@@ -20,6 +20,9 @@ from starfish_server import (
     save_config,
     create_group_role_enricher,
     GroupRoleEnricherOptions,
+    create_entitlement_role_enricher,
+    EntitlementRoleEnricherOptions,
+    compose_enrichers,
 )
 from starfish_server.audit import CallbackAuditLogger, AuditEntry
 from starfish_server.lifecycle import GracefulShutdown, GracefulShutdownOptions
@@ -113,6 +116,28 @@ config = SyncConfig(
             max_body_bytes=65_536,
         ),
 
+        # Per-user entitlement document — admin writes, user reads their own.
+        # Contains feature slugs like ["premium-package-1", "paid-cloud-sync"].
+        # The entitlement_enricher below translates these into roles at request time.
+        CollectionConfig(
+            name="entitlements",
+            storage_path="users/{identity}/entitlements",
+            read_roles=["self"],
+            write_roles=["admin"],
+            encryption="none",
+            max_body_bytes=4096,
+        ),
+        # Premium-gated collection — only users with the "premium-package-1" entitlement
+        # can read this. Add to or remove from the user's entitlement document to grant/revoke.
+        CollectionConfig(
+            name="premium-content",
+            storage_path="premium/{contentId}",
+            read_roles=["entitlement:premium-package-1"],
+            write_roles=["admin"],
+            encryption="none",
+            max_body_bytes=131_072,
+        ),
+
         # Owner-managed whitelist — only the owner controls who can access the
         # restricted collection below. "self" is auto-granted when {ownerId} in
         # the storage_path matches the authenticated user's identity.
@@ -173,10 +198,14 @@ whitelist_enricher = create_group_role_enricher(
     )
 )
 
+# Translate per-user entitlement slugs → roles like "entitlement:premium-package-1"
+# Reads from users/{identity}/entitlements (default path)
+entitlement_enricher = create_entitlement_role_enricher(
+    EntitlementRoleEnricherOptions(store=store)
+)
 
-async def role_enricher(auth: AuthResult, params: dict[str, str]) -> list[str]:
-    """Compose both enrichers: roles from both are merged into the effective set."""
-    return (await group_enricher(auth, params)) + (await whitelist_enricher(auth, params))
+# Compose all enrichers: roles from all are merged into the effective set
+role_enricher = compose_enrichers(group_enricher, whitelist_enricher, entitlement_enricher)
 
 
 async def _audit_record(entry: AuditEntry) -> None:

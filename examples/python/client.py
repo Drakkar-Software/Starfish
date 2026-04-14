@@ -7,7 +7,7 @@ Install:
 
 import asyncio
 from datetime import date
-from starfish_sdk import StarfishClient, SyncManager, ConflictError
+from starfish_sdk import StarfishClient, SyncManager, ConflictError, pull_entitlements
 from starfish_sdk.group import (
     GroupKeyring,
     derive_group_key_pair,
@@ -356,6 +356,50 @@ async def binary_example() -> None:
         #     f.write(blob.data)
 
 
+async def entitlements_example() -> None:
+    # ── Client: read your own entitlements ─────────────────────────────────────
+    async with StarfishClient(BASE_URL, auth=auth) as client:
+        # Returns the raw feature slug list. Returns [] if the document doesn't exist.
+        features = await pull_entitlements(client, USER_ID)
+        print("my entitlements:", features)
+        # e.g. ["premium-package-1", "paid-cloud-sync"]
+
+        if "premium-package-1" in features:
+            premium = await client.pull("/pull/premium/latest-report")
+            print("premium content:", premium.data)
+
+    # ── Admin: grant entitlements to a user ────────────────────────────────────
+    async def admin_auth(*, method: str, path: str, body: str | None) -> dict[str, str]:
+        return {"Authorization": "Bearer admin-secret-token"}
+
+    async with StarfishClient(BASE_URL, auth=admin_auth) as admin:
+        target_user_id = USER_ID
+
+        # Read current entitlements first (for conflict-safe push)
+        existing = await admin.pull(f"/pull/users/{target_user_id}/entitlements")
+        current_features: list[str] = (existing.data or {}).get("features", [])
+
+        # Grant new entitlements (deduplicated)
+        updated = list(set(current_features + ["premium-package-1", "paid-cloud-sync"]))
+        await admin.push(
+            f"/push/users/{target_user_id}/entitlements",
+            {"features": updated},
+            existing.hash,  # pass current hash to detect concurrent admin edits
+        )
+        print("entitlements updated for", target_user_id)
+
+        # Revoke a specific entitlement
+        fresh = await admin.pull(f"/pull/users/{target_user_id}/entitlements")
+        remaining = [f for f in (fresh.data or {}).get("features", []) if f != "paid-cloud-sync"]
+        await admin.push(
+            f"/push/users/{target_user_id}/entitlements",
+            {"features": remaining},
+            fresh.hash,
+        )
+        print("paid-cloud-sync revoked")
+
+
 if __name__ == "__main__":
     asyncio.run(sync_manager_example())
     asyncio.run(binary_example())
+    asyncio.run(entitlements_example())

@@ -14,6 +14,8 @@ import type { Context } from "hono"
 import {
   createSyncRouter,
   createGroupRoleEnricher,
+  createEntitlementRoleEnricher,
+  composeEnrichers,
   createCallbackAuditLogger,
   createGracefulShutdown,
   saveConfig,
@@ -73,6 +75,30 @@ const sharedCollections: SyncConfig["collections"] = [
     writeRoles: ["group-admin"],
     encryption: "none",
     maxBodyBytes: 65_536,
+    allowedMimeTypes: ["application/json"],
+  },
+
+  // Per-user entitlement document — admin writes, user reads their own.
+  // Contains feature slugs like ["premium-package-1", "paid-cloud-sync"].
+  // The entitlementEnricher below translates these into roles at request time.
+  {
+    name: "entitlements",
+    storagePath: "users/{identity}/entitlements",
+    readRoles: ["self"],
+    writeRoles: ["admin"],
+    encryption: "none",
+    maxBodyBytes: 4096,
+    allowedMimeTypes: ["application/json"],
+  },
+  // Premium-gated collection — only users with the "premium-package-1" entitlement
+  // can read this. Add to or remove from the user's entitlement document to grant/revoke.
+  {
+    name: "premium-content",
+    storagePath: "premium/{contentId}",
+    readRoles: ["entitlement:premium-package-1"],
+    writeRoles: ["admin"],
+    encryption: "none",
+    maxBodyBytes: 131_072,
     allowedMimeTypes: ["application/json"],
   },
 
@@ -163,16 +189,17 @@ const whitelistEnricher = createGroupRoleEnricher({
   role: "whitelisted",
 })
 
+// Translate per-user entitlement slugs → roles like "entitlement:premium-package-1"
+// Reads from users/{identity}/entitlements (default path)
+const entitlementEnricher = createEntitlementRoleEnricher({ store })
+
 const syncRouter = createSyncRouter({
   store,
   config,
   roleResolver,
   encryptionSecret: process.env.ENCRYPTION_SECRET ?? "change-me",
-  // Compose both enrichers: roles from both are merged into the effective set
-  roleEnricher: async (auth, params) => [
-    ...(await groupEnricher(auth, params)),
-    ...(await whitelistEnricher(auth, params)),
-  ],
+  // Compose all enrichers: roles from all are merged into the effective set
+  roleEnricher: composeEnrichers(groupEnricher, whitelistEnricher, entitlementEnricher),
   // Audit every pull and push — swap for createCallbackAuditLogger to write to a DB
   audit: createCallbackAuditLogger((entry) => {
     if (!entry.success) {
