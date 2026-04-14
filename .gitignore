@@ -16,6 +16,7 @@ venv/
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/
+build/
 
 # Rust
 target/
