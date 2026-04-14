@@ -290,4 +290,79 @@ async function groupRemoveMember(remainingMembers: Record<string, string>): Prom
   return newGek  // store securely in admin's private vault
 }
 
+// ---------------------------------------------------------------------------
+// Group encryption — single-collection (admin as member)
+//
+// Simpler variant: the keyring is built in memory and distributed
+// out-of-band (e.g. stored in each member's private vault). No separate
+// keyring collection in Starfish is needed. The admin includes themselves
+// in the members map so they can also encrypt/decrypt.
+// ---------------------------------------------------------------------------
+
+async function groupSingleCollectionSetup(): Promise<{ keyring: GroupKeyring; gek: string }> {
+  const adminKp = await deriveGroupKeyPair("admin-passphrase", "admin")
+  const aliceKp = await deriveGroupKeyPair("alice-passphrase", "alice")
+  const bobKp   = await deriveGroupKeyPair("bob-passphrase",   "bob")
+
+  // Admin includes themselves as a member so they can encrypt/decrypt too
+  const { keyring, gek } = await createGroupKeyring(adminKp, {
+    admin: adminKp.publicKey,
+    alice: aliceKp.publicKey,
+    bob:   bobKp.publicKey,
+  })
+
+  // Distribute `keyring` to all members (e.g. push to each member's private vault)
+  // Store `gek` in the admin's private vault — needed to add future members
+  console.log("single-collection keyring created, epoch:", keyring.currentEpoch)
+  return { keyring, gek }
+}
+
+async function groupSingleCollectionPush(
+  userId: string,
+  passphrase: string,
+  keyring: GroupKeyring,
+  data: Record<string, unknown>,
+): Promise<void> {
+  const myKp = await deriveGroupKeyPair(passphrase, userId)
+  const encryptor = await createGroupEncryptor(keyring, userId, myKp.privateKey)
+
+  const client = new StarfishClient({
+    baseUrl: BASE_URL,
+    auth: async () => ({ Authorization: `Bearer my-token-${userId}` }),
+  })
+
+  // One encrypted collection — encryptor replaces encryptionSecret / encryptionSalt
+  const sync = new SyncManager({
+    client,
+    pullPath: "/pull/groups/g1/notes",
+    pushPath: "/push/groups/g1/notes",
+    encryptor,
+  })
+  await sync.push(data)
+  console.log(`[${userId}] pushed encrypted data`)
+}
+
+async function groupSingleCollectionPull(
+  userId: string,
+  passphrase: string,
+  keyring: GroupKeyring,
+): Promise<Record<string, unknown>> {
+  const myKp = await deriveGroupKeyPair(passphrase, userId)
+  const encryptor = await createGroupEncryptor(keyring, userId, myKp.privateKey)
+
+  const client = new StarfishClient({
+    baseUrl: BASE_URL,
+    auth: async () => ({ Authorization: `Bearer my-token-${userId}` }),
+  })
+
+  const sync = new SyncManager({
+    client,
+    pullPath: "/pull/groups/g1/notes",
+    pushPath: "/push/groups/g1/notes",
+    encryptor,
+  })
+  await sync.pull()
+  return sync.getData()
+}
+
 syncManagerExample()

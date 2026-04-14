@@ -248,5 +248,84 @@ async def group_remove_member(remaining_members: dict[str, str]) -> str:
     return new_gek  # store securely in admin's private vault
 
 
+# ---------------------------------------------------------------------------
+# Group encryption — single-collection (admin as member)
+#
+# Simpler variant: the keyring is built in memory and distributed
+# out-of-band (e.g. stored in each member's private vault). No separate
+# keyring collection in Starfish is needed. The admin includes themselves
+# in the members map so they can also encrypt/decrypt.
+# ---------------------------------------------------------------------------
+
+async def group_single_collection_setup() -> tuple[GroupKeyring, str]:
+    admin_kp = derive_group_key_pair("admin-passphrase", "admin")
+    alice_kp = derive_group_key_pair("alice-passphrase", "alice")
+    bob_kp   = derive_group_key_pair("bob-passphrase",   "bob")
+
+    # Admin includes themselves as a member so they can encrypt/decrypt too
+    keyring, gek = create_group_keyring(
+        admin_kp,
+        {
+            "admin": admin_kp.public_key,
+            "alice": alice_kp.public_key,
+            "bob":   bob_kp.public_key,
+        },
+    )
+
+    # Distribute `keyring` to all members (e.g. push to each member's private vault)
+    # Store `gek` in the admin's private vault — needed to add future members
+    print(f"single-collection keyring created, epoch: {keyring.current_epoch}")
+    return keyring, gek
+
+
+async def group_single_collection_push(
+    user_id: str,
+    passphrase: str,
+    keyring: GroupKeyring,
+    data: dict,
+) -> None:
+    my_kp = derive_group_key_pair(passphrase, user_id)
+    encryptor = create_group_encryptor(keyring, user_id, my_kp.private_key)
+
+    async def auth(*, method: str, path: str, body: str | None) -> dict[str, str]:
+        return {"Authorization": f"Bearer my-token-{user_id}"}
+
+    # One encrypted collection — encryptor replaces encryption_secret / encryption_salt
+    async with StarfishClient(BASE_URL, auth=auth) as client:
+        sync = SyncManager(
+            client,
+            pull_path="/pull/groups/g1/notes",
+            push_path="/push/groups/g1/notes",
+            encryptor=encryptor,
+        )
+        await sync.push(data)
+
+    print(f"[{user_id}] pushed encrypted data")
+
+
+async def group_single_collection_pull(
+    user_id: str,
+    passphrase: str,
+    keyring: GroupKeyring,
+) -> dict:
+    my_kp = derive_group_key_pair(passphrase, user_id)
+    encryptor = create_group_encryptor(keyring, user_id, my_kp.private_key)
+
+    async def auth(*, method: str, path: str, body: str | None) -> dict[str, str]:
+        return {"Authorization": f"Bearer my-token-{user_id}"}
+
+    async with StarfishClient(BASE_URL, auth=auth) as client:
+        sync = SyncManager(
+            client,
+            pull_path="/pull/groups/g1/notes",
+            push_path="/push/groups/g1/notes",
+            encryptor=encryptor,
+        )
+        result = await sync.pull()
+
+    print(f"[{user_id}] pulled and decrypted:", result.data)
+    return result.data
+
+
 if __name__ == "__main__":
     asyncio.run(sync_manager_example())
