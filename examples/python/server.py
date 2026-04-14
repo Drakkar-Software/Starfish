@@ -21,9 +21,23 @@ from starfish_server import (
     create_group_role_enricher,
     GroupRoleEnricherOptions,
 )
+from starfish_server.audit import CallbackAuditLogger, AuditEntry
+from starfish_server.lifecycle import GracefulShutdown, GracefulShutdownOptions
 from starfish_server.router import SyncRouterOptions, AuthResult, create_sync_router
 
 store = FilesystemObjectStore(FilesystemStorageOptions(base_dir="./data"))
+
+# For production: swap FilesystemObjectStore for S3ObjectStore
+# (requires: pip install starfish-server[s3])
+#
+# from starfish_server.storage.s3 import S3ObjectStore, S3StorageOptions
+# store = S3ObjectStore(S3StorageOptions(
+#     access_key_id=os.environ["S3_ACCESS_KEY_ID"],
+#     secret_access_key=os.environ["S3_SECRET_ACCESS_KEY"],
+#     endpoint=os.environ.get("S3_ENDPOINT", "https://s3.amazonaws.com"),
+#     bucket=os.environ["S3_BUCKET"],
+#     region=os.environ.get("S3_REGION", "us-east-1"),
+# ))
 
 
 def _make_tenant_namespace(tenant_id: str) -> NamespaceConfig:
@@ -165,6 +179,15 @@ async def role_enricher(auth: AuthResult, params: dict[str, str]) -> list[str]:
     return (await group_enricher(auth, params)) + (await whitelist_enricher(auth, params))
 
 
+async def _audit_record(entry: AuditEntry) -> None:
+    """Log only failed requests; swap for a DB write in production."""
+    if not entry.success:
+        print(
+            f"[AUDIT] {entry.action.upper()} {entry.collection} "
+            f"by {entry.identity or 'anonymous'} → {entry.status_code}"
+        )
+
+
 sync_router = create_sync_router(
     SyncRouterOptions(
         store=store,
@@ -172,15 +195,21 @@ sync_router = create_sync_router(
         role_resolver=role_resolver,
         encryption_secret=os.environ.get("ENCRYPTION_SECRET", "change-me"),
         role_enricher=role_enricher,
+        # Audit every pull and push — replace CallbackAuditLogger with a DB writer in prod
+        audit=CallbackAuditLogger(_audit_record),
     )
 )
+
+shutdown = GracefulShutdown()  # handles SIGTERM / SIGINT; add replica_manager= or queue= if needed
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Persist config to storage so it can be reloaded later
     await save_config(store, config)
+    shutdown.register()
     yield
+    await shutdown.shutdown()
 
 
 app = FastAPI(lifespan=lifespan)

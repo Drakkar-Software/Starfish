@@ -280,18 +280,20 @@ See [Conflict Resolution — Soft-delete-aware merge](07-conflict-resolution.md#
 
 ### Tombstone cleanup
 
-Tombstones grow the document over time. Periodically prune old ones:
+Tombstones grow the document over time. Periodically prune old ones using the built-in
+`pruneTombstones` utility:
 
 ```ts
-const TOMBSTONE_TTL_MS = 30 * 24 * 60 * 60 * 1000 // 30 days
+import { pruneTombstones } from "@drakkar.software/starfish-client"
 
-function pruneTombstones(items: SyncItem[]): SyncItem[] {
-  const cutoff = Date.now() - TOMBSTONE_TTL_MS
-  return items.filter((item) => !item._deletedAt || item._deletedAt > cutoff)
-}
+// Default: 30-day TTL, _deletedAt key
+const cleaned = pruneTombstones(items)
+
+// Custom TTL (ms) and a non-default deleted-at key
+const cleaned2 = pruneTombstones(items, 7 * 24 * 60 * 60 * 1000, "removedAt")
 ```
 
-Run this before `createSyncDocument()`. The TTL should be longer than the maximum time a device might be offline — otherwise a device that comes back after 30 days could resurrect pruned items.
+Run this before pushing to the server. The TTL should be longer than the maximum time a device might be offline — otherwise a device that comes back after the TTL window could resurrect pruned items.
 
 ## Local History
 

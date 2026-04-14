@@ -146,8 +146,48 @@ To share encrypted data between users, share the `(encryptionSecret, encryptionS
 
 Sharing methods:
 - **Passphrase**: share a human-readable passphrase from which both values are derived
-- **Deep link**: encode credentials in a URL (`app://join?token=base64(...)`)
+- **Deep link**: encode credentials in a URL — see [Invite links](#invite-links) below
 - **QR code**: encode the passphrase or credentials
+
+## Invite links
+
+`buildInviteUrl` and `parseInviteUrl` encode an arbitrary payload as a URL-safe base64 token appended to any base URL. Use this to share a generated passphrase (or any other onboarding data) as a tappable deep link or QR code.
+
+```ts
+import { generatePassphrase, deriveCredentials, buildInviteUrl, parseInviteUrl } from "@drakkar.software/starfish-client"
+
+// ── Sending device ─────────────────────────────────────────────────────────
+
+const passphrase = generatePassphrase()
+const creds = await deriveCredentials(passphrase)
+
+// Encode anything serialisable into a ?t=... token
+const inviteUrl = buildInviteUrl("myapp://join", {
+  p: passphrase,        // the passphrase itself — never log or store cleartext in prod
+  displayName: "Alice",
+})
+// → "myapp://join?t=eyJwIjoiYWJsZSBhY2lkIC4uLiIsImRpc3BsYXlOYW1lIjoiQWxpY2UifQ"
+
+// Works with HTTPS deep links too
+const webInvite = buildInviteUrl("https://myapp.example.com/join?ref=email", { p: passphrase })
+
+// ── Receiving device ───────────────────────────────────────────────────────
+
+// parseInviteUrl returns the decoded object, or null on any error
+const payload = parseInviteUrl(inviteUrl)
+
+if (payload) {
+  const joinCreds = await deriveCredentials(payload.p as string)
+  // joinCreds.userId / authToken / encryptionSecret are now identical to the sender's
+  console.log("joined as", joinCreds.userId)
+} else {
+  console.error("invalid or expired invite link")
+}
+```
+
+**Security notes:**
+- The token is base64url-encoded JSON — it is **not encrypted**. Do not embed secrets beyond the passphrase itself (which already grants full access).
+- Links are single-use by convention only — Starfish does not invalidate them server-side. For one-time links, rotate the passphrase after the recipient connects.
 
 ## Next Steps
 

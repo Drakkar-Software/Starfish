@@ -14,6 +14,8 @@ import type { Context } from "hono"
 import {
   createSyncRouter,
   createGroupRoleEnricher,
+  createCallbackAuditLogger,
+  createGracefulShutdown,
   saveConfig,
   type SyncConfig,
   type SyncRouterOptions,
@@ -171,6 +173,15 @@ const syncRouter = createSyncRouter({
     ...(await groupEnricher(auth, params)),
     ...(await whitelistEnricher(auth, params)),
   ],
+  // Audit every pull and push — swap for createCallbackAuditLogger to write to a DB
+  audit: createCallbackAuditLogger((entry) => {
+    if (!entry.success) {
+      console.warn(
+        `[AUDIT] ${entry.action.toUpperCase()} ${entry.collection} ` +
+        `by ${entry.identity ?? "anonymous"} → ${entry.statusCode}`,
+      )
+    }
+  }),
 })
 
 // Persist config to storage on startup
@@ -178,6 +189,10 @@ await saveConfig(store, config)
 
 const app = new Hono()
 app.route("/v1", syncRouter)
+
+// Graceful shutdown: closes resources on SIGTERM / SIGINT
+// Add replicaManager: or queue: here if your server uses them
+createGracefulShutdown()
 
 serve({ fetch: app.fetch, port: 3000 }, (info) => {
   console.log(`Starfish server listening on http://localhost:${info.port}`)
