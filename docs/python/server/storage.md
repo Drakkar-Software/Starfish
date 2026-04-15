@@ -164,10 +164,9 @@ Alternatively, use `CustomObjectStore` for a callback-based approach without sub
 from starfish_server.storage.memory import CustomObjectStore
 
 store = CustomObjectStore(
-    get=lambda key: my_backend.get(key),
-    put=lambda key, body: my_backend.set(key, body),
-    list=lambda prefix: my_backend.scan(prefix),
-    delete=lambda key: my_backend.delete(key),
-    delete_many=lambda keys: my_backend.delete_many(keys),
+    on_get=lambda key: my_backend.get(key),
+    on_put=lambda key, body, **kwargs: my_backend.set(key, body),
+    on_list=lambda prefix, start_after=None, limit=100: my_backend.scan(prefix),
+    on_delete=lambda key: my_backend.delete(key),
 )
 ```

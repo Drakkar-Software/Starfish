@@ -88,12 +88,12 @@ export function createMobileLifecycle(
   const appSub = deps.appState.addEventListener("change", (appState) => {
     if (appState === "background" && flushOnBackground) {
       if (store.getState().dirty) {
-        store.getState().flush().catch(() => {})
+        store.getState().flush().catch((err) => { console.error("[Starfish] background flush failed:", err) })
       }
     } else if (appState === "active" && pullOnForeground) {
       const { online, syncing } = store.getState()
       if (online && !syncing) {
-        store.getState().pull().catch(() => {})
+        store.getState().pull().catch((err) => { console.error("[Starfish] foreground pull failed:", err) })
       }
     }
     // "inactive" (iOS transition) and other states are intentionally ignored

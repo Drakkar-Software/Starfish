@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from dataclasses import dataclass, field
 
@@ -118,9 +119,11 @@ def create_entitlement_role_enricher(opts: EntitlementRoleEnricherOptions) -> Ro
                 feature_list = doc.get("data", {}).get(opts.field)
                 if isinstance(feature_list, list):
                     features = frozenset(s for s in feature_list if isinstance(s, str))
-            except (json.JSONDecodeError, AttributeError):
+            except (json.JSONDecodeError, AttributeError) as exc:
+                logging.getLogger(__name__).error(
+                    "entitlement-enricher: corrupt entitlement document at %r: %s", key, exc
+                )
                 # Corrupt document — treat as no entitlements
-                pass
 
         if opts.cache_ttl_ms > 0:
             cache[identity] = _CacheEntry(

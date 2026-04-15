@@ -25,7 +25,7 @@ export function startPolling(
 ): () => void {
   const timer = setInterval(() => {
     const { online, syncing } = getState()
-    if (online && !syncing) pullFn().catch(() => {})
+    if (online && !syncing) pullFn().catch((err) => { console.error("[Starfish] poll failed:", err) })
   }, intervalMs)
 
   return () => clearInterval(timer)
@@ -72,7 +72,7 @@ export function startAdaptivePolling(
   const timer = setInterval(() => {
     if (paused) return
     const { online, syncing } = getState()
-    if (online && !syncing) pullFn().catch(() => {})
+    if (online && !syncing) pullFn().catch((err) => { console.error("[Starfish] adaptive poll failed:", err) })
   }, intervalMs)
 
   return {

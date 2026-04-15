@@ -10,6 +10,30 @@ from starfish_server.router.route_builder import create_sync_router, SyncRouterO
 from tests.helpers import MemoryObjectStore
 
 
+def _make_app_with_enricher(
+    config: SyncConfig,
+    identity: str = "user-1",
+    roles: list[str] | None = None,
+    role_enricher=None,
+) -> tuple[FastAPI, MemoryObjectStore]:
+    store = MemoryObjectStore()
+
+    async def role_resolver(request: Request) -> AuthResult:
+        return AuthResult(identity=identity, roles=roles or [])
+
+    router = create_sync_router(
+        SyncRouterOptions(
+            store=store,
+            config=config,
+            role_resolver=role_resolver,
+            role_enricher=role_enricher,
+        ),
+    )
+    app = FastAPI()
+    app.include_router(router)
+    return app, store
+
+
 def _make_app(
     config: SyncConfig,
     identity: str = "user-1",
@@ -269,3 +293,78 @@ async def test_field_permissions_write_allowed_for_privileged_user():
             json={"data": {"adminFlag": True, "theme": "dark"}, "baseHash": None},
         )
     assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# "public" role in field-level read permissions
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_field_permissions_public_read_role_visible_to_authenticated_user():
+    """A field with readRoles=["public"] must be visible to authenticated users.
+
+    Previously, Python never added ROLE_PUBLIC to effective_roles for
+    authenticated requests, so "public" fields were stripped for authenticated
+    users — they saw less than anonymous callers.
+    """
+    config = SyncConfig(
+        version=1,
+        collections=[
+            CollectionConfig(
+                name="profile",
+                storagePath="users/{identity}/profile",
+                readRoles=["self"],
+                writeRoles=["self"],
+                encryption="none",
+                maxBodyBytes=65536,
+                fieldPermissions={"bio": FieldPermission(readRoles=["public"])},
+            ),
+        ],
+    )
+    app, _ = _make_app(config, identity="user-1", roles=[])
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        await client.post(
+            "/push/users/user-1/profile",
+            json={"data": {"name": "Alice", "bio": "Hello!"}, "baseHash": None},
+        )
+        pull_resp = await client.get("/pull/users/user-1/profile")
+
+    assert pull_resp.status_code == 200
+    data = pull_resp.json()["data"]
+    assert data["name"] == "Alice"
+    assert "bio" in data, "field with readRoles=['public'] must be visible to authenticated users"
+    assert data["bio"] == "Hello!"
+
+
+# ---------------------------------------------------------------------------
+# roleEnricher exception handling
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_role_enricher_exception_returns_500_not_crash():
+    """A crashing roleEnricher must return a structured 500, not an unhandled exception."""
+    config = SyncConfig(
+        version=1,
+        collections=[
+            CollectionConfig(
+                name="settings",
+                storagePath="users/{identity}/settings",
+                readRoles=["self"],
+                writeRoles=["self"],
+                encryption="none",
+                maxBodyBytes=65536,
+            ),
+        ],
+    )
+
+    async def crashing_enricher(auth: AuthResult, params: dict) -> list[str]:
+        raise RuntimeError("Enricher exploded")
+
+    app, _ = _make_app_with_enricher(config, identity="user-1", roles=[], role_enricher=crashing_enricher)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/pull/users/user-1/settings")
+
+    # Must return a structured error response, not an unhandled 500 with traceback
+    assert resp.status_code == 500
+    body = resp.json()
+    assert "error" in body

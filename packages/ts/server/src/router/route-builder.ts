@@ -53,6 +53,7 @@ import type { QueueMessage } from "../queue/message.js"
 import type { ServerLogger } from "../logger.js"
 import type { AuditLogger, AuditEntry } from "../audit.js"
 import { isExpired } from "../ttl.js"
+import { maxLeafTimestamp } from "../protocol/timestamps.js"
 
 export interface AuthResult {
   identity: string
@@ -376,7 +377,8 @@ async function proxyPushToPrimary(
 
     return c.json(body, resp.status as any)
   } catch (e) {
-    return c.json({ error: `Failed to reach primary: ${e}` }, 502)
+    console.error(`[Starfish] Failed to reach primary for "${col.name}":`, e)
+    return c.json({ error: "Failed to reach primary" }, 502)
   }
 }
 
@@ -638,11 +640,22 @@ function addCollectionRoutes(
         col.readRoles.includes(ROLE_PUBLIC),
       )
 
-      // TTL check: return empty data for expired documents
+      // TTL check: compare the *stored* document timestamp against now.
+      // pullResult.body["timestamp"] is Date.now() at pull time (not the stored write time),
+      // so we must read the stored timestamps tree directly from the store.
       if (col.ttlMs != null && pullResult.status === 200) {
-        const ts = pullResult.body["timestamp"] as number | undefined
-        if (ts && isExpired(ts, col.ttlMs)) {
-          pullResult.body = { data: {}, hash: "", timestamp: ts }
+        try {
+          const rawDoc = await store.getString(documentKey)
+          if (rawDoc) {
+            const stored = JSON.parse(rawDoc) as { timestamps?: unknown }
+            const storedTs = maxLeafTimestamp(stored.timestamps ?? {})
+            if (isExpired(storedTs, col.ttlMs)) {
+              const currentTs = pullResult.body["timestamp"] as number
+              pullResult.body = { data: {}, hash: "", timestamp: currentTs }
+            }
+          }
+        } catch {
+          // Corrupt document — already handled by pull(); skip TTL check
         }
       }
 
@@ -1055,8 +1068,9 @@ export function createSyncRouter(opts: SyncRouterOptions): Hono {
       try {
         const result = await opts.roleResolver(c)
         callerRoles = result.roles
-      } catch {
-        // roleResolver failed — return empty collections rather than 5xx
+      } catch (e) {
+        console.error("[Starfish] /config: roleResolver failed:", e)
+        // return empty collections rather than 5xx
       }
     }
 

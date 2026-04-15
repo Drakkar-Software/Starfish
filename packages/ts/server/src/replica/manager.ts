@@ -120,9 +120,14 @@ export class ReplicaManager {
     let currentLocalHash = ""
     let currentLocalData: Record<string, unknown> = {}
     if (rawLocal) {
-      const localDoc = JSON.parse(rawLocal) as Record<string, unknown>
-      currentLocalHash = (localDoc["hash"] as string) ?? ""
-      currentLocalData = (localDoc["data"] as Record<string, unknown>) ?? {}
+      try {
+        const localDoc = JSON.parse(rawLocal) as Record<string, unknown>
+        currentLocalHash = (localDoc["hash"] as string) ?? ""
+        currentLocalData = (localDoc["data"] as Record<string, unknown>) ?? {}
+      } catch (e) {
+        console.error(`[ReplicaManager] Corrupt local document at "${documentKey}" — treating as empty:`, e)
+        // currentLocalHash stays "" — push with baseHash="" matches the "" stored by push.ts on corrupt read
+      }
     }
 
     if (currentLocalHash === primaryHash) {
@@ -140,6 +145,8 @@ export class ReplicaManager {
       dataToWrite = primaryData
     }
 
+    // Use currentLocalHash directly ("" works for both "no document" and "corrupt document"):
+    // push() treats baseHash="" the same as no hash when stored currentHash is also ""
     const baseHash = currentLocalHash || null
     const result = await push(this._store, documentKey, dataToWrite, baseHash)
 

@@ -243,7 +243,10 @@ async def _check_auth(
         )
     except asyncio.TimeoutError:
         return None, frozenset(), JSONResponse({"error": "Unauthorized"}, status_code=503)
-    except Exception:
+    except Exception as exc:
+        logging.getLogger(__name__).error(
+            "_check_auth: role_resolver raised: %s", exc, exc_info=True
+        )
         return None, frozenset(), JSONResponse({"error": "Unauthorized"}, status_code=401)
 
     effective_roles: set[str] = set(auth.roles)
@@ -253,8 +256,14 @@ async def _check_auth(
             effective_roles.add(ROLE_SELF)
 
     if opts.role_enricher:
-        extra = await opts.role_enricher(auth, params)
-        effective_roles.update(extra)
+        try:
+            extra = await opts.role_enricher(auth, params)
+            effective_roles.update(extra)
+        except Exception as exc:
+            logging.getLogger(__name__).error(
+                "_check_auth: role_enricher raised: %s", exc, exc_info=True
+            )
+            return auth.identity, frozenset(effective_roles), JSONResponse({"error": "Authorization error"}, status_code=500)
 
     has_access = any(r in effective_roles for r in required_roles)
     if not has_access:
@@ -313,10 +322,10 @@ async def _proxy_push_to_primary(
         try:
             resp = await client.post(primary_url, content=raw_body, headers=headers)
         except httpx.HTTPError as exc:
-            return JSONResponse(
-                {"error": f"Failed to reach primary: {exc}"},
-                status_code=502,
+            logging.getLogger(__name__).error(
+                "Failed to reach primary for %r: %s", col.name, exc
             )
+            return JSONResponse({"error": "Failed to reach primary"}, status_code=502)
 
     if resp.status_code == 409:
         return JSONResponse({"error": "hash_mismatch"}, status_code=409)
@@ -326,7 +335,13 @@ async def _proxy_push_to_primary(
             status_code=resp.status_code,
         )
 
-    asyncio.create_task(replica_manager.sync_now(col.name))
+    _task = asyncio.create_task(replica_manager.sync_now(col.name))
+    _logger = logging.getLogger(__name__)
+    _task.add_done_callback(
+        lambda t: _logger.error("replica sync_now failed for %r: %s", col.name, t.exception())
+        if not t.cancelled() and t.exception() is not None
+        else None
+    )
 
     return JSONResponse(resp.json(), status_code=resp.status_code)
 
@@ -584,43 +599,42 @@ def _add_collection_routes(
             # TTL: if the document has expired, return empty data.
             # Python pull() returns the current time, not the stored timestamp,
             # so read the stored timestamps directly to check expiry.
+            # Use the resolved encrypted `store` (not opts.store) so encrypted
+            # collections are decrypted before timestamp extraction.
             if col.ttl_ms is not None and response.status_code == 200:
-                try:
-                    raw_doc = await opts.store.get_string(document_key)
-                    if raw_doc:
-                        stored = json.loads(raw_doc)
-                        doc_timestamp = _max_stored_timestamp(stored.get("timestamps", {}))
-                        if _is_expired(doc_timestamp, col.ttl_ms):
-                            resp_body = json.loads(response.body)
-                            resp_body["data"] = {}
-                            response = JSONResponse(resp_body, status_code=200)
-                            if col.cache_duration_ms is not None:
-                                max_age = col.cache_duration_ms // 1000
-                                directive = (
-                                    f"max-age={max_age}"
-                                    if ROLE_PUBLIC in col.read_roles
-                                    else f"private, max-age={max_age}"
-                                )
-                                response.headers["Cache-Control"] = directive
-                except Exception:
-                    pass
+                raw_doc = await store.get_string(document_key)
+                if raw_doc:
+                    stored = json.loads(raw_doc)
+                    doc_timestamp = _max_stored_timestamp(stored.get("timestamps", {}))
+                    if _is_expired(doc_timestamp, col.ttl_ms):
+                        resp_body = json.loads(response.body)
+                        resp_body["data"] = {}
+                        response = JSONResponse(resp_body, status_code=200)
+                        if col.cache_duration_ms is not None:
+                            max_age = col.cache_duration_ms // 1000
+                            directive = (
+                                f"max-age={max_age}"
+                                if ROLE_PUBLIC in col.read_roles
+                                else f"private, max-age={max_age}"
+                            )
+                            response.headers["Cache-Control"] = directive
 
             # Field-level read permission filtering
             if col.field_permissions and response.status_code == 200:
-                try:
-                    resp_body = json.loads(response.body)
-                    if isinstance(resp_body.get("data"), dict):
-                        data = dict(resp_body["data"])
-                        for field_name, fp in col.field_permissions.items():
-                            if fp.read_roles and field_name in data:
-                                if not any(r in effective_roles for r in fp.read_roles):
-                                    del data[field_name]
-                        resp_body["data"] = data
-                        response = JSONResponse(resp_body, status_code=200)
-                        if "Cache-Control" in response.headers:
-                            pass  # already set above; re-apply if needed
-                except Exception:
-                    pass
+                resp_body = json.loads(response.body)
+                if isinstance(resp_body.get("data"), dict):
+                    data = dict(resp_body["data"])
+                    for field_name, fp in col.field_permissions.items():
+                        if fp.read_roles and field_name in data:
+                            # ROLE_PUBLIC fields are visible to everyone, including
+                            # authenticated users (matches TypeScript behaviour)
+                            if not any(
+                                r in effective_roles or r == ROLE_PUBLIC
+                                for r in fp.read_roles
+                            ):
+                                del data[field_name]
+                    resp_body["data"] = data
+                    response = JSONResponse(resp_body, status_code=200)
 
             # ETag conditional request support
             etag = response.headers.get("ETag")
@@ -925,8 +939,11 @@ def create_sync_router(opts: SyncRouterOptions) -> APIRouter:
                 try:
                     auth_result = await opts.role_resolver(request)
                     caller_roles = auth_result.roles
-                except Exception:
-                    pass  # return empty collections rather than 5xx
+                except Exception as exc:
+                    logging.getLogger(__name__).error(
+                        "/config: role_resolver raised: %s", exc, exc_info=True
+                    )
+                    # return empty collections rather than 5xx
 
             def is_visible(col: CollectionConfig) -> bool:
                 if cfg_opts.auth == "public":

@@ -71,3 +71,15 @@ async def test_returns_full_data_when_checkpoint_is_zero():
 
     result = await pull(store, "col/doc1", 0)
     assert result.data == data
+
+
+@pytest.mark.asyncio
+async def test_corrupt_stored_document_does_not_crash_pull():
+    """A corrupt stored document must return empty data, not raise an unhandled exception."""
+    store = MemoryObjectStore()
+    # Inject a corrupt (non-JSON) value directly into the store
+    await store.put("col/corrupt", "NOT_VALID_JSON", content_type="application/json")
+
+    result = await pull(store, "col/corrupt")
+    assert result.data == {}
+    assert result.hash == ""

@@ -1,5 +1,41 @@
 # Changelog
 
+## 1.17.1
+
+### Fixed
+
+#### Server (TypeScript)
+
+- **TTL expiry was completely non-functional**: the pull route compared `Date.now()` against itself (always ~0 ms), so documents never expired. Fixed to read the stored timestamp tree via `maxLeafTimestamp` — a new exported helper in `timestamps.ts` — and compare the actual write time against the current time.
+- **Replica manager corrupt document recovery**: `JSON.parse` on a corrupt local document in `_doSync` now logs the error and treats the document as empty instead of throwing into the `_syncSafe` catch loop, allowing primary data to overwrite the corrupt record on the next sync.
+- **Proxy push error leaks internal host/port details**: `Failed to reach primary: ${e}` replaced with a generic `"Failed to reach primary"` message; full error is now logged server-side only.
+- **Config endpoint role-resolver exception now logged** before silently returning empty collections.
+- **Polling errors no longer silently discarded**: `.catch(() => {})` replaced with `.catch((err) => console.error(...))` in both `startPolling` and `startAdaptivePolling`.
+- **Mobile lifecycle flush/pull errors no longer silently discarded**: same fix in `createMobileLifecycle` background flush and foreground pull paths.
+
+#### Server (Python)
+
+- **Field-level read permission stripping was wrapped in `except Exception: pass`**, silently leaking privileged fields on any error. Removed the try/except — field stripping is pure dict manipulation and must not fail silently.
+- **`"public"` role not honored in Python field-level read permissions**: authenticated users had public fields stripped (they saw less than anonymous callers). Fixed to check `r == ROLE_PUBLIC` alongside `r in effective_roles`, matching TypeScript behaviour.
+- **TTL check read from base store instead of encrypted store**: for identity/server-encrypted collections the TTL timestamp extraction always failed silently. Fixed to use the resolved (decrypted) `store` variable.
+- **Bare `except: pass` on TTL check**: any storage/parse error silently skipped the expiry check, serving expired documents. Removed the try/except.
+- **Push crashes on corrupt stored document**: `json.loads(raw)` raised an unhandled exception that made the push endpoint permanently return 500 for that key. Wrapped in try/except with logging; corrupt records are treated as empty (recoverable via `baseHash=""`).
+- **Pull crashes on corrupt stored document**: same fix — returns `{data: {}, hash: ""}` with an error log instead of raising.
+- **`role_enricher` call not wrapped in try/except**: an exception from a user-supplied enricher propagated as an unhandled 500 with a raw traceback. Now caught, logged, and returned as a structured `{"error": "Authorization error"}` 500.
+- **`_check_auth` swallowed role-resolver exceptions with no logging**: operators could not distinguish misconfiguration from legitimate auth failures. Exception is now logged at error level before returning 401.
+- **Proxy push leaks internal host/port**: same fix as TypeScript.
+- **Config endpoint role-resolver exception now logged** at error level before returning empty collections.
+- **Fire-and-forget replica sync task lost exceptions**: `asyncio.create_task(replica_manager.sync_now(...))` had no done callback. Added one that logs any exception at error level.
+- **Replica manager corrupt document recovery**: `json.loads` on a corrupt local document in `_do_sync` now logs and treats the document as empty, matching TypeScript behaviour.
+- **Enricher `except` blocks silenced errors**: `group_role_enricher` and `entitlement_role_enricher` caught `JSONDecodeError`/`AttributeError` with no logging. Now logs at error level with the storage key and error message.
+
+#### Documentation
+
+- **`audit.md`**: fixed `audit:` → `auditLogger:` option name in all TypeScript examples (the old name was silently ignored at runtime). Added note that Python audit logging is not yet implemented.
+- **`config-endpoint.md`**: added missing `"group"` encryption mode to the `EncryptionMode` value list.
+- **`03-sync-manager.md`**: documented four previously undocumented `SyncManagerOptions` fields: `encryptor`, `logger`, `loggerName`, `validate`.
+- **`docs/python/server/storage.md`**: fixed `CustomObjectStore` constructor argument names (`get` → `on_get`, `put` → `on_put`, `list` → `on_list`, `delete` → `on_delete`; removed non-existent `delete_many`). The old names raised `TypeError` at construction time.
+
 ## 1.17.0
 
 ### Added

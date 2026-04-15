@@ -142,9 +142,16 @@ class ReplicaManager:
         current_local_hash: str = ""
         current_local_data: dict[str, Any] = {}
         if raw_local:
-            local_doc = json.loads(raw_local)
-            current_local_hash = local_doc.get("hash", "")
-            current_local_data = local_doc.get("data", {})
+            try:
+                local_doc = json.loads(raw_local)
+                current_local_hash = local_doc.get("hash", "")
+                current_local_data = local_doc.get("data", {})
+            except json.JSONDecodeError as exc:
+                logger.error(
+                    "[ReplicaManager] Corrupt local document at %r — treating as empty: %s",
+                    document_key, exc,
+                )
+                # current_local_hash stays "" — push with baseHash="" will overwrite
 
         if current_local_hash == primary_hash:
             self._last_hash[col.name] = primary_hash

@@ -32,7 +32,7 @@ const syncRouter = createSyncRouter({
   store,
   config,
   roleResolver,
-  audit: createConsoleAuditLogger(),
+  auditLogger: createConsoleAuditLogger(),
 })
 ```
 
@@ -55,7 +55,7 @@ const syncRouter = createSyncRouter({
   store,
   config,
   roleResolver,
-  audit: createCallbackAuditLogger(async (entry) => {
+  auditLogger: createCallbackAuditLogger(async (entry) => {
     await db.insert("audit_log", {
       ts:         entry.timestamp,
       action:     entry.action,
@@ -71,7 +71,7 @@ const syncRouter = createSyncRouter({
 
 ### No-op logger
 
-Discards all entries. This is the default when `audit` is not set in `createSyncRouter`.
+Discards all entries. This is the default when `auditLogger` is not set in `createSyncRouter`.
 
 ```ts
 import { createNoopAuditLogger } from "@drakkar.software/starfish-server"
@@ -82,31 +82,7 @@ import { createNoopAuditLogger } from "@drakkar.software/starfish-server"
 
 ## Python
 
-```python
-from starfish_server.audit import ConsoleAuditLogger, CallbackAuditLogger, NoopAuditLogger
-from starfish_server.router import SyncRouterOptions, create_sync_router
-
-# Console logger
-router = create_sync_router(SyncRouterOptions(
-    store=store,
-    config=config,
-    role_resolver=role_resolver,
-    audit=ConsoleAuditLogger(),
-))
-
-# Callback logger
-async def record_to_db(entry):
-    await db.execute(
-        "INSERT INTO audit_log VALUES ($1,$2,$3,$4,$5,$6,$7)",
-        entry.timestamp, entry.action, entry.collection,
-        entry.identity, entry.document_key, entry.success, entry.status_code,
-    )
-
-router = create_sync_router(SyncRouterOptions(
-    ...
-    audit=CallbackAuditLogger(record_to_db),
-))
-```
+> **Note:** Audit logging is not yet implemented in the Python server. The `SyncRouterOptions` dataclass does not have an `audit_logger` field. Use application-level middleware or a logging framework to capture request events in Python deployments.
 
 ---
 

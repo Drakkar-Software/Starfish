@@ -56,6 +56,23 @@ export function computeTimestamps(
   return result
 }
 
+/**
+ * Recursively find the maximum leaf timestamp in a timestamps tree.
+ * Returns 0 if the tree is empty or contains no numeric leaves.
+ */
+export function maxLeafTimestamp(timestamps: Timestamps | unknown): number {
+  if (typeof timestamps === "number") return timestamps
+  if (timestamps != null && typeof timestamps === "object" && !Array.isArray(timestamps)) {
+    let max = 0
+    for (const v of Object.values(timestamps as Record<string, unknown>)) {
+      const t = maxLeafTimestamp(v)
+      if (t > max) max = t
+    }
+    return max
+  }
+  return 0
+}
+
 export function filterByCheckpoint(
   data: Record<string, unknown>,
   timestamps: Timestamps,

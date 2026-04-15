@@ -2,6 +2,7 @@
 
 
 import json
+import logging
 import time
 
 from starfish_server.storage.base import AbstractObjectStore
@@ -26,7 +27,13 @@ async def pull(
     if not raw:
         return PullResult(data={}, hash="", timestamp=timestamp)
 
-    parsed = json.loads(raw)
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        logging.getLogger(__name__).error(
+            "Corrupt stored document at key %r: %s", document_key, exc
+        )
+        return PullResult(data={}, hash="", timestamp=timestamp)
     doc = StoredDocument(
         v=parsed["v"],
         data=parsed["data"],

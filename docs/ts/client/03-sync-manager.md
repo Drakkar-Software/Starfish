@@ -46,6 +46,19 @@ interface SyncManagerOptions {
 
   /** Callback to sign payloads for data provenance */
   signData?: (data: string) => Promise<string>
+
+  /** Pre-built encryptor object (alternative to encryptionSecret/Salt/Info).
+   * Required when integrating group encryption — pass the result of createGroupEncryptor(). */
+  encryptor?: Encryptor
+
+  /** Structured sync event logger */
+  logger?: SyncLogger
+
+  /** Label attached to log entries when using a shared logger instance */
+  loggerName?: string
+
+  /** Schema validator applied to pulled data before storing locally */
+  validate?: Validator
 }
 ```
 
@@ -60,6 +73,10 @@ interface SyncManagerOptions {
 | `encryptionSalt` | No | — | Salt for key derivation |
 | `encryptionInfo` | No | `"starfish-e2e"` | HKDF info parameter |
 | `signData` | No | — | Signs the serialized payload |
+| `encryptor` | No | — | Pre-built encryptor (alternative to `encryptionSecret`; required for group encryption) |
+| `logger` | No | — | Structured sync event logger |
+| `loggerName` | No | — | Label for log entries when sharing a logger |
+| `validate` | No | — | Schema validator applied to pulled data |
 
 ## Methods
 

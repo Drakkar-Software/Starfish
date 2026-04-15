@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from dataclasses import dataclass, field
 
@@ -96,9 +97,11 @@ def create_group_role_enricher(opts: GroupRoleEnricherOptions) -> RoleEnricher:
                 member_list = doc.get("data", {}).get(opts.members_field)
                 if isinstance(member_list, list):
                     members = frozenset(m for m in member_list if isinstance(m, str))
-            except (json.JSONDecodeError, AttributeError):
+            except (json.JSONDecodeError, AttributeError) as exc:
+                logging.getLogger(__name__).error(
+                    "group-enricher: corrupt membership document at %r: %s", key, exc
+                )
                 # Corrupt document — treat as empty membership
-                pass
 
         if opts.cache_ttl_ms > 0:
             cache[group_id] = _CacheEntry(

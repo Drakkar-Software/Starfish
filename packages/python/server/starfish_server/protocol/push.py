@@ -2,6 +2,7 @@
 
 
 import json
+import logging
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -56,10 +57,16 @@ async def push(
     current_hash = ""
 
     if raw:
-        existing = json.loads(raw)
-        old_data = existing["data"]
-        old_timestamps = existing["timestamps"]
-        current_hash = existing["hash"]
+        try:
+            existing = json.loads(raw)
+            old_data = existing["data"]
+            old_timestamps = existing["timestamps"]
+            current_hash = existing["hash"]
+        except (json.JSONDecodeError, KeyError) as exc:
+            logging.getLogger(__name__).error(
+                "Corrupt stored document at key %r: %s", document_key, exc
+            )
+            # Treat as empty — current_hash stays "" which allows recovery via baseHash=""
 
     # Hash check
     if base_hash is None:

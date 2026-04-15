@@ -114,3 +114,27 @@ async def test_preserves_timestamps_for_unchanged_values():
     doc2 = json.loads(raw2)
     assert doc2["timestamps"]["a"] == ts_a
     assert doc2["timestamps"]["b"] != ts_a
+
+
+@pytest.mark.asyncio
+async def test_corrupt_stored_document_does_not_crash_push():
+    """A corrupt stored document must be handled gracefully, not raise a 500."""
+    store = MemoryObjectStore()
+    # Inject a corrupt (non-JSON) value directly into the store
+    await store.put("col/corrupt", "NOT_VALID_JSON", content_type="application/json")
+
+    # Should not raise; must return a PushConflict or PushSuccess, not an exception
+    result = await push(store, "col/corrupt", {"a": 1}, None)
+    # Corrupt document → current_hash = "" → baseHash=None with raw truthy → conflict
+    assert isinstance(result, PushConflict), f"Expected PushConflict, got {result!r}"
+
+
+@pytest.mark.asyncio
+async def test_corrupt_stored_document_overwritable_with_empty_base_hash():
+    """A corrupt document can be overwritten when the client passes baseHash=''."""
+    store = MemoryObjectStore()
+    await store.put("col/corrupt", "NOT_VALID_JSON", content_type="application/json")
+
+    # Pass baseHash="" to match the "" current_hash that results from parse failure
+    result = await push(store, "col/corrupt", {"recovered": True}, "")
+    assert isinstance(result, PushSuccess), f"Expected PushSuccess, got {result!r}"

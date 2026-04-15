@@ -70,7 +70,7 @@ import type { ConfigResponse, CollectionClientInfo } from "@drakkar.software/sta
 |---|---|---|
 | `name` | `string` | Collection name |
 | `maxBodyBytes` | `number` | Maximum push body size in bytes |
-| `encryption` | `EncryptionMode` | Encryption mode: `"none"`, `"identity"`, `"server"`, or `"delegated"` |
+| `encryption` | `EncryptionMode` | Encryption mode: `"none"`, `"identity"`, `"server"`, `"delegated"`, or `"group"` |
 | `allowedMimeTypes` | `string[]` | MIME types accepted on push |
 | `pullOnly` | `boolean?` | Push routes are disabled |
 | `pushOnly` | `boolean?` | Pull routes are disabled |
