@@ -117,8 +117,11 @@ export function createEntitlementRoleEnricher(opts: EntitlementRoleEnricherOptio
         if (Array.isArray(list)) {
           features = new Set(list.filter((s): s is string => typeof s === "string"))
         }
-      } catch {
-        // Corrupt document — treat as no entitlements
+      } catch (err) {
+        if (!(err instanceof SyntaxError)) throw err
+        console.error("entitlement-enricher: corrupt entitlement document at %s:", key, err)
+        // Do not cache corrupt result — return early without writing to cache
+        return features
       }
     }
 

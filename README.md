@@ -1387,6 +1387,18 @@ Members document (standard Starfish push):
 { "members": ["alice", "bob", "charlie"] }
 ```
 
+**Group candidacy** — users can apply to join a group. Set `candidacyPath` on the enricher and add `candidacyEnabled: true` to the members document. Applicants push `{ status: "pending", message: "..." }` to a candidacy collection (gated by `"self"` role). Pending applicants receive `"group-candidate"` (configurable); admins accept or deny by pushing `{ status: "accepted" }` / `{ status: "denied" }` and manually adding accepted users to the members document.
+
+```ts
+createGroupRoleEnricher({
+  store,
+  membersPath: "groups/{groupId}/members",
+  groupParam: "groupId",
+  candidacyPath: "groups/{groupId}/candidacies/{identity}",
+  // candidacyRole: "group-candidate" (default)
+})
+```
+
 > Full reference: [`docs/ts/server/group-access.md`](docs/ts/server/group-access.md)
 
 ---

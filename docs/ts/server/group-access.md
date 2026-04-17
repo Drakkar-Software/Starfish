@@ -135,6 +135,11 @@ router = create_sync_router(SyncRouterOptions(
 | `membersField` | `members_field` | `"members"` | Field name inside `data` holding the member list |
 | `role` | `role` | `"group-member"` | Role granted to members |
 | `cacheTtlMs` | `cache_ttl_ms` | `60000` | Membership cache TTL (ms). Set to `0` to disable |
+| `candidacyPath` | `candidacy_path` | `undefined` / `None` | `storagePath` template for candidacy docs. When absent, candidacy is disabled globally. Example: `"groups/{groupId}/candidacies/{identity}"` |
+| `candidacyRole` | `candidacy_role` | `"group-candidate"` | Role granted to pending candidates |
+| `candidacyStatusField` | `candidacy_status_field` | `"status"` | Field in the candidacy doc holding the status (`"pending"` / `"accepted"` / `"denied"`) |
+| `candidacyEnabledField` | `candidacy_enabled_field` | `"candidacyEnabled"` | Field in the members doc that enables candidacy for that group |
+| `candidacyCacheTtlMs` | `candidacy_cache_ttl_ms` | same as `cacheTtlMs` | Candidacy doc cache TTL (ms). Set to `0` to disable |
 
 ## Caching
 
@@ -261,6 +266,144 @@ Client flow:
 4. **Stay updated** — poll via `startAdaptivePolling`, or bridge queue events to WebSocket
 
 See [List Endpoint](list-endpoint.md) for details on discovery and pagination.
+
+## Group candidacy
+
+When `candidacyPath` is set, users can _apply_ to join a group. An admin then accepts or denies the application. Accepted candidates must still be added to the members document manually — there is no automatic promotion.
+
+### How it works
+
+```
+User pushes { status: "pending", message: "..." } to candidacy collection
+  → enricher checks members doc: user not a member
+  → enricher checks candidacyEnabled in members doc: true
+  → enricher reads candidacy doc: status == "pending"
+  → grants "group-candidate" role
+Admin reviews candidacy list, accepts user:
+  → admin pushes { status: "accepted" } to candidacy doc
+  → admin adds user identity to members doc
+  → on next request, user is in members → granted "group-member"
+```
+
+### Setup
+
+Add a candidacy collection and enable `candidacyPath` on the enricher:
+
+```ts
+// TypeScript
+const config: SyncConfig = {
+  version: 1,
+  collections: [
+    // existing chat and members collections...
+    {
+      name: "candidacy",
+      storagePath: "groups/{groupId}/candidacies/{identity}",
+      readRoles: ["group-admin", "self"],   // admin sees all; applicant sees own
+      writeRoles: ["group-admin", "self"],  // admin updates status; user submits application
+      encryption: "none",
+      maxBodyBytes: 4_096,
+      allowedMimeTypes: ["application/json"],
+      listable: true,                       // admin can list all applications
+    },
+  ],
+}
+
+const enricher = createGroupRoleEnricher({
+  store,
+  membersPath: "groups/{groupId}/members",
+  groupParam: "groupId",
+  candidacyPath: "groups/{groupId}/candidacies/{identity}",
+})
+```
+
+```python
+# Python
+config = SyncConfig(version=1, collections=[
+    # existing chat and members collections...
+    CollectionConfig(
+        name="candidacy",
+        storagePath="groups/{groupId}/candidacies/{identity}",
+        readRoles=["group-admin", "self"],
+        writeRoles=["group-admin", "self"],
+        encryption="none",
+        maxBodyBytes=4_096,
+        listable=True,
+    ),
+])
+
+enricher = create_group_role_enricher(GroupRoleEnricherOptions(
+    store=store,
+    members_path="groups/{groupId}/members",
+    group_param="groupId",
+    candidacy_path="groups/{groupId}/candidacies/{identity}",
+))
+```
+
+### Members document with candidacy toggle
+
+Enable candidacy for a specific group by adding `candidacyEnabled: true` to the members document. Without this field (or when it is `false`), the enricher skips candidacy lookups entirely — even if `candidacyPath` is set globally.
+
+```json
+{
+  "members": ["alice", "bob"],
+  "candidacyEnabled": true
+}
+```
+
+The group admin controls this field by pushing an updated members document.
+
+### Applying to join a group
+
+A user submits an application by pushing to their own candidacy document. The `{identity}` placeholder in the `storagePath` matches the authenticated user's identity, which triggers the built-in `"self"` role:
+
+```ts
+// User "charlie" applies to group-1
+await candidacySync.update(() => ({
+  status: "pending",
+  message: "I'd like to join the team!",
+}))
+// Pushes to: groups/group-1/candidacies/charlie
+```
+
+While the application is `"pending"`, the enricher grants `"group-candidate"` to that user. This role can be used to allow candidates to read a welcome or instructions document, but they cannot access member-only collections.
+
+### Accepting and denying applications
+
+Admins push an updated status to the candidacy document:
+
+```ts
+// Admin accepts charlie
+await candidacySync.update((current) => ({ ...current, status: "accepted" }))
+
+// Admin must also add charlie to the members document for member access to take effect
+await membersSync.update((current) => ({
+  ...current,
+  members: [...(current.members ?? []), "charlie"],
+}))
+
+// Admin denies dave
+await candidacySync.update((current) => ({ ...current, status: "denied" }))
+```
+
+Only `"pending"` status grants the `"group-candidate"` role. `"accepted"` and `"denied"` grant nothing — the user stays without roles until actually added to the members list.
+
+### Listing pending applications (admin)
+
+Because the candidacy collection is `listable: true` and the admin has `"group-admin"` in their roles, they can list all candidacy documents for a group:
+
+```ts
+// GET /list/groups/group-1/candidacies
+// Returns all applicant identities as items
+```
+
+### Re-applying after denial
+
+A denied user can re-push `{ status: "pending" }` since `"self"` role grants write access to their own candidacy document. This re-grants `"group-candidate"` but does not grant `"group-member"`. If you want to prevent re-application after denial, add a `fieldPermissions` rule on the `status` field restricting writes to `"group-admin"` only. Note that `fieldPermissions` is static configuration — it applies from the very first push, which means the applicant cannot set their own initial `status`. You would need to handle the initial status server-side (e.g. via an admin action) or by treating an absent `status` field as pending in your application logic.
+
+### Disabling candidacy
+
+- **Globally**: remove `candidacyPath` from the enricher options. No candidacy lookups run.
+- **Per group**: set `candidacyEnabled: false` (or remove the field) in that group's members document. Other groups are unaffected.
 
 ## Limitations
 

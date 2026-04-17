@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.18.0
+
+### Added
+
+#### Server (TypeScript + Python)
+
+- **Group candidacy** — `createGroupRoleEnricher` / `create_group_role_enricher` now optionally supports an application/candidacy flow. Set `candidacyPath` (TS) / `candidacy_path` (Python) to a `storagePath` template (e.g. `"groups/{groupId}/candidacies/{identity}"`) to enable the feature globally. Enable it per-group by adding `candidacyEnabled: true` to the members document. Users apply by pushing `{ status: "pending", message: "..." }` to their own candidacy document (gated by the built-in `"self"` role); pending applicants receive a configurable `candidacyRole` (default `"group-candidate"`). Admins accept/deny by pushing `{ status: "accepted" }` / `{ status: "denied" }` and manually adding accepted users to the members list. Candidacy documents are cached separately from membership documents with their own configurable TTL (`candidacyCacheTtlMs` / `candidacy_cache_ttl_ms`). Disabling: remove `candidacyPath` globally, or set `candidacyEnabled: false` in a specific group's members document.
+
 ## 1.17.1
 
 ### Fixed
