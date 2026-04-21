@@ -20,11 +20,13 @@ class StarfishClient:
         base_url: str,
         *,
         auth: AuthProvider | None = None,
+        namespace: str | None = None,
         timeout: float = 30.0,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._auth = auth
+        self._namespace = namespace
         self._client = client or httpx.AsyncClient(timeout=timeout)
 
     async def close(self) -> None:
@@ -36,6 +38,16 @@ class StarfishClient:
 
     async def __aexit__(self, *args: Any) -> None:
         await self.close()
+
+    def _send_path(self, path: str) -> str:
+        if self._namespace is None:
+            return path
+        return f"/sync/{self._namespace}{path}"
+
+    def _sign_path(self, path: str) -> str:
+        if self._namespace is None:
+            return path
+        return f"/v1/{self._namespace}/{path[4:]}"
 
     async def _auth_headers(
         self, method: str, path: str, body: str | None
@@ -55,10 +67,10 @@ class StarfishClient:
         if checkpoint is not None and checkpoint > 0:
             params["checkpoint"] = str(checkpoint)
 
-        auth_headers = await self._auth_headers("GET", path, None)
+        auth_headers = await self._auth_headers("GET", self._sign_path(path), None)
 
         resp = await self._client.get(
-            f"{self._base_url}{path}",
+            f"{self._base_url}{self._send_path(path)}",
             params=params,
             headers={"Accept": "application/json", **auth_headers},
         )
@@ -97,10 +109,10 @@ class StarfishClient:
             payload["authorSignature"] = author_signature
         body = json.dumps(payload)
 
-        auth_headers = await self._auth_headers("POST", path, body)
+        auth_headers = await self._auth_headers("POST", self._sign_path(path), body)
 
         resp = await self._client.post(
-            f"{self._base_url}{path}",
+            f"{self._base_url}{self._send_path(path)}",
             content=body,
             headers={
                 "Content-Type": "application/json",
@@ -123,10 +135,10 @@ class StarfishClient:
         Returns raw bytes with the content hash from the ETag header.
         Binary collections use last-write-wins (no conflict detection).
         """
-        auth_headers = await self._auth_headers("GET", path, None)
+        auth_headers = await self._auth_headers("GET", self._sign_path(path), None)
 
         resp = await self._client.get(
-            f"{self._base_url}{path}",
+            f"{self._base_url}{self._send_path(path)}",
             headers={"Accept": "*/*", **auth_headers},
         )
         if resp.status_code != 200:
@@ -146,10 +158,10 @@ class StarfishClient:
 
         Binary collections accept any push unconditionally (no baseHash required).
         """
-        auth_headers = await self._auth_headers("POST", path, None)
+        auth_headers = await self._auth_headers("POST", self._sign_path(path), None)
 
         resp = await self._client.post(
-            f"{self._base_url}{path}",
+            f"{self._base_url}{self._send_path(path)}",
             content=data,
             headers={
                 "Content-Type": content_type,

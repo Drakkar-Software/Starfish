@@ -234,3 +234,55 @@ async def test_push_blob_error_raises():
     with pytest.raises(StarfishHttpError) as exc_info:
         await client.push_blob("/push/blobs/x", b"data", "video/mp4")
     assert exc_info.value.status == 415
+
+
+# ---------------------------------------------------------------------------
+# namespace path transformation
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_namespace_none_leaves_paths_unchanged():
+    signed_paths: list[str] = []
+
+    async def capture_auth(method: str, path: str, body: str | None) -> dict[str, str]:
+        signed_paths.append(path)
+        return {}
+
+    mock_http = AsyncMock()
+    mock_http.get.return_value = make_response(200, {"data": {}, "hash": "h", "timestamp": 0})
+    client = StarfishClient("http://test", auth=capture_auth, namespace=None, client=mock_http)
+
+    await client.pull("/v1/pull/users/abc/settings")
+
+    url = mock_http.get.call_args.args[0]
+    assert url == "http://test/v1/pull/users/abc/settings"
+    assert signed_paths == ["/v1/pull/users/abc/settings"]
+
+
+@pytest.mark.asyncio
+async def test_namespace_send_path_prepends_sync_prefix():
+    mock_http = AsyncMock()
+    mock_http.post.return_value = make_response(200, {"hash": "h", "timestamp": 1})
+    client = StarfishClient("http://sync.example.com", namespace="octobot", client=mock_http)
+
+    await client.push("/v1/push/users/abc/errors/salt", {"x": 1}, None)
+
+    url = mock_http.post.call_args.args[0]
+    assert url == "http://sync.example.com/sync/octobot/v1/push/users/abc/errors/salt"
+
+
+@pytest.mark.asyncio
+async def test_namespace_sign_path_inserts_namespace_after_v1():
+    signed_paths: list[str] = []
+
+    async def capture_auth(method: str, path: str, body: str | None) -> dict[str, str]:
+        signed_paths.append(path)
+        return {}
+
+    mock_http = AsyncMock()
+    mock_http.post.return_value = make_response(200, {"hash": "h", "timestamp": 1})
+    client = StarfishClient("http://test", auth=capture_auth, namespace="octobot", client=mock_http)
+
+    await client.push("/v1/push/users/abc/errors/salt", {"x": 1}, None)
+
+    assert signed_paths == ["/v1/octobot/push/users/abc/errors/salt"]
