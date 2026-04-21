@@ -446,8 +446,9 @@ await sync.update((current) => ({
 from starfish_sdk import StarfishClient, SyncManager
 
 async with StarfishClient(
-    "https://api.example.com/v1",
+    "https://api.example.com",
     auth=my_auth_provider,
+    # namespace="my-ns"  # set when the server is behind a namespace-rewriting proxy
 ) as client:
     # Low-level
     pulled = await client.pull("/pull/users/abc/settings")

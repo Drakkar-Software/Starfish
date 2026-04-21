@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.18.1
+
+### Added
+
+#### Client (Python)
+
+- **`namespace` parameter on `StarfishClient`** — when the sync server is deployed behind a namespace-aware reverse proxy (e.g. nginx rewriting `/sync/{ns}/v1/push/...` to `/v1/{ns}/push/...` before forwarding), pass `namespace="my-ns"` to `StarfishClient`. The client will prepend `/sync/{namespace}` to the URL it sends while signing the canonical path in its post-rewrite form (`/v1/{namespace}/push/...`), matching what the upstream server validates. Callers still pass plain `/v1/push/...` paths — the namespace transformation is fully internal. Default is `None` (no transformation, backward-compatible).
+
 ## 1.18.0
 
 ### Added
