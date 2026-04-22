@@ -174,3 +174,14 @@ class StarfishClient:
 
         result = resp.json()
         return BlobPushResult(hash=result["hash"])
+
+    async def get_config(self) -> dict:
+        """Fetch the server's collection config from the /config endpoint."""
+        config_path = "/sync/config" if self._namespace is not None else "/config"
+        resp = await self._client.get(
+            f"{self._base_url}{config_path}",
+            headers={"Accept": "application/json"},
+        )
+        if resp.status_code != 200:
+            raise StarfishHttpError(resp.status_code, resp.text)
+        return resp.json()

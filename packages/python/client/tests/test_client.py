@@ -286,3 +286,28 @@ async def test_namespace_sign_path_inserts_namespace_after_v1():
     await client.push("/v1/push/users/abc/errors/salt", {"x": 1}, None)
 
     assert signed_paths == ["/v1/octobot/push/users/abc/errors/salt"]
+
+
+@pytest.mark.asyncio
+async def test_get_config_without_namespace():
+    mock_http = AsyncMock()
+    mock_http.get.return_value = make_response(200, {"collections": [], "version": 1})
+    client = StarfishClient("http://test", client=mock_http)
+
+    result = await client.get_config()
+
+    url = mock_http.get.call_args.args[0]
+    assert url == "http://test/config"
+    assert result == {"collections": [], "version": 1}
+
+
+@pytest.mark.asyncio
+async def test_get_config_with_namespace():
+    mock_http = AsyncMock()
+    mock_http.get.return_value = make_response(200, {"collections": [], "version": 1})
+    client = StarfishClient("http://sync.example.com", namespace="octobot", client=mock_http)
+
+    await client.get_config()
+
+    url = mock_http.get.call_args.args[0]
+    assert url == "http://sync.example.com/sync/config"
