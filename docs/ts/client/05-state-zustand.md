@@ -1,6 +1,6 @@
 # Zustand Binding
 
-`createStarfishStore` wraps a `SyncManager` in a [Zustand](https://github.com/pmndrs/zustand) store with persistence, devtools, and offline-first writes.
+`createStarfishStore` wraps a `SyncManager` in a [Zustand](https://github.com/pmndrs/zustand) store with persistence, optional devtools, and offline-first writes.
 
 > **Prerequisites:** [SyncManager](03-sync-manager.md)
 
@@ -42,8 +42,8 @@ interface CreateStarfishStoreOptions {
   syncManager: SyncManager
   /** Pass `false` to disable persistence. Defaults to localStorage in browsers. */
   storage?: StateStorage | false
-  /** Enable Redux DevTools. Pass `true` or a DevtoolsOptions object. */
-  devtools?: boolean | DevtoolsOptions
+  /** Wrap the store with Redux DevTools. Import devtools from 'zustand/middleware' and pass it directly. */
+  devtools?: (storeCreator: any) => any
   /** Pass `produce` from immer to enable draft-based mutations in set(). */
   produce?: <T>(base: T, recipe: (draft: T) => T | void) => T
 }
@@ -183,13 +183,15 @@ Only `data` and `dirty` are persisted — `syncing`, `online`, and `error` are t
 
 ## Redux DevTools
 
-Enable time-travel debugging:
+Import `devtools` from `'zustand/middleware'` and pass it as a wrapper function. This keeps the import in your code so bundlers that don't support `import.meta.env` (Metro/Hermes, Expo web) are unaffected when devtools is unused.
 
 ```ts
+import { devtools } from 'zustand/middleware'
+
 const store = createStarfishStore({
   name: "settings",
   syncManager,
-  devtools: true,
+  devtools: (fn) => devtools(fn, { name: 'settings' }),
 })
 ```
 

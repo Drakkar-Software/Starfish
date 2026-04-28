@@ -715,15 +715,17 @@ function App() {
 
 #### Middleware options
 
-**Redux DevTools** — opt-in with `devtools: true` for time-travel debugging. All actions are labeled (`pull/start`, `pull/success`, `set`, `flush/start`, etc.):
+**Redux DevTools** — opt-in for time-travel debugging. Import `devtools` from `zustand/middleware` and pass it as a wrapper function. All actions are labeled (`pull/start`, `pull/success`, `set`, `flush/start`, etc.):
 
 ```ts
+import { devtools } from 'zustand/middleware'
+
 const settingsStore = createStarfishStore({
   name: "settings",
   syncManager,
-  devtools: true,
+  devtools: (fn) => devtools(fn),
   // Or with custom options:
-  // devtools: { name: "Settings Store", enabled: process.env.NODE_ENV !== "production" },
+  // devtools: (fn) => devtools(fn, { name: "Settings Store", enabled: process.env.NODE_ENV !== "production" }),
 })
 ```
 

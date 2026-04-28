@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.19.0
+
+### Changed
+
+#### Client (TypeScript)
+
+- **`devtools` option signature changed** — previously accepted `boolean | DevtoolsOptions`; now accepts a middleware wrapper function `(storeCreator) => storeCreator`. Import `devtools` from `'zustand/middleware'` yourself and pass it directly. This removes the static `import { devtools } from 'zustand/middleware'` from the library bundle, preventing `import.meta.env` from being included in environments that don't support it (Metro/Hermes, Expo web).
+
+  Migration:
+  ```ts
+  // Before
+  createStarfishStore({ devtools: true })
+  createStarfishStore({ devtools: { name: 'my-store' } })
+
+  // After
+  import { devtools } from 'zustand/middleware'
+  createStarfishStore({ devtools: (fn) => devtools(fn) })
+  createStarfishStore({ devtools: (fn) => devtools(fn, { name: 'my-store' }) })
+  ```
+
 ## 1.18.1
 
 ### Added

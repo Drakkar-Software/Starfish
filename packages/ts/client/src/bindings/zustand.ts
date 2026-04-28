@@ -2,12 +2,11 @@ import { createStore, type StoreApi } from "zustand/vanilla"
 import { useStore } from "zustand"
 import {
   persist,
-  devtools,
   subscribeWithSelector,
   createJSONStorage,
   type StateStorage,
-  type DevtoolsOptions,
 } from "zustand/middleware"
+import type { DevtoolsOptions } from "zustand/middleware"
 import { useEffect, useRef, useState, useCallback } from "react"
 import { StarfishClient } from "../client.js"
 import { SyncManager } from "../sync.js"
@@ -41,8 +40,17 @@ export interface CreateStarfishStoreOptions {
   syncManager: SyncManager
   /** Pass `false` to disable persistence. Defaults to `localStorage` in browsers. */
   storage?: StateStorage | false
-  /** Enable Redux DevTools. Pass `true` or a `DevtoolsOptions` object. */
-  devtools?: boolean | DevtoolsOptions
+  /**
+   * Wrap the store with Redux DevTools. Import `devtools` from `'zustand/middleware'`
+   * and pass it directly — this keeps the import in your code, preventing
+   * `import.meta.env` from being bundled in Metro/Hermes environments.
+   *
+   * @example
+   * import { devtools } from 'zustand/middleware'
+   * createStarfishStore({ devtools: (fn) => devtools(fn, { name: 'my-app' }) })
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  devtools?: (storeCreator: any) => any
   /** Pass `produce` from `immer` to enable draft-based mutations in `set()`. */
   produce?: <T>(base: T, recipe: (draft: T) => T | void) => T
   /**
@@ -149,15 +157,9 @@ export function createStarfishStore(
 
   const withSelector = subscribeWithSelector(withPersist)
 
-  if (options.devtools) {
-    const devtoolsOpts: DevtoolsOptions =
-      typeof options.devtools === "object"
-        ? options.devtools
-        : { name: `starfish-${name}` }
-    return createStore<StarfishStore>()(devtools(withSelector, devtoolsOpts))
-  }
-
-  return createStore<StarfishStore>()(withSelector)
+  return createStore<StarfishStore>()(
+    options.devtools ? options.devtools(withSelector) : withSelector,
+  )
 }
 
 // ── React hooks ──────────────────────────────────────────────────────
