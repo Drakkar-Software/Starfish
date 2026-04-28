@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.19.2
+
+### Fixed
+
+#### Client (TypeScript)
+
+- **`zustand/middleware` now actually bundled** — 1.19.1 listed `zustand` in esbuild's `external`, but esbuild treats a package-name external as covering every subpath under it (so `zustand/middleware` was unintentionally external too, and `devtoolsImpl` + `import.meta.env` survived in the consumer bundle). The build now uses an esbuild plugin (`zustand-selective-external`) that externalizes only `zustand` and `zustand/vanilla` while letting `zustand/middleware` be bundled and tree-shaken. Verified: published `dist/bindings/zustand.js` contains zero `import.meta` / `devtoolsImpl` references.
+
+## 1.19.1
+
+### Fixed
+
+#### Client (TypeScript)
+
+- **`import.meta.env` eliminated from published bundle** — the build now uses esbuild with tree-shaking instead of `tsc --build`. Previously, `tsc` preserved bare `import` statements verbatim, causing consumer bundlers (Metro/Hermes, Expo web) to load the entire `zustand/middleware` ESM file — including `devtoolsImpl`, whose `import.meta.env.MODE` reference throws `Uncaught SyntaxError: Cannot use 'import.meta' outside a module`. esbuild inlines and tree-shakes `zustand/middleware` at publish time, so only the middleware we actually use (`persist`, `subscribeWithSelector`, `createJSONStorage`) appears in the dist. Consumers no longer need any metro-config workaround.
+
+### Internal
+
+- New `build.mjs` (esbuild) emits the 8 published entry points as ESM bundles.
+- New `tsconfig.build.json` (`emitDeclarationOnly: true`) generates `.d.ts` files without re-emitting JS.
+- Peer deps (`react`, `zustand`, `zustand/vanilla`, `@legendapp/state*`, `immer`) and the `@drakkar.software/starfish-protocol` workspace dep remain external.
+
 ## 1.19.0
 
 ### Changed

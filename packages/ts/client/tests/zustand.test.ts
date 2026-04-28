@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { produce } from "immer"
+import { devtools } from "zustand/middleware"
 import { StarfishClient } from "../src/client.js"
 import { SyncManager } from "../src/sync.js"
 import { createStarfishStore, subscribeSyncStatus } from "../src/bindings/zustand.js"
@@ -280,7 +281,7 @@ describe("subscribeWithSelector", () => {
 })
 
 describe("devtools", () => {
-  it("creates store without error when devtools is true", () => {
+  it("creates store without error when devtools wrapper passed", () => {
     const client = mockClient()
     const syncManager = new SyncManager({
       client,
@@ -292,7 +293,7 @@ describe("devtools", () => {
       name: "devtools-test",
       syncManager,
       storage: false,
-      devtools: true,
+      devtools: (fn) => devtools(fn),
     })
 
     expect(store.getState().data).toEqual({})
@@ -310,7 +311,7 @@ describe("devtools", () => {
       name: "devtools-custom",
       syncManager,
       storage: false,
-      devtools: { name: "My Custom Store", enabled: false },
+      devtools: (fn) => devtools(fn, { name: "My Custom Store", enabled: false }),
     })
 
     expect(store.getState().data).toEqual({})
@@ -329,7 +330,7 @@ describe("devtools", () => {
       name: "devtools-actions",
       syncManager,
       storage: false,
-      devtools: true,
+      devtools: (fn) => devtools(fn),
     })
 
     // pull
