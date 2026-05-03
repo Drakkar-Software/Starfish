@@ -1,6 +1,5 @@
 """Utility for composing multiple RoleEnrichers into one."""
 
-from __future__ import annotations
 
 import asyncio
 

@@ -13,7 +13,6 @@ Typical flow:
   4. Pass the ``Encryptor`` to ``SyncManager`` via the ``encryptor`` parameter.
 """
 
-from __future__ import annotations
 
 import base64
 import hashlib

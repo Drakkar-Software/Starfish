@@ -62,7 +62,14 @@ export function computeTimestamps(
  */
 export function maxLeafTimestamp(timestamps: Timestamps | unknown): number {
   if (typeof timestamps === "number") return timestamps
-  if (timestamps != null && typeof timestamps === "object" && !Array.isArray(timestamps)) {
+  if (Array.isArray(timestamps)) {
+    let max = 0
+    for (const v of timestamps) {
+      if (typeof v === "number" && v > max) max = v
+    }
+    return max
+  }
+  if (timestamps != null && typeof timestamps === "object") {
     let max = 0
     for (const v of Object.values(timestamps as Record<string, unknown>)) {
       const t = maxLeafTimestamp(v)
@@ -90,8 +97,8 @@ export function filterByCheckpoint(
       if (ts > checkpoint) {
         result[key] = val
       }
-    } else {
-      // Nested object timestamps
+    } else if (!Array.isArray(ts)) {
+      // Nested object timestamps (number[] is appendOnly per-item — not recursed into here)
       if (isLeaf(val)) {
         result[key] = val
       } else {

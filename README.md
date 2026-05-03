@@ -1456,21 +1456,56 @@ Gated collection:
 
 ---
 
-#### Queue-only collections
+#### Append-only collections
 
-Set `queueOnly: true` (`queue_only=True` in Python) on a collection to skip storage entirely. Pushes are accepted and return a `{hash, timestamp}`, but nothing is stored. Pull always returns empty. `baseHash` conflict detection is disabled.
-
-Use for event-only streams where only the queue consumer matters:
+Set `appendOnly: {}` on a collection to append every push to a stored array (default field: `items`). `baseHash` conflict detection is disabled — concurrent pushes never return 409.
 
 ```ts
-// TypeScript
-{ name: "events", storagePath: "events/{eventId}", /* ... */, queueOnly: true, queue: { topic: "analytics.events" } }
+// TypeScript — stored array
+{ name: "events", storagePath: "events", /* ... */, appendOnly: {} }
 ```
 
 ```python
-# Python
-CollectionConfig(name="events", storage_path="events/{eventId}", ..., queue_only=True, queue=QueueConfig(topic="analytics.events"))
+# Python — stored array
+CollectionConfig(name="events", storage_path="events", ..., append_only=AppendOnlyConfig())
 ```
+
+Use `appendOnly: { persist: false }` (`AppendOnlyConfig(persist=False)` in Python) to skip storage entirely — pushes are accepted and published to the queue, but nothing is stored (replaces the old `queueOnly` flag):
+
+```ts
+{ name: "events", storagePath: "events/{eventId}", /* ... */, appendOnly: { persist: false }, queue: { topic: "analytics.events" } }
+```
+
+Client usage:
+
+```ts
+// Append an item (baseHash=null means "no conflict check")
+await client.push("/push/events", { type: "click" }, null)
+
+// Full pull → returns T[]
+const items = await client.pull("/pull/events", { appendField: "items" })
+
+// Incremental pull — only items appended since last sync (O(M) payload, not O(N))
+const newItems = await client.pull("/pull/events", { appendField: "items", since: lastSyncTimestamp })
+
+// Custom field name + last K items
+const logs = await client.pull("/pull/audit", { appendField: "logs", last: 50 })
+```
+
+```python
+# Append an item
+await client.push("/push/events", {"type": "click"}, None)
+
+# Incremental pull
+new_items = await client.pull("/pull/events", since=last_sync_timestamp)
+
+# Last 50 items, custom field
+logs = await client.pull("/pull/audit", append_field="logs", last=50)
+```
+
+Push CPU is O(1) — the stored hash covers only the last item and array length, not the full array.
+
+> Full reference: [`docs/ts/server/append-only-collections.md`](docs/ts/server/append-only-collections.md)
 
 #### Collection config
 
@@ -1606,13 +1641,13 @@ Fetch from the client:
 ```ts
 import { fetchServerConfig } from "@drakkar.software/starfish-client"
 const config = await fetchServerConfig("https://api.example.com/v1")
-// config.collections[0].publicKey, .maxBodyBytes, .queueOnly, …
+// config.collections[0].publicKey, .maxBodyBytes, .appendOnly, …
 ```
 
 ```python
 from starfish_sdk import fetch_server_config
 config = await fetch_server_config("https://api.example.com/v1")
-# config.collections[0].public_key, .max_body_bytes, .queue_only, …
+# config.collections[0].public_key, .max_body_bytes, .append_only, …
 ```
 
 > Full reference: [`docs/ts/server/config-endpoint.md`](docs/ts/server/config-endpoint.md)

@@ -36,6 +36,8 @@ async def push(
     author: Author | None = None,
     skip_timestamps: bool = False,
     skip_storage: bool = False,
+    precomputed_hash: str | None = None,
+    precomputed_timestamps: dict | None = None,
 ) -> PushResult:
     """Push a new full document.
 
@@ -47,7 +49,7 @@ async def push(
     """
     if skip_storage:
         now = time.time_ns() // 1_000_000
-        new_hash = compute_hash(new_data)
+        new_hash = precomputed_hash if precomputed_hash is not None else compute_hash(new_data)
         return PushSuccess(hash=new_hash, timestamp=now)
 
     raw = await store.get_string(document_key)
@@ -77,8 +79,13 @@ async def push(
             return PushConflict(error=ERROR_HASH_MISMATCH)
 
     now = time.time_ns() // 1_000_000
-    new_hash = compute_hash(new_data)
-    timestamps = {} if skip_timestamps else compute_timestamps(old_data, new_data, old_timestamps, now)
+    new_hash = precomputed_hash if precomputed_hash is not None else compute_hash(new_data)
+    if skip_timestamps:
+        timestamps: dict = {}
+    elif precomputed_timestamps is not None:
+        timestamps = precomputed_timestamps
+    else:
+        timestamps = compute_timestamps(old_data, new_data, old_timestamps, now)
 
     doc: dict[str, Any] = {
         "v": DOCUMENT_VERSION,

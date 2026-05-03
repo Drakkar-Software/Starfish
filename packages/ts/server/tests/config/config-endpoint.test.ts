@@ -87,7 +87,7 @@ describe("GET /config — auth: public", () => {
 
   it("includes correct capability flags", async () => {
     const app = makeRouter(
-      [makeCol({ pullOnly: true, queueOnly: undefined, ttlMs: 3600000 })],
+      [makeCol({ pullOnly: true, ttlMs: 3600000 })],
       { configEndpoint: { auth: "public" } },
     )
     const res = await app.request("/config")

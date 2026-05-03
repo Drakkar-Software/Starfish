@@ -3,7 +3,7 @@ import type { PullResult, PushSuccess } from "@drakkar.software/starfish-protoco
 export type { PullResult, PushSuccess }
 
 export interface Timestamps {
-  [key: string]: number | Timestamps
+  [key: string]: number | number[] | Timestamps
 }
 
 export const DOCUMENT_VERSION = 1

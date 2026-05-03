@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
-from starfish_sdk.config import fetch_server_config, ConfigResponse, CollectionClientInfo, NamespaceClientConfig
+from starfish_sdk.config import fetch_server_config, ConfigResponse, CollectionClientInfo, NamespaceClientConfig, AppendOnlyClientInfo
 
 BASE_URL = "https://api.example.com/v1"
 
@@ -23,7 +23,7 @@ MOCK_BODY = {
             "maxBodyBytes": 16384,
             "encryption": "none",
             "allowedMimeTypes": ["application/json"],
-            "queueOnly": True,
+            "appendOnly": {"persist": False},
         },
     ]
 }
@@ -54,7 +54,7 @@ async def test_fetch_returns_typed_config_response():
     assert len(result.collections) == 2
     assert result.collections[0].name == "posts"
     assert result.collections[0].public_key == "base64key=="
-    assert result.collections[1].queue_only is True
+    assert result.collections[1].append_only == AppendOnlyClientInfo(persist=False)
 
 
 @pytest.mark.asyncio

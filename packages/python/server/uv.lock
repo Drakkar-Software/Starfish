@@ -1146,7 +1146,7 @@ wheels = [
 
 [[package]]
 name = "starfish-protocol"
-version = "1.18.1"
+version = "2.0.0"
 source = { editable = "../protocol" }
 dependencies = [
     { name = "cryptography" },
@@ -1162,7 +1162,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "starfish-server"
-version = "1.18.1"
+version = "2.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiofiles" },

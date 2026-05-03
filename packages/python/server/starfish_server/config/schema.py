@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-from starfish_server.constants import ENCRYPTION_NONE, ENCRYPTION_IDENTITY, ENCRYPTION_SERVER, ENCRYPTION_DELEGATED, ENCRYPTION_GROUP
+from starfish_server.constants import ENCRYPTION_NONE, ENCRYPTION_IDENTITY, ENCRYPTION_SERVER, ENCRYPTION_DELEGATED, ENCRYPTION_GROUP, APPEND_DEFAULT_FIELD
 
 EncryptionMode = Literal["none", "identity", "server", "delegated", "group"]
 
@@ -105,6 +105,30 @@ class QueueConfig(BaseModel):
     by the client (before server-side sanitization of prototype-pollution keys)."""
 
 
+class AppendOnlyConfig(BaseModel):
+    """Append-only collection configuration.
+
+    When set on a :class:`CollectionConfig`, every push appends the incoming data
+    object as the last item of a stored array.  ``baseHash`` from the client is
+    ignored (unless ``check_last_item`` is ``True``).
+    """
+
+    model_config = {"populate_by_name": True}
+
+    field: str = Field(default=APPEND_DEFAULT_FIELD)
+    """Array field name in the stored document.  Defaults to ``"items"``."""
+
+    persist: bool = Field(default=True)
+    """``True`` (default) — append item to stored array.
+    ``False`` — compute hash and publish to queue without writing to storage
+    (replaces the old ``queueOnly`` behaviour)."""
+
+    check_last_item: bool = Field(default=False, alias="checkLastItem")
+    """When ``True``, validates the client's ``baseHash`` against ``hash(lastItem)``
+    before appending.  Returns ``409`` if the last item has changed since the client
+    last read."""
+
+
 class CollectionRateLimitConfig(BaseModel):
     """Per-collection rate limit overrides.
 
@@ -198,13 +222,11 @@ class CollectionConfig(BaseModel):
     ``false``/``null`` (disabled), or an object ``{"topic": …, "includeParams": …}``
     to customise."""
 
-    queue_only: bool | None = Field(default=None, alias="queueOnly")
-    """When ``True``, pushes compute and return a hash but do not write to storage.
+    append_only: "AppendOnlyConfig | None" = Field(default=None, alias="appendOnly")
+    """When set, every push appends the incoming data object as the last item of a stored array.
 
-    Use for event-only or ephemeral collections where only the queue consumer
-    matters and no stored state is needed.  ``baseHash`` from the client is
-    ignored — there is no conflict detection.  Cannot be used with binary
-    collections."""
+    Pass ``True`` as shorthand for ``AppendOnlyConfig()`` (all defaults).
+    ``False``/``None`` disables append-only mode."""
 
     ttl_ms: int | None = Field(default=None, gt=0, alias="ttlMs")
     """Document time-to-live in milliseconds.
@@ -239,7 +261,7 @@ class CollectionConfig(BaseModel):
 
     The last path parameter in ``storage_path`` is the value being
     enumerated.  Requires at least one path parameter; incompatible with
-    ``queue_only`` and ``bundle``."""
+    ``appendOnly`` (persist=False) and ``bundle``."""
 
     @field_validator("rate_limit", mode="before")
     @classmethod
@@ -255,6 +277,15 @@ class CollectionConfig(BaseModel):
     def _coerce_queue(cls, v: object) -> object:
         if v is True:
             return QueueConfig()
+        if v is False:
+            return None
+        return v
+
+    @field_validator("append_only", mode="before")
+    @classmethod
+    def _coerce_append_only(cls, v: object) -> object:
+        if v is True:
+            return AppendOnlyConfig()
         if v is False:
             return None
         return v

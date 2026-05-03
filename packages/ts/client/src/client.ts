@@ -5,6 +5,8 @@ import type {
 } from "./types.js"
 import { ConflictError, StarfishHttpError } from "./types.js"
 
+const APPEND_DEFAULT_FIELD = "items"
+
 /** Result of pulling a binary blob from the server. */
 export interface BlobPullResult {
   data: ArrayBuffer
@@ -16,6 +18,16 @@ export interface BlobPullResult {
 /** Result of pushing a binary blob to the server. */
 export interface BlobPushResult {
   hash: string
+}
+
+/** Options for append-only pull — extracts a single array field from the response. */
+export interface AppendPullOptions {
+  /** Array field name in `data`. Defaults to `"items"`. */
+  appendField?: string
+  /** Only return items appended after this timestamp (ms). Sent as `?checkpoint=`. */
+  since?: number
+  /** Return only the last K items (applied after `since` filter). Sent as `?last=`. */
+  last?: number
 }
 
 /**
@@ -33,15 +45,32 @@ export class StarfishClient {
     this.fetch = options.fetch ?? globalThis.fetch.bind(globalThis)
   }
 
-  /**
-   * Pull synced data from the server.
-   * @param path - The pull endpoint path (e.g. "/pull/users/abc/settings")
-   * @param checkpoint - Only return data updated after this timestamp (0 = full pull)
-   */
-  async pull(path: string, checkpoint?: number): Promise<PullResult> {
-    const url = checkpoint
-      ? `${this.baseUrl}${path}?checkpoint=${checkpoint}`
-      : `${this.baseUrl}${path}`
+  /** Pull synced data from the server. Returns the raw `PullResult`. */
+  async pull(path: string, checkpoint?: number): Promise<PullResult>
+  /** Pull an append-only collection. Extracts and returns `data[appendField]` as `T[]`. */
+  async pull<T = unknown>(path: string, options: AppendPullOptions): Promise<T[]>
+  async pull<T = unknown>(
+    path: string,
+    checkpointOrOptions?: number | AppendPullOptions,
+  ): Promise<PullResult | T[]> {
+    let url = `${this.baseUrl}${path}`
+    let appendField: string | undefined
+
+    if (typeof checkpointOrOptions === "number") {
+      if (checkpointOrOptions) url += `?checkpoint=${checkpointOrOptions}`
+    } else if (checkpointOrOptions != null) {
+      appendField = checkpointOrOptions.appendField ?? APPEND_DEFAULT_FIELD
+      const params = new URLSearchParams()
+      if (checkpointOrOptions.since != null) {
+        if (checkpointOrOptions.since < 0) throw new Error("since must be non-negative")
+        params.set("checkpoint", String(checkpointOrOptions.since))
+      }
+      if (checkpointOrOptions.last != null) {
+        if (checkpointOrOptions.last < 0) throw new Error("last must be non-negative")
+        params.set("last", String(checkpointOrOptions.last))
+      }
+      if (params.size > 0) url += `?${params.toString()}`
+    }
 
     const authHeaders = this.auth
       ? await this.auth({ method: "GET", path, body: null })
@@ -54,7 +83,13 @@ export class StarfishClient {
     if (!res.ok) {
       throw new StarfishHttpError(res.status, await res.text())
     }
-    return res.json() as Promise<PullResult>
+
+    const result = await res.json() as PullResult
+    if (appendField !== undefined) {
+      const list = (result.data as Record<string, unknown> | null)?.[appendField]
+      return (Array.isArray(list) ? list : []) as T[]
+    }
+    return result
   }
 
   /**

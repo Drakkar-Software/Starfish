@@ -17,15 +17,20 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 
 from starfish_server.storage.base import AbstractObjectStore
-from starfish_server.config.schema import SyncConfig, CollectionConfig, SyncTrigger, WriteMode, CollectionRateLimitConfig, NamespaceConfig, ConfigEndpointOptions
+from starfish_server.config.schema import SyncConfig, CollectionConfig, SyncTrigger, WriteMode, CollectionRateLimitConfig, NamespaceConfig, ConfigEndpointOptions, AppendOnlyConfig
+from starfish_server.protocol.append import build_append_only_data
 from starfish_server.encryption.encrypted_store import EncryptedObjectStore
 from starfish_server.protocol.pull import pull
 from starfish_server.router.helpers import (
     handle_sync_pull,
     handle_sync_push,
+    handle_append_only_pull,
+    deep_sanitize,
     validate_path_segment,
     SignatureVerifier,
 )
+from starfish_server.protocol.push import push as push_direct
+from starfish_server.protocol.types import PushSuccess
 from starfish_server.router.middleware import check_body_limit, RateLimiter
 from starfish_server.router.mime import matches_allowed_mime, is_json_collection
 from starfish_server.queue.message import QueueMessage
@@ -96,7 +101,7 @@ class CollectionClientInfo(_BaseModel):
     allowedMimeTypes: list[str]
     pullOnly: bool | None = None
     pushOnly: bool | None = None
-    queueOnly: bool | None = None
+    appendOnly: AppendOnlyConfig | None = None
     clientEncrypted: bool | None = None
     publicKey: str | None = None
     ttlMs: int | None = None
@@ -124,7 +129,7 @@ def _to_collection_client_info(col: CollectionConfig) -> CollectionClientInfo:
         allowedMimeTypes=col.allowed_mime_types,
         pullOnly=col.pull_only or None,
         pushOnly=col.push_only or None,
-        queueOnly=col.queue_only or None,
+        appendOnly=col.append_only or None,
         clientEncrypted=col.client_encrypted or None,
         publicKey=col.public_key,
         ttlMs=col.ttl_ms,
@@ -135,12 +140,13 @@ def _to_collection_client_info(col: CollectionConfig) -> CollectionClientInfo:
 def _max_stored_timestamp(timestamps: Any) -> int:
     """Recursively find the maximum leaf timestamp in a timestamps tree.
 
-    The stored ``timestamps`` dict maps field names to either an integer
-    (leaf timestamp) or a nested dict (sub-object timestamps).  The document's
-    last-modified time is the maximum of all leaf timestamps.
+    Handles ``int`` leaves, ``list[int]`` leaves (per-item appendOnly
+    timestamps), and nested ``dict`` trees.
     """
     if isinstance(timestamps, int):
         return timestamps
+    if isinstance(timestamps, list):
+        return max((v for v in timestamps if isinstance(v, int)), default=0)
     if isinstance(timestamps, dict):
         return max((_max_stored_timestamp(v) for v in timestamps.values()), default=0)
     return 0
@@ -393,10 +399,48 @@ async def _run_push(
 
     store = _resolve_store(col, opts.store, params, identity, opts)
     is_client_encrypted = bool(col.client_encrypted) or col.encryption in (ENCRYPTION_DELEGATED, ENCRYPTION_GROUP)
+
+    if col.append_only:
+        append_cfg = col.append_only
+        append_field = append_cfg.field
+
+        if not append_cfg.persist:
+            # queueOnly path: compute hash, publish to queue, no storage write
+            return await handle_sync_push(
+                document_key, store, body, identity,
+                None, is_client_encrypted, True,
+            )
+
+        # persist=true (default): append item to stored array with retry loop
+        client_base_hash = body.get("baseHash")
+        item = body.get("data")
+
+        max_retries = 3
+        for _attempt in range(max_retries):
+            now = int(time.time() * 1000)
+            appended_data, base_hash, timestamps, last_item_hash = await build_append_only_data(
+                store, document_key, item, append_field, now,
+            )
+            # checkLastItem: validate client's view using the same read used for the write —
+            # avoids a separate read and closes the TOCTOU window on retry races
+            if append_cfg.check_last_item and (client_base_hash or "") != base_hash:
+                return JSONResponse({"error": "hash_mismatch"}, status_code=409)
+            sanitized = deep_sanitize(appended_data)
+            result = await push_direct(
+                store, document_key, sanitized, base_hash,
+                None, False, False,
+                precomputed_hash=last_item_hash,
+                precomputed_timestamps=timestamps,
+            )
+            if isinstance(result, PushSuccess):
+                return JSONResponse({"hash": result.hash, "timestamp": result.timestamp})
+            # hash_mismatch = concurrent write race — retry (checkLastItem already returned 409)
+
+        return JSONResponse({"error": "append_retry_exhausted"}, status_code=500)
+
     return await handle_sync_push(
         document_key, store, body, identity,
-        opts.signature_verifier, is_client_encrypted,
-        bool(col.queue_only),
+        opts.signature_verifier, is_client_encrypted, False,
     )
 
 
@@ -588,13 +632,26 @@ def _add_collection_routes(
 
             store = _resolve_store(col, opts.store, params, identity, opts)
             checkpoint_param = request.query_params.get(QUERY_CHECKPOINT)
+            last_param = request.query_params.get("last")
             is_client_encrypted = bool(col.client_encrypted) or col.encryption in (ENCRYPTION_DELEGATED, ENCRYPTION_GROUP)
-            response = await handle_sync_pull(
-                document_key, store, checkpoint_param,
-                bool(col.force_full_fetch), is_client_encrypted,
-                col.cache_duration_ms,
-                is_public=ROLE_PUBLIC in col.read_roles,
-            )
+            is_public = ROLE_PUBLIC in col.read_roles
+
+            # AppendOnly persist=true uses custom per-item checkpoint filtering
+            if col.append_only is not None and col.append_only.persist:
+                response = await handle_append_only_pull(
+                    document_key, store, checkpoint_param,
+                    col.append_only.field,
+                    col.cache_duration_ms,
+                    is_public=is_public,
+                    last_param=last_param,
+                )
+            else:
+                response = await handle_sync_pull(
+                    document_key, store, checkpoint_param,
+                    bool(col.force_full_fetch), is_client_encrypted,
+                    col.cache_duration_ms,
+                    is_public=is_public,
+                )
 
             # TTL: if the document has expired, return empty data.
             # Python pull() returns the current time, not the stored timestamp,

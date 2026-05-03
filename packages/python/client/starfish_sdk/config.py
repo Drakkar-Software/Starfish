@@ -1,10 +1,24 @@
 """Client-side helpers for fetching the server's collection manifest."""
 
-from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 import httpx
+
+
+@dataclass
+class AppendOnlyClientInfo:
+    """Append-only configuration exposed via ``GET /config``."""
+
+    field: str | None = None
+    """Array field name in the stored document. ``None`` means the server default (``"items"``)."""
+
+    persist: bool | None = None
+    """``False`` = no storage write (replaces ``queueOnly``). ``None``/``True`` = append to array."""
+
+    check_last_item: bool | None = None
+    """When ``True``, server validates client's ``baseHash`` against ``hash(lastItem)``."""
 
 
 @dataclass
@@ -17,7 +31,7 @@ class CollectionClientInfo:
     allowed_mime_types: list[str]
     pull_only: bool | None = None
     push_only: bool | None = None
-    queue_only: bool | None = None
+    append_only: AppendOnlyClientInfo | None = None
     client_encrypted: bool | None = None
     public_key: str | None = None
     ttl_ms: int | None = None
@@ -39,6 +53,16 @@ class ConfigResponse:
     namespaces: dict[str, NamespaceClientConfig] | None = None
 
 
+def _parse_append_only(raw: dict[str, Any] | None) -> AppendOnlyClientInfo | None:
+    if raw is None:
+        return None
+    return AppendOnlyClientInfo(
+        field=raw.get("field"),
+        persist=raw.get("persist"),
+        check_last_item=raw.get("checkLastItem"),
+    )
+
+
 def _parse_collection(raw: dict) -> CollectionClientInfo:
     return CollectionClientInfo(
         name=raw["name"],
@@ -47,7 +71,7 @@ def _parse_collection(raw: dict) -> CollectionClientInfo:
         allowed_mime_types=raw["allowedMimeTypes"],
         pull_only=raw.get("pullOnly") or None,
         push_only=raw.get("pushOnly") or None,
-        queue_only=raw.get("queueOnly") or None,
+        append_only=_parse_append_only(raw.get("appendOnly")),
         client_encrypted=raw.get("clientEncrypted") or None,
         public_key=raw.get("publicKey"),
         ttl_ms=raw.get("ttlMs"),

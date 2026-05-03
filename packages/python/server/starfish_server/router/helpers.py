@@ -1,8 +1,12 @@
 """Request handling helpers for sync routes."""
 
 
+import bisect
 import ipaddress
+import json
+import logging
 import re
+import time
 from typing import Any, Callable, Awaitable
 from urllib.parse import urlparse
 
@@ -14,7 +18,9 @@ from starfish_server.protocol.push import push
 from starfish_server.protocol.push import Author
 from starfish_protocol.hash import stable_stringify
 from starfish_server.protocol.types import PushSuccess
-from starfish_server.constants import QUERY_CHECKPOINT, ERROR_HASH_MISMATCH, CONTENT_TYPE_JSON
+from starfish_server.constants import QUERY_CHECKPOINT, ERROR_HASH_MISMATCH, CONTENT_TYPE_JSON, APPEND_DEFAULT_FIELD
+
+logger = logging.getLogger(__name__)
 
 SAFE_PARAM = re.compile(r"^[a-zA-Z0-9._:@-]+$")
 UNSAFE_KEY = re.compile(r"\.\.|[\x00-\x1f]|//")
@@ -104,6 +110,97 @@ async def handle_sync_pull(
     doc_hash = result.hash
     if doc_hash:
         headers["ETag"] = f'"{doc_hash}"'
+
+    return JSONResponse(body, headers=headers if headers else None)
+
+
+async def handle_append_only_pull(
+    document_key: str,
+    store: AbstractObjectStore,
+    checkpoint_param: str | None = None,
+    append_field: str = APPEND_DEFAULT_FIELD,
+    cache_duration_ms: int | None = None,
+    is_public: bool = True,
+    last_param: str | None = None,
+) -> JSONResponse:
+    """Pull handler for appendOnly persist=true collections.
+
+    Filters data[append_field] to items whose per-item timestamp > checkpoint.
+    Falls back to full array for legacy docs without per-item timestamps.
+    When last_param is set, returns only the last K items (applied after checkpoint filter).
+    """
+    if UNSAFE_KEY.search(document_key):
+        return JSONResponse({"error": "Invalid path parameter"}, status_code=400)
+
+    checkpoint = 0
+    if checkpoint_param is not None:
+        try:
+            parsed = int(checkpoint_param)
+        except ValueError:
+            return JSONResponse({"error": "Invalid checkpoint"}, status_code=400)
+        if parsed < 0 or str(parsed) != checkpoint_param:
+            return JSONResponse({"error": "Invalid checkpoint"}, status_code=400)
+        checkpoint = parsed
+
+    last: int | None = None
+    if last_param is not None:
+        try:
+            parsed_last = int(last_param)
+        except ValueError:
+            return JSONResponse({"error": "Invalid last"}, status_code=400)
+        if parsed_last < 0 or str(parsed_last) != last_param:
+            return JSONResponse({"error": "Invalid last"}, status_code=400)
+        last = parsed_last
+
+    now = int(time.time() * 1000)
+    raw = await store.get_string(document_key)
+
+    if not raw:
+        body: dict = {"data": {append_field: []}, "hash": "", "timestamp": now}
+        headers: dict[str, str] = {}
+        if cache_duration_ms is not None:
+            max_age = cache_duration_ms // 1000
+            directive = f"max-age={max_age}" if is_public else f"private, max-age={max_age}"
+            headers["Cache-Control"] = directive
+        return JSONResponse(body, headers=headers if headers else None)
+
+    try:
+        stored = json.loads(raw)
+    except (json.JSONDecodeError, ValueError) as exc:
+        logger.error("Corrupt stored document at key %r during pull: %s", document_key, exc)
+        body = {"data": {append_field: []}, "hash": "", "timestamp": now}
+        return JSONResponse(body)
+
+    stored_data: dict = stored.get("data") or {}
+    stored_hash: str = stored.get("hash") or ""
+    all_items = stored_data.get(append_field)
+    if not isinstance(all_items, list):
+        all_items = []
+
+    if checkpoint > 0:
+        stored_ts = (stored.get("timestamps") or {}).get(append_field)
+        if isinstance(stored_ts, list):
+            # Timestamps are monotonically non-decreasing — binary search for first index > checkpoint
+            lo = bisect.bisect_right(stored_ts, checkpoint)
+            filtered_items = all_items[lo:]
+        else:
+            filtered_items = all_items
+    else:
+        filtered_items = all_items
+
+    if last is not None:
+        filtered_items = [] if last == 0 else filtered_items[-last:]
+
+    response_data = {**stored_data, append_field: filtered_items}
+    body = {"data": response_data, "hash": stored_hash, "timestamp": now}
+
+    headers = {}
+    if cache_duration_ms is not None:
+        max_age = cache_duration_ms // 1000
+        directive = f"max-age={max_age}" if is_public else f"private, max-age={max_age}"
+        headers["Cache-Control"] = directive
+    if stored_hash:
+        headers["ETag"] = f'"{stored_hash}"'
 
     return JSONResponse(body, headers=headers if headers else None)
 

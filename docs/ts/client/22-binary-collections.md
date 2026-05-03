@@ -50,7 +50,7 @@ The server returns **415 Unsupported Media Type** if the `Content-Type` header d
 ### Constraints
 
 - `encryption` must be `"none"` or `"delegated"` — `"identity"`, `"server"`, and `"group"` are rejected by the config validator
-- `objectSchema`, `bundle`, `remote`, and `queueOnly` cannot be combined with binary collections
+- `objectSchema`, `bundle`, `remote`, and `appendOnly` cannot be combined with binary collections
 - The `GET /config` endpoint exposes `allowedMimeTypes` so clients can discover it at runtime
 
 ---
@@ -191,7 +191,7 @@ Because `readRoles` contains `"public"`, the `Cache-Control` header is emitted w
 | JSON Schema validation | No |
 | Field-level permissions | No |
 | Replica / remote collections | No |
-| `queueOnly` | No |
+| `appendOnly` | No |
 
 ---
 

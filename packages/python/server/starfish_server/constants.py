@@ -33,6 +33,9 @@ HKDF_INFO_SERVER = "starfish-server-data"
 # Config
 DEFAULT_CONFIG_KEY = "__sync__/config.json"
 
+# AppendOnly
+APPEND_DEFAULT_FIELD = "items"
+
 # Protocol
 ERROR_HASH_MISMATCH = "hash_mismatch"
 CONTENT_TYPE_JSON = "application/json"

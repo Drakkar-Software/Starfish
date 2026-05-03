@@ -40,17 +40,30 @@ def _validate_collections(collections: list[CollectionConfig], scope_label: str)
         if col.pull_only and col.push_only:
             errors.append(f'{prefix}Collection "{col.name}": cannot be both pullOnly and pushOnly')
 
-        # queueOnly cannot be used with binary collections (no JSON hash for raw bytes)
-        if col.queue_only and _is_binary_collection(col.allowed_mime_types):
-            errors.append(f'{prefix}Collection "{col.name}": queueOnly cannot be used with binary collections')
-
-        # queueOnly + pullOnly: push is disabled so queueOnly has no effect
-        if col.queue_only and col.pull_only:
-            errors.append(f'{prefix}Collection "{col.name}": queueOnly cannot be used with pullOnly (push routes are disabled)')
-
-        # queueOnly + remote: nothing stored locally, replication has nothing to read
-        if col.queue_only and col.remote:
-            errors.append(f'{prefix}Collection "{col.name}": queueOnly cannot be used with remote replication (no data is stored locally to replicate)')
+        if col.append_only:
+            persist = col.append_only.persist
+            if _is_binary_collection(col.allowed_mime_types):
+                errors.append(f'{prefix}Collection "{col.name}": appendOnly cannot be used with binary collections')
+            if col.pull_only:
+                errors.append(f'{prefix}Collection "{col.name}": appendOnly cannot be used with pullOnly (push routes are disabled)')
+            if col.remote:
+                errors.append(f'{prefix}Collection "{col.name}": appendOnly cannot be used with remote replication')
+            if persist:
+                # persist=True (default) — additional restrictions for the stored-array path
+                if col.client_encrypted:
+                    errors.append(
+                        f'{prefix}Collection "{col.name}": appendOnly with persist=true cannot be used with '
+                        f'clientEncrypted (server cannot read ciphertext to append)'
+                    )
+                if col.encryption in (ENCRYPTION_DELEGATED, ENCRYPTION_GROUP):
+                    errors.append(
+                        f'{prefix}Collection "{col.name}": appendOnly with persist=true cannot be used with '
+                        f'"{col.encryption}" encryption (server cannot read ciphertext to append)'
+                    )
+                if col.bundle:
+                    errors.append(
+                        f'{prefix}Collection "{col.name}": appendOnly with persist=true cannot be used with bundle'
+                    )
 
         if col.listable:
             param_matches = re.findall(r"\{[^}]+\}", col.storage_path)
@@ -65,9 +78,9 @@ def _validate_collections(collections: list[CollectionConfig], scope_label: str)
                         f'{prefix}Collection "{col.name}": listable requires the last storagePath segment '
                         f'to be a path parameter (e.g. {{day}}), got "{last_segment}"'
                     )
-            if col.queue_only:
+            if col.append_only and col.append_only.persist is False:
                 errors.append(
-                    f'{prefix}Collection "{col.name}": listable cannot be used with queueOnly (no documents are stored)'
+                    f'{prefix}Collection "{col.name}": listable cannot be used with appendOnly+persist=false (no documents are stored)'
                 )
             if col.bundle:
                 errors.append(
