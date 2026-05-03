@@ -31,6 +31,9 @@ export const HKDF_INFO_SERVER = "starfish-server-data"
 // Config
 export const DEFAULT_CONFIG_KEY = "__sync__/config.json"
 
+// AppendOnly
+export const APPEND_DEFAULT_FIELD = "items"
+
 // Protocol
 export const ERROR_HASH_MISMATCH = "hash_mismatch"
 export const CONTENT_TYPE_JSON = "application/json"

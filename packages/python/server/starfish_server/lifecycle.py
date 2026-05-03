@@ -1,6 +1,5 @@
 """Graceful shutdown utilities for Starfish servers."""
 
-from __future__ import annotations
 
 import asyncio
 import logging

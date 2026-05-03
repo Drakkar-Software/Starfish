@@ -1,6 +1,16 @@
 /** Encryption modes supported by the Starfish server. */
 export type EncryptionMode = "none" | "identity" | "server" | "delegated"
 
+/** Append-only configuration exposed via GET /config. */
+export interface AppendOnlyClientInfo {
+  /** Array field name in the stored document. Defaults to "items". */
+  field?: string
+  /** false = no storage write (replaces queueOnly). true/absent = append to array. */
+  persist?: boolean
+  /** When true, server validates client's baseHash against hash(lastItem). */
+  checkLastItem?: boolean
+}
+
 /** Per-collection metadata returned by GET /config. */
 export interface CollectionClientInfo {
   name: string
@@ -9,7 +19,7 @@ export interface CollectionClientInfo {
   allowedMimeTypes: string[]
   pullOnly?: boolean
   pushOnly?: boolean
-  queueOnly?: boolean
+  appendOnly?: AppendOnlyClientInfo
   clientEncrypted?: boolean
   /** Base64-encoded public key for client-side encryption, if configured on the server. */
   publicKey?: string

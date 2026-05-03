@@ -18,10 +18,12 @@ export async function push(
   author?: Author,
   skipTimestamps: boolean = false,
   skipStorage: boolean = false,
+  precomputedHash?: string,
+  precomputedTimestamps?: Timestamps,
 ): Promise<PushResult> {
   if (skipStorage) {
     const now = Date.now()
-    const newHash = await computeHash(newData)
+    const newHash = precomputedHash ?? await computeHash(newData)
     return { hash: newHash, timestamp: now } as PushSuccess
   }
 
@@ -55,10 +57,10 @@ export async function push(
   }
 
   const now = Date.now()
-  const newHash = await computeHash(newData)
+  const newHash = precomputedHash ?? await computeHash(newData)
   const timestamps = skipTimestamps
     ? {}
-    : computeTimestamps(oldData, newData, oldTimestamps, now)
+    : (precomputedTimestamps ?? computeTimestamps(oldData, newData, oldTimestamps, now))
 
   const doc: Record<string, unknown> = {
     v: DOCUMENT_VERSION,

@@ -1,6 +1,5 @@
 """Structured logging for Starfish server operations."""
 
-from __future__ import annotations
 
 import json
 import logging

@@ -1,7 +1,7 @@
 import type { ObjectStore } from "../storage/base.js"
 import { pull } from "../protocol/pull.js"
 import { push, type Author } from "../protocol/push.js"
-import type { PushSuccess } from "../protocol/types.js"
+import type { PushSuccess, StoredDocument } from "../protocol/types.js"
 import { stableStringify } from "@drakkar.software/starfish-protocol"
 import { ERROR_HASH_MISMATCH } from "../constants.js"
 
@@ -127,6 +127,104 @@ export async function handleSyncPull(
   }
 
   return { body, status: 200, headers }
+}
+
+/**
+ * Pull handler for appendOnly persist=true collections.
+ *
+ * When a checkpoint is requested, filters data[appendField] to only items
+ * whose per-item timestamp (stored as a number[] parallel to the array)
+ * is greater than the checkpoint. Falls back to returning the full array for
+ * legacy docs without per-item timestamps.
+ */
+export async function handleAppendOnlyPull(
+  documentKey: string,
+  store: ObjectStore,
+  checkpointParam: string | null | undefined,
+  appendField: string,
+  cacheDurationMs?: number,
+  isPublic: boolean = true,
+  lastParam?: string | null,
+): Promise<PullResponse> {
+  if (UNSAFE_KEY.test(documentKey)) {
+    return { body: { error: "Invalid path parameter" }, status: 400 }
+  }
+
+  let checkpoint = 0
+  if (checkpointParam != null) {
+    const parsed = parseInt(checkpointParam, 10)
+    if (isNaN(parsed) || parsed < 0 || String(parsed) !== checkpointParam) {
+      return { body: { error: "Invalid checkpoint" }, status: 400 }
+    }
+    checkpoint = parsed
+  }
+
+  let last: number | null = null
+  if (lastParam != null) {
+    const parsed = parseInt(lastParam, 10)
+    if (isNaN(parsed) || parsed < 0 || String(parsed) !== lastParam) {
+      return { body: { error: "Invalid last" }, status: 400 }
+    }
+    last = parsed
+  }
+
+  const now = Date.now()
+  const raw = await store.getString(documentKey)
+
+  if (!raw) {
+    return { body: { data: { [appendField]: [] }, hash: "", timestamp: now }, status: 200 }
+  }
+
+  let stored: StoredDocument
+  try {
+    stored = JSON.parse(raw) as StoredDocument
+  } catch (e) {
+    console.error(`[Starfish] Corrupt stored document at key "${documentKey}":`, e)
+    return { body: { data: { [appendField]: [] }, hash: "", timestamp: now }, status: 200 }
+  }
+
+  const storedData = (stored.data as Record<string, unknown>) ?? {}
+  const storedHash = stored.hash ?? ""
+  const allItems = Array.isArray(storedData[appendField]) ? (storedData[appendField] as unknown[]) : []
+
+  let filteredItems: unknown[]
+  if (checkpoint > 0) {
+    const storedTs = stored.timestamps?.[appendField]
+    if (Array.isArray(storedTs)) {
+      // Timestamps are monotonically non-decreasing — binary search for first index > checkpoint
+      const ts = storedTs as number[]
+      let lo = 0, hi = ts.length
+      while (lo < hi) {
+        const mid = (lo + hi) >>> 1
+        if ((ts[mid] ?? 0) <= checkpoint) lo = mid + 1
+        else hi = mid
+      }
+      filteredItems = lo < allItems.length ? allItems.slice(lo) : []
+    } else {
+      // Legacy doc without per-item timestamps: return full array (checkpoint not applicable)
+      filteredItems = allItems
+    }
+  } else {
+    filteredItems = allItems
+  }
+
+  if (last !== null) {
+    filteredItems = last === 0 ? [] : filteredItems.slice(-last)
+  }
+
+  const responseData = { ...storedData, [appendField]: filteredItems }
+
+  const headers: Record<string, string> = {}
+  if (cacheDurationMs != null) {
+    const maxAge = Math.floor(cacheDurationMs / 1000)
+    const directive = isPublic ? `max-age=${maxAge}` : `private, max-age=${maxAge}`
+    headers["Cache-Control"] = directive
+  }
+  if (storedHash) {
+    headers["ETag"] = `"${storedHash}"`
+  }
+
+  return { body: { data: responseData, hash: storedHash, timestamp: now }, status: 200, headers: Object.keys(headers).length ? headers : undefined }
 }
 
 export interface PushResponse {

@@ -31,6 +31,17 @@ export interface FieldPermission {
   writeRoles?: string[]
 }
 
+export interface AppendOnlyConfig {
+  /** Array field name in the stored document. Defaults to "items". */
+  field?: string
+  /** true (default) — append item to stored array.
+   *  false — compute hash and publish to queue without writing to storage (replaces queueOnly). */
+  persist?: boolean
+  /** When true, validates the client's baseHash against hash(lastItem) before appending.
+   *  Returns 409 if the last item has changed since the client last read. */
+  checkLastItem?: boolean
+}
+
 export interface CollectionConfig {
   name: string
   storagePath: string
@@ -49,8 +60,9 @@ export interface CollectionConfig {
   bundle?: string
   remote?: RemoteConfig
   queue?: QueueConfig
-  /** When true, pushes compute and return a hash but do not write to storage. Use for event-only collections where only the queue consumer matters. */
-  queueOnly?: boolean
+  /** When set, every push appends the incoming data object as the last item of a stored array.
+   *  Pass `true` as shorthand for `{}` (all defaults). */
+  appendOnly?: AppendOnlyConfig
   /** Document time-to-live in milliseconds. Expired documents return empty data on pull. */
   ttlMs?: number
   /** Per-field read/write permissions. Keys are top-level field names. */
@@ -59,7 +71,7 @@ export interface CollectionConfig {
   publicKey?: string
   /** When true, exposes a GET /list/... endpoint that returns the keys of existing documents
    *  under this collection's prefix. The last path parameter in storagePath is the one being
-   *  enumerated. Requires at least one path parameter; incompatible with queueOnly and bundle. */
+   *  enumerated. Requires at least one path parameter; incompatible with appendOnly and bundle. */
   listable?: boolean
 }
 

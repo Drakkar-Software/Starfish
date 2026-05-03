@@ -1,5 +1,36 @@
 # Changelog
 
+## 2.0.0
+
+### Breaking
+
+- **`queueOnly` removed** — replaced by the unified `appendOnly` + `persist` model. Migrate: `queueOnly: true` → `appendOnly: { persist: false }` (Python: `queue_only=True` → `append_only=AppendOnlyConfig(persist=False)`). The `/config` response no longer includes `queueOnly`; clients now receive `appendOnly` with optional `persist` and `checkLastItem` fields instead.
+
+### Added
+
+- **Append-only collections** (`appendOnly: {}`, persist defaults `true`) — every push appends `body.data` to a stored array (default field: `"items"`). No conflict detection; `baseHash` ignored. Configurable via `appendField`/`field`.
+- **`AppendOnlyConfig` object** — `{ field?, persist?, checkLastItem? }`. Pass `true` as shorthand for `{}`.
+- **`checkLastItem` mode** — `appendOnly: { checkLastItem: true }` validates the client's `baseHash` against the stored document hash before appending. Returns `409` on mismatch. Client should pass the `hash` field from the last pull response as `baseHash`.
+- **Server-side retry loop** (max 3) for concurrent appenders to absorb storage races. Returns `500 { error: "append_retry_exhausted" }` after exhaustion.
+- **Append-only pull via `client.pull`** — `pull(path, { appendField, since?, last? })` (TS) and `pull(path, append_field=, since=, last=)` (Python) return `T[]` / `list` directly. No separate helper needed; `push(path, item, null)` / `push(path, item, None)` handles append pushes.
+- **Incremental checkpoint pull** for `appendOnly persist=true` — each item is stored with its own timestamp. `?checkpoint=<ts>` returns only items appended after `ts`, decoupling pull payload size from total array length.
+- **`?last=K` pull parameter** for `appendOnly persist=true` — returns only the last K items (applied after `?checkpoint` filter). Useful for "latest N entries" queries without a tracked checkpoint. Exposed as `last?: number` in `AppendPullOptions` (TS: `client.pull(path, { last: K })`) and `last=` kwarg in `client.pull(path, last=K)` (Python).
+- New doc: [`docs/ts/server/append-only-collections.md`](docs/ts/server/append-only-collections.md).
+
+### Changed
+
+#### Client (Python)
+
+- **`namespace` send-path now matches sign-path** — `StarfishClient` previously sent HTTP requests to `/sync/{namespace}/v1/...` while signing the canonical over `/v1/{namespace}/...`, requiring a server-side rewrite (nginx or `NamespaceRewriteMiddleware`) to bridge the gap. Both paths now use the same `/v1/{namespace}/...` format, so no rewrite layer is needed and the URL the client hits is identical to the URL the signature covers. Servers that relied on the old `/sync/{namespace}/v1/...` incoming URL must update their routing to expect `/v1/{namespace}/...` instead.
+
+#### Server (TypeScript + Python)
+
+- Author signature verification is skipped for all `appendOnly` collections (stored data is a transformed wrapper; signatures cannot be meaningfully verified).
+- **`appendOnly persist=true` stored hash** is now `hash({ n: items.length, last: lastItem })` (was `hash(fullDoc)`). Push CPU dropped from O(N) to O(1). ETag/304 and `checkLastItem` semantics preserved — length-tagging ensures duplicate pushes of identical items still produce distinct hashes.
+- **`pushAppend` / `pullAppendList`** (TS) and **`push_append` / `pull_append_list`** (Python) standalone helpers removed — append-only push/pull is now handled directly by `StarfishClient.push` / `StarfishClient.pull` (see Added above).
+- **`checkLastItem` race fix** — the stored-hash comparison now happens inside the retry loop, using the same document read that feeds the write. Previously the check ran once before the loop, so a concurrent write that arrived between the pre-loop check and the actual store write would slip through on a retry. Now every attempt re-reads and re-validates; the loser returns `409` deterministically. Also saves one storage read per `checkLastItem` push.
+- **Checkpoint filter uses binary search** — `?checkpoint=<ts>` on `appendOnly persist=true` documents now uses `bisect_right` / binary search on the monotonically non-decreasing per-item timestamps array (O(log N)) instead of a linear scan (O(N)).
+
 ## 1.19.2
 
 ### Fixed

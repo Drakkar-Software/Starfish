@@ -35,16 +35,29 @@ function validateCollections(collections: CollectionConfig[], scopeLabel: string
       errors.push(`${scopeLabel}Collection "${col.name}": cannot be both pullOnly and pushOnly`)
     }
 
-    if (col.queueOnly && isBinaryCollection(col.allowedMimeTypes)) {
-      errors.push(`${scopeLabel}Collection "${col.name}": queueOnly cannot be used with binary collections`)
-    }
-
-    if (col.queueOnly && col.pullOnly) {
-      errors.push(`${scopeLabel}Collection "${col.name}": queueOnly cannot be used with pullOnly (push routes are disabled)`)
-    }
-
-    if (col.queueOnly && col.remote) {
-      errors.push(`${scopeLabel}Collection "${col.name}": queueOnly cannot be used with remote replication (no data is stored locally to replicate)`)
+    if (col.appendOnly) {
+      const persist = col.appendOnly.persist
+      if (isBinaryCollection(col.allowedMimeTypes)) {
+        errors.push(`${scopeLabel}Collection "${col.name}": appendOnly cannot be used with binary collections`)
+      }
+      if (col.pullOnly) {
+        errors.push(`${scopeLabel}Collection "${col.name}": appendOnly cannot be used with pullOnly (push routes are disabled)`)
+      }
+      if (col.remote) {
+        errors.push(`${scopeLabel}Collection "${col.name}": appendOnly cannot be used with remote replication`)
+      }
+      if (persist !== false) {
+        // persist=true (default) — additional restrictions for the stored-array path
+        if (col.clientEncrypted) {
+          errors.push(`${scopeLabel}Collection "${col.name}": appendOnly with persist=true cannot be used with clientEncrypted (server cannot read ciphertext to append)`)
+        }
+        if (col.encryption === ENCRYPTION_DELEGATED || col.encryption === ENCRYPTION_GROUP) {
+          errors.push(`${scopeLabel}Collection "${col.name}": appendOnly with persist=true cannot be used with "${col.encryption}" encryption (server cannot read ciphertext to append)`)
+        }
+        if (col.bundle) {
+          errors.push(`${scopeLabel}Collection "${col.name}": appendOnly with persist=true cannot be used with bundle`)
+        }
+      }
     }
 
     if (col.listable) {
@@ -57,8 +70,8 @@ function validateCollections(collections: CollectionConfig[], scopeLabel: string
           errors.push(`${scopeLabel}Collection "${col.name}": listable requires the last storagePath segment to be a path parameter (e.g. {day}), got "${lastSegment}"`)
         }
       }
-      if (col.queueOnly) {
-        errors.push(`${scopeLabel}Collection "${col.name}": listable cannot be used with queueOnly (no documents are stored)`)
+      if (col.appendOnly && col.appendOnly.persist === false) {
+        errors.push(`${scopeLabel}Collection "${col.name}": listable cannot be used with appendOnly+persist=false (no documents are stored)`)
       }
       if (col.bundle) {
         errors.push(`${scopeLabel}Collection "${col.name}": listable cannot be used with bundle (bundled collections share storage paths)`)
@@ -165,9 +178,7 @@ function validateCollections(collections: CollectionConfig[], scopeLabel: string
 }
 
 export function validateConfig(config: SyncConfig): string[] {
-  const errors: string[] = []
-
-  errors.push(...validateCollections(config.collections, ""))
+  const errors = validateCollections(config.collections, "")
 
   if (config.namespaces) {
     for (const [nsName, nsConfig] of Object.entries(config.namespaces)) {

@@ -74,7 +74,7 @@ import type { ConfigResponse, CollectionClientInfo } from "@drakkar.software/sta
 | `allowedMimeTypes` | `string[]` | MIME types accepted on push |
 | `pullOnly` | `boolean?` | Push routes are disabled |
 | `pushOnly` | `boolean?` | Pull routes are disabled |
-| `queueOnly` | `boolean?` | Nothing is stored — use `push()` directly, never `update()` |
+| `appendOnly` | `{ field?, persist?, checkLastItem? }?` | Append-only mode config — see [Append-Only Collections](append-only-collections.md) |
 | `clientEncrypted` | `boolean?` | Client-side E2E encryption expected |
 | `publicKey` | `string?` | Base64-encoded public key for client-side encryption |
 | `ttlMs` | `number?` | Document time-to-live in milliseconds |
@@ -160,6 +160,6 @@ config = await fetch_server_config(
 
 `fetch_server_config` raises `httpx.HTTPStatusError` on non-2xx responses.
 
-## queueOnly collections
+## Append-only collections
 
-When `queueOnly: true`, the manifest flags this so clients know to call `push()` directly and never `update()`. See [`queue.md`](queue.md#queue-only-collections) for details.
+When `appendOnly` is set, the manifest exposes its configuration so clients can discover the collection's behavior at runtime. See [Append-Only Collections](append-only-collections.md) for details.

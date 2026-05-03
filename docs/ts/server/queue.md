@@ -190,9 +190,9 @@ class RedisQueue implements Queue {
 }
 ```
 
-## Queue-only collections
+## Append-only collections (no storage)
 
-Set `queueOnly: true` on a collection to publish change events without writing anything to storage. Pushes are accepted and return a `{hash, timestamp}` response like normal, but no document is ever persisted.
+Set `appendOnly: { persist: false }` on a collection to publish change events without writing anything to storage. Pushes are accepted and return a `{hash, timestamp}` response like normal, but no document is ever persisted.
 
 This is useful for event-only or ephemeral use cases — audit streams, analytics pipelines, or anything where you only need the queue consumer and never need to pull the data back.
 
@@ -204,25 +204,27 @@ This is useful for event-only or ephemeral use cases — audit streams, analytic
   writeRoles: ["admin"],
   encryption: "none",
   maxBodyBytes: 65536,
-  queueOnly: true,
+  appendOnly: { persist: false },
   queue: { topic: "analytics.events", includeParams: true },
 }
 ```
 
 **Behaviour differences from a normal collection:**
 
-| | Normal | `queueOnly` |
+| | Normal | `appendOnly` + `persist: false` |
 |---|---|---|
 | Storage write | Yes | No |
 | Hash conflict check | Yes (`baseHash` validated) | No (any `baseHash` accepted) |
 | Pull response | Returns stored data | Returns empty (`{}`) |
 | Queue event | If `queue` configured | If `queue` configured |
 
-`queueOnly` cannot be used with binary collections (there is no JSON hash function for raw bytes). The config validator will reject this combination.
+`appendOnly` cannot be used with binary collections (there is no JSON hash function for raw bytes). The config validator will reject this combination.
 
-**Client usage:** Use `push()` directly — never `update()`. The client already uses optimistic concurrency (no pull before push in the normal path), so there is no wasted round-trip. `update()` pulls first by design; for a `queueOnly` collection it would always receive empty data, merge into it, then push — which is almost certainly not what you want.
+**Client usage:** Use `push()` (or the `pushAppend` helper) directly — never `update()`. Pull always returns empty for `persist: false` collections, so `update()` would merge your data into `{}` before pushing.
 
-> **Tip:** The [`GET /config` endpoint](config-endpoint.md) exposes the `queueOnly` flag so clients can discover it at runtime rather than hardcoding it.
+> **Tip:** The [`GET /config` endpoint](config-endpoint.md) exposes the `appendOnly` flag so clients can discover it at runtime.
+
+For the stored-array variant (append to a persisted array), see [Append-Only Collections](append-only-collections.md).
 
 ## Python
 
@@ -279,9 +281,9 @@ CollectionConfig(
 )
 ```
 
-### Queue-only collections (Python)
+### Append-only (no storage) collections (Python)
 
-Pass `queue_only=True` (or `queueOnly: true` in JSON) to skip storage entirely:
+Pass `append_only=AppendOnlyConfig(persist=False)` (or `appendOnly: { persist: false }` in JSON) to skip storage entirely:
 
 ```python
 CollectionConfig(
@@ -291,12 +293,12 @@ CollectionConfig(
     write_roles=["admin"],
     encryption="none",
     max_body_bytes=65536,
-    queue_only=True,
+    append_only=AppendOnlyConfig(persist=False),
     queue=QueueConfig(topic="analytics.events", include_params=True),
 )
 ```
 
-Use `push()` directly on the client — never `update()`. Pull always returns empty for `queueOnly` collections, so `update()` would merge your data into `{}` before pushing.
+Use `push()` directly on the client — never `update()`. Pull always returns empty for `persist=False` collections.
 
 ### Implementing a custom Queue (Python)
 

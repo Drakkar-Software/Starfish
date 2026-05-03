@@ -1,4 +1,4 @@
-import type { SyncConfig, CollectionConfig, RemoteConfig, QueueConfig, CollectionRateLimitConfig, NamespaceConfig, FieldPermission } from "./schema.js"
+import type { SyncConfig, CollectionConfig, RemoteConfig, QueueConfig, CollectionRateLimitConfig, NamespaceConfig, FieldPermission, AppendOnlyConfig } from "./schema.js"
 import { validateConfig } from "./validate.js"
 import { StartupError } from "../errors.js"
 import { DEFAULT_CONFIG_KEY, CONTENT_TYPE_JSON } from "../constants.js"
@@ -14,6 +14,12 @@ function coerceQueue(v: unknown): QueueConfig | undefined {
   if (v === true) return { includeParams: false }
   if (v === false || v == null) return undefined
   return v as QueueConfig
+}
+
+function coerceAppendOnly(v: unknown): AppendOnlyConfig | undefined {
+  if (v === true) return {}
+  if (v === false || v == null) return undefined
+  return v as AppendOnlyConfig
 }
 
 function parseRemote(raw: Record<string, unknown>): RemoteConfig {
@@ -48,7 +54,7 @@ function parseCollection(raw: Record<string, unknown>): CollectionConfig {
     bundle: (raw["bundle"] as string) ?? undefined,
     remote: raw["remote"] ? parseRemote(raw["remote"] as Record<string, unknown>) : undefined,
     queue: coerceQueue(raw["queue"]),
-    queueOnly: (raw["queueOnly"] as boolean) ?? undefined,
+    appendOnly: coerceAppendOnly(raw["appendOnly"]),
     ttlMs: (raw["ttlMs"] as number) ?? undefined,
     fieldPermissions: (raw["fieldPermissions"] as Record<string, FieldPermission>) ?? undefined,
     publicKey: (raw["publicKey"] as string) ?? undefined,

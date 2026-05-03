@@ -8,6 +8,8 @@ import httpx
 from starfish_protocol.types import PullResult, PushSuccess
 from starfish_sdk.types import AuthProvider, BlobPullResult, BlobPushResult, ConflictError, StarfishHttpError
 
+APPEND_DEFAULT_FIELD = "items"
+
 
 class StarfishClient:
     """Low-level HTTP client for the Starfish sync protocol.
@@ -40,9 +42,7 @@ class StarfishClient:
         await self.close()
 
     def _send_path(self, path: str) -> str:
-        if self._namespace is None:
-            return path
-        return f"/sync/{self._namespace}{path}"
+        return self._sign_path(path)
 
     def _sign_path(self, path: str) -> str:
         if self._namespace is None:
@@ -56,16 +56,44 @@ class StarfishClient:
             return {}
         return await self._auth(method=method, path=path, body=body)
 
-    async def pull(self, path: str, checkpoint: int | None = None) -> PullResult:
+    async def pull(
+        self,
+        path: str,
+        checkpoint: int | None = None,
+        *,
+        append_field: str | None = None,
+        since: int | None = None,
+        last: int | None = None,
+    ) -> "PullResult | list[Any]":
         """Pull synced data from the server.
 
         Args:
             path: The pull endpoint path (e.g. "/pull/users/abc/settings")
             checkpoint: Only return data updated after this timestamp (0 = full pull)
+            append_field: When set, extracts and returns ``data[append_field]`` as a
+                list (append-only mode). Defaults to ``"items"`` when any append
+                option is provided.
+            since: Alias for ``checkpoint`` in append-only mode. Sent as
+                ``?checkpoint=``. Ignored when ``append_field`` is not set.
+            last: Return only the last K items after the checkpoint filter.
+                Sent as ``?last=``. Ignored when ``append_field`` is not set.
         """
         params: dict[str, str] = {}
-        if checkpoint is not None and checkpoint > 0:
-            params["checkpoint"] = str(checkpoint)
+
+        if append_field is not None or since is not None or last is not None:
+            field = append_field or APPEND_DEFAULT_FIELD
+            if since is not None:
+                if since < 0:
+                    raise ValueError("since must be non-negative")
+                params["checkpoint"] = str(since)
+            if last is not None:
+                if last < 0:
+                    raise ValueError("last must be non-negative")
+                params["last"] = str(last)
+        else:
+            field = None
+            if checkpoint is not None and checkpoint > 0:
+                params["checkpoint"] = str(checkpoint)
 
         auth_headers = await self._auth_headers("GET", self._sign_path(path), None)
 
@@ -78,13 +106,20 @@ class StarfishClient:
             raise StarfishHttpError(resp.status_code, resp.text)
 
         body = resp.json()
-        return PullResult(
+        result = PullResult(
             data=body["data"],
             hash=body["hash"],
             timestamp=body["timestamp"],
             author_pubkey=body.get("authorPubkey"),
             author_signature=body.get("authorSignature"),
         )
+
+        if field is not None:
+            data = result.data if isinstance(result.data, dict) else {}
+            arr = data.get(field)
+            return arr if isinstance(arr, list) else []
+
+        return result
 
     async def push(
         self,

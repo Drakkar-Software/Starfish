@@ -1,4 +1,4 @@
-"""Tests for queueOnly collection flag."""
+"""Tests for appendOnly+persist=false collection (replaces queueOnly)."""
 
 import json
 
@@ -6,7 +6,7 @@ import pytest
 from fastapi import FastAPI, Request
 from httpx import AsyncClient, ASGITransport
 
-from starfish_server.config.schema import SyncConfig, CollectionConfig, QueueConfig
+from starfish_server.config.schema import SyncConfig, CollectionConfig, QueueConfig, AppendOnlyConfig
 from starfish_server.config.validate import validate_config
 from starfish_server.queue.memory import MemoryQueue
 from starfish_server.router.route_builder import (
@@ -57,7 +57,7 @@ async def _push(client: AsyncClient, path: str = "/push/events/evt-1", base_hash
 
 @pytest.mark.asyncio
 async def test_push_returns_hash_and_timestamp():
-    app, _, _ = _build_app(_make_col(queue_only=True))
+    app, _, _ = _build_app(_make_col(appendOnly=AppendOnlyConfig(persist=False)))
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await _push(client)
     assert resp.status_code == 200
@@ -69,7 +69,7 @@ async def test_push_returns_hash_and_timestamp():
 
 @pytest.mark.asyncio
 async def test_does_not_write_to_storage():
-    app, store, _ = _build_app(_make_col(queue_only=True))
+    app, store, _ = _build_app(_make_col(appendOnly=AppendOnlyConfig(persist=False)))
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         await _push(client)
     stored = await store.get_string("events/evt-1")
@@ -79,7 +79,7 @@ async def test_does_not_write_to_storage():
 @pytest.mark.asyncio
 async def test_pull_returns_empty_data():
     """Nothing stored → pull returns empty."""
-    app, _, _ = _build_app(_make_col(queue_only=True))
+    app, _, _ = _build_app(_make_col(appendOnly=AppendOnlyConfig(persist=False)))
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         await _push(client)
         resp = await client.get("/pull/events/evt-1")
@@ -92,7 +92,7 @@ async def test_pull_returns_empty_data():
 @pytest.mark.asyncio
 async def test_accepts_any_base_hash():
     """No conflict detection — any baseHash is accepted."""
-    app, _, _ = _build_app(_make_col(queue_only=True))
+    app, _, _ = _build_app(_make_col(appendOnly=AppendOnlyConfig(persist=False)))
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         await _push(client)
         resp = await _push(client, base_hash="arbitrary-wrong-hash")
@@ -101,7 +101,7 @@ async def test_accepts_any_base_hash():
 
 @pytest.mark.asyncio
 async def test_consistent_hash_for_same_data():
-    app, _, _ = _build_app(_make_col(queue_only=True))
+    app, _, _ = _build_app(_make_col(appendOnly=AppendOnlyConfig(persist=False)))
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp1 = await _push(client, "/push/events/evt-1")
         resp2 = await _push(client, "/push/events/evt-2")
@@ -112,7 +112,7 @@ async def test_consistent_hash_for_same_data():
 async def test_publishes_queue_event():
     q = MemoryQueue()
     col = _make_col(
-        queue_only=True,
+        appendOnly=AppendOnlyConfig(persist=False),
         queue=QueueConfig(topic="events.created"),
     )
     app, _, _ = _build_app(col, queue=q)
@@ -131,48 +131,48 @@ async def test_publishes_queue_event():
 
 @pytest.mark.asyncio
 async def test_push_accepted_without_queue_configured():
-    """queueOnly without a queue: ephemeral (no storage, no queue event)."""
-    col = _make_col(queue_only=True)
+    """appendOnly+persist=false without a queue: ephemeral (no storage, no queue event)."""
+    col = _make_col(appendOnly=AppendOnlyConfig(persist=False))
     app, _, q = _build_app(col)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await _push(client)
     assert resp.status_code == 200
-    assert len(q.messages) == 0  # no col.queue configured → no event
+    assert len(q.messages) == 0
 
 
 @pytest.mark.asyncio
 async def test_still_validates_missing_data_field():
-    app, _, _ = _build_app(_make_col(queue_only=True))
+    app, _, _ = _build_app(_make_col(appendOnly=AppendOnlyConfig(persist=False)))
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post(
             "/push/events/evt-1",
-            json={"baseHash": None},  # no data field
+            json={"baseHash": None},
             headers={"content-type": "application/json"},
         )
     assert resp.status_code == 400
 
 
-def test_queueonly_valid_json_collection():
-    errors = validate_config(SyncConfig(version=1, collections=[_make_col(queue_only=True)]))
+def test_valid_append_only_no_persist_collection():
+    errors = validate_config(SyncConfig(version=1, collections=[_make_col(appendOnly=AppendOnlyConfig(persist=False))]))
     assert errors == []
 
 
-def test_queueonly_binary_collection_rejected():
-    col = _make_col(queue_only=True, allowedMimeTypes=["image/png"])
+def test_append_only_binary_collection_rejected():
+    col = _make_col(appendOnly=AppendOnlyConfig(persist=False), allowedMimeTypes=["image/png"])
     errors = validate_config(SyncConfig(version=1, collections=[col]))
-    assert any("queueOnly cannot be used with binary collections" in e for e in errors)
+    assert any("appendOnly cannot be used with binary collections" in e for e in errors)
 
 
-def test_queueonly_pullonly_rejected():
-    col = _make_col(queue_only=True, pull_only=True)
+def test_append_only_pullonly_rejected():
+    col = _make_col(appendOnly=AppendOnlyConfig(persist=False), pull_only=True)
     errors = validate_config(SyncConfig(version=1, collections=[col]))
-    assert any("queueOnly cannot be used with pullOnly" in e for e in errors)
+    assert any("appendOnly cannot be used with pullOnly" in e for e in errors)
 
 
-def test_queueonly_remote_rejected():
+def test_append_only_remote_rejected():
     from starfish_server.config.schema import RemoteConfig
     col = _make_col(
-        queue_only=True,
+        appendOnly=AppendOnlyConfig(persist=False),
         remote=RemoteConfig(
             url="https://primary.example.com",
             pull_path="/pull/events/{eventId}",
@@ -181,4 +181,4 @@ def test_queueonly_remote_rejected():
         ),
     )
     errors = validate_config(SyncConfig(version=1, collections=[col]))
-    assert any("queueOnly cannot be used with remote replication" in e for e in errors)
+    assert any("appendOnly cannot be used with remote replication" in e for e in errors)

@@ -1,6 +1,5 @@
 """Client-side helper for reading a user's entitlement document."""
 
-from __future__ import annotations
 
 from starfish_sdk.client import StarfishClient
 from starfish_sdk.types import StarfishHttpError

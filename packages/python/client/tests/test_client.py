@@ -260,15 +260,25 @@ async def test_namespace_none_leaves_paths_unchanged():
 
 
 @pytest.mark.asyncio
-async def test_namespace_send_path_prepends_sync_prefix():
+async def test_namespace_send_path_matches_sign_path():
+    signed_paths: list[str] = []
+    sent_urls: list[str] = []
+
+    async def capture_auth(method: str, path: str, body: str | None) -> dict[str, str]:
+        signed_paths.append(path)
+        return {}
+
     mock_http = AsyncMock()
     mock_http.post.return_value = make_response(200, {"hash": "h", "timestamp": 1})
-    client = StarfishClient("http://sync.example.com", namespace="octobot", client=mock_http)
+    client = StarfishClient("http://sync.example.com", auth=capture_auth, namespace="octobot", client=mock_http)
 
     await client.push("/v1/push/users/abc/errors/salt", {"x": 1}, None)
 
-    url = mock_http.post.call_args.args[0]
-    assert url == "http://sync.example.com/sync/octobot/v1/push/users/abc/errors/salt"
+    sent_urls.append(mock_http.post.call_args.args[0])
+
+    # HTTP URL path and signed canonical path must be identical
+    assert sent_urls == ["http://sync.example.com/v1/octobot/push/users/abc/errors/salt"]
+    assert signed_paths == ["/v1/octobot/push/users/abc/errors/salt"]
 
 
 @pytest.mark.asyncio
@@ -286,6 +296,63 @@ async def test_namespace_sign_path_inserts_namespace_after_v1():
     await client.push("/v1/push/users/abc/errors/salt", {"x": 1}, None)
 
     assert signed_paths == ["/v1/octobot/push/users/abc/errors/salt"]
+
+
+@pytest.mark.asyncio
+async def test_namespace_pull_url_and_sign_path_match():
+    signed_paths: list[str] = []
+
+    async def capture_auth(method: str, path: str, body: str | None) -> dict[str, str]:
+        signed_paths.append(path)
+        return {}
+
+    mock_http = AsyncMock()
+    mock_http.get.return_value = make_response(200, {"data": {}, "hash": "h", "timestamp": 0})
+    client = StarfishClient("http://sync.example.com", auth=capture_auth, namespace="octobot", client=mock_http)
+
+    await client.pull("/v1/pull/users/abc/settings")
+
+    url = mock_http.get.call_args.args[0]
+    assert url == "http://sync.example.com/v1/octobot/pull/users/abc/settings"
+    assert signed_paths == ["/v1/octobot/pull/users/abc/settings"]
+
+
+@pytest.mark.asyncio
+async def test_namespace_pull_blob_url_and_sign_path_match():
+    signed_paths: list[str] = []
+
+    async def capture_auth(method: str, path: str, body: str | None) -> dict[str, str]:
+        signed_paths.append(path)
+        return {}
+
+    mock_http = AsyncMock()
+    mock_http.get.return_value = make_binary_response(200, content=b"\x89PNG", content_type="image/png", etag="abc")
+    client = StarfishClient("http://sync.example.com", auth=capture_auth, namespace="octobot", client=mock_http)
+
+    await client.pull_blob("/v1/pull/users/abc/avatar")
+
+    url = mock_http.get.call_args.args[0]
+    assert url == "http://sync.example.com/v1/octobot/pull/users/abc/avatar"
+    assert signed_paths == ["/v1/octobot/pull/users/abc/avatar"]
+
+
+@pytest.mark.asyncio
+async def test_namespace_push_blob_url_and_sign_path_match():
+    signed_paths: list[str] = []
+
+    async def capture_auth(method: str, path: str, body: str | None) -> dict[str, str]:
+        signed_paths.append(path)
+        return {}
+
+    mock_http = AsyncMock()
+    mock_http.post.return_value = MagicMock(status_code=200, json=MagicMock(return_value={"hash": "xyz"}))
+    client = StarfishClient("http://sync.example.com", auth=capture_auth, namespace="octobot", client=mock_http)
+
+    await client.push_blob("/v1/push/users/abc/avatar", b"\x89PNG", "image/png")
+
+    url = mock_http.post.call_args.args[0]
+    assert url == "http://sync.example.com/v1/octobot/push/users/abc/avatar"
+    assert signed_paths == ["/v1/octobot/push/users/abc/avatar"]
 
 
 @pytest.mark.asyncio

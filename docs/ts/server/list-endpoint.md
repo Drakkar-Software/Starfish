@@ -86,7 +86,7 @@ roleEnricher receives params: { groupId: "abc" }   ← groupId present
 |---|---|
 | `listable` with no path params in `storagePath` | `listable requires at least one path parameter` |
 | `listable` when the last segment is not a `{param}` | `listable requires the last storagePath segment to be a path parameter` |
-| `listable: true` + `queueOnly: true` | `listable cannot be used with queueOnly` |
+| `listable: true` + `appendOnly: { persist: false }` | `listable cannot be used with appendOnly+persist=false` |
 | `listable: true` + `bundle: "..."` | `listable cannot be used with bundle` |
 
 ## Python

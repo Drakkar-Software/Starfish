@@ -138,3 +138,23 @@ async def test_corrupt_stored_document_overwritable_with_empty_base_hash():
     # Pass baseHash="" to match the "" current_hash that results from parse failure
     result = await push(store, "col/corrupt", {"recovered": True}, "")
     assert isinstance(result, PushSuccess), f"Expected PushSuccess, got {result!r}"
+
+
+@pytest.mark.asyncio
+async def test_precomputed_hash_is_stored():
+    store = MemoryObjectStore()
+    sentinel = "a" * 64
+    await push(store, "col/doc", {"a": 1}, None, precomputed_hash=sentinel)
+    import json
+    raw = json.loads(await store.get_string("col/doc"))
+    assert raw["hash"] == sentinel
+
+
+@pytest.mark.asyncio
+async def test_precomputed_timestamps_are_stored():
+    store = MemoryObjectStore()
+    pre_ts = {"items": [1714000001, 1714000002]}
+    await push(store, "col/doc", {"items": [{"a": 1}, {"a": 2}]}, None, precomputed_timestamps=pre_ts)
+    import json
+    raw = json.loads(await store.get_string("col/doc"))
+    assert raw["timestamps"] == pre_ts

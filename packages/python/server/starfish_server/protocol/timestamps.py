@@ -1,7 +1,6 @@
 """Timestamp computation and checkpoint filtering."""
 
 
-import json
 from typing import Any
 
 from starfish_server.protocol.types import Timestamps
@@ -69,6 +68,21 @@ def compute_timestamps(
             result[key] = compute_timestamps(old_obj, new_obj, old_ts_obj, now)
 
     return result
+
+
+def max_leaf_timestamp(timestamps: Any) -> int:
+    """Recursively find the maximum leaf timestamp in a timestamps tree.
+
+    Handles ``int`` leaves, ``list[int]`` leaves (per-item appendOnly timestamps),
+    and nested ``dict`` trees. Returns 0 for empty or non-numeric inputs.
+    """
+    if isinstance(timestamps, int):
+        return timestamps
+    if isinstance(timestamps, list):
+        return max((v for v in timestamps if isinstance(v, int)), default=0)
+    if isinstance(timestamps, dict):
+        return max((max_leaf_timestamp(v) for v in timestamps.values()), default=0)
+    return 0
 
 
 def filter_by_checkpoint(

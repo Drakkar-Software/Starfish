@@ -4,7 +4,7 @@
 from dataclasses import dataclass
 from typing import Any, Union
 
-Timestamps = dict[str, Union[int, "Timestamps"]]
+Timestamps = dict[str, Union[int, list[int], "Timestamps"]]
 
 
 @dataclass

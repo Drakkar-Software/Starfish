@@ -49,9 +49,9 @@ async function push(app: ReturnType<typeof createSyncRouter>, path = "/push/even
   })
 }
 
-describe("queueOnly collection", () => {
+describe("appendOnly+persist=false collection (replaces queueOnly)", () => {
   it("push returns hash and timestamp", async () => {
-    const { app } = makeRouter(makeCol({ queueOnly: true }))
+    const { app } = makeRouter(makeCol({ appendOnly: { persist: false } }))
     const res = await push(app)
     expect(res.status).toBe(200)
     const body = await res.json()
@@ -61,14 +61,14 @@ describe("queueOnly collection", () => {
   })
 
   it("does not write to storage", async () => {
-    const { app, store } = makeRouter(makeCol({ queueOnly: true }))
+    const { app, store } = makeRouter(makeCol({ appendOnly: { persist: false } }))
     await push(app)
     const stored = await store.getString("events/evt-1")
     expect(stored).toBeNull()
   })
 
   it("pull returns empty data (nothing stored)", async () => {
-    const { app } = makeRouter(makeCol({ queueOnly: true, readRoles: ["admin"] }))
+    const { app } = makeRouter(makeCol({ appendOnly: { persist: false }, readRoles: ["admin"] }))
     await push(app)
     const res = await app.request("/pull/events/evt-1")
     expect(res.status).toBe(200)
@@ -78,28 +78,25 @@ describe("queueOnly collection", () => {
   })
 
   it("accepts any baseHash (no conflict detection)", async () => {
-    const { app } = makeRouter(makeCol({ queueOnly: true }))
-    // First push
+    const { app } = makeRouter(makeCol({ appendOnly: { persist: false } }))
     await push(app)
-    // Second push with arbitrary baseHash should also succeed
     const res = await push(app, "/push/events/evt-1", "arbitrary-hash-that-does-not-match")
     expect(res.status).toBe(200)
   })
 
   it("returns consistent hash for same data", async () => {
-    const { app } = makeRouter(makeCol({ queueOnly: true }))
+    const { app } = makeRouter(makeCol({ appendOnly: { persist: false } }))
     const res1 = await push(app, "/push/events/evt-1")
     const res2 = await push(app, "/push/events/evt-2")
     const body1 = await res1.json()
     const body2 = await res2.json()
-    // Same data → same hash
     expect(body1.hash).toBe(body2.hash)
   })
 
   it("publishes queue event when queue configured", async () => {
     const q = new MemoryQueue()
     const { app } = makeRouter(
-      makeCol({ queueOnly: true, queue: { topic: "events.created", includeParams: false } }),
+      makeCol({ appendOnly: { persist: false }, queue: { topic: "events.created", includeParams: false } }),
       q,
     )
     const res = await push(app)
@@ -115,52 +112,51 @@ describe("queueOnly collection", () => {
   })
 
   it("accepts push even without queue configured", async () => {
-    // queueOnly without queue: collection is ephemeral (no storage, no queue)
-    const col = makeCol({ queueOnly: true, queue: undefined })
+    const col = makeCol({ appendOnly: { persist: false }, queue: undefined })
     const { app } = makeRouter(col)
     const res = await push(app)
     expect(res.status).toBe(200)
   })
 
   it("still validates missing data field", async () => {
-    const { app } = makeRouter(makeCol({ queueOnly: true }))
+    const { app } = makeRouter(makeCol({ appendOnly: { persist: false } }))
     const res = await app.request("/push/events/evt-1", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ baseHash: null }), // no data field
+      body: JSON.stringify({ baseHash: null }),
     })
     expect(res.status).toBe(400)
   })
 })
 
-describe("queueOnly config validation", () => {
-  it("valid queueOnly JSON collection passes", () => {
-    const errors = validateConfig({ version: 1, collections: [makeCol({ queueOnly: true })] })
+describe("appendOnly+persist=false config validation", () => {
+  it("valid appendOnly+persist=false JSON collection passes", () => {
+    const errors = validateConfig({ version: 1, collections: [makeCol({ appendOnly: { persist: false } })] })
     expect(errors).toHaveLength(0)
   })
 
-  it("queueOnly with binary collection is rejected", () => {
+  it("appendOnly with binary collection is rejected", () => {
     const errors = validateConfig({
       version: 1,
-      collections: [makeCol({ queueOnly: true, allowedMimeTypes: ["image/png"] })],
+      collections: [makeCol({ appendOnly: { persist: false }, allowedMimeTypes: ["image/png"] })],
     })
-    expect(errors.some((e) => e.includes("queueOnly cannot be used with binary collections"))).toBe(true)
+    expect(errors.some((e) => e.includes("appendOnly cannot be used with binary collections"))).toBe(true)
   })
 
-  it("queueOnly with pullOnly is rejected", () => {
+  it("appendOnly with pullOnly is rejected", () => {
     const errors = validateConfig({
       version: 1,
-      collections: [makeCol({ queueOnly: true, pullOnly: true })],
+      collections: [makeCol({ appendOnly: { persist: false }, pullOnly: true })],
     })
-    expect(errors.some((e) => e.includes("queueOnly cannot be used with pullOnly"))).toBe(true)
+    expect(errors.some((e) => e.includes("appendOnly cannot be used with pullOnly"))).toBe(true)
   })
 
-  it("queueOnly with remote is rejected", () => {
+  it("appendOnly with remote is rejected", () => {
     const errors = validateConfig({
       version: 1,
       collections: [
         makeCol({
-          queueOnly: true,
+          appendOnly: { persist: false },
           remote: {
             url: "https://primary.example.com",
             pullPath: "/pull/events/{eventId}",
@@ -172,6 +168,6 @@ describe("queueOnly config validation", () => {
         }),
       ],
     })
-    expect(errors.some((e) => e.includes("queueOnly cannot be used with remote replication"))).toBe(true)
+    expect(errors.some((e) => e.includes("appendOnly cannot be used with remote replication"))).toBe(true)
   })
 })

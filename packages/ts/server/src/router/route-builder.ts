@@ -9,16 +9,20 @@ import type {
   EncryptionMode,
   FieldPermission,
   NamespaceConfig,
+  AppendOnlyConfig,
 } from "../config/schema.js"
+import { buildAppendOnlyData } from "../protocol/append.js"
 import { EncryptedObjectStore } from "../encryption/encrypted-store.js"
 import { pull } from "../protocol/pull.js"
 import {
   handleSyncPull,
   handleSyncPush,
+  handleAppendOnlyPull,
   validatePathSegment,
   deepSanitize,
   type SignatureVerifier,
 } from "./helpers.js"
+import { push as pushDirect } from "../protocol/push.js"
 import {
   checkBodyLimit,
   RateLimiter,
@@ -44,6 +48,7 @@ import {
   IDENTITY_PARAM,
   IDENTITY_KEY,
   QUERY_CHECKPOINT,
+  APPEND_DEFAULT_FIELD,
   HKDF_INFO_IDENTITY,
   HKDF_INFO_SERVER,
 } from "../constants.js"
@@ -82,7 +87,7 @@ export interface CollectionClientInfo {
   allowedMimeTypes: string[]
   pullOnly?: boolean
   pushOnly?: boolean
-  queueOnly?: boolean
+  appendOnly?: AppendOnlyConfig
   clientEncrypted?: boolean
   /** Base64-encoded public key for client-side encryption, if configured. */
   publicKey?: string
@@ -430,6 +435,60 @@ async function runPush(
 
   const store = resolveStore(col, opts.store, params, identity, opts)
   const isClientEncrypted = Boolean(col.clientEncrypted) || col.encryption === ENCRYPTION_DELEGATED || col.encryption === ENCRYPTION_GROUP
+
+  if (col.appendOnly) {
+    const appendCfg = col.appendOnly
+    const appendField = appendCfg.field ?? APPEND_DEFAULT_FIELD
+
+    if (appendCfg.persist === false) {
+      // queueOnly path: compute hash, publish to queue, no storage write
+      const result = await handleSyncPush(
+        documentKey,
+        store,
+        bodyObj,
+        identity,
+        undefined, // signatures not verified for appendOnly
+        isClientEncrypted,
+        true,
+      )
+      return c.json(result.body, result.status as any)
+    }
+
+    // persist=true (default): append item to stored array with retry loop
+    const clientBaseHash = bodyObj["baseHash"] as string | null | undefined
+    const item = bodyObj["data"] as Record<string, unknown>
+
+    const MAX_RETRIES = 3
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+      const now = Date.now()
+      const { data: appendedData, baseHash, timestamps, lastItemHash } =
+        await buildAppendOnlyData(store, documentKey, item, appendField, now)
+      // checkLastItem: validate client's view of the array using the same read used for
+      // the write — avoids a separate read and closes the TOCTOU window on retry races
+      if (appendCfg.checkLastItem && (clientBaseHash ?? "") !== baseHash) {
+        return c.json({ error: "hash_mismatch" }, 409)
+      }
+      const sanitized = deepSanitize(appendedData)
+      const result = await pushDirect(
+        store,
+        documentKey,
+        sanitized,
+        baseHash,
+        undefined, // no author for appendOnly
+        false,
+        false,
+        lastItemHash,
+        timestamps,
+      )
+      if (!("error" in result)) {
+        const { hash, timestamp } = result
+        return c.json({ hash, timestamp }, 200)
+      }
+      // hash_mismatch = concurrent write race — retry (unless checkLastItem, which already returned 409)
+    }
+    return c.json({ error: "append_retry_exhausted" }, 500)
+  }
+
   const result = await handleSyncPush(
     documentKey,
     store,
@@ -437,7 +496,7 @@ async function runPush(
     identity,
     opts.signatureVerifier,
     isClientEncrypted,
-    col.queueOnly ?? false,
+    false,
   )
   return c.json(result.body, result.status as any)
 }
@@ -630,15 +689,29 @@ function addCollectionRoutes(
       const checkpointParam = c.req.query(QUERY_CHECKPOINT)
       const isClientEncrypted =
         Boolean(col.clientEncrypted) || col.encryption === ENCRYPTION_DELEGATED || col.encryption === ENCRYPTION_GROUP
-      const pullResult = await handleSyncPull(
-        documentKey,
-        store,
-        checkpointParam,
-        Boolean(col.forceFullFetch),
-        isClientEncrypted,
-        col.cacheDurationMs,
-        col.readRoles.includes(ROLE_PUBLIC),
-      )
+      const isPublic = col.readRoles.includes(ROLE_PUBLIC)
+
+      const lastParam = c.req.query("last")
+      // AppendOnly persist=true uses custom per-item checkpoint filtering
+      const pullResult = col.appendOnly != null && col.appendOnly.persist !== false
+        ? await handleAppendOnlyPull(
+            documentKey,
+            store,
+            checkpointParam,
+            col.appendOnly?.field ?? APPEND_DEFAULT_FIELD,
+            col.cacheDurationMs,
+            isPublic,
+            lastParam,
+          )
+        : await handleSyncPull(
+            documentKey,
+            store,
+            checkpointParam,
+            Boolean(col.forceFullFetch),
+            isClientEncrypted,
+            col.cacheDurationMs,
+            isPublic,
+          )
 
       // TTL check: compare the *stored* document timestamp against now.
       // pullResult.body["timestamp"] is Date.now() at pull time (not the stored write time),
@@ -1030,7 +1103,7 @@ function toCollectionClientInfo(col: CollectionConfig): CollectionClientInfo {
   }
   if (col.pullOnly) info.pullOnly = true
   if (col.pushOnly) info.pushOnly = true
-  if (col.queueOnly) info.queueOnly = true
+  if (col.appendOnly) info.appendOnly = col.appendOnly
   if (col.clientEncrypted) info.clientEncrypted = true
   if (col.publicKey) info.publicKey = col.publicKey
   if (col.ttlMs != null) info.ttlMs = col.ttlMs
