@@ -179,7 +179,13 @@ const store = createStarfishStore({
 })
 ```
 
-Only `data` and `dirty` are persisted — `syncing`, `online`, and `error` are transient.
+`data`, `dirty`, and `hash` are persisted — `syncing`, `online`, and `error` are transient. The persisted JSON shape is:
+
+```json
+{ "state": { "data": { "items": [] }, "dirty": false, "hash": "<server-hash>" }, "version": 0 }
+```
+
+On hydration, the stored `hash` is automatically restored into the bound `SyncManager` via `syncManager.setHash(hash)` before any pull or push runs. This means that after a page reload, wallet lock/unlock, or app restart, the first push sends `baseHash:<lastKnownHash>` instead of `null` — avoiding a spurious 409 conflict + recovery roundtrip.
 
 ## Redux DevTools
 

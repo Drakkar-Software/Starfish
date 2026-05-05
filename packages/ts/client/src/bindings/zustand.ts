@@ -21,6 +21,8 @@ export interface StarfishState {
   online: boolean
   dirty: boolean
   error: string | null
+  /** Last-known server hash, persisted alongside `data`/`dirty`. Restored into the bound SyncManager on hydration. */
+  hash: string | null
 }
 
 export interface StarfishActions {
@@ -96,13 +98,14 @@ export function createStarfishStore(
     online: true,
     dirty: false,
     error: null,
+    hash: null,
 
     pull: async () => {
       set({ syncing: true, error: null }, false, "pull/start")
       try {
         await syncManager.pull()
         const newData = syncManager.getData()
-        set({ data: newData, syncing: false }, false, "pull/success")
+        set({ data: newData, syncing: false, hash: syncManager.getHash() }, false, "pull/success")
         // Fire after state update so domain stores can read the updated Starfish state if needed.
         // Calling set() inside onRemoteUpdate does NOT re-enter pull(), so no feedback loop.
         options.onRemoteUpdate?.(newData)
@@ -132,7 +135,7 @@ export function createStarfishStore(
       set({ syncing: true, error: null }, false, "flush/start")
       try {
         await syncManager.push(get().data)
-        set({ data: syncManager.getData(), syncing: false, dirty: false }, false, "flush/success")
+        set({ data: syncManager.getData(), syncing: false, dirty: false, hash: syncManager.getHash() }, false, "flush/success")
       } catch (err) {
         set({ syncing: false, error: err instanceof Error ? err.message : String(err) }, false, "flush/error")
       }
@@ -152,7 +155,14 @@ export function createStarfishStore(
         partialize: (state) => ({
           data: state.data,
           dirty: state.dirty,
+          hash: state.hash,
         }),
+        onRehydrateStorage: () => (state) => {
+          // Only restore if the manager hasn't already received a hash from a live pull/push.
+          // With async storage, pull() may resolve before hydration completes — the server's
+          // hash always wins over the persisted one.
+          if (state?.hash && syncManager.getHash() === null) syncManager.setHash(state.hash)
+        },
       })
 
   const withSelector = subscribeWithSelector(withPersist)

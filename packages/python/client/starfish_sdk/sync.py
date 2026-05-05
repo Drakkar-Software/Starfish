@@ -64,6 +64,10 @@ class SyncManager:
         """Last known remote hash."""
         return self._last_hash
 
+    def set_hash(self, hash: str | None) -> None:
+        """Set the last-known server hash. Used by persistence layers to restore state across restarts."""
+        self._last_hash = hash
+
     @property
     def checkpoint(self) -> int:
         """Last checkpoint timestamp."""

@@ -76,6 +76,11 @@ export class SyncManager {
     return this.lastHash
   }
 
+  /** Set the last-known server hash. Used by persistence layers to restore state across restarts. */
+  setHash(hash: string | null): void {
+    this.lastHash = hash
+  }
+
   getCheckpoint(): number {
     return this.lastCheckpoint
   }

@@ -286,3 +286,37 @@ describe("SyncManager", () => {
     expect(pushFn.mock.calls[0][3]).toBe("test-signature-abc")
   })
 })
+
+// ── setHash ───────────────────────────────────────────────────────────────────
+
+describe("SyncManager.setHash", () => {
+  function makeSync() {
+    const client = mockClient()
+    return new SyncManager({ client, pullPath: "/pull/test", pushPath: "/push/test" })
+  }
+
+  it("sets the hash returned by getHash()", () => {
+    const sync = makeSync()
+    sync.setHash("h1")
+    expect(sync.getHash()).toBe("h1")
+  })
+
+  it("accepts null to clear the hash", () => {
+    const sync = makeSync()
+    sync.setHash("h1")
+    sync.setHash(null)
+    expect(sync.getHash()).toBeNull()
+  })
+
+  it("next push sends the restored hash as baseHash", async () => {
+    const pushFn = vi.fn(async () => ({ hash: "h2", timestamp: 200 }))
+    const client = mockClient({ push: pushFn as any })
+    const sync = new SyncManager({ client, pullPath: "/pull/test", pushPath: "/push/test" })
+
+    sync.setHash("restored-hash")
+    await sync.push({ foo: "bar" })
+
+    // Third positional arg to client.push is baseHash
+    expect(pushFn.mock.calls[0][2]).toBe("restored-hash")
+  })
+})

@@ -51,7 +51,7 @@ async def test_push_sends_signature():
         push_responses=[PushSuccess(hash="h1", timestamp=100)],
     )
     sync = SyncManager(client, "/pull/test", "/push/test", sign_data=sign)
-    sync._last_hash = "base"  # type: ignore[attr-defined]
+    sync.set_hash("base")
 
     await sync.push({"key": "value"})
 
@@ -77,7 +77,7 @@ async def test_conflict_retry_resolves():
     client.pull = AsyncMock(side_effect=pull_side_effect)
 
     sync = SyncManager(client, "/pull/test", "/push/test", max_retries=3)
-    sync._last_hash = "old-hash"  # type: ignore[attr-defined]
+    sync.set_hash("old-hash")
 
     with patch("starfish_sdk.sync.asyncio.sleep"):
         result = await sync.push({"local": True})
@@ -112,9 +112,43 @@ async def test_encrypted_conflict_retry_decrypts_remote():
         client, "/pull/test", "/push/test",
         encryption_secret="secret", encryption_salt="user-salt",
     )
-    sync._last_hash = "old-hash"  # type: ignore[attr-defined]
+    sync.set_hash("old-hash")
 
     with patch("starfish_sdk.sync.asyncio.sleep"):
         await sync.push({"local": True})
 
     assert call_count == 2
+
+
+# ── set_hash ──────────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_set_hash_reflected_by_hash_property():
+    client = make_mock_client()
+    sync = SyncManager(client, "/pull/test", "/push/test")
+    assert sync.hash is None
+    sync.set_hash("h1")
+    assert sync.hash == "h1"
+
+
+@pytest.mark.asyncio
+async def test_set_hash_none_clears_hash():
+    client = make_mock_client()
+    sync = SyncManager(client, "/pull/test", "/push/test")
+    sync.set_hash("h1")
+    sync.set_hash(None)
+    assert sync.hash is None
+
+
+@pytest.mark.asyncio
+async def test_set_hash_used_as_base_hash_on_next_push():
+    push_fn = AsyncMock(return_value=PushSuccess(hash="h2", timestamp=200))
+    client = MagicMock(spec=StarfishClient)
+    client.push = push_fn
+
+    sync = SyncManager(client, "/pull/test", "/push/test")
+    sync.set_hash("restored-hash")
+    await sync.push({"foo": "bar"})
+
+    # Third positional arg to client.push is base_hash
+    assert push_fn.call_args.args[2] == "restored-hash"

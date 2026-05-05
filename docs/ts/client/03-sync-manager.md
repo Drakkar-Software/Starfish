@@ -151,6 +151,7 @@ await sync.push(updated)
 |--------|---------|-------------|
 | `getData()` | `Record<string, unknown>` | Current local data snapshot |
 | `getHash()` | `string \| null` | Hash of the last known server version |
+| `setHash(hash: string \| null)` | `void` | Restore the last-known hash (used by `createStarfishStore` on hydration; consumers using `SyncManager` directly typically do not need this) |
 | `getCheckpoint()` | `number` | Timestamp for incremental pulls |
 
 ## Encryption
