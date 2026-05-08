@@ -40,8 +40,8 @@ importers:
         specifier: ^0.27.4
         version: 0.27.4
       hono:
-        specifier: ^4.12.7
-        version: 4.12.7
+        specifier: ^4.12.16
+        version: 4.12.16
       immer:
         specifier: ^11.1.4
         version: 11.1.4
@@ -79,8 +79,8 @@ importers:
         specifier: workspace:*
         version: link:../protocol
       hono:
-        specifier: ^4.12.7
-        version: 4.12.7
+        specifier: ^4.12.16
+        version: 4.12.16
     devDependencies:
       '@aws-sdk/client-s3':
         specifier: ^3
@@ -1030,8 +1030,8 @@ packages:
     engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
     os: [darwin]
 
-  hono@4.12.7:
-    resolution: {integrity: sha512-jq9l1DM0zVIvsm3lv9Nw9nlJnMNPOcAtsbsgiUhWcFzPE99Gvo6yRTlszSLLYacMeQ6quHD6hMfId8crVHvexw==}
+  hono@4.12.16:
+    resolution: {integrity: sha512-jN0ZewiNAWSe5khM3EyCmBb250+b40wWbwNILNfEvq84VREWwOIkuUsFONk/3i3nqkz7Oe1PcpM2mwQEK2L9Kg==}
     engines: {node: '>=16.9.0'}
 
   html-encoding-sniffer@6.0.0:
@@ -2556,7 +2556,7 @@ snapshots:
   fsevents@2.3.3:
     optional: true
 
-  hono@4.12.7: {}
+  hono@4.12.16: {}
 
   html-encoding-sniffer@6.0.0(@noble/hashes@2.2.0):
     dependencies:
