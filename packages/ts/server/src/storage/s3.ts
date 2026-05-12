@@ -6,7 +6,7 @@ import {
   DeleteObjectCommand,
   DeleteObjectsCommand,
 } from "@aws-sdk/client-s3"
-import type { ObjectStore } from "./base.js"
+import type { ObjectStore, StoreContext } from "./base.js"
 
 export interface S3StorageOptions {
   accessKeyId: string
@@ -39,7 +39,7 @@ export class S3ObjectStore implements ObjectStore {
     })
   }
 
-  async getString(key: string): Promise<string | null> {
+  async getString(key: string, _context?: StoreContext): Promise<string | null> {
     try {
       const resp = await this._client.send(new GetObjectCommand({ Bucket: this._bucket, Key: key }))
       return await resp.Body!.transformToString("utf-8")
@@ -53,6 +53,7 @@ export class S3ObjectStore implements ObjectStore {
     key: string,
     body: string,
     opts?: { contentType?: string; cacheControl?: string },
+    _context?: StoreContext,
   ): Promise<void> {
     await this._client.send(
       new PutObjectCommand({
@@ -65,7 +66,7 @@ export class S3ObjectStore implements ObjectStore {
     )
   }
 
-  async getBytes(key: string): Promise<{ body: Uint8Array; contentType: string } | null> {
+  async getBytes(key: string, _context?: StoreContext): Promise<{ body: Uint8Array; contentType: string } | null> {
     try {
       const resp = await this._client.send(new GetObjectCommand({ Bucket: this._bucket, Key: key }))
       const contentType = resp.ContentType ?? "application/octet-stream"
@@ -81,6 +82,7 @@ export class S3ObjectStore implements ObjectStore {
     key: string,
     body: Uint8Array,
     opts: { contentType: string; cacheControl?: string },
+    _context?: StoreContext,
   ): Promise<void> {
     await this._client.send(
       new PutObjectCommand({
@@ -96,6 +98,7 @@ export class S3ObjectStore implements ObjectStore {
   async listKeys(
     prefix: string,
     opts?: { startAfter?: string; limit?: number },
+    _context?: StoreContext,
   ): Promise<string[]> {
     const resp = await this._client.send(
       new ListObjectsV2Command({
@@ -108,11 +111,11 @@ export class S3ObjectStore implements ObjectStore {
     return (resp.Contents ?? []).map((obj) => obj.Key!)
   }
 
-  async delete(key: string): Promise<void> {
+  async delete(key: string, _context?: StoreContext): Promise<void> {
     await this._client.send(new DeleteObjectCommand({ Bucket: this._bucket, Key: key }))
   }
 
-  async deleteMany(keys: string[]): Promise<void> {
+  async deleteMany(keys: string[], _context?: StoreContext): Promise<void> {
     if (keys.length === 0) return
     await this._client.send(
       new DeleteObjectsCommand({

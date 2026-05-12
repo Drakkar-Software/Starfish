@@ -8,7 +8,7 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from starfish_protocol.crypto import _derive_key, IV_BYTES
-from starfish_server.storage.base import AbstractObjectStore
+from starfish_server.storage.base import AbstractObjectStore, StoreContext
 from starfish_server.constants import HKDF_INFO_DEFAULT
 
 
@@ -48,8 +48,8 @@ class EncryptedObjectStore(AbstractObjectStore):
             raise ValueError("Decryption failed: data may be tampered or key is incorrect") from exc
         return plaintext.decode("utf-8")
 
-    async def get_string(self, key: str) -> str | None:
-        raw = await self._inner.get_string(key)
+    async def get_string(self, key: str, *, context: StoreContext | None = None) -> str | None:
+        raw = await self._inner.get_string(key, context=context)
         if raw is None:
             return None
         return self._decrypt(raw)
@@ -61,9 +61,10 @@ class EncryptedObjectStore(AbstractObjectStore):
         *,
         content_type: str | None = None,
         cache_control: str | None = None,
+        context: StoreContext | None = None,
     ) -> None:
         encrypted = self._encrypt(body)
-        await self._inner.put(key, encrypted, content_type=content_type, cache_control=cache_control)
+        await self._inner.put(key, encrypted, content_type=content_type, cache_control=cache_control, context=context)
 
     async def list_keys(
         self,
@@ -71,11 +72,12 @@ class EncryptedObjectStore(AbstractObjectStore):
         *,
         start_after: str | None = None,
         limit: int | None = None,
+        context: StoreContext | None = None,
     ) -> list[str]:
-        return await self._inner.list_keys(prefix, start_after=start_after, limit=limit)
+        return await self._inner.list_keys(prefix, start_after=start_after, limit=limit, context=context)
 
-    async def delete(self, key: str) -> None:
-        await self._inner.delete(key)
+    async def delete(self, key: str, *, context: StoreContext | None = None) -> None:
+        await self._inner.delete(key, context=context)
 
-    async def delete_many(self, keys: list[str]) -> None:
-        await self._inner.delete_many(keys)
+    async def delete_many(self, keys: list[str], *, context: StoreContext | None = None) -> None:
+        await self._inner.delete_many(keys, context=context)

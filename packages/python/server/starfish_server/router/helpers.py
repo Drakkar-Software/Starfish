@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 
 from fastapi.responses import JSONResponse
 
-from starfish_server.storage.base import AbstractObjectStore
+from starfish_server.storage.base import AbstractObjectStore, StoreContext
 from starfish_server.protocol.pull import pull
 from starfish_server.protocol.push import push
 from starfish_server.protocol.push import Author
@@ -75,6 +75,7 @@ async def handle_sync_pull(
     client_encrypted: bool = False,
     cache_duration_ms: int | None = None,
     is_public: bool = True,
+    context: StoreContext | None = None,
 ) -> JSONResponse:
     if UNSAFE_KEY.search(document_key):
         return JSONResponse({"error": "Invalid path parameter"}, status_code=400)
@@ -89,7 +90,7 @@ async def handle_sync_pull(
             return JSONResponse({"error": "Invalid checkpoint"}, status_code=400)
         checkpoint = parsed
 
-    result = await pull(store, document_key, checkpoint)
+    result = await pull(store, document_key, checkpoint, context)
     body: dict[str, Any] = {
         "data": result.data,
         "hash": result.hash,
@@ -122,6 +123,7 @@ async def handle_append_only_pull(
     cache_duration_ms: int | None = None,
     is_public: bool = True,
     last_param: str | None = None,
+    context: StoreContext | None = None,
 ) -> JSONResponse:
     """Pull handler for appendOnly persist=true collections.
 
@@ -153,7 +155,7 @@ async def handle_append_only_pull(
         last = parsed_last
 
     now = int(time.time() * 1000)
-    raw = await store.get_string(document_key)
+    raw = await store.get_string(document_key, context=context)
 
     if not raw:
         body: dict = {"data": {append_field: []}, "hash": "", "timestamp": now}
@@ -213,6 +215,7 @@ async def handle_sync_push(
     verify_signature: SignatureVerifier | None = None,
     skip_timestamps: bool = False,
     skip_storage: bool = False,
+    context: StoreContext | None = None,
 ) -> JSONResponse:
     if UNSAFE_KEY.search(document_key):
         return JSONResponse({"error": "Invalid path parameter"}, status_code=400)
@@ -241,7 +244,7 @@ async def handle_sync_push(
     elif isinstance(author_signature, str) and identity:
         author = Author(pubkey=identity, signature=author_signature)
 
-    result = await push(store, document_key, sanitized, base_hash, author, skip_timestamps, skip_storage)
+    result = await push(store, document_key, sanitized, base_hash, author, skip_timestamps, skip_storage, context=context)
 
     if not isinstance(result, PushSuccess):
         return JSONResponse({"error": ERROR_HASH_MISMATCH}, status_code=409)

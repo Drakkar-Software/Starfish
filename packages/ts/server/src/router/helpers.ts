@@ -1,4 +1,4 @@
-import type { ObjectStore } from "../storage/base.js"
+import type { ObjectStore, StoreContext } from "../storage/base.js"
 import { pull } from "../protocol/pull.js"
 import { push, type Author } from "../protocol/push.js"
 import type { PushSuccess, StoredDocument } from "../protocol/types.js"
@@ -96,6 +96,7 @@ export async function handleSyncPull(
   clientEncrypted: boolean = false,
   cacheDurationMs?: number,
   isPublic: boolean = true,
+  context?: StoreContext,
 ): Promise<PullResponse> {
   if (UNSAFE_KEY.test(documentKey)) {
     return { body: { error: "Invalid path parameter" }, status: 400 }
@@ -110,7 +111,7 @@ export async function handleSyncPull(
     checkpoint = parsed
   }
 
-  const result = await pull(store, documentKey, checkpoint)
+  const result = await pull(store, documentKey, checkpoint, context)
   const body: Record<string, unknown> = {
     data: result.data,
     hash: result.hash,
@@ -145,6 +146,7 @@ export async function handleAppendOnlyPull(
   cacheDurationMs?: number,
   isPublic: boolean = true,
   lastParam?: string | null,
+  context?: StoreContext,
 ): Promise<PullResponse> {
   if (UNSAFE_KEY.test(documentKey)) {
     return { body: { error: "Invalid path parameter" }, status: 400 }
@@ -169,7 +171,7 @@ export async function handleAppendOnlyPull(
   }
 
   const now = Date.now()
-  const raw = await store.getString(documentKey)
+  const raw = await store.getString(documentKey, context)
 
   if (!raw) {
     return { body: { data: { [appendField]: [] }, hash: "", timestamp: now }, status: 200 }
@@ -240,6 +242,7 @@ export async function handleSyncPush(
   verifySignature?: SignatureVerifier,
   skipTimestamps: boolean = false,
   skipStorage: boolean = false,
+  context?: StoreContext,
 ): Promise<PushResponse> {
   if (UNSAFE_KEY.test(documentKey)) {
     return { body: { error: "Invalid path parameter" }, status: 400 }
@@ -282,6 +285,9 @@ export async function handleSyncPush(
     author,
     skipTimestamps,
     skipStorage,
+    undefined,
+    undefined,
+    context,
   )
 
   if (!("hash" in result) || !("timestamp" in result)) {

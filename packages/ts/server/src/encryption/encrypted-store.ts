@@ -1,5 +1,5 @@
 import { deriveKey, IV_BYTES, getCrypto, getBase64 } from "@drakkar.software/starfish-protocol"
-import type { ObjectStore } from "../storage/base.js"
+import type { ObjectStore, StoreContext } from "../storage/base.js"
 import { HKDF_INFO_DEFAULT } from "../constants.js"
 
 export class EncryptedObjectStore implements ObjectStore {
@@ -50,8 +50,8 @@ export class EncryptedObjectStore implements ObjectStore {
     }
   }
 
-  async getString(key: string): Promise<string | null> {
-    const raw = await this._inner.getString(key)
+  async getString(key: string, context?: StoreContext): Promise<string | null> {
+    const raw = await this._inner.getString(key, context)
     if (raw == null) return null
     return this._decrypt(raw)
   }
@@ -60,23 +60,25 @@ export class EncryptedObjectStore implements ObjectStore {
     key: string,
     body: string,
     opts?: { contentType?: string; cacheControl?: string },
+    context?: StoreContext,
   ): Promise<void> {
     const encrypted = await this._encrypt(body)
-    await this._inner.put(key, encrypted, opts)
+    await this._inner.put(key, encrypted, opts, context)
   }
 
   async listKeys(
     prefix: string,
     opts?: { startAfter?: string; limit?: number },
+    context?: StoreContext,
   ): Promise<string[]> {
-    return this._inner.listKeys(prefix, opts)
+    return this._inner.listKeys(prefix, opts, context)
   }
 
-  async delete(key: string): Promise<void> {
-    return this._inner.delete(key)
+  async delete(key: string, context?: StoreContext): Promise<void> {
+    return this._inner.delete(key, context)
   }
 
-  async deleteMany(keys: string[]): Promise<void> {
-    return this._inner.deleteMany(keys)
+  async deleteMany(keys: string[], context?: StoreContext): Promise<void> {
+    return this._inner.deleteMany(keys, context)
   }
 }

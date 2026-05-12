@@ -1,5 +1,5 @@
 import { computeHash } from "@drakkar.software/starfish-protocol"
-import type { ObjectStore } from "../storage/base.js"
+import type { ObjectStore, StoreContext } from "../storage/base.js"
 import type { StoredDocument, Timestamps } from "./types.js"
 
 export interface AppendTransformResult {
@@ -15,8 +15,9 @@ export async function buildAppendOnlyData(
   newItem: Record<string, unknown>,
   appendField: string,
   now: number,
+  context?: StoreContext,
 ): Promise<AppendTransformResult> {
-  const raw = await store.getString(documentKey)
+  const raw = await store.getString(documentKey, context)
 
   if (!raw) {
     const lastItemHash = await computeHash({ n: 1, last: newItem })
@@ -88,8 +89,9 @@ export async function checkLastItemConflict(
   documentKey: string,
   clientBaseHash: string | null | undefined,
   _appendField: string,
+  context?: StoreContext,
 ): Promise<string | null> {
-  const raw = await store.getString(documentKey)
+  const raw = await store.getString(documentKey, context)
 
   if (!raw) {
     if (clientBaseHash && clientBaseHash !== "") return "hash_mismatch"

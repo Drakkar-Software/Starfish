@@ -1,7 +1,7 @@
 import { Hono } from "hono"
 import type { Context } from "hono"
 import { getCrypto } from "@drakkar.software/starfish-protocol"
-import type { ObjectStore } from "../storage/base.js"
+import type { ObjectStore, StoreContext } from "../storage/base.js"
 import type {
   SyncConfig,
   CollectionConfig,
@@ -395,6 +395,7 @@ async function runPush(
   identity: string | null,
   rateLimiter: RateLimiter | null,
   opts: SyncRouterOptions,
+  context?: StoreContext,
 ): Promise<Response> {
   const contentLength = c.req.header("content-length")
   const limitErr = checkBodyLimit(contentLength ?? null, col.maxBodyBytes)
@@ -450,6 +451,7 @@ async function runPush(
         undefined, // signatures not verified for appendOnly
         isClientEncrypted,
         true,
+        context,
       )
       return c.json(result.body, result.status as any)
     }
@@ -462,7 +464,7 @@ async function runPush(
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
       const now = Date.now()
       const { data: appendedData, baseHash, timestamps, lastItemHash } =
-        await buildAppendOnlyData(store, documentKey, item, appendField, now)
+        await buildAppendOnlyData(store, documentKey, item, appendField, now, context)
       // checkLastItem: validate client's view of the array using the same read used for
       // the write — avoids a separate read and closes the TOCTOU window on retry races
       if (appendCfg.checkLastItem && (clientBaseHash ?? "") !== baseHash) {
@@ -479,6 +481,7 @@ async function runPush(
         false,
         lastItemHash,
         timestamps,
+        context,
       )
       if (!("error" in result)) {
         const { hash, timestamp } = result
@@ -497,6 +500,7 @@ async function runPush(
     opts.signatureVerifier,
     isClientEncrypted,
     false,
+    context,
   )
   return c.json(result.body, result.status as any)
 }
@@ -508,6 +512,7 @@ async function runBinaryPush(
   identity: string | null,
   rateLimiter: RateLimiter | null,
   opts: SyncRouterOptions,
+  context?: StoreContext,
 ): Promise<Response> {
   const contentLength = c.req.header("content-length")
   const limitErr = checkBodyLimit(contentLength ?? null, col.maxBodyBytes)
@@ -545,7 +550,7 @@ async function runBinaryPush(
   if (!opts.store.putBytes) {
     return c.json({ error: "Store does not support binary operations" }, 501)
   }
-  await opts.store.putBytes(documentKey, new Uint8Array(rawBuffer), { contentType: mediaType })
+  await opts.store.putBytes(documentKey, new Uint8Array(rawBuffer), { contentType: mediaType }, context)
 
   return c.json({ hash: contentHash })
 }
@@ -620,6 +625,7 @@ function addCollectionRoutes(
   app: Hono,
   col: CollectionConfig,
   opts: SyncRouterOptions,
+  namespaceName?: string,
 ): void {
   if (!col.pushOnly) {
     const pullPath = toRoutePath(ACTION_PULL, col.storagePath)
@@ -633,6 +639,15 @@ function addCollectionRoutes(
 
       const { identity, roles, error } = await checkAuth(col, OP_READ, c, params, opts)
       if (error) return error
+
+      const pullCtx: StoreContext = {
+        collection: col.name,
+        params,
+        identity,
+        roles,
+        action: ACTION_PULL,
+        ...(namespaceName != null && { namespace: namespaceName }),
+      }
 
       if (col.remote?.writeMode === "push_only") {
         return c.json({ error: "This collection is write-only on this server" }, 405)
@@ -653,7 +668,7 @@ function addCollectionRoutes(
         if (!opts.store.getBytes) {
           return c.json({ error: "Store does not support binary operations" }, 501)
         }
-        const result = await opts.store.getBytes(documentKey)
+        const result = await opts.store.getBytes(documentKey, pullCtx)
         if (result == null) {
           return new Response(null, { status: 404 })
         }
@@ -702,6 +717,7 @@ function addCollectionRoutes(
             col.cacheDurationMs,
             isPublic,
             lastParam,
+            pullCtx,
           )
         : await handleSyncPull(
             documentKey,
@@ -711,6 +727,7 @@ function addCollectionRoutes(
             isClientEncrypted,
             col.cacheDurationMs,
             isPublic,
+            pullCtx,
           )
 
       // TTL check: compare the *stored* document timestamp against now.
@@ -718,7 +735,7 @@ function addCollectionRoutes(
       // so we must read the stored timestamps tree directly from the store.
       if (col.ttlMs != null && pullResult.status === 200) {
         try {
-          const rawDoc = await store.getString(documentKey)
+          const rawDoc = await store.getString(documentKey, pullCtx)
           if (rawDoc) {
             const stored = JSON.parse(rawDoc) as { timestamps?: unknown }
             const storedTs = maxLeafTimestamp(stored.timestamps ?? {})
@@ -798,8 +815,17 @@ function addCollectionRoutes(
         return c.json({ error: "Invalid path parameter" }, 400)
       }
 
-      const { error } = await checkAuth(col, OP_READ, c, params, opts)
+      const { identity: listIdentity, roles: listRoles, error } = await checkAuth(col, OP_READ, c, params, opts)
       if (error) return error
+
+      const listCtx: StoreContext = {
+        collection: col.name,
+        params,
+        identity: listIdentity,
+        roles: listRoles,
+        action: ACTION_LIST,
+        ...(namespaceName != null && { namespace: namespaceName }),
+      }
 
       const prefix = toListPrefix(col.storagePath, params)
 
@@ -822,7 +848,7 @@ function addCollectionRoutes(
       }
 
       // Fetch one extra to detect hasMore without an additional query
-      const keys = await opts.store.listKeys(prefix, { startAfter, limit: limit + 1 })
+      const keys = await opts.store.listKeys(prefix, { startAfter, limit: limit + 1 }, listCtx)
       const hasMore = keys.length > limit
       const page = hasMore ? keys.slice(0, limit) : keys
 
@@ -880,9 +906,17 @@ function addCollectionRoutes(
       }
 
       const documentKey = resolveDocumentKey(col.storagePath, params)
+      const pushCtx: StoreContext = {
+        collection: col.name,
+        params,
+        identity,
+        roles,
+        action: ACTION_PUSH,
+        ...(namespaceName != null && { namespace: namespaceName }),
+      }
 
       if (!isJsonCollection(col.allowedMimeTypes)) {
-        const response = await runBinaryPush(c, col, documentKey, identity, rateLimiter, opts)
+        const response = await runBinaryPush(c, col, documentKey, identity, rateLimiter, opts, pushCtx)
         await safePublishEvent(opts, col, response, params)
         if (opts.auditLogger) {
           opts.auditLogger.record({ timestamp: Date.now(), action: "push", collection: col.name, identity, documentKey, success: response.status === 200, statusCode: response.status, params })
@@ -908,7 +942,7 @@ function addCollectionRoutes(
         }
       }
 
-      const response = await runPush(c, col, params, documentKey, identity, rateLimiter, opts)
+      const response = await runPush(c, col, params, documentKey, identity, rateLimiter, opts, pushCtx)
       await safePublishEvent(opts, col, response, params, bodyData)
       if (opts.auditLogger) {
         opts.auditLogger.record({ timestamp: Date.now(), action: "push", collection: col.name, identity, documentKey, success: response.status === 200, statusCode: response.status, params })
@@ -923,6 +957,7 @@ function addBundledRoutes(
   bundleName: string,
   collections: CollectionConfig[],
   opts: SyncRouterOptions,
+  namespaceName?: string,
 ): void {
   const storagePath = collections[0]!.storagePath
   const pullPath = toRoutePath(ACTION_PULL, storagePath)
@@ -963,7 +998,15 @@ function addBundledRoutes(
 
     for (const col of collections) {
       const documentKey = `${baseKey}/${col.name}`
-      const pullResult = await pull(store, documentKey, checkpoint)
+      const bundlePullCtx: StoreContext = {
+        collection: col.name,
+        params,
+        identity,
+        roles: [],
+        action: ACTION_PULL,
+        ...(namespaceName != null && { namespace: namespaceName }),
+      }
+      const pullResult = await pull(store, documentKey, checkpoint, bundlePullCtx)
       result[col.name] = {
         data: pullResult.data,
         hash: pullResult.hash,
@@ -993,6 +1036,14 @@ function addBundledRoutes(
       if (error) return error
 
       const documentKey = `${resolveDocumentKey(storagePath, params)}/${col.name}`
+      const bundlePushCtx: StoreContext = {
+        collection: col.name,
+        params,
+        identity,
+        roles: [],
+        action: ACTION_PUSH,
+        ...(namespaceName != null && { namespace: namespaceName }),
+      }
 
       let bundleBodyData: Record<string, unknown> | undefined
       if (col.queue?.includeBody) {
@@ -1009,7 +1060,7 @@ function addBundledRoutes(
         }
       }
 
-      const response = await runPush(c, col, params, documentKey, identity, rateLimiter, opts)
+      const response = await runPush(c, col, params, documentKey, identity, rateLimiter, opts, bundlePushCtx)
       await safePublishEvent(opts, col, response, params, bundleBodyData)
       return response
     })
@@ -1020,6 +1071,7 @@ function registerCollectionsOnApp(
   app: Hono,
   collections: CollectionConfig[],
   opts: SyncRouterOptions,
+  namespaceName?: string,
 ): void {
   const bundles = new Map<string, CollectionConfig[]>()
   const standalone: CollectionConfig[] = []
@@ -1035,17 +1087,18 @@ function registerCollectionsOnApp(
   }
 
   for (const col of standalone) {
-    addCollectionRoutes(app, col, opts)
+    addCollectionRoutes(app, col, opts, namespaceName)
   }
 
   for (const [bundleName, bundleCollections] of bundles) {
-    addBundledRoutes(app, bundleName, bundleCollections, opts)
+    addBundledRoutes(app, bundleName, bundleCollections, opts, namespaceName)
   }
 }
 
 function createBatchPullHandler(
   collections: CollectionConfig[],
   opts: SyncRouterOptions,
+  namespaceName?: string,
 ) {
   return async (c: Context) => {
     const colNames = c.req.query("collections")?.split(",").map((s) => s.trim()) ?? []
@@ -1061,7 +1114,7 @@ function createBatchPullHandler(
         continue
       }
 
-      const { identity, error: authError } = await checkAuth(col, OP_READ, c, {}, opts)
+      const { identity, roles, error: authError } = await checkAuth(col, OP_READ, c, {}, opts)
       if (authError) {
         results[name] = { error: "Forbidden" }
         continue
@@ -1070,7 +1123,15 @@ function createBatchPullHandler(
       try {
         const store = resolveStore(col, opts.store, {}, identity, opts)
         const key = col.storagePath.replace(/\{[^}]+\}/g, "_batch_")
-        const pullResult = await pull(store, key, 0)
+        const batchCtx: StoreContext = {
+          collection: col.name,
+          params: {},
+          identity,
+          roles,
+          action: ACTION_PULL,
+          ...(namespaceName != null && { namespace: namespaceName }),
+        }
+        const pullResult = await pull(store, key, 0, batchCtx)
         results[name] = { data: pullResult.data, hash: pullResult.hash, timestamp: pullResult.timestamp }
       } catch (e) {
         console.error(`[Starfish] Batch pull failed for collection "${name}":`, e)
@@ -1089,8 +1150,8 @@ function mountNamespace(
   opts: SyncRouterOptions,
 ): void {
   const nsApp = new Hono()
-  registerCollectionsOnApp(nsApp, nsConfig.collections, opts)
-  nsApp.get("/batch/pull", createBatchPullHandler(nsConfig.collections, opts))
+  registerCollectionsOnApp(nsApp, nsConfig.collections, opts, nsName)
+  nsApp.get("/batch/pull", createBatchPullHandler(nsConfig.collections, opts, nsName))
   app.route(`/${nsName}`, nsApp)
 }
 

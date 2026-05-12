@@ -16,7 +16,7 @@ export { validateConfig } from "./config/validate.js"
 export { parseConfigJson, loadConfig, saveConfig } from "./config/loader.js"
 
 // Storage
-export type { ObjectStore } from "./storage/base.js"
+export type { ObjectStore, StoreContext } from "./storage/base.js"
 export { MemoryObjectStore, CustomObjectStore } from "./storage/memory.js"
 
 // Encryption

@@ -16,7 +16,7 @@ import jsonschema
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 
-from starfish_server.storage.base import AbstractObjectStore
+from starfish_server.storage.base import AbstractObjectStore, StoreContext
 from starfish_server.config.schema import SyncConfig, CollectionConfig, SyncTrigger, WriteMode, CollectionRateLimitConfig, NamespaceConfig, ConfigEndpointOptions, AppendOnlyConfig
 from starfish_server.protocol.append import build_append_only_data
 from starfish_server.encryption.encrypted_store import EncryptedObjectStore
@@ -363,6 +363,7 @@ async def _run_push(
     effective_roles: frozenset[str],
     rate_limiter: RateLimiter | None,
     opts: SyncRouterOptions,
+    context: StoreContext | None = None,
 ) -> JSONResponse:
     content_length = request.headers.get("content-length")
     limit_error = check_body_limit(content_length, col.max_body_bytes)
@@ -410,7 +411,7 @@ async def _run_push(
             # queueOnly path: compute hash, publish to queue, no storage write
             return await handle_sync_push(
                 document_key, store, body, identity,
-                None, is_client_encrypted, True,
+                None, is_client_encrypted, True, context,
             )
 
         # persist=true (default): append item to stored array with retry loop
@@ -421,7 +422,7 @@ async def _run_push(
         for _attempt in range(max_retries):
             now = int(time.time() * 1000)
             appended_data, base_hash, timestamps, last_item_hash = await build_append_only_data(
-                store, document_key, item, append_field, now,
+                store, document_key, item, append_field, now, context,
             )
             # checkLastItem: validate client's view using the same read used for the write —
             # avoids a separate read and closes the TOCTOU window on retry races
@@ -433,6 +434,7 @@ async def _run_push(
                 None, False, False,
                 precomputed_hash=last_item_hash,
                 precomputed_timestamps=timestamps,
+                context=context,
             )
             if isinstance(result, PushSuccess):
                 return JSONResponse({"hash": result.hash, "timestamp": result.timestamp})
@@ -442,7 +444,7 @@ async def _run_push(
 
     return await handle_sync_push(
         document_key, store, body, identity,
-        opts.signature_verifier, is_client_encrypted, False,
+        opts.signature_verifier, is_client_encrypted, False, context,
     )
 
 
@@ -453,6 +455,7 @@ async def _run_binary_push(
     identity: str | None,
     rate_limiter: RateLimiter | None,
     opts: SyncRouterOptions,
+    context: StoreContext | None = None,
 ) -> Response:
     """Handle a binary push: validate MIME type, store raw bytes."""
 
@@ -478,7 +481,7 @@ async def _run_binary_push(
     content_hash = hashlib.sha256(body).hexdigest()
 
     media_type = content_type.split(";")[0].strip()
-    await opts.store.put_bytes(document_key, body, content_type=media_type)
+    await opts.store.put_bytes(document_key, body, content_type=media_type, context=context)
 
     return JSONResponse({"hash": content_hash})
 
@@ -520,6 +523,7 @@ def _make_push_handler(
     col: CollectionConfig,
     rate_limiter: RateLimiter | None,
     opts: SyncRouterOptions,
+    namespace_name: str | None = None,
 ) -> Callable:
     """Create a push handler with *col* and *rate_limiter* captured in a closure."""
     async def push_handler(request: Request) -> JSONResponse:
@@ -545,10 +549,18 @@ def _make_push_handler(
             )
 
         document_key = _resolve_document_key(col.storage_path, params)
+        push_ctx = StoreContext(
+            collection=col.name,
+            params=dict(params),
+            identity=identity,
+            roles=tuple(effective_roles),
+            action=ACTION_PUSH,
+            namespace=namespace_name,
+        )
 
         if not is_json_collection(col.allowed_mime_types):
             response = await _run_binary_push(
-                request, col, document_key, identity, rate_limiter, opts,
+                request, col, document_key, identity, rate_limiter, opts, push_ctx,
             )
             await _publish_change_event(opts, col, response, params)
             return response
@@ -571,7 +583,7 @@ def _make_push_handler(
                     exc_info=True,
                 )
 
-        response = await _run_push(request, col, params, document_key, identity, effective_roles, rate_limiter, opts)
+        response = await _run_push(request, col, params, document_key, identity, effective_roles, rate_limiter, opts, push_ctx)
         await _publish_change_event(opts, col, response, params, body_data)
         # Emit audit entry for every push (success or conflict).
         if opts.audit_logger is not None:
@@ -594,6 +606,7 @@ def _add_collection_routes(
     router: APIRouter,
     col: CollectionConfig,
     opts: SyncRouterOptions,
+    namespace_name: str | None = None,
 ) -> None:
     if not col.push_only:
         pull_path = _to_route_path(ACTION_PULL, col.storage_path)
@@ -606,6 +619,15 @@ def _add_collection_routes(
             identity, effective_roles, error = await _check_auth(col, OP_READ, request, params, opts)
             if error:
                 return error
+
+            pull_ctx = StoreContext(
+                collection=col.name,
+                params=dict(params),
+                identity=identity,
+                roles=tuple(effective_roles),
+                action=ACTION_PULL,
+                namespace=namespace_name,
+            )
 
             if col.remote is not None and col.remote.write_mode == WriteMode.PUSH_ONLY:
                 return JSONResponse(
@@ -624,7 +646,7 @@ def _add_collection_routes(
 
             # Binary collection: return raw bytes
             if not is_json_collection(col.allowed_mime_types):
-                result = await opts.store.get_bytes(document_key)
+                result = await opts.store.get_bytes(document_key, context=pull_ctx)
                 if result is None:
                     return Response(status_code=404)
                 raw_bytes, stored_content_type = result
@@ -658,6 +680,7 @@ def _add_collection_routes(
                     col.cache_duration_ms,
                     is_public=is_public,
                     last_param=last_param,
+                    context=pull_ctx,
                 )
             else:
                 response = await handle_sync_pull(
@@ -665,6 +688,7 @@ def _add_collection_routes(
                     bool(col.force_full_fetch), is_client_encrypted,
                     col.cache_duration_ms,
                     is_public=is_public,
+                    context=pull_ctx,
                 )
 
             # TTL: if the document has expired, return empty data.
@@ -673,7 +697,7 @@ def _add_collection_routes(
             # Use the resolved encrypted `store` (not opts.store) so encrypted
             # collections are decrypted before timestamp extraction.
             if col.ttl_ms is not None and response.status_code == 200:
-                raw_doc = await store.get_string(document_key)
+                raw_doc = await store.get_string(document_key, context=pull_ctx)
                 if raw_doc:
                     stored = json.loads(raw_doc)
                     doc_timestamp = _max_stored_timestamp(stored.get("timestamps", {}))
@@ -723,13 +747,13 @@ def _add_collection_routes(
         push_path = _to_route_path(ACTION_PUSH, col.storage_path)
         rate_limiter = _build_rate_limiter(col.rate_limit, opts)
         router.add_api_route(
-            push_path, _make_push_handler(col, rate_limiter, opts), methods=["POST"],
+            push_path, _make_push_handler(col, rate_limiter, opts, namespace_name), methods=["POST"],
         )
 
     if col.listable:
         list_path = _to_list_route_path(col.storage_path)
 
-        def _make_list_handler(col: CollectionConfig) -> Callable:
+        def _make_list_handler(col: CollectionConfig, ns: str | None) -> Callable:
             async def list_handler(request: Request) -> JSONResponse:
                 # The list route has one fewer path param than storagePath.
                 # Resolve only the prefix portion.
@@ -740,9 +764,18 @@ def _add_collection_routes(
                 if not _validate_all_params(params):
                     return JSONResponse({"error": "Invalid path parameter"}, status_code=400)
 
-                _identity, _roles, error = await _check_auth(col, OP_READ, request, params, opts)
+                list_identity, list_roles, error = await _check_auth(col, OP_READ, request, params, opts)
                 if error:
                     return error
+
+                list_ctx = StoreContext(
+                    collection=col.name,
+                    params=params,
+                    identity=list_identity,
+                    roles=tuple(list_roles),
+                    action=ACTION_LIST,
+                    namespace=ns,
+                )
 
                 prefix = _to_list_prefix(col.storage_path, params)
 
@@ -765,7 +798,7 @@ def _add_collection_routes(
                     start_after = prefix + after_param
 
                 # Fetch one extra to detect hasMore
-                keys = await opts.store.list_keys(prefix, start_after=start_after, limit=limit + 1)
+                keys = await opts.store.list_keys(prefix, start_after=start_after, limit=limit + 1, context=list_ctx)
                 has_more = len(keys) > limit
                 page = keys[:limit] if has_more else keys
 
@@ -774,7 +807,7 @@ def _add_collection_routes(
 
             return list_handler
 
-        router.add_api_route(list_path, _make_list_handler(col), methods=["GET"])
+        router.add_api_route(list_path, _make_list_handler(col, namespace_name), methods=["GET"])
 
 
 def _add_bundled_routes(
@@ -782,6 +815,7 @@ def _add_bundled_routes(
     bundle_name: str,
     collections: list[CollectionConfig],
     opts: SyncRouterOptions,
+    namespace_name: str | None = None,
 ) -> None:
     storage_path = collections[0].storage_path
 
@@ -823,7 +857,15 @@ def _add_bundled_routes(
 
         for col in collections:
             document_key = f"{base_key}/{col.name}"
-            pull_result = await pull(store, document_key, checkpoint)
+            bundle_pull_ctx = StoreContext(
+                collection=col.name,
+                params=dict(params),
+                identity=identity,
+                roles=(),
+                action=ACTION_PULL,
+                namespace=namespace_name,
+            )
+            pull_result = await pull(store, document_key, checkpoint, bundle_pull_ctx)
             result[col.name] = {
                 "data": pull_result.data,
                 "hash": pull_result.hash,
@@ -842,7 +884,7 @@ def _add_bundled_routes(
         push_path = _to_route_path(ACTION_PUSH, storage_path) + f"/{col.name}"
         rate_limiter = _build_rate_limiter(col.rate_limit, opts)
 
-        def _make_bundle_push(col: CollectionConfig, rl: RateLimiter | None) -> Callable:
+        def _make_bundle_push(col: CollectionConfig, rl: RateLimiter | None, ns: str | None) -> Callable:
             async def bundle_push_handler(request: Request) -> JSONResponse:
                 params = request.path_params
                 if not _validate_all_params(params):
@@ -853,6 +895,14 @@ def _add_bundled_routes(
                     return error
 
                 document_key = f"{_resolve_document_key(storage_path, params)}/{col.name}"
+                bundle_push_ctx = StoreContext(
+                    collection=col.name,
+                    params=dict(params),
+                    identity=identity,
+                    roles=tuple(effective_roles),
+                    action=ACTION_PUSH,
+                    namespace=ns,
+                )
 
                 bundle_body_data: dict[str, Any] | None = None
                 if col.queue is not None and col.queue.include_body:
@@ -872,19 +922,20 @@ def _add_bundled_routes(
                             exc_info=True,
                         )
 
-                response = await _run_push(request, col, params, document_key, identity, effective_roles, rl, opts)
+                response = await _run_push(request, col, params, document_key, identity, effective_roles, rl, opts, bundle_push_ctx)
                 await _publish_change_event(opts, col, response, params, bundle_body_data)
                 return response
 
             return bundle_push_handler
 
-        router.add_api_route(push_path, _make_bundle_push(col, rate_limiter), methods=["POST"])
+        router.add_api_route(push_path, _make_bundle_push(col, rate_limiter, namespace_name), methods=["POST"])
 
 
 def _register_collections_on_router(
     router: APIRouter,
     collections: list[CollectionConfig],
     opts: SyncRouterOptions,
+    namespace_name: str | None = None,
 ) -> None:
     """Register standalone and bundled collection routes on *router*."""
     bundles: dict[str, list[CollectionConfig]] = {}
@@ -897,15 +948,16 @@ def _register_collections_on_router(
             standalone.append(col)
 
     for col in standalone:
-        _add_collection_routes(router, col, opts)
+        _add_collection_routes(router, col, opts, namespace_name)
 
     for bundle_name, bundle_collections in bundles.items():
-        _add_bundled_routes(router, bundle_name, bundle_collections, opts)
+        _add_bundled_routes(router, bundle_name, bundle_collections, opts, namespace_name)
 
 
 def _make_batch_pull_handler(
     collections_by_name: dict[str, CollectionConfig],
     opts: SyncRouterOptions,
+    namespace_name: str | None = None,
 ) -> Callable:
     """Create a ``/batch/pull`` handler scoped to *collections_by_name*."""
     async def batch_pull_handler(request: Request) -> JSONResponse:
@@ -932,12 +984,20 @@ def _make_batch_pull_handler(
                     continue
 
                 store = _resolve_store(col, opts.store, {}, identity, opts)
-                pull_result = await pull(store, col.storage_path, 0)
+                batch_ctx = StoreContext(
+                    collection=col.name,
+                    params={},
+                    identity=identity,
+                    roles=tuple(effective_roles),
+                    action=ACTION_PULL,
+                    namespace=namespace_name,
+                )
+                pull_result = await pull(store, col.storage_path, 0, batch_ctx)
                 data = pull_result.data
 
                 # TTL check: use stored timestamps (Python pull() returns current time)
                 if col.ttl_ms is not None:
-                    raw_doc = await opts.store.get_string(col.storage_path)
+                    raw_doc = await opts.store.get_string(col.storage_path, context=batch_ctx)
                     if raw_doc:
                         stored = json.loads(raw_doc)
                         doc_timestamp = _max_stored_timestamp(stored.get("timestamps", {}))
@@ -976,12 +1036,12 @@ def _mount_namespace(
 ) -> None:
     """Create a sub-router for *ns_name* and mount it on *router*."""
     ns_router = APIRouter()
-    _register_collections_on_router(ns_router, ns_config.collections, opts)
+    _register_collections_on_router(ns_router, ns_config.collections, opts, ns_name)
 
     collections_by_name = {col.name: col for col in ns_config.collections if not col.bundle}
     ns_router.add_api_route(
         "/batch/pull",
-        _make_batch_pull_handler(collections_by_name, opts),
+        _make_batch_pull_handler(collections_by_name, opts, ns_name),
         methods=["GET"],
     )
 
