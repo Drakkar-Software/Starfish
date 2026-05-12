@@ -14,7 +14,7 @@ from typing import Any
 # defaultdict is safe — asyncio is single-threaded per event loop.
 _push_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
-from starfish_server.storage.base import AbstractObjectStore
+from starfish_server.storage.base import AbstractObjectStore, StoreContext
 from starfish_server.constants import ERROR_HASH_MISMATCH, CONTENT_TYPE_JSON
 from starfish_server.protocol.types import (
     StoredDocument,
@@ -45,6 +45,7 @@ async def push(
     skip_storage: bool = False,
     precomputed_hash: str | None = None,
     precomputed_timestamps: dict | None = None,
+    context: StoreContext | None = None,
 ) -> PushResult:
     """Push a new full document.
 
@@ -62,7 +63,7 @@ async def push(
     async with _push_locks[document_key]:  # serialise concurrent pushes per key
         return await _push_locked(
             store, document_key, new_data, base_hash, author,
-            skip_timestamps, precomputed_hash, precomputed_timestamps,
+            skip_timestamps, precomputed_hash, precomputed_timestamps, context,
         )
 
 
@@ -75,8 +76,9 @@ async def _push_locked(
     skip_timestamps: bool,
     precomputed_hash: str | None,
     precomputed_timestamps: dict | None,
+    context: "StoreContext | None" = None,
 ) -> PushResult:
-    raw = await store.get_string(document_key)
+    raw = await store.get_string(document_key, context=context)
 
     old_data: dict[str, Any] | None = None
     old_timestamps = None
@@ -121,6 +123,6 @@ async def _push_locked(
         doc["authorPubkey"] = author.pubkey
         doc["authorSignature"] = author.signature
 
-    await store.put(document_key, json.dumps(doc), content_type=CONTENT_TYPE_JSON)
+    await store.put(document_key, json.dumps(doc), content_type=CONTENT_TYPE_JSON, context=context)
 
     return PushSuccess(hash=new_hash, timestamp=now)

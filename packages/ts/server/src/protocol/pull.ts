@@ -1,4 +1,4 @@
-import type { ObjectStore } from "../storage/base.js"
+import type { ObjectStore, StoreContext } from "../storage/base.js"
 import type { PullResult, StoredDocument } from "./types.js"
 import { filterByCheckpoint } from "./timestamps.js"
 
@@ -6,9 +6,10 @@ export async function pull(
   store: ObjectStore,
   documentKey: string,
   checkpoint: number = 0,
+  context?: StoreContext,
 ): Promise<PullResult> {
   const timestamp = Date.now()
-  const raw = await store.getString(documentKey)
+  const raw = await store.getString(documentKey, context)
 
   if (!raw) {
     return { data: {}, hash: "", timestamp }

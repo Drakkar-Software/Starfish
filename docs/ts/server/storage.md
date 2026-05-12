@@ -114,3 +114,39 @@ class MyStore implements ObjectStore {
   async deleteMany(keys: string[]) { ... }
 }
 ```
+
+## Request metadata via `StoreContext`
+
+Every store method accepts an optional trailing `context?: StoreContext` argument. When a request comes in through a route handler the library fills this with structured metadata about the request:
+
+```ts
+interface StoreContext {
+  collection: string            // collection name from config (e.g. "profile")
+  namespace?: string            // set when the route lives under a namespace mount
+  params: Record<string, string>  // resolved path params (e.g. { identity: "alice" })
+  identity: string | null       // authenticated caller, or null for public routes
+  roles: readonly string[]      // resolved roles for this caller
+  action: "pull" | "push" | "list" | "delete"
+}
+```
+
+### `CustomObjectStore` — receiving context in callbacks
+
+Callbacks that accept an extra trailing argument automatically receive the context. Callbacks written with the old single-argument signature continue to work unchanged — no migration required.
+
+```ts
+import { CustomObjectStore } from "@drakkar.software/starfish-server"
+
+const store = new CustomObjectStore({
+  // Old-style — still works, ctx is silently ignored
+  onGet: (key) => myBackend.get(key),
+
+  // New-style — receives full request context
+  onPut: (key, body, ctx) => {
+    console.log(`${ctx?.identity} pushed to ${ctx?.collection}`)
+    return myBackend.set(key, body)
+  },
+})
+```
+
+System-internal calls (replica sync, config loading, enrichers) pass `undefined` — your callback should treat a missing context as "no request context available".

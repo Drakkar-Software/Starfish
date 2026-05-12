@@ -5,7 +5,7 @@ import json
 import logging
 import time
 
-from starfish_server.storage.base import AbstractObjectStore
+from starfish_server.storage.base import AbstractObjectStore, StoreContext
 from starfish_server.protocol.types import StoredDocument, PullResult
 from starfish_server.protocol.timestamps import filter_by_checkpoint
 
@@ -14,6 +14,7 @@ async def pull(
     store: AbstractObjectStore,
     document_key: str,
     checkpoint: int = 0,
+    context: StoreContext | None = None,
 ) -> PullResult:
     """Pull the current document, optionally filtered by checkpoint.
 
@@ -22,7 +23,7 @@ async def pull(
     - hash is always the hash of the FULL document
     """
     timestamp = time.time_ns() // 1_000_000
-    raw = await store.get_string(document_key)
+    raw = await store.get_string(document_key, context=context)
 
     if not raw:
         return PullResult(data={}, hash="", timestamp=timestamp)

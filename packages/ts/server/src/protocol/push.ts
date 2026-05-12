@@ -1,5 +1,5 @@
 import { computeHash } from "@drakkar.software/starfish-protocol"
-import type { ObjectStore } from "../storage/base.js"
+import type { ObjectStore, StoreContext } from "../storage/base.js"
 import type { PushResult, PushSuccess, PushConflict, StoredDocument, Timestamps } from "./types.js"
 import { DOCUMENT_VERSION } from "./types.js"
 import { computeTimestamps } from "./timestamps.js"
@@ -26,6 +26,7 @@ export function push(
   skipStorage: boolean = false,
   precomputedHash?: string,
   precomputedTimestamps?: Timestamps,
+  context?: StoreContext,
 ): Promise<PushResult> {
   // skip-storage calls are stateless — no TOCTOU risk, no serialisation needed.
   if (skipStorage) {
@@ -38,10 +39,12 @@ export function push(
 
   // Chain onto any in-flight push for the same key so the read-check-write
   // triplet is never interleaved with a concurrent push for the same document.
+  // Capture context per-call in the closure so concurrent pushes carry their own ctx.
+  const capturedContext = context
   const prev = pushChain.get(documentKey) ?? Promise.resolve<PushResult>({} as PushResult)
   const current: Promise<PushResult> = prev.then(
-    () => _pushImpl(store, documentKey, newData, baseHash, author, skipTimestamps, precomputedHash, precomputedTimestamps),
-    () => _pushImpl(store, documentKey, newData, baseHash, author, skipTimestamps, precomputedHash, precomputedTimestamps),
+    () => _pushImpl(store, documentKey, newData, baseHash, author, skipTimestamps, precomputedHash, precomputedTimestamps, capturedContext),
+    () => _pushImpl(store, documentKey, newData, baseHash, author, skipTimestamps, precomputedHash, precomputedTimestamps, capturedContext),
   )
   pushChain.set(documentKey, current)
   // Clean up map entry once this push is the last one in the chain
@@ -60,8 +63,9 @@ async function _pushImpl(
   skipTimestamps: boolean,
   precomputedHash: string | undefined,
   precomputedTimestamps: Timestamps | undefined,
+  context: StoreContext | undefined,
 ): Promise<PushResult> {
-  const raw = await store.getString(documentKey)
+  const raw = await store.getString(documentKey, context)
 
   let oldData: Record<string, unknown> | null = null
   let oldTimestamps: Timestamps | null = null
@@ -107,7 +111,7 @@ async function _pushImpl(
     doc["authorSignature"] = author.signature
   }
 
-  await store.put(documentKey, JSON.stringify(doc), { contentType: CONTENT_TYPE_JSON })
+  await store.put(documentKey, JSON.stringify(doc), { contentType: CONTENT_TYPE_JSON }, context)
 
   return { hash: newHash, timestamp: now } as PushSuccess
 }

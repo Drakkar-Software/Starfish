@@ -10,7 +10,7 @@ from dataclasses import dataclass
 import aiofiles
 import aiofiles.os
 
-from starfish_server.storage.base import AbstractObjectStore
+from starfish_server.storage.base import AbstractObjectStore, StoreContext
 
 # Keys may only contain alphanumeric chars, dots, underscores, hyphens, colons, at-signs,
 # and forward slashes (used as directory separators). This mirrors the path-segment
@@ -53,7 +53,7 @@ class FilesystemObjectStore(AbstractObjectStore):
         _validate_key(key)
         return os.path.join(self._base, *key.split("/"))
 
-    async def get_string(self, key: str) -> str | None:
+    async def get_string(self, key: str, *, context: StoreContext | None = None) -> str | None:  # noqa: ARG002
         path = self._path(key)
         try:
             async with aiofiles.open(path, encoding="utf-8") as f:
@@ -68,6 +68,7 @@ class FilesystemObjectStore(AbstractObjectStore):
         *,
         content_type: str | None = None,
         cache_control: str | None = None,
+        context: StoreContext | None = None,  # noqa: ARG002
     ) -> None:
         path = self._path(key)
         await aiofiles.os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -84,7 +85,7 @@ class FilesystemObjectStore(AbstractObjectStore):
                 pass
             raise
 
-    async def get_bytes(self, key: str) -> tuple[bytes, str] | None:
+    async def get_bytes(self, key: str, *, context: StoreContext | None = None) -> tuple[bytes, str] | None:  # noqa: ARG002
         path = self._path(key)
         try:
             async with aiofiles.open(path, "rb") as f:
@@ -109,6 +110,7 @@ class FilesystemObjectStore(AbstractObjectStore):
         *,
         content_type: str,
         cache_control: str | None = None,
+        context: StoreContext | None = None,  # noqa: ARG002
     ) -> None:
         path = self._path(key)
         await aiofiles.os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -143,6 +145,7 @@ class FilesystemObjectStore(AbstractObjectStore):
         *,
         start_after: str | None = None,
         limit: int | None = None,
+        context: StoreContext | None = None,  # noqa: ARG002
     ) -> list[str]:
         _validate_key(prefix)
 
@@ -180,7 +183,7 @@ class FilesystemObjectStore(AbstractObjectStore):
 
         return await to_thread(_list)
 
-    async def delete(self, key: str) -> None:
+    async def delete(self, key: str, *, context: StoreContext | None = None) -> None:  # noqa: ARG002
         path = self._path(key)
         try:
             await aiofiles.os.remove(path)
@@ -192,6 +195,6 @@ class FilesystemObjectStore(AbstractObjectStore):
         except FileNotFoundError:
             pass
 
-    async def delete_many(self, keys: list[str]) -> None:
+    async def delete_many(self, keys: list[str], *, context: StoreContext | None = None) -> None:
         for key in keys:
-            await self.delete(key)
+            await self.delete(key, context=context)

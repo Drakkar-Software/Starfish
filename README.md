@@ -1201,6 +1201,29 @@ const store = new CustomObjectStore({
 })
 ```
 
+**Accessing request metadata in callbacks — `StoreContext`**
+
+Every store method receives an optional `StoreContext` as its last argument. It carries the collection name, resolved path parameters (e.g. the `identity` value from `/{identity}/collection`), the authenticated caller, their roles, and the operation type. Declare an extra argument in your callback to opt in; old single-argument callbacks are unaffected.
+
+```ts
+// TypeScript — opt in by accepting the extra argument
+const store = new CustomObjectStore({
+  onPut: (key, body, ctx) => {
+    console.log(`${ctx?.identity} pushed to ${ctx?.collection}`, ctx?.params)
+    return myBackend.set(key, body)
+  },
+})
+```
+
+```python
+# Python — arity-sniffed at construction; old lambdas unchanged
+async def on_put(key: str, body: str, ctx) -> None:
+    print(f"{ctx.identity} pushed to {ctx.collection}", ctx.params)
+    await my_backend.set(key, body)
+
+store = CustomObjectStore(on_put=on_put)
+```
+
 **`FilesystemObjectStore`** — files on disk, atomic writes. Good for single-node deployments.
 
 ```python

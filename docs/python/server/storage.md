@@ -170,3 +170,42 @@ store = CustomObjectStore(
     on_delete=lambda key: my_backend.delete(key),
 )
 ```
+
+---
+
+## Request metadata via `StoreContext`
+
+Every store method accepts a keyword-only `context: StoreContext | None = None` argument. When a request comes in through a route handler the library fills this with structured metadata about the request:
+
+```python
+@dataclass(frozen=True)
+class StoreContext:
+    collection: str              # collection name from config (e.g. "profile")
+    params: Mapping[str, str]    # resolved path params (e.g. {"identity": "alice"})
+    identity: str | None         # authenticated caller, or None for public routes
+    roles: tuple[str, ...]       # resolved roles for this caller
+    action: str                  # "pull" | "push" | "list" | "delete"
+    namespace: str | None        # set when route lives under a namespace mount
+```
+
+### `CustomObjectStore` — receiving context in callbacks
+
+Callbacks that accept an extra positional argument automatically receive the context. Callbacks written with the old single-argument signature continue to work unchanged — arity is sniffed once at construction time using `inspect.signature`.
+
+```python
+from starfish_server import CustomObjectStore
+
+# Old-style — still works, ctx is never passed
+store = CustomObjectStore(
+    on_get=lambda key: my_backend.get(key),
+)
+
+# New-style — receives full request context
+async def on_put(key: str, body: str, ctx) -> None:
+    print(f"{ctx.identity} pushed to {ctx.collection}")
+    await my_backend.set(key, body)
+
+store = CustomObjectStore(on_put=on_put)
+```
+
+System-internal calls (replica sync, config loading, enrichers) pass `None` — treat a missing context as "no request context available".

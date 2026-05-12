@@ -1,7 +1,7 @@
 """In-memory and callback-based object stores."""
 
 import inspect
-from starfish_server.storage.base import AbstractObjectStore
+from starfish_server.storage.base import AbstractObjectStore, StoreContext
 from typing import Any, Awaitable, Callable
 
 
@@ -31,7 +31,7 @@ class MemoryObjectStore(AbstractObjectStore):
         self._binary: dict[str, bytes] = {}
         self._binary_meta: dict[str, str] = {}
 
-    async def get_string(self, key: str) -> str | None:
+    async def get_string(self, key: str, *, context: StoreContext | None = None) -> str | None:  # noqa: ARG002
         return self._data.get(key)
 
     async def put(
@@ -41,6 +41,7 @@ class MemoryObjectStore(AbstractObjectStore):
         *,
         content_type: str | None = None,  # noqa: ARG002 — interface parameter
         cache_control: str | None = None,  # noqa: ARG002 — interface parameter
+        context: StoreContext | None = None,  # noqa: ARG002
     ) -> None:
         self._data[key] = body
 
@@ -50,6 +51,7 @@ class MemoryObjectStore(AbstractObjectStore):
         *,
         start_after: str | None = None,
         limit: int | None = None,
+        context: StoreContext | None = None,  # noqa: ARG002
     ) -> list[str]:
         keys = sorted(k for k in self._data if k.startswith(prefix))
         if start_after:
@@ -58,7 +60,7 @@ class MemoryObjectStore(AbstractObjectStore):
             keys = keys[:limit]
         return keys
 
-    async def get_bytes(self, key: str) -> tuple[bytes, str] | None:
+    async def get_bytes(self, key: str, *, context: StoreContext | None = None) -> tuple[bytes, str] | None:  # noqa: ARG002
         body = self._binary.get(key)
         if body is None:
             return None
@@ -71,16 +73,17 @@ class MemoryObjectStore(AbstractObjectStore):
         *,
         content_type: str,
         cache_control: str | None = None,  # noqa: ARG002
+        context: StoreContext | None = None,  # noqa: ARG002
     ) -> None:
         self._binary[key] = body
         self._binary_meta[key] = content_type
 
-    async def delete(self, key: str) -> None:
+    async def delete(self, key: str, *, context: StoreContext | None = None) -> None:  # noqa: ARG002
         self._data.pop(key, None)
         self._binary.pop(key, None)
         self._binary_meta.pop(key, None)
 
-    async def delete_many(self, keys: list[str]) -> None:
+    async def delete_many(self, keys: list[str], *, context: StoreContext | None = None) -> None:
         for key in keys:
             self._data.pop(key, None)
             self._binary.pop(key, None)
@@ -95,10 +98,33 @@ async def _call(fn: Callable[..., Any], *args: Any) -> Any:
     return result
 
 
-GetFn = Callable[[str], str | None | Awaitable[str | None]]
-PutFn = Callable[[str, str], None | Awaitable[None]]
-ListFn = Callable[[str, str | None, int | None], list[str] | Awaitable[list[str]]]
-DeleteFn = Callable[[str], None | Awaitable[None]]
+def _accepts_ctx(fn: Callable[..., Any], base_arity: int) -> bool:
+    """Return True if ``fn`` accepts at least ``base_arity + 1`` positional args.
+
+    Detects whether the user's callback was written to receive a StoreContext
+    as its last positional argument. Checked once at construction time and
+    cached to avoid repeated introspection overhead.
+    """
+    try:
+        sig = inspect.signature(fn)
+        params = list(sig.parameters.values())
+        # *args catches any number of positional args
+        if any(p.kind == inspect.Parameter.VAR_POSITIONAL for p in params):
+            return True
+        positional = [
+            p for p in params
+            if p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.POSITIONAL_ONLY)
+        ]
+        return len(positional) >= base_arity + 1
+    except (ValueError, TypeError):
+        # Cannot introspect (e.g. some builtins, C extensions) — assume accepts ctx
+        return True
+
+
+GetFn = Callable[..., str | None | Awaitable[str | None]]
+PutFn = Callable[..., None | Awaitable[None]]
+ListFn = Callable[..., list[str] | Awaitable[list[str]]]
+DeleteFn = Callable[..., None | Awaitable[None]]
 
 
 class CustomObjectStore(AbstractObjectStore):
@@ -145,10 +171,18 @@ class CustomObjectStore(AbstractObjectStore):
         self._on_put = on_put
         self._on_list = on_list
         self._on_delete = on_delete
+        # Arity-sniff once at construction time for backward compatibility.
+        # Callbacks written as ``lambda key: ...`` still work; ``lambda key, ctx: ...`` gets ctx.
+        self._on_get_accepts_ctx = _accepts_ctx(on_get, 1) if on_get is not None else False
+        self._on_put_accepts_ctx = _accepts_ctx(on_put, 2) if on_put is not None else False
+        self._on_list_accepts_ctx = _accepts_ctx(on_list, 3) if on_list is not None else False
+        self._on_delete_accepts_ctx = _accepts_ctx(on_delete, 1) if on_delete is not None else False
 
-    async def get_string(self, key: str) -> str | None:
+    async def get_string(self, key: str, *, context: StoreContext | None = None) -> str | None:
         if self._on_get is None:
             return None
+        if self._on_get_accepts_ctx:
+            return await _call(self._on_get, key, context)
         return await _call(self._on_get, key)
 
     async def put(
@@ -158,9 +192,13 @@ class CustomObjectStore(AbstractObjectStore):
         *,
         content_type: str | None = None,  # noqa: ARG002 — interface parameter
         cache_control: str | None = None,  # noqa: ARG002 — interface parameter
+        context: StoreContext | None = None,
     ) -> None:
         if self._on_put is not None:
-            await _call(self._on_put, key, body)
+            if self._on_put_accepts_ctx:
+                await _call(self._on_put, key, body, context)
+            else:
+                await _call(self._on_put, key, body)
 
     async def list_keys(
         self,
@@ -168,15 +206,21 @@ class CustomObjectStore(AbstractObjectStore):
         *,
         start_after: str | None = None,
         limit: int | None = None,
+        context: StoreContext | None = None,
     ) -> list[str]:
         if self._on_list is None:
             return []
+        if self._on_list_accepts_ctx:
+            return await _call(self._on_list, prefix, start_after, limit, context)
         return await _call(self._on_list, prefix, start_after, limit)
 
-    async def delete(self, key: str) -> None:
+    async def delete(self, key: str, *, context: StoreContext | None = None) -> None:
         if self._on_delete is not None:
-            await _call(self._on_delete, key)
+            if self._on_delete_accepts_ctx:
+                await _call(self._on_delete, key, context)
+            else:
+                await _call(self._on_delete, key)
 
-    async def delete_many(self, keys: list[str]) -> None:
+    async def delete_many(self, keys: list[str], *, context: StoreContext | None = None) -> None:
         for key in keys:
-            await self.delete(key)
+            await self.delete(key, context=context)

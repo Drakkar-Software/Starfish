@@ -25,8 +25,8 @@ class _YieldingStore(MemoryObjectStore):
     deterministic.
     """
 
-    async def get_string(self, key: str) -> str | None:
-        result = await super().get_string(key)
+    async def get_string(self, key: str, *, context=None) -> str | None:
+        result = await super().get_string(key, context=context)
         await asyncio.sleep(0)  # hand control back to the event loop
         return result
 

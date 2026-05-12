@@ -1,7 +1,7 @@
 import { readFile, writeFile, mkdir, rm, readdir, stat, rename } from "node:fs/promises"
 import { join, dirname, relative, sep } from "node:path"
 import { resolve } from "node:path"
-import type { ObjectStore } from "./base.js"
+import type { ObjectStore, StoreContext } from "./base.js"
 
 const VALID_KEY = /^[a-zA-Z0-9._:@\-/]+$/
 
@@ -27,7 +27,7 @@ export class FilesystemObjectStore implements ObjectStore {
     return join(this._base, ...key.split("/"))
   }
 
-  async getString(key: string): Promise<string | null> {
+  async getString(key: string, _context?: StoreContext): Promise<string | null> {
     const path = this._path(key)
     try {
       return await readFile(path, "utf-8")
@@ -37,7 +37,7 @@ export class FilesystemObjectStore implements ObjectStore {
     }
   }
 
-  async put(key: string, body: string): Promise<void> {
+  async put(key: string, body: string, _opts?: { contentType?: string; cacheControl?: string }, _context?: StoreContext): Promise<void> {
     const path = this._path(key)
     await mkdir(dirname(path), { recursive: true })
     const tmp = path + ".tmp"
@@ -50,7 +50,7 @@ export class FilesystemObjectStore implements ObjectStore {
     }
   }
 
-  async getBytes(key: string): Promise<{ body: Uint8Array; contentType: string } | null> {
+  async getBytes(key: string, _context?: StoreContext): Promise<{ body: Uint8Array; contentType: string } | null> {
     const path = this._path(key)
     let body: Uint8Array
     try {
@@ -75,6 +75,7 @@ export class FilesystemObjectStore implements ObjectStore {
     key: string,
     body: Uint8Array,
     opts: { contentType: string },
+    _context?: StoreContext,
   ): Promise<void> {
     const path = this._path(key)
     await mkdir(dirname(path), { recursive: true })
@@ -101,6 +102,7 @@ export class FilesystemObjectStore implements ObjectStore {
   async listKeys(
     prefix: string,
     opts?: { startAfter?: string; limit?: number },
+    _context?: StoreContext,
   ): Promise<string[]> {
     validateKey(prefix)
     const prefixPath = join(this._base, ...prefix.split("/"))
@@ -143,13 +145,13 @@ export class FilesystemObjectStore implements ObjectStore {
     return results
   }
 
-  async delete(key: string): Promise<void> {
+  async delete(key: string, _context?: StoreContext): Promise<void> {
     const path = this._path(key)
     await rm(path, { force: true })
     await rm(path + ".__meta__", { force: true })
   }
 
-  async deleteMany(keys: string[]): Promise<void> {
-    for (const key of keys) await this.delete(key)
+  async deleteMany(keys: string[], _context?: StoreContext): Promise<void> {
+    for (const key of keys) await this.delete(key, _context)
   }
 }

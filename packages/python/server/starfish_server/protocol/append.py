@@ -5,7 +5,7 @@ import logging
 from typing import Any
 
 from starfish_protocol.hash import compute_hash
-from starfish_server.storage.base import AbstractObjectStore
+from starfish_server.storage.base import AbstractObjectStore, StoreContext
 from starfish_server.protocol.types import Timestamps
 
 logger = logging.getLogger(__name__)
@@ -17,6 +17,7 @@ async def build_append_only_data(
     new_item: dict[str, Any],
     append_field: str,
     now: int,
+    context: StoreContext | None = None,
 ) -> tuple[dict[str, Any], str, Timestamps, str]:
     """Read existing doc, append new_item, return (new_data, base_hash, timestamps, last_item_hash).
 
@@ -24,7 +25,7 @@ async def build_append_only_data(
     append_field entry becomes a ``list[int]`` parallel to the array.
     ``last_item_hash`` is ``compute_hash({"n": len, "last": new_item})`` — O(1).
     """
-    raw = await store.get_string(document_key)
+    raw = await store.get_string(document_key, context=context)
 
     if not raw:
         last_item_hash = compute_hash({"n": 1, "last": new_item})
@@ -86,6 +87,7 @@ async def check_last_item_conflict(
     document_key: str,
     client_base_hash: str | None,
     _append_field: str,
+    context: StoreContext | None = None,
 ) -> str | None:
     """Compare client_base_hash against the stored document hash.
 
@@ -98,7 +100,7 @@ async def check_last_item_conflict(
     using the base_hash already returned by build_append_only_data). Exported as
     a utility for callers that manage their own retry logic.
     """
-    raw = await store.get_string(document_key)
+    raw = await store.get_string(document_key, context=context)
 
     if not raw:
         if client_base_hash and client_base_hash != "":

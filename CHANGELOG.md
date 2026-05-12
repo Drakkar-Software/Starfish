@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.3.0
+
+### Added
+
+#### Server (TypeScript + Python)
+
+- **`StoreContext`** — new type/dataclass (`collection`, `namespace?`, `params`, `identity`, `roles`, `action`) passed as an optional trailing parameter to every `ObjectStore` / `AbstractObjectStore` method (`getString`, `put`, `listKeys`, `delete`, `deleteMany`, `getBytes`, `putBytes`). Route handlers build and forward context so callbacks can inspect the collection name, path parameters, authenticated caller, roles, and operation type for each request. Exported from the top-level package.
+- **`CustomObjectStore` backward-compatible context forwarding** — existing 1-arg callbacks continue to work unchanged. In TypeScript, the extra argument is silently ignored. In Python, callback arity is sniffed once at construction via `inspect.signature`; old lambdas and functions are called without context while new callbacks that declare an extra positional argument receive the full `StoreContext`.
+- **`EncryptedObjectStore` context pass-through** — the encrypted wrapper forwards the same `StoreContext` object unchanged to its inner store.
+- **Namespace routes expose `ctx.namespace`** — routes mounted under a namespace (via `mountNamespace` / `_mount_namespace`) populate the `namespace` field with the namespace name.
+- **Bundle/batch handlers construct per-collection context** — each collection in a bundle or batch response gets its own `StoreContext` with the correct `collection` name rather than sharing a single context object.
+- **System callers use `undefined`/`None`** — internal subsystems (replica sync, config loader, role enrichers) pass explicit `undefined`/`None` so callbacks can distinguish "no request context" from a public-route context.
+
 ## 2.2.0
 
 ### Added
