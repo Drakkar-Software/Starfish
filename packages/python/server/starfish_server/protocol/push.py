@@ -1,11 +1,18 @@
 """Push operation for the Starfish sync protocol."""
 
 
+import asyncio
 import json
 import logging
 import time
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any
+
+# Per-key asyncio lock registry. Serialises concurrent pushes to the same
+# document_key so the read-check-write triplet is atomic under asyncio.
+# defaultdict is safe — asyncio is single-threaded per event loop.
+_push_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 from starfish_server.storage.base import AbstractObjectStore
 from starfish_server.constants import ERROR_HASH_MISMATCH, CONTENT_TYPE_JSON
@@ -52,6 +59,23 @@ async def push(
         new_hash = precomputed_hash if precomputed_hash is not None else compute_hash(new_data)
         return PushSuccess(hash=new_hash, timestamp=now)
 
+    async with _push_locks[document_key]:  # serialise concurrent pushes per key
+        return await _push_locked(
+            store, document_key, new_data, base_hash, author,
+            skip_timestamps, precomputed_hash, precomputed_timestamps,
+        )
+
+
+async def _push_locked(
+    store: AbstractObjectStore,
+    document_key: str,
+    new_data: dict[str, Any],
+    base_hash: str | None,
+    author: "Author | None",
+    skip_timestamps: bool,
+    precomputed_hash: str | None,
+    precomputed_timestamps: dict | None,
+) -> PushResult:
     raw = await store.get_string(document_key)
 
     old_data: dict[str, Any] | None = None

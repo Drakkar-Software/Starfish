@@ -146,6 +146,38 @@ async def test_ttl_not_set_returns_data_normally():
     assert pull_resp.json()["data"] == {"x": 1}
 
 
+@pytest.mark.asyncio
+async def test_ttl_pull_zeros_hash_for_expired_document():
+    """An expired document must return hash='' alongside empty data.
+    Without the fix, hash retains the real stored hash — a client that pushes
+    back with that hash passes the baseHash check and overwrites the doc with
+    empty data, silently clobbering content."""
+    config = SyncConfig(
+        version=1,
+        collections=[
+            CollectionConfig(
+                name="settings",
+                storagePath="users/{identity}/settings",
+                readRoles=["self"],
+                writeRoles=["self"],
+                encryption="none",
+                maxBodyBytes=65536,
+                ttlMs=1,  # 1 ms TTL — expires immediately
+            ),
+        ],
+    )
+    app, _ = _make_app(config)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        await client.post(
+            "/push/users/user-1/settings",
+            json={"data": {"secret": "value"}, "baseHash": None},
+        )
+        time.sleep(0.01)
+        pull_resp = await client.get("/pull/users/user-1/settings")
+    assert pull_resp.status_code == 200
+    assert pull_resp.json()["hash"] == ""
+
+
 # ---------------------------------------------------------------------------
 # Field-level read permissions
 # ---------------------------------------------------------------------------

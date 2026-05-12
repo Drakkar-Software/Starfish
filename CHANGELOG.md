@@ -1,5 +1,30 @@
 # Changelog
 
+## 2.2.0
+
+### Added
+
+#### Client (TypeScript + Python)
+
+- **`SyncManager.abort()`** — cancels any in-flight `pull()` or `push()` immediately. The in-flight coroutine/promise rejects with `AbortError`. Subsequent calls to `push()` or `pull()` on an aborted manager also throw `AbortError` without making a network request.
+- **`SyncManager.isAborted` / `SyncManager.is_aborted`** — getter that reflects current abort state.
+- **`AbortError`** — new error class exported from `@drakkar.software/starfish-client` (TypeScript) and `starfish_sdk` (Python). Consumers can distinguish abort errors from network/protocol errors with `err instanceof AbortError` / `isinstance(err, AbortError)`.
+
+#### Server (Python)
+
+- **`SyncRouterOptions.audit_logger`** — optional `AuditLogger` instance passed to the sync router. When set, the push handler calls `audit_logger.log(entry)` after every push attempt (both success and 409 conflict), giving operators a record of who pushed what and when.
+
+### Fixed
+
+#### Server (TypeScript)
+
+- **Concurrent-push TOCTOU eliminated** — concurrent pushes to the same document key are now serialised via a per-key Promise chain. Previously, two clients with the same `baseHash` could both pass the hash-check window and the second write would silently overwrite the first. Now the second caller always receives a deterministic 409 conflict response.
+
+#### Server (Python)
+
+- **TTL-expired pull returned a real hash alongside empty data** — a client receiving `{ data: {}, hash: "<real-hash>" }` could use the stale hash as `baseHash` on the next push and accidentally overwrite the (intentionally empty) document. The pull response now returns `hash: ""` when TTL expiry strips data, signalling "no prior write" to the client.
+- **Concurrent-push TOCTOU eliminated** — per-document-key `asyncio.Lock` serialises concurrent push handlers so only one writer passes the `baseHash` check at a time; the other receives a deterministic 409.
+
 ## 2.0.0
 
 ### Breaking

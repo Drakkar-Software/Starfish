@@ -5,7 +5,7 @@ export type { PullResult, PushSuccess } from "@drakkar.software/starfish-protoco
 
 export { StarfishClient } from "./client.js"
 export type { BlobPullResult, BlobPushResult, AppendPullOptions } from "./client.js"
-export { SyncManager } from "./sync.js"
+export { SyncManager, AbortError } from "./sync.js"
 export type { SyncManagerOptions } from "./sync.js"
 export { createEncryptor, ENCRYPTED_KEY } from "./crypto.js"
 export type { Encryptor } from "./crypto.js"

@@ -12,6 +12,13 @@ from starfish_sdk.crypto import Encryptor, create_encryptor
 from starfish_sdk.types import ConflictError, ConflictResolver, DataSigner
 
 
+class AbortError(Exception):
+    """Raised when a SyncManager operation is cancelled via abort()."""
+
+    def __init__(self) -> None:
+        super().__init__("SyncManager was aborted")
+
+
 class SyncManager:
     """High-level sync manager with pull, push, and automatic conflict resolution.
 
@@ -53,6 +60,16 @@ class SyncManager:
         self._last_hash: str | None = None
         self._last_checkpoint: int = 0
         self._local_data: dict[str, Any] = {}
+        self._aborted: bool = False
+
+    def abort(self) -> None:
+        """Cancel any in-flight push or pull. Future operations immediately raise AbortError."""
+        self._aborted = True
+
+    @property
+    def is_aborted(self) -> bool:
+        """True if abort() has been called."""
+        return self._aborted
 
     @property
     def data(self) -> dict[str, Any]:
@@ -75,10 +92,16 @@ class SyncManager:
 
     async def pull(self) -> PullResult:
         """Pull latest data from the server, using checkpoint for incremental sync."""
+        if self._aborted:
+            raise AbortError()
         result = await self._client.pull(self._pull_path, self._last_checkpoint)
+        if self._aborted:
+            raise AbortError()
 
         if self._encryptor is not None:
             decrypted = self._encryptor.decrypt(result.data)
+            if self._aborted:
+                raise AbortError()
             self._local_data = decrypted
             result.data = decrypted
         elif self._last_checkpoint > 0:
@@ -92,6 +115,8 @@ class SyncManager:
 
     async def push(self, data: dict[str, Any]) -> dict[str, Any]:
         """Push data with automatic conflict resolution. Returns dict with hash and timestamp."""
+        if self._aborted:
+            raise AbortError()
         attempt = 0
         pending_data = data
 
@@ -102,24 +127,34 @@ class SyncManager:
                     if self._encryptor is not None
                     else pending_data
                 )
+                if self._aborted:
+                    raise AbortError()
 
                 sig = (
                     await self._sign_data(stable_stringify(payload))
                     if self._sign_data is not None
                     else None
                 )
+                if self._aborted:
+                    raise AbortError()
 
                 result = await self._client.push(
                     self._push_path, payload, self._last_hash, sig
                 )
+                if self._aborted:
+                    raise AbortError()
                 self._last_hash = result.hash
                 self._last_checkpoint = result.timestamp
                 self._local_data = pending_data
                 return {"hash": result.hash, "timestamp": result.timestamp}
+            except AbortError:
+                raise
             except ConflictError:
                 if attempt >= self._max_retries:
                     raise
                 remote = await self._client.pull(self._pull_path)
+                if self._aborted:
+                    raise AbortError()
                 self._last_hash = remote.hash
                 self._last_checkpoint = remote.timestamp
 
@@ -128,6 +163,8 @@ class SyncManager:
                     if self._encryptor is not None
                     else remote.data
                 )
+                if self._aborted:
+                    raise AbortError()
                 pending_data = self._on_conflict(pending_data, remote_data)
                 delay = min(0.1 * (2 ** attempt), 2.0) + random.random() * 0.1
                 await asyncio.sleep(delay)

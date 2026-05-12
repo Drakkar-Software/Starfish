@@ -9,6 +9,13 @@ import type { SyncLogger } from "./logger.js"
 import type { Validator } from "./validate.js"
 import { ValidationError } from "./validate.js"
 
+export class AbortError extends Error {
+  constructor() {
+    super("SyncManager was aborted")
+    this.name = "AbortError"
+  }
+}
+
 
 export interface SyncManagerOptions {
   client: StarfishClient
@@ -50,6 +57,7 @@ export class SyncManager {
   private lastHash: string | null = null
   private lastCheckpoint: number = 0
   private localData: Record<string, unknown> = {}
+  private aborted: boolean = false
 
   constructor(options: SyncManagerOptions) {
     this.client = options.client
@@ -66,6 +74,14 @@ export class SyncManager {
       (options.encryptionSecret && options.encryptionSalt
         ? createEncryptor(options.encryptionSecret, options.encryptionSalt, options.encryptionInfo)
         : null)
+  }
+
+  abort(): void {
+    this.aborted = true
+  }
+
+  get isAborted(): boolean {
+    return this.aborted
   }
 
   getData(): Record<string, unknown> {
@@ -86,13 +102,16 @@ export class SyncManager {
   }
 
   async pull(): Promise<PullResult> {
+    if (this.aborted) throw new AbortError()
     this.logger?.pullStart(this.loggerName)
     const start = performance.now()
     try {
       const result = await this.client.pull(this.pullPath, this.lastCheckpoint)
+      if (this.aborted) throw new AbortError()
 
       if (this.encryptor) {
         const decrypted = await this.encryptor.decrypt(result.data)
+        if (this.aborted) throw new AbortError()
         this.localData = decrypted
         result.data = decrypted
       } else if (this.lastCheckpoint > 0) {
@@ -113,6 +132,7 @@ export class SyncManager {
   }
 
   async push(data: Record<string, unknown>): Promise<{ hash: string; timestamp: number }> {
+    if (this.aborted) throw new AbortError()
     if (this.validate) {
       const result = this.validate(data)
       if (result !== true) throw new ValidationError(result)
@@ -127,10 +147,12 @@ export class SyncManager {
         const payload = this.encryptor
           ? await this.encryptor.encrypt(pendingData)
           : pendingData
+        if (this.aborted) throw new AbortError()
 
         const sig = this.signData
           ? await this.signData(stableStringify(payload))
           : undefined
+        if (this.aborted) throw new AbortError()
 
         const result = await this.client.push(
           this.pushPath,
@@ -138,12 +160,14 @@ export class SyncManager {
           this.lastHash,
           sig
         )
+        if (this.aborted) throw new AbortError()
         this.lastHash = result.hash
         this.lastCheckpoint = result.timestamp
         this.localData = pendingData
         this.logger?.pushSuccess(this.loggerName, Math.round(performance.now() - start))
         return result
       } catch (err) {
+        if (err instanceof AbortError) throw err
         if (!(err instanceof ConflictError) || attempt >= this.maxRetries) {
           this.logger?.pushError(this.loggerName, err instanceof Error ? err.message : String(err))
           throw err
@@ -151,13 +175,16 @@ export class SyncManager {
         this.logger?.conflict(this.loggerName, attempt + 1)
         try {
           const remote = await this.client.pull(this.pullPath)
+          if (this.aborted) throw new AbortError()
           const remoteData = this.encryptor
             ? await this.encryptor.decrypt(remote.data)
             : remote.data
+          if (this.aborted) throw new AbortError()
           this.lastHash = remote.hash
           this.lastCheckpoint = remote.timestamp
           pendingData = this.onConflict(pendingData, remoteData)
         } catch (resolveErr) {
+          if (resolveErr instanceof AbortError) throw resolveErr
           const msg = resolveErr instanceof Error ? resolveErr.message : String(resolveErr)
           this.logger?.pushError(this.loggerName, `Conflict resolution failed (attempt ${attempt + 1}): ${msg}`)
           throw resolveErr
