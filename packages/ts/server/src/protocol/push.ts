@@ -5,12 +5,18 @@ import { DOCUMENT_VERSION } from "./types.js"
 import { computeTimestamps } from "./timestamps.js"
 import { ERROR_HASH_MISMATCH, CONTENT_TYPE_JSON } from "../constants.js"
 
+// Per-key promise chain serialises concurrent pushes to the same documentKey.
+// Node.js is single-threaded but awaits yield between the getString read and the
+// put write — two concurrent pushes can both read the same hash and both succeed.
+// Chaining guarantees the second push only starts after the first write completes.
+const pushChain = new Map<string, Promise<PushResult>>()
+
 export interface Author {
   pubkey: string
   signature: string
 }
 
-export async function push(
+export function push(
   store: ObjectStore,
   documentKey: string,
   newData: Record<string, unknown>,
@@ -21,12 +27,40 @@ export async function push(
   precomputedHash?: string,
   precomputedTimestamps?: Timestamps,
 ): Promise<PushResult> {
+  // skip-storage calls are stateless — no TOCTOU risk, no serialisation needed.
   if (skipStorage) {
-    const now = Date.now()
-    const newHash = precomputedHash ?? await computeHash(newData)
-    return { hash: newHash, timestamp: now } as PushSuccess
+    return (async () => {
+      const now = Date.now()
+      const newHash = precomputedHash ?? await computeHash(newData)
+      return { hash: newHash, timestamp: now } as PushSuccess
+    })()
   }
 
+  // Chain onto any in-flight push for the same key so the read-check-write
+  // triplet is never interleaved with a concurrent push for the same document.
+  const prev = pushChain.get(documentKey) ?? Promise.resolve<PushResult>({} as PushResult)
+  const current: Promise<PushResult> = prev.then(
+    () => _pushImpl(store, documentKey, newData, baseHash, author, skipTimestamps, precomputedHash, precomputedTimestamps),
+    () => _pushImpl(store, documentKey, newData, baseHash, author, skipTimestamps, precomputedHash, precomputedTimestamps),
+  )
+  pushChain.set(documentKey, current)
+  // Clean up map entry once this push is the last one in the chain
+  void current.finally(() => {
+    if (pushChain.get(documentKey) === current) pushChain.delete(documentKey)
+  })
+  return current
+}
+
+async function _pushImpl(
+  store: ObjectStore,
+  documentKey: string,
+  newData: Record<string, unknown>,
+  baseHash: string | null,
+  author: Author | undefined,
+  skipTimestamps: boolean,
+  precomputedHash: string | undefined,
+  precomputedTimestamps: Timestamps | undefined,
+): Promise<PushResult> {
   const raw = await store.getString(documentKey)
 
   let oldData: Record<string, unknown> | null = null

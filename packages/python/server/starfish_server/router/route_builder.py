@@ -35,6 +35,7 @@ from starfish_server.router.middleware import check_body_limit, RateLimiter
 from starfish_server.router.mime import matches_allowed_mime, is_json_collection
 from starfish_server.queue.message import QueueMessage
 from starfish_server.ttl import is_expired as _is_expired
+from starfish_server.audit import AuditLogger, AuditEntry as _AuditEntry
 from starfish_server.constants import (
     ROLE_PUBLIC,
     ROLE_SELF,
@@ -87,6 +88,7 @@ class SyncRouterOptions:
     queue: "AbstractQueue | None" = None
     role_resolver_timeout: float = 5.0
     config_endpoint: ConfigEndpointOptions | None = None
+    audit_logger: AuditLogger | None = None
 
 
 from pydantic import BaseModel as _BaseModel
@@ -571,6 +573,18 @@ def _make_push_handler(
 
         response = await _run_push(request, col, params, document_key, identity, effective_roles, rate_limiter, opts)
         await _publish_change_event(opts, col, response, params, body_data)
+        # Emit audit entry for every push (success or conflict).
+        if opts.audit_logger is not None:
+            await opts.audit_logger.record(_AuditEntry(
+                timestamp=time.time() * 1000,
+                action="push",
+                collection=col.name,
+                identity=identity,
+                document_key=document_key,
+                success=response.status_code == 200,
+                status_code=response.status_code,
+                params=dict(params),
+            ))
         return response
 
     return push_handler
@@ -666,6 +680,7 @@ def _add_collection_routes(
                     if _is_expired(doc_timestamp, col.ttl_ms):
                         resp_body = json.loads(response.body)
                         resp_body["data"] = {}
+                        resp_body["hash"] = ""  # zero hash so client can't clobber with stale baseHash
                         response = JSONResponse(resp_body, status_code=200)
                         if col.cache_duration_ms is not None:
                             max_age = col.cache_duration_ms // 1000
