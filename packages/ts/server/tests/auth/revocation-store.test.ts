@@ -3,7 +3,7 @@ import { ed25519 } from "@noble/curves/ed25519.js"
 import { sha256 } from "@noble/hashes/sha2.js"
 import {
   configurePlatform,
-  stableStringify,
+  revocationListCanonicalSigningInput,
 } from "@drakkar.software/starfish-protocol"
 import { webcrypto } from "node:crypto"
 import {
@@ -42,7 +42,7 @@ function signList(
   list: Omit<RevocationList, "sig">,
   privKey: Uint8Array,
 ): RevocationList {
-  const canonical = stableStringify(list as unknown as Record<string, unknown>)
+  const canonical = revocationListCanonicalSigningInput(list)
   const sigBytes = ed25519.sign(new TextEncoder().encode(canonical), privKey)
   const sig = Buffer.from(sigBytes).toString("base64")
   return { ...list, sig }

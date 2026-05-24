@@ -57,6 +57,39 @@ describe("mintDeviceCap", () => {
     )
     expect(cert.nonce).toBe(expected)
   })
+
+  it("mints an ed25519-sign + secp256k1-schnorr-KEM cap (decoupled KEM, now wrappable)", async () => {
+    // The KEM phase relaxed the old mint gate: a non-ed25519 subKemAlg is now
+    // mintable (the keyring wraps under any suite's ECDH).
+    const alice = await deriveRootIdentity("alice-root-passphrase")
+    const bob = await deriveRootIdentity("bob-root-passphrase")
+    const cert = await mintDeviceCap(
+      alice.keys.edPriv,
+      alice.keys.edPub,
+      { edPubHex: bob.keys.edPub, kemPubHex: bob.keys.kemPub },
+      scopes.rootAll(),
+      { subKemAlg: "secp256k1-schnorr" },
+    )
+    expect(cert.subKemAlg).toBe("secp256k1-schnorr")
+    expect(typeof cert.subKem).toBe("string") // distinct KEM key emitted
+    expect((await verifyCapCert(cert, { now: cert.nbf + 5 })).ok).toBe(true)
+  })
+
+  it("allows secp256k1-schnorr signing with an X25519 (ed25519) KEM", async () => {
+    // The one usable decoupled combo today (key bytes are stand-ins).
+    const alice = await deriveRootIdentity("alice-root-passphrase")
+    const bob = await deriveRootIdentity("bob-root-passphrase")
+    const cert = await mintDeviceCap(
+      alice.keys.edPriv,
+      alice.keys.edPub,
+      { edPubHex: bob.keys.edPub, kemPubHex: bob.keys.kemPub },
+      scopes.rootAll(),
+      { subAlg: "secp256k1-schnorr", subKemAlg: "ed25519" },
+    )
+    expect(cert.subAlg).toBe("secp256k1-schnorr")
+    expect(cert.subKemAlg).toBe("ed25519")
+    expect(typeof cert.subKem).toBe("string")
+  })
 })
 
 describe("scopes presets (identities)", () => {

@@ -1,5 +1,6 @@
 import type { PullResult, PushSuccess } from "@drakkar.software/starfish-protocol"
 import {
+  DEFAULT_ALG,
   signRequest,
   stableStringify,
   type SignableMethod,
@@ -127,19 +128,33 @@ export class StarfishClient {
     body: string | undefined,
   ): Promise<Record<string, string>> {
     if (this.capProvider) {
-      const { cap, devEdPrivHex, pubHex } = await this.capProvider.getCap()
+      const { cap, devEdPrivHex, pubHex, presenterAlg } = await this.capProvider.getCap()
       const req: SignableRequest = {
         method,
         pathAndQuery,
         body,
         host: this.signingHost(),
       }
-      const { sig, ts, nonce } = await signRequest(req, devEdPrivHex)
+      // The signing suite is the suite of whoever holds `devEdPrivHex`:
+      // - device/member: the subject signs, so use the cert's subject suite.
+      //   Tolerant-reader rule (matches the server resolver): an absent
+      //   `subAlg` means "same suite as the issuer", so fall back to
+      //   `cap.issAlg`, not the global default.
+      // - audience (public-link): the presenter is an arbitrary redeemer
+      //   signing with their own key, unrelated to the cert's suites, so use
+      //   `presenterAlg` (defaulting to ed25519). The server reads it back from
+      //   `X-Starfish-Alg` for audience caps.
+      const signAlg =
+        cap.kind === "audience" ? (presenterAlg ?? DEFAULT_ALG) : (cap.subAlg ?? cap.issAlg)
+      const { alg, sig, ts, nonce } = await signRequest(req, devEdPrivHex, {
+        alg: signAlg,
+      })
       const headers: Record<string, string> = {
         Authorization: `Cap ${encodeCapAuth(cap)}`,
         "X-Starfish-Sig": sig,
         "X-Starfish-Ts": String(ts),
         "X-Starfish-Nonce": nonce,
+        "X-Starfish-Alg": alg,
       }
       // Audience (public-link) caps bind no single subject, so the server needs
       // the presenter's pubkey to verify the signature and check the allow-list.

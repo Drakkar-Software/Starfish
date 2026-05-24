@@ -16,6 +16,7 @@ from starfish_sharing import sharing_server_plugin
 from starfish_protocol.cap import sign_cap_cert
 from starfish_protocol.hash import stable_stringify
 from starfish_protocol.request_signing import sign_request
+from starfish_protocol.revocation import revocation_list_canonical_signing_input
 from starfish_server.auth.nonce_cache import create_in_memory_nonce_cache
 from starfish_server.auth.revocation_store import create_in_memory_revocation_store
 from starfish_server.router.cap_resolver import (
@@ -65,6 +66,7 @@ def _mint_device(iss: _Root, sub: _Root, nbf: int, ttl: int = 3600) -> dict:
     unsigned = {
         "v": 1,
         "kind": "device",
+        "issAlg": "ed25519",
         "iss": iss.ed_pub_hex,
         "issUserId": iss.user_id,
         "sub": sub.ed_pub_hex,
@@ -85,6 +87,7 @@ def _mint_member(iss: _Root, sub: _Root, nbf: int, ttl: int = 3600) -> dict:
     unsigned = {
         "v": 1,
         "kind": "member",
+        "issAlg": "ed25519",
         "iss": iss.ed_pub_hex,
         "issUserId": iss.user_id,
         "sub": sub.ed_pub_hex,
@@ -592,7 +595,7 @@ async def test_revoked_cap_raises_401() -> None:
             {"sub": cert["sub"], "nonce": cert["nonce"], "exp": cert["exp"]}
         ],
     }
-    canonical = stable_stringify(unsigned).encode("utf-8")
+    canonical = revocation_list_canonical_signing_input(unsigned).encode("utf-8")
     sig_bytes = alice.ed_priv.sign(canonical)
     list_signed = {**unsigned, "sig": base64.b64encode(sig_bytes).decode("ascii")}
     assert rev_store.accept_list(list_signed)["ok"] is True
@@ -906,7 +909,7 @@ async def test_content_length_canonicalization_and_leading_zeros() -> None:
 
 def _mint_with_paths(iss, sub, nbf, paths, ttl=3600):
     unsigned = {
-        "v": 1, "kind": "device",
+        "v": 1, "kind": "device", "issAlg": "ed25519",
         "iss": iss.ed_pub_hex, "issUserId": iss.user_id,
         "sub": sub.ed_pub_hex, "subKem": sub.kem_pub_hex,
         "scope": {"ops": ["read","write","list"], "collections": ["notes"], "paths": paths},

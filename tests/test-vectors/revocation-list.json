@@ -18,6 +18,7 @@
     "1": {
       "list": {
         "v": 1,
+        "alg": "ed25519",
         "iss": "4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6",
         "issUserId": "98341e0ad3e56672018cd761b99a2906",
         "generation": 1,
@@ -28,13 +29,14 @@
             "exp": 1999999999
           }
         ],
-        "sig": "LGJftwFKNWEWB6JZZcx2JmGCICK7fWByuCWtv3/wdOpUyM9bsQ9C/esmRzXRZjkYJ8OouMx09MVs6QZIxMhkDA=="
+        "sig": "Qhlt4BXgNkqvUCB3t65ZmeBOHRSL2Kl/b3YsqDCnWAXblqexiQ1v+C4EUMXAQWO6XpxI+ykrsW98XCyBeLBzAg=="
       },
-      "canonicalSigningInput": "{\"generation\":1,\"iss\":\"4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6\",\"issUserId\":\"98341e0ad3e56672018cd761b99a2906\",\"revoked\":[{\"exp\":1999999999,\"nonce\":\"ABEiM0RVZneImaq7zN3u/w==\",\"sub\":\"5333460b6cdb1dd4adc074c70ac38823c09153d430202406599f0b929a55f8ca\"}],\"v\":1}"
+      "canonicalSigningInput": "starfish-revlist-v1\n{\"alg\":\"ed25519\",\"generation\":1,\"iss\":\"4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6\",\"issUserId\":\"98341e0ad3e56672018cd761b99a2906\",\"revoked\":[{\"exp\":1999999999,\"nonce\":\"ABEiM0RVZneImaq7zN3u/w==\",\"sub\":\"5333460b6cdb1dd4adc074c70ac38823c09153d430202406599f0b929a55f8ca\"}],\"v\":1}"
     },
     "2": {
       "list": {
         "v": 1,
+        "alg": "ed25519",
         "iss": "4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6",
         "issUserId": "98341e0ad3e56672018cd761b99a2906",
         "generation": 2,
@@ -50,14 +52,15 @@
             "exp": 1999999999
           }
         ],
-        "sig": "9zSSkJovAC3oy2KrM5Wltt55NlqW7IvLG5agrI8WfMnYMwRLxzNEhSonVbOw6XejhRfVQeza5eJ1Ou7CaCLnDA=="
+        "sig": "9CgweSasP1RqgzmmNdmi2RQ7XpyTX/1cD5q3QMrFe7lKUM5GRQw1rRQFXlHszZrPLgIw7EtigtL5gNJbtpqjAQ=="
       },
-      "canonicalSigningInput": "{\"generation\":2,\"iss\":\"4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6\",\"issUserId\":\"98341e0ad3e56672018cd761b99a2906\",\"revoked\":[{\"exp\":1999999999,\"nonce\":\"ABEiM0RVZneImaq7zN3u/w==\",\"sub\":\"5333460b6cdb1dd4adc074c70ac38823c09153d430202406599f0b929a55f8ca\"},{\"exp\":1999999999,\"nonce\":\"/+7dzLuqmYh3ZlVEMyIRAA==\",\"sub\":\"190f69aaf6aa0b4ee884e1fcb7cc8d5b087dbd5e17ccbe0424a426e2e0620d6f\"}],\"v\":1}"
+      "canonicalSigningInput": "starfish-revlist-v1\n{\"alg\":\"ed25519\",\"generation\":2,\"iss\":\"4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6\",\"issUserId\":\"98341e0ad3e56672018cd761b99a2906\",\"revoked\":[{\"exp\":1999999999,\"nonce\":\"ABEiM0RVZneImaq7zN3u/w==\",\"sub\":\"5333460b6cdb1dd4adc074c70ac38823c09153d430202406599f0b929a55f8ca\"},{\"exp\":1999999999,\"nonce\":\"/+7dzLuqmYh3ZlVEMyIRAA==\",\"sub\":\"190f69aaf6aa0b4ee884e1fcb7cc8d5b087dbd5e17ccbe0424a426e2e0620d6f\"}],\"v\":1}"
     }
   },
   "forged": {
     "list": {
       "v": 1,
+      "alg": "ed25519",
       "iss": "4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6",
       "issUserId": "98341e0ad3e56672018cd761b99a2906",
       "generation": 2,
@@ -75,7 +78,7 @@
       ],
       "sig": "7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7g=="
     },
-    "canonicalSigningInput": "{\"generation\":2,\"iss\":\"4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6\",\"issUserId\":\"98341e0ad3e56672018cd761b99a2906\",\"revoked\":[{\"exp\":1999999999,\"nonce\":\"ABEiM0RVZneImaq7zN3u/w==\",\"sub\":\"5333460b6cdb1dd4adc074c70ac38823c09153d430202406599f0b929a55f8ca\"},{\"exp\":1999999999,\"nonce\":\"/+7dzLuqmYh3ZlVEMyIRAA==\",\"sub\":\"190f69aaf6aa0b4ee884e1fcb7cc8d5b087dbd5e17ccbe0424a426e2e0620d6f\"}],\"v\":1}",
+    "canonicalSigningInput": "starfish-revlist-v1\n{\"alg\":\"ed25519\",\"generation\":2,\"iss\":\"4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6\",\"issUserId\":\"98341e0ad3e56672018cd761b99a2906\",\"revoked\":[{\"exp\":1999999999,\"nonce\":\"ABEiM0RVZneImaq7zN3u/w==\",\"sub\":\"5333460b6cdb1dd4adc074c70ac38823c09153d430202406599f0b929a55f8ca\"},{\"exp\":1999999999,\"nonce\":\"/+7dzLuqmYh3ZlVEMyIRAA==\",\"sub\":\"190f69aaf6aa0b4ee884e1fcb7cc8d5b087dbd5e17ccbe0424a426e2e0620d6f\"}],\"v\":1}",
     "expectVerify": false
   }
 }

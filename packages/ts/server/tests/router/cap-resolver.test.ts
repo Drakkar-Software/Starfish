@@ -60,6 +60,7 @@ async function mintDeviceCertForTest(
   const unsigned: UnsignedCapCert = {
     v: 1,
     kind: "device",
+    issAlg: "ed25519",
     iss: issuer.edPubHex,
     issUserId: issuer.userId,
     sub: subject.edPubHex,
@@ -85,6 +86,7 @@ async function mintMemberCertForTest(
   const unsigned: UnsignedCapCert = {
     v: 1,
     kind: "member",
+    issAlg: "ed25519",
     iss: issuer.edPubHex,
     issUserId: issuer.userId,
     sub: subject.edPubHex,
@@ -697,8 +699,8 @@ describe("createCapCertRoleResolver", () => {
       generation: 1,
       revoked: [{ sub: cert.sub, nonce: cert.nonce, exp: cert.exp }],
     }
-    const { stableStringify } = await import("@drakkar.software/starfish-protocol")
-    const canonStr = stableStringify(canonical as unknown as Record<string, unknown>)
+    const { revocationListCanonicalSigningInput } = await import("@drakkar.software/starfish-protocol")
+    const canonStr = revocationListCanonicalSigningInput(canonical)
     const sigBytes = ed25519.sign(new TextEncoder().encode(canonStr), alice.edPriv)
     const list = {
       ...canonical,
@@ -1239,6 +1241,7 @@ describe("createCapCertRoleResolver — scope.paths glob", () => {
     const unsigned: UnsignedCapCert = {
       v: 1,
       kind: "device",
+      issAlg: "ed25519",
       iss: alice.edPubHex,
       issUserId: alice.userId,
       sub: dev.edPubHex,
@@ -1361,6 +1364,7 @@ describe("createCapCertRoleResolver — scope.paths glob", () => {
     const unsigned: UnsignedCapCert = {
       v: 1,
       kind: "device",
+      issAlg: "ed25519",
       iss: alice.edPubHex,
       issUserId: alice.userId,
       sub: dev.edPubHex,

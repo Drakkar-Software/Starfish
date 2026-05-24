@@ -2,6 +2,8 @@
 
 Starfish 3.0 binds every user to a **root key pair** derived deterministically from a passphrase. The root key signs capability certificates (cap-certs); each device runs under its own per-device key pair authorized by such a cert.
 
+> **Crypto suite:** this page describes the default **`ed25519`** suite (Ed25519 signing + X25519 KEM). Identities are pluggable per user — a `secp256k1-schnorr` ("Nostr") suite also exists. See [Identity Models](26-identity-models.md). Passphrase derivation for `secp256k1-schnorr` (NIP-06) is not yet implemented.
+
 > **Prerequisites:** [StarfishClient](02-starfish-client.md), [Encryption](04-encryption.md), [Capability Certificates](25-capability-certs.md)
 
 ## Root identity

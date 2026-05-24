@@ -11,8 +11,9 @@ prior pull as ``base_hash``. Callers may retry on :class:`ConflictError`.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, TypedDict
+from typing import TYPE_CHECKING, Any, NotRequired, TypedDict
 
+from starfish_protocol.suites import DEFAULT_ALG
 from starfish_sdk.types import StarfishHttpError
 
 from .keyring import (
@@ -37,9 +38,11 @@ def keyring_path_for(collection_name: str) -> str:
 
 
 class RecipientRef(TypedDict, total=False):
-    """A recipient referenced by its KEM (X25519) public key, with metadata."""
+    """A recipient referenced by its KEM public key, with metadata."""
 
     subKem: str
+    kemAlg: str
+    """Recipient KEM suite. Absent ⇒ ``ed25519`` (X25519)."""
     userId: str
     label: str
 
@@ -50,6 +53,8 @@ class AdderKeys(TypedDict):
     edPriv: str
     edPub: str
     kemPriv: str
+    alg: NotRequired[str]
+    """Adder's signing suite (governs the entry's ``addedSig``). Absent ⇒ ``ed25519``."""
 
 
 class ListedRecipient(TypedDict):
@@ -210,6 +215,8 @@ async def add_recipient(
         adder_ed_pub_hex=adder["edPub"],
         current_cek=current_cek,
         recipient_kem_hex=recipient["subKem"],
+        kem_alg=recipient.get("kemAlg", DEFAULT_ALG),
+        added_by_alg=adder.get("alg", DEFAULT_ALG),
     )
 
     await client.push(
@@ -251,7 +258,11 @@ async def remove_recipient(
     trusted = _require_trusted_adders(trusted_adders, "remove_recipient")
     remove_set = set(remove_sub_kems)
     retained = [
-        e.sub_kem
+        # `is not None`, not `or`: a server-supplied entry with an empty-string
+        # `kemAlg` must stay `""` so the downstream wrap raises (matching TS,
+        # where `getSuite("")` throws and aborts the rotation). `or DEFAULT_ALG`
+        # would coerce `""` → ed25519 and silently re-wrap under X25519.
+        (e.sub_kem, e.kem_alg if e.kem_alg is not None else DEFAULT_ALG)
         for e in epoch.wrapped_keys
         if e.sub_kem not in remove_set and e.added_by in trusted
     ]
@@ -261,6 +272,7 @@ async def remove_recipient(
         adder_ed_priv_hex=adder["edPriv"],
         adder_ed_pub_hex=adder["edPub"],
         retained_recipients=retained,
+        added_by_alg=adder.get("alg", DEFAULT_ALG),
     )
 
     await client.push(

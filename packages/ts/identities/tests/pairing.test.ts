@@ -245,6 +245,52 @@ describe("assemblePairingBundle + installPairingBundle — synthetic roundtrip",
   })
 })
 
+// ── secp256k1 root pairing is DEFERRED — the gate must fail clear ──────────────
+// The pairing CEK wrap is X25519-only. A secp256k1 identity flowing into it
+// would otherwise feed a secp256k1 x-only key into X25519 ECDH and surface as a
+// confusing GCM-tag failure at unwrap. Until bring-your-own-nsec ships, both
+// the root side (assemble) and the new-device side (install) reject it loudly.
+describe("pairing rejects non-ed25519 suites (deferred: secp256k1 root pairing)", () => {
+  it("assemblePairingBundle throws clearly when the QR declares a secp256k1 device", async () => {
+    const root = await deriveRootIdentity("alice-root-passphrase")
+    const qr: PairingQrPayload = {
+      v: 1,
+      devEdPub: V.newDevice.edPub,
+      devKemPub: V.newDevice.kemPub,
+      requestedScope: V.qrPayload.object.requestedScope,
+      qrNonce: V.qrPayload.object.qrNonce,
+      alg: "secp256k1-schnorr",
+    }
+    await expect(
+      assemblePairingBundle(
+        { edPriv: root.keys.edPriv, edPub: root.keys.edPub },
+        qr,
+        { notes: { epoch: 1, cek: new Uint8Array(32).fill(0x11) } },
+        { grantedScope: qr.requestedScope },
+      ),
+    ).rejects.toThrow(/secp256k1 root pairing not yet supported/)
+  })
+
+  it("installPairingBundle throws clearly when the bundle cap-cert is a secp256k1 subject", async () => {
+    const bundle: PairingBundle = {
+      ...V.bundle,
+      capCert: { ...V.bundle.capCert, subAlg: "secp256k1-schnorr" },
+    }
+    await expect(
+      installPairingBundle(
+        bundle,
+        {
+          edPriv: V.newDevice.edPriv,
+          edPub: V.newDevice.edPub,
+          kemPriv: V.newDevice.kemPriv,
+          kemPub: V.newDevice.kemPub,
+        },
+        { now: V.bundle.capCert.nbf + 5 },
+      ),
+    ).rejects.toThrow(/secp256k1 root pairing not yet supported/)
+  })
+})
+
 // ── provisionDevice (one-way) → installProvisionedDevice ──────────────────────
 
 describe("provisionDevice + installProvisionedDevice — one-way provisioning", () => {
@@ -332,6 +378,7 @@ describe("installPairingBundle — hardening", () => {
       {
         v: 1,
         kind: "member",
+        issAlg: "ed25519",
         iss: root.keys.edPub,
         issUserId: root.userId,
         sub: member.keys.edPub,

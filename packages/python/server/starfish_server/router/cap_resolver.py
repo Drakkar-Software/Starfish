@@ -29,6 +29,7 @@ from starfish_protocol.request_signing import (
     is_within_clock_skew,
     verify_request_signature,
 )
+from starfish_protocol.suites import DEFAULT_ALG, is_alg
 from starfish_server.auth.nonce_cache import NonceCache
 from starfish_server.auth.revocation_store import RevocationStore
 from starfish_server.constants import IDENTITY_KEY, ROLE_PUBLIC, ROLE_ROOT_DEVICE
@@ -52,10 +53,16 @@ _HEADER_NONCE = "x-starfish-nonce"
 # key and, when the cap carries an ``aud`` allow-list, checks membership.
 # Ignored for device/member caps, whose verifying key is ``cert["sub"]``.
 _HEADER_PUB = "x-starfish-pub"
+# Conveys the crypto suite of an ``audience`` presenter's request signature. For
+# device/member caps the signing suite is authoritative from the verified
+# ``cert["subAlg"]``, so this header is read only for audience caps (defaulting
+# to ed25519 when absent). Mirrors the TS server's X-Starfish-Alg handling.
+_HEADER_ALG = "x-starfish-alg"
 _HEADER_CONTENT_LENGTH = "content-length"
 
-# A presenter pubkey: 64-char lowercase hex Ed25519 key. ASCII class ``[0-9a-f]``
-# (not ``\w``) so the predicate matches the TS ``/^[0-9a-f]{64}$/`` exactly.
+# A presenter pubkey: 64-char lowercase hex (32-byte Ed25519 or secp256k1
+# x-only). ASCII class ``[0-9a-f]`` (not ``\w``) so the predicate matches the TS
+# ``/^[0-9a-f]{64}$/`` exactly.
 _PUB_HEX_RE = re.compile(r"[0-9a-f]{64}")
 
 _WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
@@ -536,8 +543,21 @@ def create_cap_cert_role_resolver(
             cert, _get_header(request, _HEADER_PUB)
         )
 
-        # Verify the per-request Ed25519 signature, bound to host.
-        signature = RequestSignature(sig=sig_b64, ts=ts, nonce=nonce_b64)
+        # Resolve the signing suite. For device/member the key is ``cert["sub"]``,
+        # whose suite is the verified ``cert["subAlg"]`` — authoritative, never
+        # client-controlled. An audience presenter signs with their own key, so
+        # their suite arrives in ``X-Starfish-Alg`` (defaulting to ed25519); a
+        # bad value fails closed. Mirrors the TS resolver exactly.
+        if cert["kind"] == "audience":
+            alg_header = _get_header(request, _HEADER_ALG)
+            if alg_header is not None and not is_alg(alg_header):
+                raise CapAuthError(401, "invalid X-Starfish-Alg")
+            req_alg = alg_header if alg_header is not None else DEFAULT_ALG
+        else:
+            req_alg = cert.get("subAlg", cert["issAlg"])
+
+        # Verify the per-request signature under ``req_alg``, bound to host.
+        signature = RequestSignature(sig=sig_b64, ts=ts, nonce=nonce_b64, alg=req_alg)
         sig_ok = verify_request_signature(
             method_upper,
             _path_and_query(request),
@@ -548,6 +568,22 @@ def create_cap_cert_role_resolver(
         )
         if not sig_ok:
             raise CapAuthError(401, "bad request signature")
+
+        # Audience allow-list is ed25519-only. ``aud`` entries are bare 32-byte
+        # hex with no suite tag, so admitting a presenter of another suite by
+        # raw-hex match would be alg-blind type confusion (a secp256k1 x-only key
+        # whose bytes equal a listed Ed25519 pubkey). An OPEN audience (no
+        # ``aud``) still accepts any registered suite — only allow-listing is
+        # pinned to ed25519. Mirrors cap-resolver.ts.
+        if (
+            cert.get("kind") == "audience"
+            and cert.get("aud") is not None
+            and req_alg != "ed25519"
+        ):
+            raise CapAuthError(
+                401,
+                "audience allow-list is ed25519-only; presenter declared a non-ed25519 suite",
+            )
 
         # Audience allow-list membership. Runs AFTER the signature proves the
         # presenter holds ``verifying_pub_hex``'s private key, and BEFORE the

@@ -5,7 +5,7 @@ import pytest
 from starfish_protocol.cap import verify_cap_cert
 from starfish_identities.cap_mint import mint_device_cap
 from starfish_identities.identity import derive_root_identity
-from starfish_sharing.cap_mint import mint_member_cap, scopes
+from starfish_sharing.cap_mint import MintOpts, mint_member_cap, scopes
 
 
 def test_mint_member_cap_returns_verifying_cert() -> None:
@@ -23,6 +23,41 @@ def test_mint_member_cap_returns_verifying_cert() -> None:
     assert cert["scope"]["collections"] == ["shared-notes"]
     result = verify_cap_cert(cert, now=cert["nbf"] + 5)
     assert result["ok"] is True
+
+
+def test_mint_allows_secp256k1_kem_now_wrappable() -> None:
+    # The KEM phase relaxed the old mint gate: a non-ed25519 sub_kem_alg is now
+    # mintable (the keyring wraps under any suite's ECDH).
+    alice = derive_root_identity("alice-root-passphrase")
+    bob = derive_root_identity("bob-root-passphrase")
+    cert = mint_member_cap(
+        alice.keys.ed_priv,
+        alice.keys.ed_pub,
+        {"edPubHex": bob.keys.ed_pub, "kemPubHex": bob.keys.kem_pub, "userIdHex": bob.user_id},
+        "shared-notes",
+        scopes.writer("shared-notes"),
+        MintOpts(sub_kem_alg="secp256k1-schnorr"),
+    )
+    assert cert["subKemAlg"] == "secp256k1-schnorr"
+    assert isinstance(cert["subKem"], str)
+    assert verify_cap_cert(cert, now=cert["nbf"] + 5)["ok"] is True
+
+
+def test_mint_allows_secp256k1_sign_with_x25519_kem() -> None:
+    # The one usable decoupled combo today (key bytes are stand-ins).
+    alice = derive_root_identity("alice-root-passphrase")
+    bob = derive_root_identity("bob-root-passphrase")
+    cert = mint_member_cap(
+        alice.keys.ed_priv,
+        alice.keys.ed_pub,
+        {"edPubHex": bob.keys.ed_pub, "kemPubHex": bob.keys.kem_pub, "userIdHex": bob.user_id},
+        "shared-notes",
+        scopes.writer("shared-notes"),
+        MintOpts(sub_alg="secp256k1-schnorr", sub_kem_alg="ed25519"),
+    )
+    assert cert["subAlg"] == "secp256k1-schnorr"
+    assert cert["subKemAlg"] == "ed25519"
+    assert isinstance(cert["subKem"], str)
 
 
 def test_mint_member_cap_forces_collection_arg() -> None:

@@ -13,6 +13,7 @@ from starfish_protocol.cap import (
     assert_cap_cert_well_formed,
     cap_cert_canonical_signing_input,
     is_root_device_cap,
+    recipient_kem,
     sign_cap_cert,
     verify_cap_cert,
     verify_cap_cert_signature,
@@ -29,6 +30,14 @@ from starfish_protocol.request_signing import (
 from starfish_protocol.revocation import (
     build_revocation_list,
     revocation_list_canonical_signing_input,
+)
+from starfish_protocol.suites import (
+    Alg,
+    CryptoSuite,
+    DEFAULT_ALG,
+    get_suite,
+    is_alg,
+    suite_has_separate_kem,
 )
 
 __all__ = [
@@ -54,6 +63,7 @@ __all__ = [
     "assert_cap_cert_well_formed",
     "cap_cert_canonical_signing_input",
     "is_root_device_cap",
+    "recipient_kem",
     "sign_cap_cert",
     "verify_cap_cert",
     "verify_cap_cert_signature",
@@ -66,4 +76,10 @@ __all__ = [
     "is_within_clock_skew",
     "build_revocation_list",
     "revocation_list_canonical_signing_input",
+    "Alg",
+    "CryptoSuite",
+    "DEFAULT_ALG",
+    "get_suite",
+    "is_alg",
+    "suite_has_separate_kem",
 ]

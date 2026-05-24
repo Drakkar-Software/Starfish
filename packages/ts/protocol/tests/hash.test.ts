@@ -19,3 +19,22 @@ describe("computeHash", () => {
     })
   }
 })
+
+describe("non-finite numbers", () => {
+  // NaN/±Infinity aren't valid JSON; both languages render them as "null"
+  // (JS via JSON.stringify, Python via _js_number) — a deliberate cross-language
+  // invariant no JSON vector can encode, so it lives as a code-level test.
+  it("NaN/±Infinity serialize as null and hash identically", async () => {
+    expect(stableStringify(NaN)).toBe("null")
+    expect(stableStringify(Infinity)).toBe("null")
+    expect(stableStringify(-Infinity)).toBe("null")
+    // Recursion path: non-finite nested in containers.
+    expect(stableStringify({ a: NaN, b: [Infinity] })).toBe('{"a":null,"b":[null]}')
+    // All three collapse to "null" ⇒ identical document hash — the property sync relies on.
+    const h1 = await computeHash({ x: NaN })
+    const h2 = await computeHash({ x: Infinity })
+    const h3 = await computeHash({ x: -Infinity })
+    expect(h1).toBe(h2)
+    expect(h2).toBe(h3)
+  })
+})

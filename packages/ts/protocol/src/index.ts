@@ -1,5 +1,7 @@
 export { configurePlatform, getCrypto, getBase64 } from "./platform.js"
 export type { CryptoProvider, Base64Provider, PlatformConfig } from "./platform.js"
+export { getSuite, isAlg, suiteHasSeparateKem, DEFAULT_ALG } from "./suites/index.js"
+export type { Alg, CryptoSuite } from "./suites/types.js"
 export { stableStringify, computeHash } from "./hash.js"
 export { buildRevocationList, revocationListCanonicalSigningInput } from "./revocation.js"
 export type {
@@ -22,6 +24,7 @@ export {
   pathGlobMatch,
   isRootDeviceCap,
   userIdFromPubHex,
+  recipientKem,
 } from "./cap.js"
 export type {
   CapCert,

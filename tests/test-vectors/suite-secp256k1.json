@@ -1,0 +1,41 @@
+{
+  "description": "Cross-language conformance for the secp256k1-schnorr suite. Locks BIP-340 Schnorr signatures over sha256(message) with deterministic aux_rand=0, so @noble (TS) and coincurve (Python) must produce and verify byte-identical signatures. Includes a tampered-signature negative case.",
+  "alg": "secp256k1-schnorr",
+  "cases": [
+    {
+      "privHex": "0000000000000000000000000000000000000000000000000000000000000003",
+      "pubHex": "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+      "messageUtf8": "hello starfish",
+      "signatureHex": "0db21488e33336a17a429aab92e140e6b4eb534b9be7e66cff21c69a2ae16c7d18991cd114c150ad857afcc647cf33d843105b45c9de1f0ba92bbd3eb1670239",
+      "expectVerify": true
+    },
+    {
+      "privHex": "0000000000000000000000000000000000000000000000000000000000000003",
+      "pubHex": "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+      "messageUtf8": "",
+      "signatureHex": "e04ab004e468822c616b33b808531b55ca88c5187fb6349addb61640688580b0f5c4235bddb7cdb652cd50b11e51fda6e77cfa114c336f961a0948694f0590e7",
+      "expectVerify": true
+    },
+    {
+      "privHex": "1111111111111111111111111111111111111111111111111111111111111111",
+      "pubHex": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+      "messageUtf8": "{\"alg\":\"secp256k1-schnorr\",\"m\":\"GET\"}",
+      "signatureHex": "020a4cd48c53da53e6050a69e1a1cea1d6e9e35c9d1675eb1a8067b9694ffe5da78f9e876aa7533ebfe1695943539b7a4e3efd304cf380e6e363e05c8e1a67fe",
+      "expectVerify": true
+    },
+    {
+      "privHex": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+      "pubHex": "c6b754b20826eb925e052ee2c25285b162b51fdca732bcf67e39d647fb6830ae",
+      "messageUtf8": "the quick brown fox",
+      "signatureHex": "481201482953755a5ff007bcdbbc07556db55a919298a202e6231e243c92dab9ab73e4dd50e20439e22377337130eba2f9f4b00530ae8e61080c3d4495d957ec",
+      "expectVerify": true
+    },
+    {
+      "privHex": "0000000000000000000000000000000000000000000000000000000000000003",
+      "pubHex": "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+      "messageUtf8": "hello starfish",
+      "signatureHex": "0db21488e33336a17a429aab92e140e6b4eb534b9be7e66cff21c69a2ae16c7d18991cd114c150ad857afcc647cf33d843105b45c9de1f0ba92bbd3eb1670238",
+      "expectVerify": false
+    }
+  ]
+}

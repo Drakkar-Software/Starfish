@@ -13,11 +13,13 @@ implementations together.
 ## Install dependencies
 
 ```bash
-pip install 'cryptography>=41.0'
+pip install 'cryptography>=41.0' 'argon2-cffi>=21.0' 'coincurve>=19.0'
 ```
 
-That single package supplies everything the generators need (HKDF, Ed25519,
-X25519, AES-GCM).
+`cryptography` supplies HKDF / Ed25519 / X25519 / AES-GCM; `argon2-cffi` the
+root-passphrase Argon2id stretch; `coincurve` the secp256k1 BIP-340 Schnorr +
+ECDH used by `suite_secp256k1*.py`, `keyring_wrap_secp256k1.py`, and the
+cross-suite member caps in `cap_cert.py`.
 
 ## Run a generator
 

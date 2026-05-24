@@ -42,7 +42,7 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import (
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
-from starfish_protocol.cap import verify_cap_cert
+from starfish_protocol.cap import recipient_kem, verify_cap_cert
 from starfish_protocol.hash import stable_stringify
 
 from starfish_keyring import hkdf_bytes
@@ -93,15 +93,25 @@ class PairingQrPayload:
     requested_scope: dict[str, Any]
     qr_nonce: str
     """Standard base64 (padded) of the 16-byte nonce bytes."""
+    alg: Optional[str] = None
+    """The new device's identity suite. Absent (``None``) ⇒ ``ed25519`` — the only
+    suite pairing supports today (the CEK wrap is X25519-only). A present,
+    non-``ed25519`` value is rejected by :func:`assemble_pairing_bundle` until
+    secp256k1 root pairing ships. Omitted on the wire for an ``ed25519`` device so
+    existing QR encodings stay byte-identical."""
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "v": self.v,
             "devEdPub": self.dev_ed_pub,
             "devKemPub": self.dev_kem_pub,
             "requestedScope": self.requested_scope,
             "qrNonce": self.qr_nonce,
         }
+        # Emit only for a non-ed25519 device, so an ed25519 QR stays byte-identical.
+        if self.alg is not None and self.alg != "ed25519":
+            out["alg"] = self.alg
+        return out
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "PairingQrPayload":
@@ -111,6 +121,7 @@ class PairingQrPayload:
             dev_kem_pub=data["devKemPub"],
             requested_scope=dict(data["requestedScope"]),
             qr_nonce=data["qrNonce"],
+            alg=data.get("alg"),
         )
 
 
@@ -273,6 +284,20 @@ def _x25519_shared(priv: bytes, pub: bytes) -> bytes:
     return shared
 
 
+def _assert_ed25519_pairing_suite(alg: Optional[str], what: str) -> None:
+    """Guard the deferred secp256k1 pairing path. The pairing CEK wrap
+    (:func:`_wrap_cek_bare`/:func:`_unwrap_cek_bare`) is X25519-only: a secp256k1
+    x-only key fed into X25519 ECDH yields a wrong shared secret and would surface
+    as an opaque GCM-tag failure at unwrap. Until secp256k1 root pairing ships,
+    reject any non-``ed25519`` suite up front. ``None`` defaults to ``ed25519``
+    (the absent-tag convention used across the protocol). Mirrors TS."""
+    if alg is not None and alg != "ed25519":
+        raise ValueError(
+            f'secp256k1 root pairing not yet supported: {what} is "{alg}", but the '
+            "pairing CEK wrap is X25519-only. Deferred to the bring-your-own-nsec phase."
+        )
+
+
 def _wrap_cek_bare(
     cek: bytes,
     recipient_kem_pub_hex: str,
@@ -354,16 +379,21 @@ def build_pairing_qr(
     dev_kem_pub: str,
     requested_scope: dict[str, Any],
     qr_nonce: Optional[bytes] = None,
+    alg: Optional[str] = None,
 ) -> str:
     """Encode a pairing QR payload as ``base64url(stable_stringify(payload))``."""
     nonce_bytes = qr_nonce if qr_nonce is not None else secrets.token_bytes(16)
-    payload = {
+    payload: dict[str, Any] = {
         "v": 1,
         "devEdPub": dev_ed_pub,
         "devKemPub": dev_kem_pub,
         "requestedScope": requested_scope,
         "qrNonce": base64.b64encode(nonce_bytes).decode("ascii"),
     }
+    # Emitted only for a non-ed25519 device, so an ed25519 QR stays byte-identical
+    # (and assemble rejects it anyway until secp256k1 pairing ships).
+    if alg is not None and alg != "ed25519":
+        payload["alg"] = alg
     canonical = stable_stringify(payload).encode("utf-8")
     return _b64url_encode(canonical)
 
@@ -412,6 +442,9 @@ def assemble_pairing_bundle(
         nonce=opts.cert_nonce,
     )
     scope_to_grant = opts.granted_scope
+    # The new device's KEM key is wrapped over X25519 below; a secp256k1 device
+    # would silently produce a garbage shared secret. Reject it loudly up front.
+    _assert_ed25519_pairing_suite(parsed.alg, "the pairing device suite")
     cap_cert = mint_device_cap(
         root_ed_key["edPriv"],
         root_ed_key["edPub"],
@@ -471,6 +504,12 @@ def install_pairing_bundle(
         ``root_ed_pub`` fingerprint for the user to compare with the root device.
     """
     now_sec = now if now is not None else int(time.time())
+    # The wrapped CEKs are unwrapped over X25519 below; reject a non-ed25519 cap
+    # up front (issuer, subject, or recipient KEM) so a secp256k1 bundle fails
+    # with a clear "not yet supported" rather than an opaque GCM-tag error.
+    _assert_ed25519_pairing_suite(bundle.cap_cert.get("issAlg"), "the bundle cap-cert issuer suite")
+    _assert_ed25519_pairing_suite(bundle.cap_cert.get("subAlg"), "the bundle cap-cert subject suite")
+    _assert_ed25519_pairing_suite(recipient_kem(bundle.cap_cert)[1], "the bundle cap-cert KEM suite")
     # Full verification: signature + not-before/expiry window + well-formedness.
     # The previous signature-only check accepted expired or not-yet-valid certs.
     verify_result = verify_cap_cert(bundle.cap_cert, now=now_sec)

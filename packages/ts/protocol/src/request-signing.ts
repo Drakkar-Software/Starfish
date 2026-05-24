@@ -1,11 +1,11 @@
 /**
- * Per-request Ed25519 signing (v3.0).
+ * Per-request signing (v3.0).
  *
- * Each authenticated HTTP request carries an Ed25519 signature over a
- * canonical encoding of (method, pathAndQuery, sha256(body), host, ts, nonce).
- * The canonical input is identical byte-for-byte across TypeScript and
- * Python — see `tests/test-vectors/request-signature.json` for locked
- * cases.
+ * Each authenticated HTTP request carries a signature — under the crypto suite
+ * named by `alg` (see `suites/`) — over a canonical encoding of
+ * (alg, method, pathAndQuery, sha256(body), host, ts, nonce). The canonical
+ * input is identical byte-for-byte across TypeScript and Python — see
+ * `tests/test-vectors/request-signature.json` for locked cases.
  *
  * The `host` field binds a signature to one specific server host. Without
  * it, an Ed25519-signed request could be replayed against a different
@@ -15,10 +15,11 @@
  * attacker cannot bypass the bind by leaving the field off.
  */
 
-import { ed25519 } from "@noble/curves/ed25519.js"
 import { sha256 } from "@noble/hashes/sha2.js"
 import { stableStringify } from "./hash.js"
 import { getCrypto, getBase64 } from "./platform.js"
+import { getSuite, DEFAULT_ALG } from "./suites/index.js"
+import type { Alg } from "./suites/types.js"
 
 /** HTTP methods the request-signing protocol supports. */
 export type SignableMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE"
@@ -47,7 +48,9 @@ export interface SignableRequest {
 
 /** Signature bundle attached to an outbound request. */
 export interface RequestSignature {
-  /** Base64-encoded Ed25519 signature. */
+  /** Crypto suite used to produce `sig` (and to reconstruct the canonical input). */
+  alg: Alg
+  /** Base64-encoded signature under `alg`. */
   sig: string
   /** Unix milliseconds; included verbatim in the canonical input. */
   ts: number
@@ -69,44 +72,49 @@ function bytesToHex(bytes: Uint8Array): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")
 }
 
-function hexToBytes(hex: string): Uint8Array {
-  if (hex.length % 2 !== 0) throw new Error("hex string must have even length")
-  const out = new Uint8Array(hex.length / 2)
-  for (let i = 0; i < out.length; i++) {
-    out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16)
-  }
-  return out
-}
+/**
+ * Domain-separation tag prepended to a per-request signing input. Binds the
+ * signature to the "request" message type by construction so it can never be
+ * reinterpreted as a cap-cert or revocation-list signature. Must stay
+ * byte-identical across TS, Python, and the test-vector generators.
+ */
+const REQUEST_SIG_DOMAIN = "starfish-req-v1\n"
 
 /**
- * Canonical UTF-8 string used as the Ed25519 signing input.
- *
- * Definition: `stableStringify({m, p, b: sha256hex(bodyBytes), h, ts, nonce})`.
+ * Canonical UTF-8 string used as the per-request signing input under `alg`:
+ * the domain tag {@link REQUEST_SIG_DOMAIN} followed by
+ * `stableStringify({alg, m, p, b: sha256hex(bodyBytes), h, ts, nonce})`.
  * `b` is the lowercase hex SHA-256 of the request body bytes; empty body
  * yields the SHA-256 of an empty buffer
  * (`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`).
  * `h` is the host the request is bound to — `req.host ?? ""`. The field
  * is always present, so an attacker who strips the property on the wire
  * still has to forge a signature against `h: ""`. `nonce` is the same
- * base64 string included on the returned signature. Keys are sorted
- * alphabetically by `stableStringify`, yielding the order
- * `{"b":…,"h":…,"m":…,"nonce":…,"p":…,"ts":…}`.
+ * base64 string included on the returned signature. `alg` names the crypto
+ * suite and is folded in so a signature cannot be downgraded to a weaker
+ * scheme. Keys are sorted alphabetically by `stableStringify`, yielding the
+ * order `{"alg":…,"b":…,"h":…,"m":…,"nonce":…,"p":…,"ts":…}`.
  */
 export function requestSigningCanonicalInput(
   req: SignableRequest,
   ts: number,
   nonceBase64: string,
+  alg: Alg,
 ): string {
   const bodyBytes = bodyToBytes(req.body)
   const bodyHash = bytesToHex(sha256(bodyBytes))
-  return stableStringify({
-    m: req.method,
-    p: req.pathAndQuery,
-    b: bodyHash,
-    h: req.host ?? "",
-    ts,
-    nonce: nonceBase64,
-  })
+  return (
+    REQUEST_SIG_DOMAIN +
+    stableStringify({
+      alg,
+      m: req.method,
+      p: req.pathAndQuery,
+      b: bodyHash,
+      h: req.host ?? "",
+      ts,
+      nonce: nonceBase64,
+    })
+  )
 }
 
 /**
@@ -118,18 +126,18 @@ export function requestSigningCanonicalInput(
  */
 export async function signRequest(
   req: SignableRequest,
-  devEdPrivHex: string,
-  opts?: { ts?: number; nonce?: Uint8Array },
+  devPrivHex: string,
+  opts?: { ts?: number; nonce?: Uint8Array; alg?: Alg },
 ): Promise<RequestSignature> {
+  const alg = opts?.alg ?? DEFAULT_ALG
   const ts = opts?.ts ?? Date.now()
   const nonceBytes = opts?.nonce ?? getCrypto().getRandomValues(new Uint8Array(16))
   const nonceB64 = getBase64().encode(nonceBytes)
-  const canon = requestSigningCanonicalInput(req, ts, nonceB64)
+  const canon = requestSigningCanonicalInput(req, ts, nonceB64, alg)
   const msg = new TextEncoder().encode(canon)
-  const priv = hexToBytes(devEdPrivHex)
-  const sigBytes = ed25519.sign(msg, priv)
+  const sigBytes = getSuite(alg).sign(msg, devPrivHex)
   const sigB64 = getBase64().encode(sigBytes)
-  return { sig: sigB64, ts, nonce: nonceB64 }
+  return { alg, sig: sigB64, ts, nonce: nonceB64 }
 }
 
 /**
@@ -142,14 +150,13 @@ export async function signRequest(
 export async function verifyRequestSignature(
   req: SignableRequest,
   signature: RequestSignature,
-  signerEdPubHex: string,
+  signerPubHex: string,
 ): Promise<boolean> {
   try {
-    const canon = requestSigningCanonicalInput(req, signature.ts, signature.nonce)
+    const canon = requestSigningCanonicalInput(req, signature.ts, signature.nonce, signature.alg)
     const msg = new TextEncoder().encode(canon)
     const sigBytes = getBase64().decode(signature.sig)
-    const pub = hexToBytes(signerEdPubHex)
-    return ed25519.verify(sigBytes, msg, pub)
+    return getSuite(signature.alg).verify(sigBytes, msg, signerPubHex)
   } catch {
     return false
   }

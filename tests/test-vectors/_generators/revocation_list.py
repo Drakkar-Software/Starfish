@@ -22,15 +22,22 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from _common import ed_sign, ed_verify, load_fixture, stable_stringify  # noqa: E402
 
 
+# Domain-separation tag — must equal the protocol's _REVOCATION_DOMAIN /
+# REVOCATION_DOMAIN (revocation.py / revocation.ts). The cross-language vector
+# tests fail loudly if it drifts (a mismatched tag → verify fails).
+_REVOCATION_DOMAIN = "starfish-revlist-v1\n"
+
+
 def _build(*, alice, revoked, generation):
     body = {
         "v": 1,
+        "alg": "ed25519",
         "iss": alice.ed_pub.hex(),
         "issUserId": alice.user_id,
         "generation": generation,
         "revoked": revoked,
     }
-    canonical = stable_stringify(body)
+    canonical = _REVOCATION_DOMAIN + stable_stringify(body)
     sig = ed_sign(alice.ed_priv, canonical.encode("utf-8"))
     assert ed_verify(alice.ed_pub, sig, canonical.encode("utf-8"))
     return {

@@ -1,6 +1,6 @@
 # 25. Capability Certificates
 
-Starfish 3.0 uses **signed capability certificates** (cap-certs) for authorization. A cap-cert is a small JSON object signed by the user's root Ed25519 key. It says: "subject `S` is allowed to perform ops `O` on collections/paths `P` until time `E`". Every authenticated request carries one.
+Starfish 3.0 uses **signed capability certificates** (cap-certs) for authorization. A cap-cert is a small JSON object signed by the user's root key. It says: "subject `S` is allowed to perform ops `O` on collections/paths `P` until time `E`". Every authenticated request carries one.
 
 ## Schema
 
@@ -8,10 +8,13 @@ Starfish 3.0 uses **signed capability certificates** (cap-certs) for authorizati
 {
   "v": 1,
   "kind": "device",
-  "iss":        "<hex Ed25519 pub of issuer (root or collection owner)>",
+  "issAlg":     "ed25519",
+  "subAlg":     "ed25519",
+  "subKemAlg":  "<KEM suite; omitted when == subAlg (the common case)>",
+  "iss":        "<hex pub of issuer (root or collection owner)>",
   "issUserId":  "<hex 32 = sha256(iss)[0:32]>",
-  "sub":        "<hex Ed25519 pub of subject (device or member)>",
-  "subKem":     "<hex X25519 pub of subject (for keyring wrap targets)>",
+  "sub":        "<hex pub of subject (device or member)>",
+  "subKem":     "<hex KEM pub of subject; present unless the KEM key is the signing key — see below>",
   "subUserId":  "<hex 32 = sha256(sub)[0:32]; required when kind=member>",
   "scope": {
     "ops":         ["read", "write", "list"],
@@ -21,13 +24,23 @@ Starfish 3.0 uses **signed capability certificates** (cap-certs) for authorizati
   "nbf":   1747000000,
   "exp":   1749592000,
   "nonce": "<base64 16 bytes>",
-  "sig":   "<base64 64 bytes = Ed25519(iss, canonical signing input)>"
+  "sig":   "<base64 64 bytes = sign(iss, canonical signing input) under issAlg>"
 }
 ```
 
+### Crypto suites (`issAlg` / `subAlg`)
+
+Each identity picks a **crypto suite** (see [Identity models](./26-identity-models.md)):
+
+- **`issAlg`** — the issuer's suite; governs the `iss` key type and how `sig` is verified.
+- **`subAlg`** — the subject's **signing** suite; governs the `sub` key type and the scheme the subject uses for its per-request signatures. Optional — absent means "same suite as the issuer". `audience` caps carry no subject and no `subAlg`.
+- **`subKemAlg`** — the subject's **KEM** (encryption) suite, decoupled from `subAlg` so a subject can sign with one curve and receive encrypted keys under another (e.g. `secp256k1-schnorr` signing + X25519 KEM, or a future post-quantum KEM). Optional — absent means "same as `subAlg`". Honored by the suite-aware keyring (since 3.0.0-alpha.4); `recipientKem(cert)` resolves the `{ kemPubHex, kemAlg }` the keyring seals to.
+
+`subKem` (the KEM pubkey) is **present unless the KEM key *is* the signing key** — i.e. it is omitted only when `subKemAlg == subAlg` and that suite reuses one key for both (`secp256k1-schnorr`). So `ed25519` subjects carry `subKem` (a distinct X25519 key); same-suite `secp256k1-schnorr` subjects omit it; any mixed sign/KEM pair carries a distinct `subKem` of suite `subKemAlg`. `issAlg` may differ from `subAlg` — an `ed25519` root can grant a `member` cap to a `secp256k1-schnorr` subject (cross-suite delegation).
+
 ### Canonical signing input
 
-The signing input is `stableStringify(certWithoutSig)` — the full cert object minus its `sig` field, recursively sorted-key JSON. The signing helper in the protocol package handles this:
+The signing input is `stableStringify(certWithoutSig)` — the full cert object minus its `sig` field, recursively sorted-key JSON. Because `issAlg`/`subAlg` are part of that object, the chosen suite is covered by the signature and cannot be stripped or downgraded. The signing helper in the protocol package handles this:
 
 ```ts
 import { capCertCanonicalSigningInput, signCapCert, verifyCapCertSignature } from "@drakkar.software/starfish-protocol"
@@ -43,7 +56,7 @@ A device cap can grant any subset of the issuer's natural authority — wildcard
 
 ### `kind: "audience"`
 
-Binds **no single subject** — used by [public links](../sharing/02-public-links.md). `sub`/`subKem`/`subUserId` are **absent**; an optional `aud` list (64-char lowercase-hex Ed25519 pubkeys) is the allow-list. Each redeemer signs requests with **their own** key, sent in the `X-Starfish-Pub` header; the server verifies the signature against it, checks membership in `aud` when present (403 otherwise), and resolves `auth.identity` to the presenter's own userId (`sha256(pub)[0:32]`). When `aud` is absent, any identity may redeem. Same single-collection and owner-namespace barriers as member caps (codes `audience-multi-collection`, `audience-private-path`, `audience-members-not-denied`, `audience-keyring-not-denied`); minted with `mintAudienceCap`, validated by `assertAudienceCapShape` (via `sharingServerPlugin`).
+Binds **no single subject** — used by [public links](../sharing/02-public-links.md). `sub`/`subKem`/`subUserId` (and `subAlg`) are **absent**; an optional `aud` list (64-char lowercase-hex pubkeys — the curve is per the presenter's suite) is the allow-list. Each redeemer signs requests with **their own** key, naming it in the `X-Starfish-Pub` header and its suite in `X-Starfish-Alg`; the server verifies the signature against it, checks membership in `aud` when present (403 otherwise), and resolves `auth.identity` to the presenter's own userId (`sha256(pub)[0:32]`). When `aud` is absent, any identity may redeem. Same single-collection and owner-namespace barriers as member caps (codes `audience-multi-collection`, `audience-private-path`, `audience-members-not-denied`, `audience-keyring-not-denied`); minted with `mintAudienceCap`, validated by `assertAudienceCapShape` (via `sharingServerPlugin`).
 
 ### `kind: "member"`
 
@@ -98,9 +111,14 @@ All directory writes use `pull-merge-push` with `baseHash` and retry once on `Co
 
 `verifyCapCert(cert, {now, clockSkewSec})` runs:
 
-1. Well-formedness, **first**, so a malformed `nbf`/`exp` can't slip past the window check: runtime shape validation (kind ∈ {device, member}; `iss`/`sub`/`subKem`/`issUserId`/`nonce` are strings; `nbf`/`exp` are numbers; `scope.ops` ⊆ {read, write, list}; `scope.collections` / `scope.paths` are string arrays — raises `malformed-shape`) followed by `sha256(iss)[0:32] === issUserId` (and the same for `sub`/`subUserId` when present). Without the shape check, a validly-signed cert with a string `scope.ops` would be iterated character-by-character into fabricated roles.
+1. Well-formedness, **first**, so a malformed `nbf`/`exp` can't slip past the window check: runtime shape validation, then `sha256(iss)[0:32] === issUserId` (and the same for `sub`/`subUserId` when present). The shape check (raises `malformed-shape`):
+   - `kind ∈ {device, member, audience}`; `issAlg` is a known suite (`ed25519` | `secp256k1-schnorr`), as are `subAlg` / `subKemAlg` when present;
+   - `iss` / `issUserId` / `nonce` are strings (`nonce` decodes to 16 bytes); `nbf` / `exp` are integers (`Infinity`/`NaN` rejected, or expiry could be disabled);
+   - subject binding is **kind-specific**: an `audience` cap carries **no** `subAlg`/`subKemAlg`/`sub`/`subKem`/`subUserId`; a device/member cap requires `sub`, and carries `subKem` **unless the KEM key is the signing key** (present for `ed25519` and any mixed sign/KEM pair; absent only for a same-suite `secp256k1-schnorr` subject). A self-signed device cap (`iss === sub`) must have `issAlg === subAlg`;
+   - `scope.ops` ⊆ {read, write, list}; `scope.collections` / `scope.paths` are string arrays.
+   Without the shape check, a validly-signed cert with a string `scope.ops` would be iterated character-by-character into fabricated roles.
 2. `now ∈ [nbf − skew, exp + skew]` (default skew 5 min).
-3. Ed25519 signature check against `iss`.
+3. Signature check against `iss`, dispatched through the suite named by `issAlg`.
 
 Kind-specific member barriers (`subUserId` required, `subUserId !== issUserId`, exactly one non-wildcard collection, no path into the issuer namespace, mandatory `_keyring`/`_members` denies) live in `assertMemberCapShape` (`starfish-sharing`) and are enforced server-side by `sharingServerPlugin` — not by `verifyCapCert` alone.
 
@@ -201,8 +219,8 @@ A recurring question is whether a cap-cert is just a reinvented JWT. It is not �
 
 | Layer | What a cap-cert does | Could JWT/JWS do it? |
 |---|---|---|
-| **Authority envelope** | Ed25519 signature over `stableStringify(cert \ sig)` (see [Canonical signing input](#canonical-signing-input)). | This is the only layer JWS even competes on — see below. |
-| **Proof-of-possession** | Every request carries `X-Starfish-Sig` over `m + p + body-hash + host + ts + nonce`, verified against the subject key (see [Validation algorithm](#validation-algorithm-server) steps 6–7). | **No.** A plain JWT is a *bearer* token — possession is authorization, so a leaked token is a compromise. A cap-cert is **subject-bound, not a bearer token**: a leaked cap is useless without the subject's private key. Matching this with JWT needs DPoP (RFC 9449) or `cnf`-bound tokens (RFC 7800) **plus** the same per-request signing we already do — JWT removes none of it. |
+| **Authority envelope** | Signature (under `issAlg`) over `stableStringify(cert \ sig)` (see [Canonical signing input](#canonical-signing-input)). | This is the only layer JWS even competes on — see below. |
+| **Proof-of-possession** | Every request carries `X-Starfish-Sig` over `alg + m + p + body-hash + host + ts + nonce`, verified against the subject key (see [Validation algorithm](#validation-algorithm-server) steps 6–7). | **No.** A plain JWT is a *bearer* token — possession is authorization, so a leaked token is a compromise. A cap-cert is **subject-bound, not a bearer token**: a leaked cap is useless without the subject's private key. Matching this with JWT needs DPoP (RFC 9449) or `cnf`-bound tokens (RFC 7800) **plus** the same per-request signing we already do — JWT removes none of it. |
 | **Capability semantics** | Structured `scope` (`ops` × `collections` × `paths` globs, `kind`, allow/deny barriers). | **No.** Custom claims and custom validators either way. The standards that *would* help here are macaroons / Biscuit (caveats, attenuation) — not JWT. |
 
 ### Why not at least use a JWS *envelope*?

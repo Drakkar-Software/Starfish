@@ -1,10 +1,10 @@
-"""Per-request Ed25519 signing (v3.0).
+"""Per-request signing (v3.0).
 
-Each authenticated HTTP request carries an Ed25519 signature over a
-canonical encoding of (method, pathAndQuery, sha256(body), host, ts, nonce).
-The canonical input is identical byte-for-byte across TypeScript and
-Python — see ``tests/test-vectors/request-signature.json`` for locked
-cases.
+Each authenticated HTTP request carries a signature — under the crypto suite
+named by ``alg`` (see ``suites``) — over a canonical encoding of
+(alg, method, pathAndQuery, sha256(body), host, ts, nonce). The canonical input
+is identical byte-for-byte across TypeScript and Python — see
+``tests/test-vectors/request-signature.json`` for locked cases.
 
 The ``host`` field binds a signature to one specific server host. Without
 it, an Ed25519-signed request could be replayed against a different
@@ -23,18 +23,13 @@ import time
 from dataclasses import dataclass
 from typing import Literal, Optional, TypedDict, Union
 
-from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives.asymmetric.ed25519 import (
-    Ed25519PrivateKey,
-    Ed25519PublicKey,
-)
-
 try:
     from typing import NotRequired
 except ImportError:  # pragma: no cover - safety net for older runtimes
     from typing_extensions import NotRequired  # type: ignore[assignment]
 
 from starfish_protocol.hash import stable_stringify
+from starfish_protocol.suites import Alg, DEFAULT_ALG, get_suite
 
 
 DEFAULT_MAX_SKEW_MS = 300_000
@@ -65,13 +60,23 @@ class RequestSignature:
     """Signature bundle attached to an outbound request."""
 
     sig: str
-    """Base64-encoded Ed25519 signature."""
+    """Base64-encoded signature under ``alg``."""
 
     ts: int
     """Unix milliseconds; included verbatim in the canonical input."""
 
     nonce: str
     """Standard (with padding) base64 of a random 16-byte nonce."""
+
+    alg: Alg = DEFAULT_ALG
+    """Crypto suite used to produce ``sig`` and reconstruct the canonical input."""
+
+
+# Domain-separation tag prepended to a per-request signing input. Binds the
+# signature to the "request" message type by construction so it can never be
+# reinterpreted as a cap-cert or revocation-list signature. Must stay
+# byte-identical across TS, Python, and the vector generators.
+_REQUEST_SIG_DOMAIN = "starfish-req-v1\n"
 
 
 def request_signing_canonical_input(
@@ -82,6 +87,7 @@ def request_signing_canonical_input(
     nonce_b64: str,
     *,
     host: Optional[str] = None,
+    alg: Alg = DEFAULT_ALG,
 ) -> str:
     """Canonical UTF-8 string used as the Ed25519 signing input.
 
@@ -95,8 +101,9 @@ def request_signing_canonical_input(
     the same base64 string included on the returned signature.
     """
     body_hash = hashlib.sha256(body).hexdigest()
-    return stable_stringify(
+    return _REQUEST_SIG_DOMAIN + stable_stringify(
         {
+            "alg": alg,
             "m": method,
             "p": path_and_query,
             "b": body_hash,
@@ -111,11 +118,12 @@ def sign_request(
     method: str,
     path_and_query: str,
     body: bytes,
-    dev_ed_priv_hex: str,
+    dev_priv_hex: str,
     *,
     host: Optional[str] = None,
     ts: Optional[int] = None,
     nonce: Optional[bytes] = None,
+    alg: Alg = DEFAULT_ALG,
 ) -> RequestSignature:
     """Produce an Ed25519 signature over the canonical request input.
 
@@ -134,12 +142,11 @@ def sign_request(
         nonce = secrets.token_bytes(16)
     nonce_b64 = base64.b64encode(nonce).decode("ascii")
     canon = request_signing_canonical_input(
-        method, path_and_query, body, ts, nonce_b64, host=host
+        method, path_and_query, body, ts, nonce_b64, host=host, alg=alg
     )
-    priv = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(dev_ed_priv_hex))
-    sig_bytes = priv.sign(canon.encode("utf-8"))
+    sig_bytes = get_suite(alg).sign(canon.encode("utf-8"), dev_priv_hex)
     sig_b64 = base64.b64encode(sig_bytes).decode("ascii")
-    return RequestSignature(sig=sig_b64, ts=ts, nonce=nonce_b64)
+    return RequestSignature(sig=sig_b64, ts=ts, nonce=nonce_b64, alg=alg)
 
 
 def verify_request_signature(
@@ -147,7 +154,7 @@ def verify_request_signature(
     path_and_query: str,
     body: bytes,
     signature: RequestSignature,
-    signer_ed_pub_hex: str,
+    signer_pub_hex: str,
     *,
     host: Optional[str] = None,
 ) -> bool:
@@ -168,12 +175,15 @@ def verify_request_signature(
             signature.ts,
             signature.nonce,
             host=host,
+            alg=signature.alg,
         )
         sig_bytes = base64.b64decode(signature.sig)
-        pub = Ed25519PublicKey.from_public_bytes(bytes.fromhex(signer_ed_pub_hex))
-        pub.verify(sig_bytes, canon.encode("utf-8"))
-        return True
-    except (InvalidSignature, ValueError, TypeError):
+        return get_suite(signature.alg).verify(
+            sig_bytes, canon.encode("utf-8"), signer_pub_hex
+        )
+    except Exception:
+        # Never raise — any decode/suite error fails closed to False (parity
+        # with the TS bare catch and the CryptoSuite "verify never throws" rule).
         return False
 
 

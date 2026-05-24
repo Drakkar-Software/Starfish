@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, vi } from "vitest"
-import { configurePlatform } from "@drakkar.software/starfish-protocol"
+import { configurePlatform, getSuite } from "@drakkar.software/starfish-protocol"
 import { x25519, ed25519 } from "@noble/curves/ed25519.js"
 import {
   createKeyring,
@@ -50,6 +50,12 @@ function makeParty(): TestParty {
     kemPriv: bytesToHex(kemPriv),
     kemPub: bytesToHex(kemPub),
   }
+}
+
+/** A secp256k1 party — one key does both signing and KEM (Nostr convention). */
+function makeSecpParty(): TestParty {
+  const k = getSuite("secp256k1-schnorr").generateKemKeypair()
+  return { edPriv: k.privHex, edPub: k.pubHex, kemPriv: k.privHex, kemPub: k.pubHex }
 }
 
 /** Mock StarfishClient that stores a single Keyring document in memory keyed by path. */
@@ -208,6 +214,36 @@ describe("addRecipient (collection-scoped)", () => {
     // Charlie can unwrap and recover the SAME CEK
     const recoveredCek = await unwrapFromEntry(charlieEntry!, charlie.kemPriv)
     expect(bytesToHex(recoveredCek)).toBe(bytesToHex(cek))
+  })
+
+  it("a secp256k1 owner grants a secp256k1 member access; member unwraps the shared CEK", async () => {
+    // End-to-end through the HTTP layer: the secp owner recovers the current CEK
+    // from its own secp entry (recoverCurrentCek → verify + unwrap under secp),
+    // then wraps it for a secp member and pushes.
+    const owner = makeSecpParty()
+    const member = makeSecpParty()
+    const { keyring, cek } = await createKeyring(
+      { edPrivHex: owner.edPriv, edPubHex: owner.edPub, alg: "secp256k1-schnorr" },
+      [{ subKemHex: owner.kemPub, kemAlg: "secp256k1-schnorr" }],
+    )
+    const path = `/pull/${keyringPathFor("vault")}`
+    const pushPath = `/push/${keyringPathFor("vault")}`
+    const { client, store } = makeMockClient({ path, data: keyring, hash: "h0" })
+
+    await addRecipientToCollection(
+      client,
+      "vault",
+      { subKem: member.kemPub, kemAlg: "secp256k1-schnorr", userId: "nostr-member" },
+      { edPriv: owner.edPriv, edPub: owner.edPub, kemPriv: owner.kemPriv, alg: "secp256k1-schnorr" },
+      { trustedAdders: [owner.edPub] },
+    )
+
+    const stored = store.get(pushPath)!.data
+    const memberEntry = stored.epochs["1"].wrappedKeys.find((e) => e.subKem === member.kemPub)
+    expect(memberEntry).toBeDefined()
+    expect(memberEntry!.kemAlg).toBe("secp256k1-schnorr")
+    const recovered = await unwrapFromEntry(memberEntry!, member.kemPriv)
+    expect(bytesToHex(recovered)).toBe(bytesToHex(cek))
   })
 
   it("preserves existing recipients", async () => {

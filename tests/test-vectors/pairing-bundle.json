@@ -40,6 +40,8 @@
     "cert": {
       "v": 1,
       "kind": "device",
+      "issAlg": "ed25519",
+      "subAlg": "ed25519",
       "iss": "4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6",
       "issUserId": "98341e0ad3e56672018cd761b99a2906",
       "sub": "190f69aaf6aa0b4ee884e1fcb7cc8d5b087dbd5e17ccbe0424a426e2e0620d6f",
@@ -62,9 +64,9 @@
       "nbf": 1747000000,
       "exp": 1749592000,
       "nonce": "q83vASNFZ4mrze8BI0VniQ==",
-      "sig": "ybPV1bmA4FJ37QKQsmsXAPV9zW3p0rOgj4QFLlNnJMb/xKB3YjR/iCc+qW7jYcRdWzcXOKxWTnZF7MHC42hkAQ=="
+      "sig": "0KrT/wK8NZE7PPdljP7Rxq6h8CwbkK1izqTzddXoEMBHn4Kl5UOr9pWfPqS5JO+Q4y9PKBY4PY7CHsE+PyKdDQ=="
     },
-    "canonicalSigningInput": "{\"exp\":1749592000,\"iss\":\"4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6\",\"issUserId\":\"98341e0ad3e56672018cd761b99a2906\",\"kind\":\"device\",\"nbf\":1747000000,\"nonce\":\"q83vASNFZ4mrze8BI0VniQ==\",\"scope\":{\"collections\":[\"notes\",\"tasks\"],\"ops\":[\"read\",\"write\",\"list\"],\"paths\":[\"notes/98341e0ad3e56672018cd761b99a2906/*\",\"tasks/98341e0ad3e56672018cd761b99a2906/*\"]},\"sub\":\"190f69aaf6aa0b4ee884e1fcb7cc8d5b087dbd5e17ccbe0424a426e2e0620d6f\",\"subKem\":\"8993cf98a82e9029730b928dc686c8951fc4cf21880051bea0ca378b72091770\",\"v\":1}"
+    "canonicalSigningInput": "starfish-capcert-v1\n{\"exp\":1749592000,\"iss\":\"4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6\",\"issAlg\":\"ed25519\",\"issUserId\":\"98341e0ad3e56672018cd761b99a2906\",\"kind\":\"device\",\"nbf\":1747000000,\"nonce\":\"q83vASNFZ4mrze8BI0VniQ==\",\"scope\":{\"collections\":[\"notes\",\"tasks\"],\"ops\":[\"read\",\"write\",\"list\"],\"paths\":[\"notes/98341e0ad3e56672018cd761b99a2906/*\",\"tasks/98341e0ad3e56672018cd761b99a2906/*\"]},\"sub\":\"190f69aaf6aa0b4ee884e1fcb7cc8d5b087dbd5e17ccbe0424a426e2e0620d6f\",\"subAlg\":\"ed25519\",\"subKem\":\"8993cf98a82e9029730b928dc686c8951fc4cf21880051bea0ca378b72091770\",\"v\":1}"
   },
   "ceks": {
     "notes": "1111111111111111111111111111111111111111111111111111111111111111",
@@ -75,6 +77,8 @@
     "capCert": {
       "v": 1,
       "kind": "device",
+      "issAlg": "ed25519",
+      "subAlg": "ed25519",
       "iss": "4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6",
       "issUserId": "98341e0ad3e56672018cd761b99a2906",
       "sub": "190f69aaf6aa0b4ee884e1fcb7cc8d5b087dbd5e17ccbe0424a426e2e0620d6f",
@@ -97,7 +101,7 @@
       "nbf": 1747000000,
       "exp": 1749592000,
       "nonce": "q83vASNFZ4mrze8BI0VniQ==",
-      "sig": "ybPV1bmA4FJ37QKQsmsXAPV9zW3p0rOgj4QFLlNnJMb/xKB3YjR/iCc+qW7jYcRdWzcXOKxWTnZF7MHC42hkAQ=="
+      "sig": "0KrT/wK8NZE7PPdljP7Rxq6h8CwbkK1izqTzddXoEMBHn4Kl5UOr9pWfPqS5JO+Q4y9PKBY4PY7CHsE+PyKdDQ=="
     },
     "rootEdPub": "4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6",
     "wrappedCEKs": {

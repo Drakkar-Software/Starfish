@@ -10,6 +10,7 @@
  * the prior pull as `baseHash`. Callers may retry on `ConflictError`.
  */
 
+import type { Alg } from "@drakkar.software/starfish-protocol"
 import type { StarfishClient } from "@drakkar.software/starfish-client"
 import { StarfishHttpError } from "@drakkar.software/starfish-client"
 import type { Keyring, WrappedKeyEntry } from "./keyring.js"
@@ -29,9 +30,12 @@ export function keyringPathFor(collectionName: string): string {
   return `${collectionName}/_keyring`
 }
 
-/** A recipient referenced by its KEM (X25519) public key, with optional metadata. */
+/** A recipient referenced by its KEM public key, with optional metadata. */
 export interface RecipientRef {
+  /** Recipient KEM pubkey (hex) of suite `kemAlg` (X25519 for ed25519). */
   subKem: string
+  /** Recipient KEM suite. Absent ⇒ `ed25519` (X25519). */
+  kemAlg?: Alg
   userId?: string
   label?: string
 }
@@ -41,6 +45,8 @@ export interface AdderKeys {
   edPriv: string
   edPub: string
   kemPriv: string
+  /** Adder's signing suite (governs the entry's `addedSig`). Absent ⇒ `ed25519`. */
+  alg?: Alg
 }
 
 /** Optional knobs shared by the recipient-mutation helpers. */
@@ -192,9 +198,11 @@ export async function addRecipient(
   const currentCek = await recoverCurrentCek(pulled.keyring, adder.kemPriv, trustedAdders)
   const next = await keyringAddRecipient(
     pulled.keyring,
-    { edPrivHex: adder.edPriv, edPubHex: adder.edPub },
+    { edPrivHex: adder.edPriv, edPubHex: adder.edPub, alg: adder.alg },
     currentCek,
     recipient.subKem,
+    undefined,
+    recipient.kemAlg,
   )
 
   await client.push(
@@ -239,11 +247,11 @@ export async function removeRecipient(
   const retainedRecipients = epoch.wrappedKeys
     .filter((e) => !removeSet.has(e.subKem))
     .filter((e) => trustedAdders.has(e.addedBy))
-    .map((e) => ({ subKemHex: e.subKem }))
+    .map((e) => ({ subKemHex: e.subKem, kemAlg: e.kemAlg }))
 
   const { keyring: rotated } = await rotateEpoch(
     pulled.keyring,
-    { edPrivHex: adder.edPriv, edPubHex: adder.edPub },
+    { edPrivHex: adder.edPriv, edPubHex: adder.edPub, alg: adder.alg },
     retainedRecipients,
   )
 

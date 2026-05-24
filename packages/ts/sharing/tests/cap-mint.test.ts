@@ -21,6 +21,43 @@ describe("mintMemberCap", () => {
     expect(result.ok).toBe(true)
   })
 
+  it("mints a member cap with a secp256k1-schnorr KEM (decoupled KEM, now wrappable)", async () => {
+    // The KEM phase relaxed the old mint gate: a non-ed25519 subKemAlg is now
+    // mintable (the keyring wraps under any suite's ECDH).
+    const alice = await deriveRootIdentity("alice-root-passphrase")
+    const bob = await deriveRootIdentity("bob-root-passphrase")
+    const cert = await mintMemberCap(
+      alice.keys.edPriv,
+      alice.keys.edPub,
+      { edPubHex: bob.keys.edPub, kemPubHex: bob.keys.kemPub, userIdHex: bob.userId },
+      "shared-notes",
+      scopes.writer("shared-notes"),
+      { subKemAlg: "secp256k1-schnorr" },
+    )
+    expect(cert.subKemAlg).toBe("secp256k1-schnorr")
+    expect(typeof cert.subKem).toBe("string")
+    expect((await verifyCapCert(cert, { now: cert.nbf + 5 })).ok).toBe(true)
+  })
+
+  it("allows secp256k1 signing with an ed25519/X25519 KEM (distinct subKem emitted)", async () => {
+    // The one usable decoupled combo today: sign with secp256k1, receive
+    // encrypted keys under X25519. (Key bytes here are stand-ins — this exercises
+    // the mint plumbing, not the curves.)
+    const alice = await deriveRootIdentity("alice-root-passphrase")
+    const bob = await deriveRootIdentity("bob-root-passphrase")
+    const cert = await mintMemberCap(
+      alice.keys.edPriv,
+      alice.keys.edPub,
+      { edPubHex: bob.keys.edPub, kemPubHex: bob.keys.kemPub, userIdHex: bob.userId },
+      "shared-notes",
+      scopes.writer("shared-notes"),
+      { subAlg: "secp256k1-schnorr", subKemAlg: "ed25519" },
+    )
+    expect(cert.subAlg).toBe("secp256k1-schnorr")
+    expect(cert.subKemAlg).toBe("ed25519")
+    expect(typeof cert.subKem).toBe("string")
+  })
+
   it("forces scope.collections to the explicit collection arg even when scope says otherwise", async () => {
     const alice = await deriveRootIdentity("alice-root-passphrase")
     const bob = await deriveRootIdentity("bob-root-passphrase")

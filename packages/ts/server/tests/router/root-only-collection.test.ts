@@ -71,6 +71,7 @@ async function mintDeviceCert(
   const unsigned: UnsignedCapCert = {
     v: 1,
     kind: "device",
+    issAlg: "ed25519",
     iss: iss.edPubHex,
     issUserId: iss.userId,
     sub: sub.edPubHex,

@@ -12,8 +12,13 @@
  * from rolling back the server's view.
  */
 
-import { ed25519 } from "@noble/curves/ed25519.js"
-import { stableStringify, getBase64 } from "@drakkar.software/starfish-protocol"
+import {
+  revocationListCanonicalSigningInput,
+  getBase64,
+  getSuite,
+  type Alg,
+  type RevocationList as ProtocolRevocationList,
+} from "@drakkar.software/starfish-protocol"
 
 /** A single revoked cap-cert (identified by subject and nonce). */
 export interface RevocationEntry {
@@ -73,7 +78,9 @@ export function revocationRetainUntilSec(
 /** A signed revocation list issued by a root identity. */
 export interface RevocationList {
   v: 1
-  /** Issuer Ed25519 pubkey, hex. Signatures verify against this key. */
+  /** Issuer's crypto suite (governs the list signature). Defaults to `ed25519` when absent. */
+  alg?: Alg
+  /** Issuer pubkey, hex (Ed25519 or secp256k1 x-only per `alg`). Signatures verify against this key. */
   iss: string
   /** `sha256(iss)[0:32]`. */
   issUserId: string
@@ -121,25 +128,17 @@ export interface RevocationStoreOptions {
 
 const DEFAULT_MAX_ISSUERS = 10_000
 
-function hexToBytes(hex: string): Uint8Array {
-  if (hex.length % 2 !== 0) throw new Error("hex string has odd length")
-  const out = new Uint8Array(hex.length / 2)
-  for (let i = 0; i < out.length; i++) {
-    out[i] = parseInt(hex.substring(i * 2, i * 2 + 2), 16)
-  }
-  return out
-}
-
 function verifyListSignature(list: RevocationList): boolean {
   try {
-    // Strip sig before canonicalizing — same convention as cap-cert signing.
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const { sig, ...unsigned } = list
-    const canonical = stableStringify(unsigned as unknown as Record<string, unknown>)
-    const msg = new TextEncoder().encode(canonical)
+    // Use the protocol's canonical function (single source of truth) so the
+    // domain-separation tag and sig-stripping stay in lockstep with signing.
+    // The server's `RevocationList.alg` is optional vs the protocol's required;
+    // the canonical fn only stringifies present fields, so the cast is safe.
+    const msg = new TextEncoder().encode(
+      revocationListCanonicalSigningInput(list as ProtocolRevocationList),
+    )
     const sigBytes = getBase64().decode(list.sig)
-    const pub = hexToBytes(list.iss)
-    return ed25519.verify(sigBytes, msg, pub)
+    return getSuite(list.alg).verify(sigBytes, msg, list.iss)
   } catch {
     return false
   }

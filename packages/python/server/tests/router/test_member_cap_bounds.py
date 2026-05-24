@@ -81,6 +81,7 @@ def _build_unsigned_member(
     return {
         "v": 1,
         "kind": "member",
+        "issAlg": "ed25519",
         "iss": iss.ed_pub_hex,
         "issUserId": iss.user_id,
         "sub": sub.ed_pub_hex,
