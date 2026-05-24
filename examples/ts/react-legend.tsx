@@ -1,8 +1,10 @@
 /**
- * Starfish + Legend State React example.
+ * Starfish v3.0 + Legend State + React.
+ *
+ * Demonstrates wiring a v3 cap-cert provider into a Legend-backed observable.
  *
  * Install:
- *   npm install @drakkar.software/starfish-client @legendapp/state
+ *   npm install @drakkar.software/starfish-client @legendapp/state react
  */
 
 import { useEffect } from "react"
@@ -10,59 +12,100 @@ import { observer, useSelector } from "@legendapp/state/react"
 import {
   StarfishClient,
   SyncManager,
+  bootstrapRootIdentity,
   consoleSyncLogger,
+  createKeyringEncryptor,
+  createKeyring,
+  type Encryptor,
+  type StarfishCapProvider,
+  type DeviceCredentials,
+  type Keyring,
 } from "@drakkar.software/starfish-client"
 import { createStarfishObservable } from "@drakkar.software/starfish-client/legend"
-import { createRetryFetch } from "@drakkar.software/starfish-client/fetch"
-import { setupCrossTabSync } from "@drakkar.software/starfish-client/broadcast"
+
+function makeCapProvider(creds: DeviceCredentials): StarfishCapProvider {
+  return {
+    async getCap() {
+      return { cap: creds.capCert, devEdPrivHex: creds.device.edPriv }
+    },
+  }
+}
 
 // ---------------------------------------------------------------------------
-// Setup (run once at app startup)
+// Setup — bootstrap identity once, then build stores per collection.
 // ---------------------------------------------------------------------------
 
-const client = new StarfishClient({
-  baseUrl: "https://api.example.com/v1",
-  auth: async () => ({ Authorization: `Bearer ${await getToken()}` }),
-  fetch: createRetryFetch({ maxRetries: 3 }),
-})
+const setupPromise = (async () => {
+  const creds = await bootstrapRootIdentity("correct-horse-battery-staple")
 
-// One observable per collection — each syncs independently
-const settingsStore = createStarfishObservable({
-  name: "settings",
-  syncManager: new SyncManager({
-    client,
-    pullPath: "/pull/users/abc/settings",
-    pushPath: "/push/users/abc/settings",
-    logger: consoleSyncLogger,
-  }),
-})
+  const client = new StarfishClient({
+    baseUrl: "https://api.example.com/v1",
+    capProvider: makeCapProvider(creds),
+  })
 
-const notesStore = createStarfishObservable({
-  name: "notes",
-  syncManager: new SyncManager({
-    client,
-    pullPath: "/pull/users/abc/notes",
-    pushPath: "/push/users/abc/notes",
-    encryptionSecret: "user-secret",
-    encryptionSalt: "user-abc",
-    logger: consoleSyncLogger,
-  }),
-})
+  // Plaintext per-user settings collection.
+  const settingsStore = createStarfishObservable({
+    name: "settings",
+    syncManager: new SyncManager({
+      client,
+      pullPath: `/pull/users/${creds.userId}/settings`,
+      pushPath: `/push/users/${creds.userId}/settings`,
+      logger: consoleSyncLogger,
+    }),
+  })
 
-// Cross-tab sync — works with Legend stores via the BroadcastableStore interface
-// Legend stores need a thin adapter since they use observables, not getState/setState
-// For Legend, use BroadcastChannel directly or wrap with an adapter
+  // Encrypted notes collection — build a keyring with just our own device,
+  // then create a KeyringEncryptor for the SyncManager.
+  const { keyring } = await createKeyring(
+    { edPrivHex: creds.device.edPriv, edPubHex: creds.device.edPub },
+    [{ subKemHex: creds.device.kemPub }],
+  )
+  const encryptor = (await createKeyringEncryptor(
+    keyring,
+    {
+      kemPubHex: creds.device.kemPub,
+      kemPrivHex: creds.device.kemPriv,
+    },
+    { trustedAdders: [creds.device.edPub] },
+  )) as unknown as Encryptor
+
+  const notesStore = createStarfishObservable({
+    name: "notes",
+    syncManager: new SyncManager({
+      client,
+      pullPath: `/pull/users/${creds.userId}/notes`,
+      pushPath: `/push/users/${creds.userId}/notes`,
+      encryptor, // v3: KeyringEncryptor — replaces v2 encryptionSecret/Salt
+      logger: consoleSyncLogger,
+    }),
+  })
+
+  return { settingsStore, notesStore, keyring, creds }
+})()
+
+// In a real app, await this once at startup before rendering components.
+// Demonstration only — components below assume the stores are resolved.
+let settingsStore: Awaited<typeof setupPromise>["settingsStore"] | null = null
+let notesStore: Awaited<typeof setupPromise>["notesStore"] | null = null
+let initializedKeyring: Keyring | null = null
+setupPromise.then((s) => {
+  settingsStore = s.settingsStore
+  notesStore = s.notesStore
+  initializedKeyring = s.keyring
+  void initializedKeyring
+})
 
 // ---------------------------------------------------------------------------
-// Components — wrap with observer() to auto-subscribe to observables
+// Components — wrap with observer() to auto-subscribe to observables.
 // ---------------------------------------------------------------------------
 
 export const Settings = observer(function Settings() {
+  if (!settingsStore) return <p>Loading…</p>
   const { state, pull, set } = settingsStore
 
   useEffect(() => {
     pull()
-  }, [])
+  }, [pull])
 
   const data = state.data.get()
   const syncing = state.syncing.get()
@@ -78,16 +121,17 @@ export const Settings = observer(function Settings() {
 })
 
 export const Notes = observer(function Notes() {
+  if (!notesStore) return <p>Loading…</p>
   const { state, pull, set, flush } = notesStore
 
   useEffect(() => {
     pull()
-  }, [])
+  }, [pull])
 
   const data = state.data.get()
   const syncing = state.syncing.get()
   const error = state.error.get()
-  const notes = (data.items ?? []) as string[]
+  const notes = (data["items"] ?? []) as string[]
 
   return (
     <div>
@@ -101,7 +145,7 @@ export const Notes = observer(function Notes() {
         onClick={() =>
           set((d) => ({
             ...d,
-            items: [...((d.items as string[]) ?? []), "new note"],
+            items: [...((d["items"] as string[]) ?? []), "new note"],
           }))
         }
       >
@@ -114,36 +158,10 @@ export const Notes = observer(function Notes() {
   )
 })
 
-// Fine-grained subscription — only re-renders when theme changes
+// Fine-grained subscription — only re-renders when theme changes.
 export function ThemeBadge() {
-  const theme = useSelector(() => settingsStore.state.data.get().theme as string)
-  return <span>{theme}</span>
-}
-
-// ---------------------------------------------------------------------------
-// Connectivity listener (browser)
-// ---------------------------------------------------------------------------
-
-export function useConnectivity() {
-  useEffect(() => {
-    const stores = [settingsStore, notesStore]
-    const setOnline = (online: boolean) =>
-      stores.forEach((s) => s.setOnline(online))
-
-    window.addEventListener("online", () => setOnline(true))
-    window.addEventListener("offline", () => setOnline(false))
-
-    return () => {
-      window.removeEventListener("online", () => setOnline(true))
-      window.removeEventListener("offline", () => setOnline(false))
-    }
-  }, [])
-}
-
-// ---------------------------------------------------------------------------
-// Placeholder — replace with your actual token retrieval
-// ---------------------------------------------------------------------------
-
-async function getToken(): Promise<string> {
-  return "my-auth-token"
+  const theme = useSelector(() =>
+    settingsStore ? (settingsStore.state.data.get()["theme"] as string | undefined) : undefined,
+  )
+  return <span>{theme ?? "default"}</span>
 }

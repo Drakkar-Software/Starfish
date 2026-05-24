@@ -4,6 +4,7 @@ import {
   corsMiddleware,
   securityHeadersMiddleware,
   requestTimeoutMiddleware,
+  RateLimiter,
 } from "../../src/router/middleware.js"
 
 describe("corsMiddleware", () => {
@@ -120,5 +121,44 @@ describe("requestTimeoutMiddleware", () => {
     expect(res.status).toBe(408)
     const body = await res.json()
     expect(body.error).toBe("Request timeout")
+  })
+})
+
+describe("RateLimiter", () => {
+  it("allows up to the limit then rejects the next request", () => {
+    const rl = new RateLimiter(60_000, 3)
+    expect(rl.check("u")).toBeNull()
+    expect(rl.check("u")).toBeNull()
+    expect(rl.check("u")).toBeNull()
+    expect(rl.check("u")?.status).toBe(429) // 4th over the limit of 3
+  })
+
+  it("isolates counters per bucket key", () => {
+    const rl = new RateLimiter(60_000, 1)
+    expect(rl.check("a")).toBeNull()
+    expect(rl.check("a")?.status).toBe(429)
+    expect(rl.check("b")).toBeNull() // a different key is unaffected
+  })
+
+  it("bounds the bucket map to maxBuckets, evicting the oldest (no unbounded growth)", () => {
+    // A flood of distinct keys (e.g. spoofed X-Forwarded-For) must not grow memory
+    // without bound. Mirrors the Python twin in test_rate_limit_and_cache.py.
+    const rl = new RateLimiter(60_000, 100, 8)
+    for (let i = 0; i < 200; i++) rl.check(`k${i}`)
+    expect((rl as unknown as { _buckets: Map<string, unknown> })._buckets.size).toBeLessThanOrEqual(8)
+  })
+
+  it("keys by identity → X-Forwarded-For (first hop) → client IP → anonymous", () => {
+    // Identical precedence to the Python limiter; pins the convergence. (The runtimes
+    // differ only in which signals they can supply — TS callers pass clientIp=null.)
+    const rl = new RateLimiter(60_000, 1)
+    expect(rl.check("user-1", "1.2.3.4", "5.6.7.8")).toBeNull() // identity wins
+    expect(rl.check("user-1", "9.9.9.9", "8.8.8.8")?.status).toBe(429) // same identity bucket
+    expect(rl.check(null, "1.1.1.1, 2.2.2.2", null)).toBeNull() // first XFF hop
+    expect(rl.check(null, "1.1.1.1", null)?.status).toBe(429) // same first-hop bucket
+    expect(rl.check(null, null, "3.3.3.3")).toBeNull() // client IP when no identity/XFF
+    expect(rl.check(null, null, "3.3.3.3")?.status).toBe(429)
+    expect(rl.check(null, null, null)).toBeNull() // shared anonymous fallback
+    expect(rl.check(null, null, null)?.status).toBe(429)
   })
 })

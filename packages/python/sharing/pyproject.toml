@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "starfish-sharing"
+version = "3.0.0a2"
+description = "Starfish member-cap extension (member cap-cert minting, scope presets, member directory)"
+requires-python = ">=3.11"
+dependencies = [
+  "starfish-protocol",
+  "starfish-sdk",
+  "starfish-keyring",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.0",
+  "pytest-asyncio>=0.21",
+  "respx>=0.23.1",
+  "starfish-identities",
+]
+
+[tool.uv.sources]
+starfish-protocol = { path = "../protocol", editable = true }
+starfish-sdk = { path = "../client", editable = true }
+starfish-keyring = { path = "../keyring", editable = true }
+starfish-identities = { path = "../identities", editable = true }
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

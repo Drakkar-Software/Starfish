@@ -6,7 +6,6 @@
 import { describe, it, expect, vi } from "vitest"
 import { createSyncRouter, type SyncRouterOptions, type AuthResult } from "../../src/router/route-builder.js"
 import { CustomObjectStore, MemoryObjectStore } from "../../src/storage/memory.js"
-import { EncryptedObjectStore } from "../../src/encryption/encrypted-store.js"
 import type { StoreContext } from "../../src/storage/base.js"
 import type { SyncConfig } from "../../src/config/schema.js"
 import { configurePlatform } from "@drakkar.software/starfish-protocol"
@@ -231,55 +230,6 @@ describe("StoreContext — namespace route", () => {
     expect(ctx.namespace).toBe("org")
     expect(ctx.collection).toBe("prefs")
     expect(ctx.action).toBe("pull")
-  })
-})
-
-describe("StoreContext — EncryptedObjectStore pass-through", () => {
-  it("forwards identical StoreContext to inner store", async () => {
-    const capturedInner: StoreContext[] = []
-    const capturedOuter: StoreContext[] = []
-    const mem = new MemoryObjectStore(new Map())
-    const innerCustom = new CustomObjectStore({
-      onGet: (key, ctx) => {
-        if (ctx) capturedInner.push(ctx)
-        return mem.getString(key)
-      },
-      onPut: (key, body, ctx) => {
-        if (ctx) capturedInner.push(ctx)
-        return mem.put(key, body)
-      },
-    })
-    const encrypted = new EncryptedObjectStore(innerCustom, "secret", "salt", "starfish-data")
-    // Wrap in one more layer to capture ctx passed TO encrypted store
-    const outerStore = new CustomObjectStore({
-      onGet: async (key, ctx) => {
-        if (ctx) capturedOuter.push(ctx)
-        return encrypted.getString(key, ctx)
-      },
-      onPut: async (key, body, ctx) => {
-        if (ctx) capturedOuter.push(ctx)
-        return encrypted.put(key, body, undefined, ctx)
-      },
-    })
-    const router = createSyncRouter({
-      store: outerStore,
-      config: makeConfig(),
-      roleResolver: async () => ({ identity: "alice", roles: ["self"] }),
-    })
-
-    const res = await router.request("/push/users/alice/profile", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ data: { x: 1 }, baseHash: null }),
-    })
-    expect(res.status).toBe(200)
-
-    const outerPush = capturedOuter.find(c => c.action === "push")
-    const innerPush = capturedInner.find(c => c.action === "push")
-    expect(outerPush).toBeDefined()
-    expect(innerPush).toBeDefined()
-    // Same context object forwarded
-    expect(innerPush).toBe(outerPush)
   })
 })
 

@@ -1,7 +1,11 @@
 /**
- * Starfish server on Cloudflare Workers with native R2 binding.
+ * Starfish v3.0 server on Cloudflare Workers with native R2 binding.
  *
  * Uses the R2 bucket binding directly — no S3 SDK, no extra credentials.
+ *
+ * v3 changes vs. v2:
+ *   • No `encryptionSecret` on `createSyncRouter`. The server holds no keys.
+ *   • Auth is cap-cert based via `createCapCertRoleResolver`.
  *
  * Install:
  *   npm install @drakkar.software/starfish-server hono
@@ -15,25 +19,23 @@
  *   binding = "BUCKET"
  *   bucket_name = "starfish"
  *
- *   [vars]
- *   ENCRYPTION_SECRET = "change-me"
- *
  * Deploy:
  *   npx wrangler deploy
  */
 
 import { Hono } from "hono"
-import type { Context } from "hono"
 import {
   createSyncRouter,
+  createCapCertRoleResolver,
+  createInMemoryNonceCache,
+  createInMemoryRevocationStore,
   saveConfig,
   type ObjectStore,
   type SyncConfig,
-  type AuthResult,
 } from "@drakkar.software/starfish-server"
 
 // ---------------------------------------------------------------------------
-// R2 ObjectStore using native Worker binding
+// R2 ObjectStore — native Worker binding.
 // ---------------------------------------------------------------------------
 
 class R2ObjectStore implements ObjectStore {
@@ -105,26 +107,34 @@ class R2ObjectStore implements ObjectStore {
 }
 
 // ---------------------------------------------------------------------------
-// Cloudflare Worker env bindings
+// Worker env bindings.
 // ---------------------------------------------------------------------------
 
 type Env = {
   BUCKET: R2Bucket
-  ENCRYPTION_SECRET: string
 }
 
 // ---------------------------------------------------------------------------
-// Config
+// Config — v3 encryption: "none" or "delegated".
 // ---------------------------------------------------------------------------
 
 const config: SyncConfig = {
   version: 1,
   collections: [
     {
+      name: "posts",
+      storagePath: "posts/{postId}",
+      readRoles: ["public"],
+      writeRoles: ["cap:write:posts"],
+      encryption: "none",
+      maxBodyBytes: 65_536,
+      allowedMimeTypes: ["application/json"],
+    },
+    {
       name: "settings",
       storagePath: "users/{identity}/settings",
-      readRoles: ["self"],
-      writeRoles: ["self"],
+      readRoles: ["cap:read:settings"],
+      writeRoles: ["cap:write:settings"],
       encryption: "none",
       maxBodyBytes: 65_536,
       allowedMimeTypes: ["application/json"],
@@ -132,17 +142,17 @@ const config: SyncConfig = {
     {
       name: "notes",
       storagePath: "users/{identity}/notes",
-      readRoles: ["self"],
-      writeRoles: ["self"],
-      encryption: "identity",
+      readRoles: ["cap:read:notes"],
+      writeRoles: ["cap:write:notes"],
+      encryption: "delegated",
       maxBodyBytes: 131_072,
       allowedMimeTypes: ["application/json"],
     },
     {
-      name: "posts",
-      storagePath: "posts/{postId}",
-      readRoles: ["public"],
-      writeRoles: ["admin"],
+      name: "notes-keyring",
+      storagePath: "users/{identity}/notes/_keyring",
+      readRoles: ["cap:read:notes"],
+      writeRoles: ["cap:write:notes"],
       encryption: "none",
       maxBodyBytes: 65_536,
       allowedMimeTypes: ["application/json"],
@@ -151,21 +161,7 @@ const config: SyncConfig = {
 }
 
 // ---------------------------------------------------------------------------
-// Auth
-// ---------------------------------------------------------------------------
-
-async function roleResolver(c: Context): Promise<AuthResult> {
-  const token = c.req.header("authorization") ?? ""
-  // Replace with real auth (JWT, API key, etc.)
-  if (token.startsWith("Bearer ")) {
-    const userId = token.slice("Bearer ".length)
-    return { identity: userId, roles: ["user"] }
-  }
-  return { identity: "anonymous", roles: ["public"] }
-}
-
-// ---------------------------------------------------------------------------
-// App
+// App — build a fresh router per request to bind the R2 store to env.
 // ---------------------------------------------------------------------------
 
 const app = new Hono<{ Bindings: Env }>()
@@ -177,14 +173,33 @@ function getSyncRouter(env: Env): Hono {
 
   const store = new R2ObjectStore(env.BUCKET)
 
+  // Nonce cache + revocation store are per-Worker-instance. For multi-region
+  // deployments, replace with Durable Object / KV-backed implementations.
+  const nonceCache = createInMemoryNonceCache({
+    windowMs: 5 * 60_000,
+    maxEntries: 100_000,
+  })
+  const revocationStore = createInMemoryRevocationStore()
+
+  // Secure by default: with no `plugins` the resolver accepts only `device`
+  // caps. This Worker example is device + anonymous-read only; to accept
+  // `member` caps (sharing) add `plugins: [identitiesServerPlugin,
+  // sharingServerPlugin]` (from starfish-identities / starfish-sharing).
+  const roleResolver = createCapCertRoleResolver({
+    nonceCache,
+    revocationStore,
+    allowAnonymous: true,
+  })
+
   cachedRouter = createSyncRouter({
     store,
     config,
     roleResolver,
-    encryptionSecret: env.ENCRYPTION_SECRET,
+    cors: true,
+    securityHeaders: true,
   })
 
-  // Persist config to storage (fire-and-forget; idempotent)
+  // Persist config to storage (fire-and-forget; idempotent).
   saveConfig(store, config).catch(() => {})
 
   return cachedRouter

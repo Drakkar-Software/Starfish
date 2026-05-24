@@ -8,6 +8,12 @@ A generic document sync library. Pull/push documents with hash-based conflict de
 
 Works with any storage backend (S3, MongoDB, in-memory) and any auth model. The server determines roles; the library enforces permissions.
 
+**Encryption:** two modes only — `"none"` (server stores plaintext) and `"delegated"` (end-to-end AES-256-GCM, N-recipient). In `"delegated"` mode the server stores opaque ciphertext plus a plaintext per-collection **keyring document** that wraps the current Content Encryption Key (CEK) for each recipient via X25519 ECDH + HKDF + AES-GCM. The server never sees a CEK.
+
+**Authorization:** every authenticated request carries a signed **capability certificate** (cap-cert). The cap-cert is issued by the user's root Ed25519 identity (derived from a passphrase) and grants a subset of `{ops, collections, paths}` to a specific device or member subject for a bounded lifetime. Each request is itself Ed25519-signed under the subject key, with nonce-replay protection and ±5 min clock skew.
+
+> **Upgrading from 2.x?** v3 is a clean break. See [docs/migration/v2-to-v3.md](docs/migration/v2-to-v3.md).
+
 ## Packages
 
 ### Server
@@ -30,8 +36,14 @@ Works with any storage backend (S3, MongoDB, in-memory) and any auth model. The 
 
 ```python
 from fastapi import FastAPI
-from starfish_server import MemoryObjectStore, load_config, save_config
-from starfish_server.router import create_sync_router, SyncRouterOptions, AuthResult
+from starfish_server import (
+    MemoryObjectStore,
+    load_config,
+    create_cap_cert_role_resolver,
+    create_in_memory_nonce_cache,
+    create_in_memory_revocation_store,
+)
+from starfish_server.router import create_sync_router, SyncRouterOptions
 
 # In-memory store — no setup needed, data lost on restart
 store = MemoryObjectStore()
@@ -53,14 +65,15 @@ config = await load_config(store)
 # from starfish_server import parse_config_json
 # config = parse_config_json('{"version": 1, "collections": [...]}')
 
-async def role_resolver(request):
-    user = await verify_token(request.headers.get("authorization"))
-    return AuthResult(identity=user.id, roles=user.roles)
-
 router = create_sync_router(SyncRouterOptions(
     store=store,
     config=config,
-    role_resolver=role_resolver,
+    # v3 default: validates cap-cert + per-request signature + nonce + revocation.
+    role_resolver=create_cap_cert_role_resolver(
+        nonce_cache=create_in_memory_nonce_cache(),
+        revocation_store=create_in_memory_revocation_store(),
+        allow_anonymous=True,
+    ),
 ))
 
 app = FastAPI()
@@ -71,8 +84,14 @@ app.include_router(router, prefix="/v1")
 
 ```ts
 import { Hono } from "hono"
-import { createSyncRouter, MemoryObjectStore, parseConfigJson } from "@drakkar.software/starfish-server"
-import type { AuthResult } from "@drakkar.software/starfish-server"
+import {
+  createSyncRouter,
+  MemoryObjectStore,
+  parseConfigJson,
+  createCapCertRoleResolver,
+  createInMemoryNonceCache,
+  createInMemoryRevocationStore,
+} from "@drakkar.software/starfish-server"
 
 const store = new MemoryObjectStore(new Map())
 
@@ -89,8 +108,8 @@ const config = parseConfigJson(JSON.stringify({
   collections: [{
     name: "settings",
     storagePath: "users/{identity}/settings",
-    readRoles: ["self"],
-    writeRoles: ["self"],
+    readRoles:  ["self", "cap:read:settings"],
+    writeRoles: ["self", "cap:write:settings"],
     encryption: "none",
     maxBodyBytes: 65536,
   }],
@@ -99,10 +118,15 @@ const config = parseConfigJson(JSON.stringify({
 const sync = createSyncRouter({
   store,
   config,
-  roleResolver: async (c) => {
-    const user = await verifyToken(c.req.header("authorization"))
-    return { identity: user.id, roles: user.roles } as AuthResult
-  },
+  // v3 default: validates cap-cert + per-request signature + nonce + revocation.
+  // Secure by default — with no `plugins` the resolver accepts only `device`
+  // caps. To accept `member` caps (sharing), wire the extension plugins:
+  //   plugins: [identitiesServerPlugin, sharingServerPlugin]
+  roleResolver: createCapCertRoleResolver({
+    nonceCache: createInMemoryNonceCache(),
+    revocationStore: createInMemoryRevocationStore(),
+    allowAnonymous: true,
+  }),
 })
 
 // Mount on a Hono app
@@ -166,7 +190,8 @@ const handle = createGracefulShutdown({
 ### Structured Logging & Audit
 
 ```ts
-import { createJsonLogger, createCallbackAuditLogger } from "@drakkar.software/starfish-server"
+import { createJsonLogger } from "@drakkar.software/starfish-server"
+import { createCallbackAuditLogger } from "@drakkar.software/starfish-audit"
 
 const sync = createSyncRouter({
   store, config, roleResolver,
@@ -249,12 +274,13 @@ Collection configuration is stored **inside the storage** at `__sync__/config.js
 
 ```ts
 {
-  name: "invoices",                        // unique identifier
+  name: "invoices",                         // unique identifier
   storagePath: "users/{identity}/invoices", // document key template
-  readRoles: ["self", "admin"],            // who can pull
-  writeRoles: ["self"],                    // who can push
-  encryption: "identity",                  // "none" | "identity" | "server"
-  maxBodyBytes: 65536,                     // body size limit
+  readRoles: ["self", "admin"],             // who can pull
+  writeRoles: ["self"],                     // who can push
+  encryption: "delegated",                  // "none" | "delegated"
+  maxBodyBytes: 65536,                      // body size limit
+  // keyringPath defaults to `<storagePath>/_keyring` for "delegated"
 }
 ```
 
@@ -353,11 +379,10 @@ const router = createSyncRouter({
 
 ### Encryption
 
-- **`"none"`** — stored in plaintext
-- **`"identity"`** — encrypted per-user with HKDF(secret, identity). Only the user can read their data.
-- **`"server"`** — encrypted with a server-wide key. All server code can read; clients cannot read raw storage.
-- **`"delegated"`** — client-side encryption. The server stores opaque encrypted data without decrypting it. See [Delegated encryption](#delegated-encryption).
-- **`"group"`** — client-side encryption for multi-user collections. Each member holds their own X25519 key pair (derived deterministically from their passphrase); a shared Group Encryption Key is distributed per-member using ECDH key wrapping. Behaves identically to `"delegated"` on the server. See [Group Encryption](docs/ts/client/21-group-encryption.md).
+Two modes — and nothing in between. The server never holds any encryption key.
+
+- **`"none"`** — stored in plaintext. Use for public data, server-managed indexes, anything that does not need confidentiality from the operator.
+- **`"delegated"`** — client-side AES-256-GCM. Each collection has a plaintext **keyring document** at `<storagePath>/_keyring` (override with `keyringPath`) listing per-recipient X25519 wraps of the current Content Encryption Key (CEK). Scales to N recipients — single device, multi-device, or multi-user — under one mode. See [Multi-Recipient Delegated Encryption](docs/ts/client/23-multi-recipient-delegated.md).
 
 ## Client SDKs
 
@@ -368,183 +393,126 @@ All clients implement the same protocol: pull/push with hash-based conflict dete
 Works in Browser, Node.js, and React Native (see [Platform Support](#platform-support)).
 
 ```ts
-import { StarfishClient, SyncManager } from "@drakkar.software/starfish-client"
+import {
+  StarfishClient, SyncManager,
+  bootstrapRootIdentity, createKeyringEncryptor,
+  type Keyring,
+} from "@drakkar.software/starfish-client"
 
+// 1. Derive root identity + self-signed cap-cert from a passphrase.
+const creds = await bootstrapRootIdentity(passphrase)
+
+// 2. StarfishClient signs every request via the CapProvider.
 const client = new StarfishClient({
   baseUrl: "https://api.example.com/v1",
-  auth: async ({ method, path, body }) => ({
-    Authorization: `Bearer ${await getToken()}`,
-  }),
+  capProvider: {
+    getCap: async () => ({ cap: creds.capCert, devEdPrivHex: creds.device.edPriv }),
+  },
 })
 
-// Low-level: pull/push directly
-const pulled = await client.pull("/pull/users/abc/settings")
-await client.push("/push/users/abc/settings", { theme: "dark" }, pulled.hash)
+// 3. (Delegated only) build an encryptor from the collection's keyring.
+const keyring = (await client.pull("/pull/notes/_keyring")).data as Keyring
+const encryptor = await createKeyringEncryptor(keyring, {
+  kemPubHex: creds.device.kemPub,
+  kemPrivHex: creds.device.kemPriv,
+})
 
-// High-level: SyncManager handles conflicts automatically
+// 4. Sync. `signer` attaches an Ed25519 author signature to every push.
 const sync = new SyncManager({
   client,
-  pullPath: "/pull/users/abc/settings",
-  pushPath: "/push/users/abc/settings",
+  pullPath: `/pull/notes/${creds.userId}`,
+  pushPath: `/push/notes/${creds.userId}`,
+  encryptor,
+  signer: {
+    getSigner: async () => ({
+      devEdPubHex: creds.device.edPub,
+      sign: async (bytes) => ed25519Sign(creds.device.edPriv, bytes),
+    }),
+  },
 })
 
 await sync.pull()
-await sync.push({ theme: "dark", lang: "en" })
-// Or: pull-modify-push in one call
-await sync.update((data) => ({ ...data, theme: "light" }))
-```
-
-#### Full example: Auth + E2E Encryption + Author Signing
-
-```ts
-import { StarfishClient, SyncManager } from "@drakkar.software/starfish-client"
-
-// 1. Create client with auth
-const client = new StarfishClient({
-  baseUrl: "https://api.example.com/v1",
-  auth: async ({ method, path, body }) => ({
-    "X-Pubkey": myPubkey,
-    "X-Signature": await sign(method + path + (body ?? "")),
-  }),
-  // Optional: custom fetch for environments that need it
-  // fetch: customFetch,
-})
-
-// 2. Create sync manager with encryption and signing
-const sync = new SyncManager({
-  client,
-  pullPath: "/pull/users/abc/notes",
-  pushPath: "/push/users/abc/notes",
-  // E2E encryption: data is encrypted client-side before push,
-  // decrypted after pull. The server never sees plaintext.
-  encryptionSecret: "user-secret-key",
-  encryptionSalt: "user-abc",
-  encryptionInfo: "starfish-e2e", // optional, default: "starfish-e2e"
-  // Author signing: sign data for provenance verification
-  signData: async (data) => await sign(data),
-  // Custom conflict resolver (default: remote-wins deep merge)
-  onConflict: (local, remote) => ({ ...remote, ...local }),
-  maxRetries: 3,
-})
-
-// 3. Sync
-await sync.pull()
-console.log(sync.getData()) // decrypted data
-
-await sync.push({ notes: ["hello world"] }) // encrypted + signed automatically
-
-// Or pull-modify-push in one call
-await sync.update((current) => ({
-  ...current,
-  notes: [...(current.notes as string[]), "new note"],
-}))
+await sync.push({ items: ["hello"] })
 ```
 
 ### Python
 
 ```python
-from starfish_sdk import StarfishClient, SyncManager
+from starfish_sdk import (
+    StarfishClient, SyncManager,
+    bootstrap_root_identity, create_keyring_encryptor,
+)
+
+creds = bootstrap_root_identity(passphrase)
+
+class MyCapProvider:
+    async def get_cap(self):
+        return {"cap": creds.cap_cert, "dev_ed_priv_hex": creds.device["ed_priv"]}
 
 async with StarfishClient(
-    "https://api.example.com",
-    auth=my_auth_provider,
-    # namespace="my-ns"  # set when the server is behind a namespace-rewriting proxy
+    "https://api.example.com/v1",
+    cap_provider=MyCapProvider(),
 ) as client:
-    # Low-level
-    pulled = await client.pull("/pull/users/abc/settings")
-    await client.push("/push/users/abc/settings", {"theme": "dark"}, pulled.hash)
+    keyring = (await client.pull("/pull/notes/_keyring")).data
+    encryptor = create_keyring_encryptor(
+        keyring,
+        {"kem_pub_hex": creds.device["kem_pub"], "kem_priv_hex": creds.device["kem_priv"]},
+    )
 
-    # High-level
     sync = SyncManager(
         client,
-        "/pull/users/abc/settings",
-        "/push/users/abc/settings",
-        encryption_secret="my-secret",
-        encryption_salt="user-abc",
-        # Optional: sign pushed data for author verification.
-        # The callback receives stable_stringify(payload) — i.e. the
-        # encrypted payload when encryption is active, or the raw data
-        # when it is not — and must return a signature string.
-        sign_data=my_signer,
+        f"/pull/notes/{creds.user_id}",
+        f"/push/notes/{creds.user_id}",
+        encryptor=encryptor,
     )
     await sync.pull()
-    await sync.push({"theme": "dark", "lang": "en"})
+    await sync.push({"items": ["hello"]})
 
     # Binary (blob) documents
     blob_result = await client.pull_blob("/pull/files/abc/photo.jpg")
     await client.push_blob("/push/files/abc/photo.jpg", b"...", blob_result.hash, "image/jpeg")
 
     # Entitlement discovery
-    from starfish_sdk import pull_entitlements
+    from starfish_entitlements import pull_entitlements
     features = await pull_entitlements(client, "alice")
     # e.g. ["premium-package-1", "paid-cloud-sync"]
 ```
 
-### Auth Provider
+### Cap-cert authorization
 
-All clients use a generic auth provider that returns headers. This decouples the SDK from any specific auth scheme:
+Every authenticated request carries a signed cap-cert plus a per-request Ed25519 signature. The wire shape:
 
-```ts
-// Bearer token
-auth: async () => ({ Authorization: `Bearer ${token}` })
+| Header | Value |
+|---|---|
+| `Authorization` | `Cap <base64(stableStringify(cap))>` |
+| `X-Starfish-Sig` | base64 Ed25519 signature over `(method, pathAndQuery, sha256(body), ts, nonce)` |
+| `X-Starfish-Ts` | Unix milliseconds (±5 min server clock skew) |
+| `X-Starfish-Nonce` | base64 random 16 bytes — server-side LRU prevents reuse |
 
-// API key
-auth: async () => ({ "X-API-Key": apiKey })
+Add a new device via in-person QR or a server-relay 6-digit code; grant a third party access by minting a `kind: "member"` cap-cert. See [Capability Certificates](docs/ts/client/25-capability-certs.md), [Pairing](docs/ts/client/24-pairing.md), and [Multi-Recipient Delegated Encryption](docs/ts/client/23-multi-recipient-delegated.md).
 
-// Custom signing (e.g. blockchain, HMAC)
-auth: async ({ method, path, body }) => ({
-  "X-Pubkey": pubkey,
-  "X-Signature": await sign(method + path + body),
-})
-```
+When the server (or QR/relay channel) is not fully trusted, prefer the explicit safety knobs: `assemblePairingBundle({ grantedScope })` bounds a paired device's authority instead of trusting the peer-supplied scope, `installPairingBundle(bundle, device, { expectedQrNonce })` binds the bundle to its pairing session (and the install now fully verifies the cap-cert — signature, expiry window, and `kind === "device"`), and `addCollectionRecipient` / `removeRecipient` accept a `trustedAdders` pin so a hostile server cannot substitute a keyring entry. `scopes.admin` is a **device-cap** preset (it manages the keyring); `mintMemberCap` rejects it.
 
-### Client-Side Encryption
+### Client-Side Encryption (delegated)
 
-All clients support optional AES-256-GCM encryption with HKDF-derived keys. When enabled, data is encrypted before push and decrypted after pull — the server never sees plaintext.
+In `"delegated"` mode a collection has data documents (opaque `{_encrypted, _epoch}` ciphertext) plus one **keyring document** at `<storagePath>/_keyring` (override with `keyringPath`). The keyring carries one Content Encryption Key (CEK) per epoch, wrapped separately for each recipient via per-entry ephemeral X25519 ECDH + HKDF-SHA256 + AES-256-GCM, signed by the granting device for audit.
 
-> **Important:** The `encryptionSalt` (or `encryption_salt`) must be **deterministic** — all devices sharing the same secret must derive the same salt value. If each device generates its own salt (e.g., a random local ID), they will derive different encryption keys and will not be able to decrypt each other's data. A safe pattern is to derive the salt from the secret itself (e.g., `hash(secret).slice(0, 16)`).
-
-You can also use the encryptor standalone:
+Rotating the epoch (`rotateEpoch`) invalidates access for any recipient not present in the new epoch — this is the post-compromise security primitive. Forward secrecy of historical documents is **not** provided by design (persistent documents must remain decryptable by current recipients).
 
 ```ts
-import { createEncryptor } from "@drakkar.software/starfish-client"
+import { addCollectionRecipient, removeRecipient, listRecipients } from "@drakkar.software/starfish-client"
 
-const encryptor = createEncryptor("my-secret", "user-abc")
-const encrypted = await encryptor.encrypt({ hello: "world" })
-// => { _encrypted: "base64..." }
-const decrypted = await encryptor.decrypt(encrypted)
-// => { hello: "world" }
+// Grant access (pulls the keyring, appends a wrap entry for the new recipient, pushes back).
+await addCollectionRecipient(client, "notes", adderKeys, { subKem: newDeviceKemPub })
+
+// Revoke access (rotates the epoch, re-wraps for the retained set).
+await removeRecipient(client, "notes", adderKeys, removedDeviceKemPub)
+
+// List who's in the keyring.
+const recipients = await listRecipients(client, "notes")
 ```
 
-### Group Encryption
-
-For multi-user encrypted collections (group chat, collaborative documents), use `encryption: "group"` on the server and `createGroupEncryptor` on the client. Each member derives their own X25519 key pair from their passphrase — no shared secret is required.
-
-```ts
-import { deriveGroupKeyPair, createGroupKeyring, createGroupEncryptor } from "@drakkar.software/starfish-client/group"
-import { SyncManager } from "@drakkar.software/starfish-client"
-
-// Admin creates a keyring for alice and bob
-const adminKp = await deriveGroupKeyPair(adminPassphrase, adminUserId)
-const { keyring, gek } = await createGroupKeyring(adminKp, {
-  alice: alicePubKey,
-  bob:   bobPubKey,
-})
-// Push keyring to Starfish, keep gek to add future members
-
-// Member uses the keyring to create an encryptor
-const myKp = await deriveGroupKeyPair(myPassphrase, myUserId)
-const encryptor = await createGroupEncryptor(keyringData, myUserId, myKp.privateKey)
-
-const sync = new SyncManager({
-  client,
-  pullPath: "/pull/groups/g1/notes",
-  pushPath: "/push/groups/g1/notes",
-  encryptor,   // replaces encryptionSecret/encryptionSalt
-})
-```
-
-See [Group Encryption](docs/ts/client/21-group-encryption.md) for the full API including member addition and epoch rotation.
+Full API: [docs/ts/client/23-multi-recipient-delegated.md](docs/ts/client/23-multi-recipient-delegated.md).
 
 ### Platform Support
 
@@ -591,13 +559,22 @@ npm install immer
 #### Creating stores per collection
 
 ```ts
-import { StarfishClient, SyncManager } from "@drakkar.software/starfish-client"
+import {
+  StarfishClient,
+  SyncManager,
+  bootstrapRootIdentity,
+} from "@drakkar.software/starfish-client"
 import { createStarfishStore } from "@drakkar.software/starfish-client/zustand"
 import AsyncStorage from "@react-native-async-storage/async-storage"
 
+// One-time at startup: derive the root identity + self-signed device cap.
+const creds = await bootstrapRootIdentity(passphrase)
+
 const client = new StarfishClient({
   baseUrl: "https://api.example.com/v1",
-  auth: async () => ({ Authorization: `Bearer ${await getToken()}` }),
+  capProvider: {
+    getCap: async () => ({ cap: creds.capCert, devEdPrivHex: creds.device.edPriv }),
+  },
 })
 
 // One store per collection — each syncs independently
@@ -620,8 +597,8 @@ const notesStore = createStarfishStore({
     client,
     pullPath: "/pull/users/abc/notes",
     pushPath: "/push/users/abc/notes",
-    encryptionSecret: "user-secret",
-    encryptionSalt: "user-abc",
+    // For "delegated" collections, pass a v3 Encryptor:
+    encryptor: await createKeyringEncryptor(keyring, deviceKem),
   }),
 })
 ```
@@ -804,8 +781,8 @@ const notesStore = createStarfishObservable({
     client,
     pullPath: "/pull/users/abc/notes",
     pushPath: "/push/users/abc/notes",
-    encryptionSecret: "user-secret",
-    encryptionSalt: "user-abc",
+    // For "delegated" collections, pass a v3 Encryptor:
+    encryptor: await createKeyringEncryptor(keyring, deviceKem),
   }),
 })
 ```
@@ -887,8 +864,9 @@ The TypeScript client ships additional utilities via subpath exports:
 |---------|---------|-------------|
 | `./fetch` | `createRetryFetch`, `CircuitBreaker`, `createResilientFetch`, `createCompressedFetch` | Retry with exponential backoff, circuit breaker, gzip compression |
 | `./broadcast` | `setupBroadcastSync`, `setupStorageFallback`, `setupCrossTabSync` | Cross-tab sync via BroadcastChannel or localStorage fallback |
-| `./identity` | `generatePassphrase`, `deriveCredentials`, `buildInviteUrl`, `parseInviteUrl` | Passphrase-based passwordless identity and invite URLs |
 | `./testing` | `createMockClient`, `createMockFetch`, `createConflictFetch` | Mock utilities for unit and integration tests |
+
+The v3 identity surface — `bootstrapRootIdentity`, `deriveRootIdentity`, `mintDeviceCap`, `mintMemberCap`, `scopes`, the pairing helpers (`buildPairingQr` / `parsePairingQr` / `assemblePairingBundle` / `installPairingBundle` / `buildPairingRequest` / `readPairingRequest` / `buildPairingResponse` / `readPairingResponse` / `deriveCodeKey`), and the keyring/recipient helpers (`createKeyring` / `addRecipient` / `rotateEpoch` / `createKeyringEncryptor` / `addCollectionRecipient` / `removeRecipient` / `listRecipients`) — is on the main entrypoint. See [docs/ts/client/](docs/ts/client/) for guides 11, 23, 24, 25.
 
 The main entrypoint also exports:
 
@@ -903,55 +881,30 @@ The main entrypoint also exports:
 - **Multi-store sync** — `createMultiStoreSync({ slices, version, migrations? })` serializes multiple domain stores into a single Starfish document with versioned schema migrations
 - **Entitlement discovery** — `pullEntitlements(client, userId)` fetches the list of feature slugs from a user's entitlement document; returns `[]` on 404, re-throws all other errors
 
-#### Passphrase Identity (`./identity`)
+#### Identity (`bootstrapRootIdentity`)
 
-Passwordless, serverless identity derived entirely from a passphrase. One passphrase → one user.
+Passwordless identity derived from a passphrase: Argon2id → HKDF → Ed25519 (sign) + X25519 (KEM) root key pair → self-signed cap-cert.
 
 ```ts
-import {
-  generatePassphrase,
-  deriveCredentials,
-  buildInviteUrl,
-  parseInviteUrl,
-} from "@drakkar.software/starfish-client/identity"
+import { bootstrapRootIdentity } from "@drakkar.software/starfish-client"
 
-// Generate a cryptographically random 12-word passphrase (96 bits of entropy)
-const passphrase = generatePassphrase()
-// => "game fire loud able blue sold east rock loop dark hunt calm"
-
-// Deterministically derive auth + encryption credentials
-const creds = await deriveCredentials(passphrase)
-// => {
-//   authToken: "a3f8...",      // 64-char hex — use as Bearer token
-//   userId: "a3f8c2d1e4b0...", // 16-char hex — use in collection paths
-//   encryptionSecret: "...",   // pass to SyncManager as encryptionSecret
-//   encryptionSalt: "...",     // pass to SyncManager as encryptionSalt (= userId)
+const creds = await bootstrapRootIdentity(passphrase)
+// creds = {
+//   rootEdPub,                                  // hex 64
+//   userId,                                     // hex 32 = sha256(rootEdPub)[0:32]
+//   device: { edPriv, edPub, kemPriv, kemPub }, // = root keys on the first device
+//   capCert,                                    // self-signed kind:"device", scope: rootAll()
 // }
 
-// Wire to StarfishClient + SyncManager
 const client = new StarfishClient({
   baseUrl: serverUrl,
-  auth: () => ({ Authorization: `Bearer ${creds.authToken}` }),
+  capProvider: {
+    getCap: async () => ({ cap: creds.capCert, devEdPrivHex: creds.device.edPriv }),
+  },
 })
-
-const syncManager = new SyncManager({
-  client,
-  pullPath: `/pull/${creds.userId}/wedding`,
-  pushPath: `/push/${creds.userId}/wedding`,
-  encryptionSecret: creds.encryptionSecret,
-  encryptionSalt: creds.encryptionSalt,
-})
-
-// Encode an invite link — share via QR code, link, or any channel
-const inviteUrl = buildInviteUrl("myapp://join", { name: "Alice & Bob", p: passphrase })
-
-// On the receiving device: parse the invite
-const payload = parseInviteUrl(inviteUrl)
-// => { name: "Alice & Bob", p: "game fire loud able ..." }
-// Derive the same credentials and pull the synced data
 ```
 
-Sharing the passphrase (via invite URL or QR code) grants full read/write access on any device — no user database, no registration, no sessions required.
+`userId` is stable across devices (it is a function of `rootEdPub` alone), so URL paths like `/pull/<userId>/notes` keep working everywhere the user pairs in. Additional devices are added with [QR or relay pairing](docs/ts/client/24-pairing.md), never by re-sharing the passphrase — that keeps per-device revocation final.
 
 #### Debounced Sync (`createDebouncedSync`)
 
@@ -1107,11 +1060,19 @@ starfish/
 │       ├── protocol/      # Shared protocol primitives (hash, merge, crypto, types)
 │       ├── server/        # TypeScript server (Hono router, encryption, config, CF Workers)
 │       └── client/        # TypeScript client SDK + Zustand/Legend bindings
+├── examples/
+│   ├── ts/ · python/      # Single-file examples, one per v3 feature slice
+│   └── app/               # Full-stack chat app (Vite/React + FastAPI) wiring all 6 extensions
 ├── tests/
 │   └── test-vectors/      # Cross-language hash/crypto/protocol test vectors
 ├── package.json           # pnpm workspace root
 └── pnpm-workspace.yaml
 ```
+
+A runnable end-to-end demo lives in [`examples/app/`](./examples/app/) — a chat
+app that exercises identities (with multi-device pairing), keyring, sharing,
+entitlements, audit, and queuing together. See its
+[README](./examples/app/README.md).
 
 ## Development
 
@@ -1142,7 +1103,7 @@ pytest -v
 
 TypeScript tests use [Vitest](https://vitest.dev/). Python tests use [pytest](https://docs.pytest.org/).
 
-The TypeScript client has 259 tests across 23 test files covering sync, crypto, bindings, React hooks, broadcast, retry/circuit breaker, resolvers, migration, validation, polling, history, dedup, export, metrics, Suspense, and more. The TypeScript server has 149 tests across 17 test files covering config, protocol, encryption, router, queue, replica, storage, middleware (CORS, security headers, timeout), ETag, batch pull, field permissions, audit logging, TTL, OpenAPI, and lifecycle. The Python server has 246 tests.
+The TypeScript client has 259 tests across 23 test files covering sync, crypto, bindings, React hooks, broadcast, retry/circuit breaker, resolvers, migration, validation, polling, history, dedup, export, metrics, Suspense, and more. The TypeScript server has 149 tests across 17 test files covering config, protocol, encryption, router, queue, replica, storage, middleware (CORS, security headers, timeout), ETag, batch pull, field permissions, TTL, OpenAPI, and lifecycle. The Python server has 246 tests.
 
 Cross-language test vectors in `tests/test-vectors/` ensure identical behavior across all TypeScript and Python implementations:
 - `crypto.json` / `hash.json` — encryption and hashing parity
@@ -1269,54 +1230,66 @@ const store = new S3ObjectStore({
 
 ### Delegated encryption
 
-With `"delegated"` mode, the server never encrypts or decrypts — it stores whatever the client sends as-is. The user generates a secret key and encrypts client-side using their public key as salt. They can share the secret + public key with a third party to grant decryption access.
+With `"delegated"` mode the server stores opaque ciphertext (`{_encrypted, _epoch}`) and a plaintext per-collection **keyring document** at `<storagePath>/_keyring` (override with `keyringPath`). The keyring carries one Content Encryption Key (CEK) per epoch, wrapped separately for each recipient via X25519 ECDH + HKDF + AES-256-GCM, signed by the granting device.
 
-> **The salt must be deterministic across all devices.** Since HKDF derives the encryption key from both `secret` and `salt`, every device that needs to read or write the same data must use the exact same values for both. Never use a value that varies per device (e.g., a local database ID, random UUID, or device identifier) as the salt — this will cause each device to derive a different key, making cross-device sync silently fail (data is encrypted with one key and cannot be decrypted with another).
->
-> Safe salt choices:
-> - A value derived from the secret itself: `hash(secret).slice(0, N)`
-> - A shared public key or user identifier that is the same on all devices
-> - A constant string (if only one user accesses the data)
+Symmetric authority: once a device holds the current CEK, it can encrypt new documents, decrypt every document in every epoch it has a wrap for, wrap the CEK for a new recipient (within its cap-cert's scope), and rotate the epoch to revoke access for anyone not in the new set. What still requires the root Ed25519 key: minting a fresh cap-cert and signing the revocation list.
 
 ```json
 {
   "name": "vault",
   "storagePath": "users/{identity}/vault",
-  "readRoles": ["self"],
-  "writeRoles": ["self"],
+  "readRoles": ["self", "cap:read:vault"],
+  "writeRoles": ["self", "cap:write:vault"],
   "encryption": "delegated",
   "maxBodyBytes": 65536
 }
 ```
 
+```ts
+import {
+  StarfishClient,
+  SyncManager,
+  createKeyringEncryptor,
+  type Keyring,
+} from "@drakkar.software/starfish-client"
+
+const keyring = (await client.pull("/pull/vault/_keyring")).data as Keyring
+const encryptor = await createKeyringEncryptor(keyring, {
+  kemPubHex: device.kemPub,
+  kemPrivHex: device.kemPriv,
+})
+
+const sync = new SyncManager({
+  client,
+  pullPath: `/pull/users/${userId}/vault`,
+  pushPath: `/push/users/${userId}/vault`,
+  encryptor,
+})
+
+await sync.push({ balance: 1000 })
+await sync.pull()  // decrypted plaintext
+```
+
 ```python
-from starfish_sdk import SyncManager
+from starfish_sdk import StarfishClient, SyncManager, create_keyring_encryptor
+
+keyring = (await client.pull("/pull/vault/_keyring")).data
+encryptor = create_keyring_encryptor(
+    keyring,
+    {"kem_pub_hex": device["kem_pub"], "kem_priv_hex": device["kem_priv"]},
+)
 
 sync = SyncManager(
     client,
-    pull_path="/pull/users/abc/vault",
-    push_path="/push/users/abc/vault",
-    encryption_secret="my-secret-key",       # user-generated secret
-    encryption_salt="my-public-key-abc123",   # user's public key (same on all devices)
+    f"/pull/users/{user_id}/vault",
+    f"/push/users/{user_id}/vault",
+    encryptor=encryptor,
 )
-
 await sync.push({"balance": 1000})
-await sync.pull()  # returns decrypted data
+await sync.pull()  # decrypted plaintext
 ```
 
-```ts
-// A third party decrypts using the credentials shared by the user
-const adminSync = new SyncManager({
-  client,
-  pullPath: "/pull/users/abc/vault",
-  pushPath: "/push/users/abc/vault",
-  encryptionSecret: "my-secret-key",
-  encryptionSalt: "my-public-key-abc123",
-})
-await adminSync.pull()
-```
-
-The server stores only the encrypted blob. Anyone with the correct secret + salt can decrypt client-side.
+Full algorithm, recipient lifecycle, and FS stance: [docs/ts/client/23-multi-recipient-delegated.md](docs/ts/client/23-multi-recipient-delegated.md).
 
 ### Bundles
 
@@ -1331,11 +1304,11 @@ Collections with the same `bundle` value share a storage path and expose a combi
 
 ### Queue (change events)
 
-Publish a lightweight change event to a message queue after every successful push. Built-in backends: `MemoryQueue` (testing), `CustomQueue` (callback-based), `NatsQueue` (Python/NATS — `pip install starfish-server[nats]`).
+The `@drakkar.software/starfish-queuing` / `starfish-queuing` (Py) extension publishes a lightweight change event after every successful push, via the additive `ServerPlugin.afterWrite` hook. Built-in backends: `MemoryQueue` (testing), `CustomQueue` (callback-based), `NatsQueue` (Python/NATS — `pip install "starfish-queuing[nats]"`).
 
-Queue errors never surface to clients — they are logged and the push response is returned normally.
+Queue errors never surface to clients — they are logged and the push response is returned normally. A collection only publishes if it appears in the plugin's `collections` map.
 
-> Full reference: [`docs/ts/server/queue.md`](docs/ts/server/queue.md)
+> Full reference: [`docs/ts/queuing/01-overview.md`](docs/ts/queuing/01-overview.md)
 
 #### QueueConfig
 
@@ -1345,7 +1318,7 @@ Queue errors never surface to clients — they are logged and the push response 
 | `includeParams` | `boolean` | `false` | Include resolved path params in the payload |
 | `includeBody` | `boolean?` | `false` | Include push request data in the payload (JSON collections only) |
 
-Pass `true` as a shorthand for defaults (topic = collection name, `includeParams: false`, `includeBody: false`). Pass `false` or omit to disable.
+Each value in the queuing plugin's `collections` map is a `QueueConfig`; collections absent from the map publish nothing.
 
 ### List Endpoint
 
@@ -1360,12 +1333,12 @@ The route drops the last path parameter from `storagePath` and enumerates its va
 
 ```ts
 // TypeScript
-{ name: "chat", storagePath: "chats/{groupId}/{day}", readRoles: ["group-member"], /* ... */, listable: true }
+{ name: "chat", storagePath: "chats/{groupId}/{day}", readRoles: ["cap:read:chat"], /* ... */, listable: true }
 ```
 
 ```python
 # Python
-CollectionConfig(name="chat", storage_path="chats/{groupId}/{day}", read_roles=["group-member"], ..., listable=True)
+CollectionConfig(name="chat", storage_path="chats/{groupId}/{day}", read_roles=["cap:read:chat"], ..., listable=True)
 ```
 
 Response: `{ "items": ["2026-04-13", "2026-04-12"], "hasMore": false }`. Pagination: `?limit=N` (default 100, max 1000) and `?after=<item>`.
@@ -1374,58 +1347,28 @@ Response: `{ "items": ["2026-04-13", "2026-04-12"], "hasMore": false }`. Paginat
 
 ---
 
-### Group-Based Access Control
+### Sharing a collection (member caps)
 
-Use `createGroupRoleEnricher` / `create_group_role_enricher` to grant access based on a member list stored in another Starfish collection. The enricher reads a membership document from the ObjectStore and grants a role (default `"group-member"`) to any user whose identity appears in the list.
-
-```ts
-// TypeScript
-import { createGroupRoleEnricher } from "@drakkar.software/starfish-server"
-
-const router = createSyncRouter({
-  store, config,
-  roleResolver: async (c) => ({ identity: await getUserId(c), roles: [] }),
-  roleEnricher: createGroupRoleEnricher({
-    store,
-    membersPath: "groups/{groupId}/members",  // storagePath of the members doc
-    groupParam: "groupId",                     // which URL param identifies the group
-    // membersField: "members" (default)
-    // role: "group-member" (default)
-    // cacheTtlMs: 60000 (default, 1 minute)
-  }),
-})
-```
-
-```python
-# Python
-from starfish_server import create_group_role_enricher, GroupRoleEnricherOptions
-
-enricher = create_group_role_enricher(GroupRoleEnricherOptions(
-    store=store,
-    members_path="groups/{groupId}/members",
-    group_param="groupId",
-))
-router = create_sync_router(SyncRouterOptions(..., role_enricher=enricher))
-```
-
-Members document (standard Starfish push):
-```json
-{ "members": ["alice", "bob", "charlie"] }
-```
-
-**Group candidacy** — users can apply to join a group. Set `candidacyPath` on the enricher and add `candidacyEnabled: true` to the members document. Applicants push `{ status: "pending", message: "..." }` to a candidacy collection (gated by `"self"` role). Pending applicants receive `"group-candidate"` (configurable); admins accept or deny by pushing `{ status: "accepted" }` / `{ status: "denied" }` and manually adding accepted users to the members document.
+To grant another user access to a collection, the owner mints a **`member` capability certificate** with `@drakkar.software/starfish-sharing` / `starfish-sharing`. The recipient keeps their own identity; the cap synthesizes a `delegated:<ownerId>:<collection>` role the collection opts into. Authorization flows from the signed cap — the server holds no membership lists.
 
 ```ts
-createGroupRoleEnricher({
-  store,
-  membersPath: "groups/{groupId}/members",
-  groupParam: "groupId",
-  candidacyPath: "groups/{groupId}/candidacies/{identity}",
-  // candidacyRole: "group-candidate" (default)
-})
+// TypeScript — owner mints a writer cap for `bob`
+import { mintMemberCap, scopes, addMemberEntry } from "@drakkar.software/starfish-sharing"
+
+const bobCap = await mintMemberCap(
+  owner.keys.edPriv, owner.keys.edPub,
+  { edPubHex: bob.edPub, kemPubHex: bob.kemPub, userIdHex: bob.userId },
+  "shared-team", scopes.writer("shared-team"),
+)
+await addMemberEntry(client, "shared-team", bobCap, { label: "Bob" }) // owner-only audit roster
+// collection: { name: "shared-team", writeRoles: ["delegated:<ownerId>:shared-team"], ... }
 ```
 
-> Full reference: [`docs/ts/server/group-access.md`](docs/ts/server/group-access.md)
+Bulk membership is one cap per recipient. If you need a server-authoritative allow-list (the old `createGroupRoleEnricher` behavior, **removed in 3.0**), write your own `RoleEnricher` (a few lines) that reads your list and grants a role, then compose it with `composeEnrichers`. Request-to-join is an app-level recipe (a `_requests` collection + owner-side `mintMemberCap`), not a built-in.
+
+**Public links.** For a plaintext (`encryption: "none"`) share by **link** rather than per-recipient cap, use `createPublicLink` / `parsePublicLink` / `redeemPublicLink`. It packs an `audience` cap-cert into a URL `#fragment` with an optional, server-enforced identity allow-list (`allowedIdentities`; omit for "anyone") and optional expiry. Redeemers sign with their own key (sent as `X-Starfish-Pub`), so the link embeds no private key and writes stay attributable. See [`docs/ts/sharing/02-public-links.md`](docs/ts/sharing/02-public-links.md).
+
+> Full reference: [`docs/ts/server/group-access.md`](docs/ts/server/group-access.md) · [`docs/ts/sharing/`](docs/ts/sharing/)
 
 ---
 
@@ -1435,7 +1378,8 @@ Use `createEntitlementRoleEnricher` / `create_entitlement_role_enricher` to gate
 
 ```ts
 // TypeScript
-import { createEntitlementRoleEnricher, composeEnrichers } from "@drakkar.software/starfish-server"
+import { composeEnrichers } from "@drakkar.software/starfish-server"
+import { createEntitlementRoleEnricher } from "@drakkar.software/starfish-entitlements"
 
 const entitlementEnricher = createEntitlementRoleEnricher({ store })
 // Combine with other enrichers using composeEnrichers:
@@ -1450,7 +1394,8 @@ const router = createSyncRouter({
 
 ```python
 # Python
-from starfish_server import create_entitlement_role_enricher, EntitlementRoleEnricherOptions, compose_enrichers
+from starfish_server import compose_enrichers
+from starfish_entitlements import create_entitlement_role_enricher, EntitlementRoleEnricherOptions
 
 entitlement_enricher = create_entitlement_role_enricher(EntitlementRoleEnricherOptions(store=store))
 role_enricher = compose_enrichers(group_enricher, entitlement_enricher)
@@ -1481,22 +1426,25 @@ Gated collection:
 
 #### Append-only collections
 
-Set `appendOnly: {}` on a collection to append every push to a stored array (default field: `items`). `baseHash` conflict detection is disabled — concurrent pushes never return 409.
+Set `appendOnly: { type: "by_timestamp" }` on a collection to append every push to a stored array (default field: `items`) as a `{ ts, data }` element. There is no hash/conflict check — an authorized append is always accepted, never 409 (a client may supply a strictly-increasing `ts`, else the server assigns one). Pull with `?checkpoint=<ts>` to get only elements appended after a timestamp. Works under both `encryption: "none"` and `"delegated"` (the client encrypts each element's `data`; the server stores it opaquely).
 
 ```ts
-// TypeScript — stored array
-{ name: "events", storagePath: "events", /* ... */, appendOnly: {} }
+// TypeScript — stored array of { ts, data }
+{ name: "events", storagePath: "events", /* ... */, appendOnly: { type: "by_timestamp" } }
 ```
 
 ```python
-# Python — stored array
-CollectionConfig(name="events", storage_path="events", ..., append_only=AppendOnlyConfig())
+# Python — stored array of { ts, data }
+CollectionConfig(name="events", storage_path="events", ..., append_only=AppendOnlyConfig(type="by_timestamp"))
 ```
 
-Use `appendOnly: { persist: false }` (`AppendOnlyConfig(persist=False)` in Python) to skip storage entirely — pushes are accepted and published to the queue, but nothing is stored (replaces the old `queueOnly` flag):
+Use `appendOnly: { type: "by_timestamp", persist: false }` (`AppendOnlyConfig(type="by_timestamp", persist=False)` in Python) to skip storage entirely — pushes are accepted and emit a change event (consumed by the `starfish-queuing` plugin), but nothing is stored (replaces the old `queueOnly` flag):
 
 ```ts
-{ name: "events", storagePath: "events/{eventId}", /* ... */, appendOnly: { persist: false }, queue: { topic: "analytics.events" } }
+// server config — persist:false is a server flag
+{ name: "events", storagePath: "events/{eventId}", /* ... */, appendOnly: { type: "by_timestamp", persist: false } }
+// queuing plugin — wire the topic for "events"
+createQueuingServerPlugin({ queue, collections: { events: { topic: "analytics.events", includeParams: false } } })
 ```
 
 Client usage:
@@ -1530,29 +1478,45 @@ Push CPU is O(1) — the stored hash covers only the last item and array length,
 
 > Full reference: [`docs/ts/server/append-only-collections.md`](docs/ts/server/append-only-collections.md)
 
-#### Collection config
+#### Root-only collections
+
+Set `rootOnly: true` (`root_only=True` in Python) to restrict a collection to the user's **root device**: every paired/provisioned device cap and member cap gets a 403 — on standalone pull/list/push and on bundle pulls. The root device is detected by `isRootDeviceCap` (a self-signed `kind:"device"` cap, `iss === sub`), surfaced as the synthesized `device:root` role. Config load rejects `rootOnly` combined with a `public` read/write role.
 
 ```ts
 // TypeScript
-{
-  name: "posts",
-  storagePath: "posts/{postId}",
-  // ...
-  queue: true,  // topic = "posts", includeParams = false, includeBody = false
-  // Or:
-  // queue: { topic: "data.posts.changed", includeParams: true, includeBody: true },
-}
+{ name: "settings", storagePath: "users/{identity}/settings", /* ... */, rootOnly: true }
 ```
 
 ```python
 # Python
-CollectionConfig(
-    name="posts",
-    storage_path="posts/{postId}",
-    # ...
-    queue=True,  # topic = "posts", include_params = False, include_body = False
-    # Or:
-    # queue=QueueConfig(topic="data.posts.changed", include_params=True, include_body=True),
+CollectionConfig(name="settings", storage_path="users/{identity}/settings", ..., root_only=True)
+```
+
+> Full reference: [`docs/ts/server/root-only-collections.md`](docs/ts/server/root-only-collections.md)
+
+#### Plugin config (per-collection)
+
+The queuing plugin owns the per-collection config — it is no longer set on `CollectionConfig`:
+
+```ts
+// TypeScript
+createQueuingServerPlugin({
+  queue,
+  collections: {
+    posts: { includeParams: false },  // topic = "posts" (collection name)
+    // comments: { topic: "data.comments.changed", includeParams: true, includeBody: true },
+  },
+})
+```
+
+```python
+# Python
+create_queuing_server_plugin(
+    queue=queue,
+    collections={
+        "posts": QueueConfig(include_params=False),
+        # "comments": QueueConfig(topic="data.comments.changed", include_params=True, include_body=True),
+    },
 )
 ```
 
@@ -1560,7 +1524,7 @@ CollectionConfig(
 
 ```ts
 // TypeScript — CustomQueue (any backend via callback)
-import { CustomQueue } from "@drakkar.software/starfish-server"
+import { createQueuingServerPlugin, CustomQueue } from "@drakkar.software/starfish-queuing"
 
 const queue = new CustomQueue({
   onPublish: async (subject, payload) => {
@@ -1568,17 +1532,21 @@ const queue = new CustomQueue({
   },
 })
 
-const sync = createSyncRouter({ store, config, roleResolver, queue })
+const queuing = createQueuingServerPlugin({ queue, collections: { posts: { includeParams: false } } })
+const sync = createSyncRouter({ store, config, roleResolver, plugins: [queuing] })
+// queuing.shutdown closes the queue when passed to createGracefulShutdown({ plugins: [queuing] })
 ```
 
 ```python
 # Python — NatsQueue
-from starfish_server.queue.nats import NatsQueue, NatsQueueOptions
+from starfish_queuing import create_queuing_server_plugin, QueueConfig
+from starfish_queuing.nats import NatsQueue, NatsQueueOptions
 
 queue = NatsQueue(NatsQueueOptions(servers="nats://localhost:4222"))
+queuing = create_queuing_server_plugin(queue=queue, collections={"posts": QueueConfig()})
 
 sync_router = create_sync_router(SyncRouterOptions(
-    store=store, config=config, role_resolver=role_resolver, queue=queue,
+    store=store, config=config, role_resolver=role_resolver, plugins=[queuing],
 ))
 
 @asynccontextmanager
@@ -1626,16 +1594,16 @@ app.include_router(sync_router, prefix="/v1")
 The `QueueMessage` type is exported for use in consumers:
 
 ```ts
-import type { QueueMessage } from "@drakkar.software/starfish-server"
+import type { QueueMessage } from "@drakkar.software/starfish-queuing"
 ```
 
 ```python
-from starfish_server import QueueMessage
+from starfish_queuing import QueueMessage
 ```
 
 ### Config endpoint
 
-`GET /config` lets clients discover server capabilities at runtime — collection names, size limits, encryption modes, supported MIME types, and public keys for client-side encryption.
+`GET /config` lets clients discover server capabilities at runtime — collection names, size limits, encryption modes, and supported MIME types.
 
 Enable it via `configEndpoint` / `config_endpoint` on the router options:
 
@@ -1657,50 +1625,27 @@ sync_router = create_sync_router(SyncRouterOptions(
 
 **Auth modes:** `"public"` — no auth check, all collections returned. `"role-filtered"` — caller sees only collections matching their roles.
 
-**publicKey field** — add a `publicKey` string to any collection config to expose a base64-encoded public key through `/config`. Clients can use it to encrypt data before pushing.
+There is no per-collection `publicKey` config field — v3 `"delegated"` encryption distributes recipient keys via the per-collection `_keyring` document, not through `/config` (see [`docs/ts/client/23-multi-recipient-delegated.md`](docs/ts/client/23-multi-recipient-delegated.md)).
 
 Fetch from the client:
 
 ```ts
 import { fetchServerConfig } from "@drakkar.software/starfish-client"
 const config = await fetchServerConfig("https://api.example.com/v1")
-// config.collections[0].publicKey, .maxBodyBytes, .appendOnly, …
+// config.collections[0].maxBodyBytes, .encryption, .appendOnly, …
 ```
 
 ```python
 from starfish_sdk import fetch_server_config
 config = await fetch_server_config("https://api.example.com/v1")
-# config.collections[0].public_key, .max_body_bytes, .append_only, …
+# config.collections[0].max_body_bytes, .encryption, .append_only, …
 ```
 
 > Full reference: [`docs/ts/server/config-endpoint.md`](docs/ts/server/config-endpoint.md)
 
 ### Replicas
 
-The replica system lets you run multiple Starfish servers that stay in sync. A **primary** server holds the source of truth; **replicas** pull from it and serve reads locally.
-
-#### Collection config
-
-Add a `remote` block to any collection to make it replicated:
-
-```python
-CollectionConfig(
-    name="posts",
-    storage_path="posts/{postId}",
-    read_roles=["public"],
-    write_roles=["admin"],
-    encryption="none",
-    max_body_bytes=65536,
-    remote=RemoteConfig(
-        url="https://primary.example.com/v1",
-        pull_path="/pull/posts/{postId}",
-        interval_ms=30_000,           # poll every 30s
-        write_mode="pull_only",       # clients can't push to replica
-        sync_triggers=["scheduled"],
-        headers={"Authorization": "Bearer replica-token"},
-    ),
-)
-```
+The replica system lets you run multiple Starfish servers that stay in sync. A **primary** server holds the source of truth; **replicas** pull from it and serve reads locally. Replication ships as a server plugin — [`@drakkar.software/starfish-replica`](packages/ts/replica) / [`starfish-replica`](packages/python/replica) — that owns its config and hooks into the pull/push routes. Install it and pass it via `plugins`.
 
 **Write modes**
 
@@ -1715,48 +1660,69 @@ CollectionConfig(
 
 | Trigger | When |
 |---|---|
-| `scheduled` | Every `interval_ms` in the background |
-| `on_pull` | Before each client `GET /pull/…` (respects `on_pull_min_interval_ms` cooldown) |
+| `scheduled` | Every `intervalMs` in the background |
+| `on_pull` | Before each client `GET /pull/…` (respects `onPullMinIntervalMs` cooldown) |
 
 #### Replica server
 
+```ts
+// TypeScript
+import { createSyncRouter, createGracefulShutdown } from "@drakkar.software/starfish-server"
+import { createReplicaServerPlugin } from "@drakkar.software/starfish-replica"
+
+const replica = createReplicaServerPlugin({
+  store,
+  syncConfig: config,
+  collections: {
+    posts: {
+      url: "https://primary.example.com/v1",
+      pullPath: "/pull/posts/featured",
+      intervalMs: 30_000,
+      headers: { Authorization: "Bearer replica-token" },
+      writeMode: "pull_only",
+      syncTriggers: ["scheduled"],
+    },
+  },
+})
+
+const sync = createSyncRouter({ store, config, roleResolver, plugins: [replica] })
+
+replica.manager.start()                      // Node.js: start background sync
+createGracefulShutdown({ plugins: [replica] }) // shutdown hook stops the timers
+// CF Workers: use replica.manager.syncNow()/syncAll() from Cron Triggers instead
+```
+
 ```python
 # Python
-from starfish_server import ReplicaManager
+from starfish_server import create_sync_router, SyncRouterOptions
+from starfish_replica import create_replica_server_plugin, RemoteConfig
 
-replica_manager = ReplicaManager(store, config.collections)
+replica = create_replica_server_plugin(
+    store=store, sync_config=config,
+    collections={
+        "posts": RemoteConfig(
+            url="https://primary.example.com/v1",
+            pullPath="/pull/posts/featured",
+            interval_ms=30_000,
+            write_mode="pull_only",
+            sync_triggers=["scheduled"],
+            headers={"Authorization": "Bearer replica-token"},
+        ),
+    },
+)
 
 sync_router = create_sync_router(SyncRouterOptions(
-    store=store, config=config,
-    role_resolver=role_resolver, replica_manager=replica_manager,
+    store=store, config=config, role_resolver=role_resolver, plugins=[replica.plugin],
 ))
 
 @asynccontextmanager
 async def lifespan(app):
-    await replica_manager.start()
+    await replica.manager.start()
     yield
-    await replica_manager.stop()
-
-app = FastAPI(lifespan=lifespan)
-app.include_router(sync_router, prefix="/v1")
+    await replica.manager.stop()
 ```
 
-```ts
-// TypeScript
-import { ReplicaManager, createSyncRouter } from "@drakkar.software/starfish-server"
-
-const replicaManager = new ReplicaManager(store, config.collections)
-
-const sync = createSyncRouter({
-  store, config, roleResolver, replicaManager,
-})
-
-// Node.js: start/stop background sync
-replicaManager.start()
-process.on("SIGTERM", () => replicaManager.stop())
-
-// CF Workers: use syncNow()/syncAll() from Cron Triggers instead
-```
+> Full reference: [`docs/ts/replica/01-overview.md`](docs/ts/replica/01-overview.md)
 
 ## Deployment
 
@@ -1781,7 +1747,6 @@ Configure collections and namespaces entirely from Ansible variables — no serv
 # group_vars/starfish_servers.yml
 starfish_variant: python
 starfish_port: 8000
-starfish_encryption_secret: "{{ vault_starfish_encryption_secret }}"
 
 starfish_config_collections:
   - name: posts

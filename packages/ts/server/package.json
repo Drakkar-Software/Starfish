@@ -1,6 +1,6 @@
 {
   "name": "@drakkar.software/starfish-server",
-  "version": "2.3.0",
+  "version": "3.0.0-alpha.2",
   "repository": {
     "type": "git",
     "url": "https://github.com/Drakkar-Software/starfish.git",
@@ -29,6 +29,8 @@
   },
   "dependencies": {
     "@drakkar.software/starfish-protocol": "workspace:*",
+    "@noble/curves": "^2.2.0",
+    "@noble/hashes": "^2.2.0",
     "hono": "^4.12.7"
   },
   "peerDependencies": {
@@ -50,6 +52,10 @@
   },
   "devDependencies": {
     "@aws-sdk/client-s3": "^3",
+    "@drakkar.software/starfish-client": "workspace:*",
+    "@drakkar.software/starfish-keyring": "workspace:*",
+    "@drakkar.software/starfish-identities": "workspace:*",
+    "@drakkar.software/starfish-sharing": "workspace:*",
     "@types/node": "^25.5.2",
     "ajv": "^8.17.0",
     "typescript": "^5.5.0",

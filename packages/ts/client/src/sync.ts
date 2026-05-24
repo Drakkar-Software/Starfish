@@ -1,10 +1,9 @@
 import type { PullResult } from "@drakkar.software/starfish-protocol"
-import { deepMerge, stableStringify } from "@drakkar.software/starfish-protocol"
+import { deepMerge, getBase64, stableStringify } from "@drakkar.software/starfish-protocol"
 import type { ConflictResolver } from "./types.js"
 import { ConflictError } from "./types.js"
+import type { Encryptor } from "@drakkar.software/starfish-protocol"
 import { StarfishClient } from "./client.js"
-import type { Encryptor } from "./crypto.js"
-import { createEncryptor } from "./crypto.js"
 import type { SyncLogger } from "./logger.js"
 import type { Validator } from "./validate.js"
 import { ValidationError } from "./validate.js"
@@ -16,6 +15,26 @@ export class AbortError extends Error {
   }
 }
 
+/**
+ * v3.0 author-signature plumbing for `SyncManager`.
+ *
+ * Returns the device's Ed25519 public key (hex) and a function that signs
+ * arbitrary payload bytes. `SyncManager` calls `getSigner()` once per push
+ * and uses the returned `sign` to produce a base64-encoded signature over
+ * the canonical stringification of the encrypted payload (sans author fields).
+ *
+ * Implementations typically wrap the same Ed25519 private key used by
+ * `StarfishCapProvider` so that `cap.sub === devEdPubHex`.
+ */
+export interface SyncSigner {
+  /**
+   * Returns the device's `cap.sub` (Ed25519 pubkey, hex) and a payload signer.
+   * The `sign` function receives the canonical signing input bytes and must
+   * return the raw 64-byte Ed25519 signature.
+   */
+  getSigner(): Promise<{ devEdPubHex: string; sign(payload: Uint8Array): Promise<Uint8Array> }>
+}
+
 
 export interface SyncManagerOptions {
   client: StarfishClient
@@ -25,15 +44,17 @@ export interface SyncManagerOptions {
   onConflict?: ConflictResolver
   /** Max conflict retry attempts (default: 3). */
   maxRetries?: number
-  encryptionSecret?: string
-  encryptionSalt?: string
-  encryptionInfo?: string
   /**
-   * Pre-created Encryptor. Use this with `createGroupEncryptor` for group encryption.
-   * Takes precedence over `encryptionSecret` / `encryptionSalt` if both are provided.
+   * Encryptor for client-side E2E encryption. For v3 `delegated` collections,
+   * build it via `createKeyringEncryptor(keyring, deviceKemKeys)`.
    */
   encryptor?: Encryptor
-  signData?: (data: string) => Promise<string>
+  /**
+   * v3 author-signature plumbing. When set, every push attaches
+   * `authorPubkey` (= `cap.sub`) and `authorSignature` (= base64 Ed25519 over
+   * stable-stringify of the encrypted payload minus author fields).
+   */
+  signer?: SyncSigner
   /** Structured logger for sync events. */
   logger?: SyncLogger
   /** Name passed to logger methods (default: derived from pullPath). */
@@ -49,7 +70,7 @@ export class SyncManager {
   private readonly onConflict: ConflictResolver
   private readonly maxRetries: number
   private readonly encryptor: Encryptor | null
-  private readonly signData?: (data: string) => Promise<string>
+  private readonly signer?: SyncSigner
   private readonly logger?: SyncLogger
   private readonly loggerName: string
   private readonly validate?: Validator
@@ -65,15 +86,19 @@ export class SyncManager {
     this.pushPath = options.pushPath
     this.onConflict = options.onConflict ?? deepMerge
     this.maxRetries = options.maxRetries ?? 3
-    this.signData = options.signData
+    this.signer = options.signer
     this.logger = options.logger
     this.loggerName = options.loggerName ?? options.pullPath.split("/").filter(Boolean).pop() ?? options.pullPath
     this.validate = options.validate
-    this.encryptor =
-      options.encryptor ??
-      (options.encryptionSecret && options.encryptionSalt
-        ? createEncryptor(options.encryptionSecret, options.encryptionSalt, options.encryptionInfo)
-        : null)
+    this.encryptor = options.encryptor ?? null
+  }
+
+  abort(): void {
+    this.aborted = true
+  }
+
+  get isAborted(): boolean {
+    return this.aborted
   }
 
   abort(): void {
@@ -106,6 +131,11 @@ export class SyncManager {
     this.logger?.pullStart(this.loggerName)
     const start = performance.now()
     try {
+      // NOTE: `SyncManager.pull` does NOT auto-enable `withKeyring`. Clients
+      // that drive the keyring helpers from `recipients.ts` and want to save
+      // the cold-start round-trip should call `client.pull(path, {withKeyring: true})`
+      // directly. We keep `SyncManager` keyring-agnostic so it stays usable
+      // for collections that don't use delegated encryption.
       const result = await this.client.pull(this.pullPath, this.lastCheckpoint)
       if (this.aborted) throw new AbortError()
 
@@ -144,21 +174,33 @@ export class SyncManager {
 
     while (attempt <= this.maxRetries) {
       try {
-        const payload = this.encryptor
+        const sealed = this.encryptor
           ? await this.encryptor.encrypt(pendingData)
           : pendingData
         if (this.aborted) throw new AbortError()
 
-        const sig = this.signData
-          ? await this.signData(stableStringify(payload))
-          : undefined
-        if (this.aborted) throw new AbortError()
+        // v3.0 signer path: sign over stableStringify(payload-without-author-fields)
+        // and attach `authorPubkey` + `authorSignature` to the sealed payload.
+        // The author fields live INSIDE `data` so the server stores them with
+        // the encrypted document.
+        let payload: Record<string, unknown> = sealed
+        if (this.signer) {
+          const { devEdPubHex, sign } = await this.signer.getSigner()
+          if (this.aborted) throw new AbortError()
+          const canonical = stableStringify(sealed as Record<string, unknown>)
+          const sigBytes = await sign(new TextEncoder().encode(canonical))
+          if (this.aborted) throw new AbortError()
+          payload = {
+            ...sealed,
+            authorPubkey: devEdPubHex,
+            authorSignature: getBase64().encode(sigBytes),
+          }
+        }
 
         const result = await this.client.push(
           this.pushPath,
           payload,
           this.lastHash,
-          sig
         )
         if (this.aborted) throw new AbortError()
         this.lastHash = result.hash

@@ -7,17 +7,25 @@ High-level sync orchestrator that wraps `StarfishClient` with automatic encrypti
 ## Constructor
 
 ```ts
-import { StarfishClient, SyncManager } from "@drakkar.software/starfish-client"
+import {
+  StarfishClient,
+  SyncManager,
+  bootstrapRootIdentity,
+} from "@drakkar.software/starfish-client"
+
+const creds = await bootstrapRootIdentity(passphrase)
 
 const client = new StarfishClient({
   baseUrl: "https://api.example.com/v1",
-  auth: async () => ({ Authorization: `Bearer ${token}` }),
+  capProvider: {
+    getCap: async () => ({ cap: creds.capCert, devEdPrivHex: creds.device.edPriv }),
+  },
 })
 
 const sync = new SyncManager({
   client,
-  pullPath: `/pull/users/${userId}/settings`,
-  pushPath: `/push/users/${userId}/settings`,
+  pullPath: `/pull/users/${creds.userId}/settings`,
+  pushPath: `/push/users/${creds.userId}/settings`,
 })
 ```
 
@@ -35,21 +43,18 @@ interface SyncManagerOptions {
   /** Max conflict retry attempts (default: 3) */
   maxRetries?: number
 
-  /** Secret for E2E encryption (enables encryption when set with encryptionSalt) */
-  encryptionSecret?: string
-
-  /** Salt for HKDF key derivation */
-  encryptionSalt?: string
-
-  /** Info parameter for HKDF (default: "starfish-e2e") */
-  encryptionInfo?: string
-
-  /** Callback to sign payloads for data provenance */
-  signData?: (data: string) => Promise<string>
-
-  /** Pre-built encryptor object (alternative to encryptionSecret/Salt/Info).
-   * Required when integrating group encryption — pass the result of createGroupEncryptor(). */
+  /**
+   * Pre-built encryptor for client-side E2E encryption. For v3 `delegated`
+   * collections, build it via `createKeyringEncryptor(keyring, deviceKemKeys)`.
+   */
   encryptor?: Encryptor
+
+  /**
+   * v3 author-signature plumbing. When set, every push attaches
+   * `authorPubkey` (= `cap.sub`) and `authorSignature` (Ed25519 over
+   * `stableStringify(payload-without-author-fields)`).
+   */
+  signer?: SyncSigner
 
   /** Structured sync event logger */
   logger?: SyncLogger
@@ -69,14 +74,15 @@ interface SyncManagerOptions {
 | `pushPath` | Yes | — | Server path for push requests |
 | `onConflict` | No | `deepMerge` | Conflict resolver function |
 | `maxRetries` | No | `3` | Max conflict retry attempts |
-| `encryptionSecret` | No | — | Enables E2E encryption |
-| `encryptionSalt` | No | — | Salt for key derivation |
-| `encryptionInfo` | No | `"starfish-e2e"` | HKDF info parameter |
-| `signData` | No | — | Signs the serialized payload |
-| `encryptor` | No | — | Pre-built encryptor (alternative to `encryptionSecret`; required for group encryption) |
+| `encryptor` | No | — | Pre-built encryptor (v3 keyring path) |
+| `signer` | No | — | v3 author-signature provider (`SyncSigner`) |
 | `logger` | No | — | Structured sync event logger |
 | `loggerName` | No | — | Label for log entries when sharing a logger |
 | `validate` | No | — | Schema validator applied to pulled data |
+
+The v2 `signData` hook is removed in 3.0. Use `signer: SyncSigner`
+instead — the new hook signs the canonical encrypted payload bytes and
+attaches `authorPubkey` / `authorSignature` to the push.
 
 ## Methods
 
@@ -88,20 +94,19 @@ Fetches remote data, decrypts if encryption is enabled, and updates internal sta
 const result = await sync.pull()
 console.log(sync.getData())       // the synced document
 console.log(sync.getHash())       // server hash
-console.log(sync.getCheckpoint()) // timestamp for incremental pulls
+console.log(sync.getCheckpoint()) // last server timestamp (high-water mark)
 ```
 
 **Behavior:**
-- First pull (`checkpoint = 0`): fetches the full document
-- Subsequent pulls: uses the last checkpoint for incremental sync
+- Every pull fetches the **full document** — regular collections no longer support `?checkpoint=` incremental sync (it is now an append-only-only feature). `getCheckpoint()` still returns the last server timestamp as a high-water mark, but it no longer filters the response.
 - With encryption: automatically decrypts before storing locally
-- Without encryption + incremental: deep-merges remote into local data
+- The remote document is deep-merged into local data (remote-wins on leaf conflicts)
 
 **Returns:** `Promise<PullResult>`
 
 ### `push(data)`
 
-Encrypts (if enabled), signs (if configured), and pushes data to the server. Automatically retries on conflict.
+Encrypts (if enabled), signs (if a `signer` is configured), and pushes data to the server. Automatically retries on conflict.
 
 ```ts
 const result = await sync.push({ theme: "dark", lang: "en" })
@@ -111,8 +116,8 @@ console.log(result.timestamp) // server timestamp
 
 **Conflict retry loop:**
 
-1. Encrypt data (if encryption enabled)
-2. Sign the serialized payload (if `signData` provided)
+1. Encrypt data (if `encryptor` configured)
+2. Attach `authorPubkey` + `authorSignature` to the encrypted payload (if `signer` configured)
 3. Push with current `lastHash`
 4. On 409 conflict:
    - Pull latest remote state
@@ -154,43 +159,78 @@ await sync.push(updated)
 | `setHash(hash: string \| null)` | `void` | Restore the last-known hash (used by `createStarfishStore` on hydration; consumers using `SyncManager` directly typically do not need this) |
 | `getCheckpoint()` | `number` | Timestamp for incremental pulls |
 
-## Encryption
+## Encryption (v3 delegated path)
 
-Pass `encryptionSecret` and `encryptionSalt` to enable client-side E2E encryption:
+For `encryption: "delegated"` collections, build the encryptor from the
+collection's keyring document:
 
 ```ts
+import {
+  SyncManager,
+  createKeyringEncryptor,
+  type Keyring,
+} from "@drakkar.software/starfish-client"
+
+const keyring = (
+  await client.pull(`users/${creds.userId}/notes/_keyring`)
+).data as Keyring
+const encryptor = await createKeyringEncryptor(keyring, {
+  kemPubHex: creds.device.kemPub,
+  kemPrivHex: creds.device.kemPriv,
+})
+
 const sync = new SyncManager({
   client,
-  pullPath: `/pull/users/${userId}/notes`,
-  pushPath: `/push/users/${userId}/notes`,
-  encryptionSecret: "user-generated-secret",
-  encryptionSalt: userId,
+  pullPath: `/pull/users/${creds.userId}/notes`,
+  pushPath: `/push/users/${creds.userId}/notes`,
+  encryptor,
 })
 ```
 
-- Data is encrypted before every push and decrypted after every pull
-- The server only sees `{ _encrypted: "base64..." }`
-- See [Encryption](04-encryption.md) for the full crypto design
+- Data is encrypted before every push and decrypted after every pull.
+- The server only sees `{ _encrypted: "base64...", _epoch: N }`.
+- The encryptor decrypts any epoch the device has a wrap entry for; it
+  encrypts under the keyring's `currentEpoch`.
+- See [23. Multi-Recipient Delegated Encryption](23-multi-recipient-delegated.md)
+  for keyring lifecycle (creation, adding recipients, epoch rotation).
 
-## Data Signing
+The v2 single-secret `encryptionSecret` / `encryptionSalt` shorthand was removed
+in v3 — supply a pre-built `encryptor` (the keyring path above) instead.
 
-Attach a signature to every push for data provenance:
+## Author Signing
+
+Attach a per-device Ed25519 signature to every push for data provenance.
+The `signer.sign` callback signs over the canonical encrypted payload
+bytes (`stableStringify(payload-without-author-fields)`), and the manager
+inserts `authorPubkey` (= the device's `cap.sub`) and `authorSignature`
+into the pushed JSON:
 
 ```ts
+import { ed25519 } from "@noble/curves/ed25519.js"
+
 const sync = new SyncManager({
   client,
-  pullPath, pushPath,
-  signData: async (data: string) => {
-    // `data` is the stable-stringified payload (after encryption, if enabled)
-    return await signWithPrivateKey(data)
+  pullPath,
+  pushPath,
+  encryptor,
+  signer: {
+    getSigner: async () => ({
+      devEdPubHex: creds.device.edPub,
+      sign: async (bytes) =>
+        ed25519.sign(bytes, Buffer.from(creds.device.edPriv, "hex")),
+    }),
   },
 })
 ```
 
-The signature is passed as `authorSignature` in the push request. The server can verify it and store `authorPubkey` + `authorSignature` in the pull response.
+The server stores `authorPubkey` + `authorSignature` alongside the
+encrypted payload, and pull responses surface them so verifying clients
+can check that a document was written by a device whose cap was valid at
+the time.
 
 ## Next Steps
 
 - [Encryption](04-encryption.md) — E2E encryption deep dive
 - [Conflict Resolution](07-conflict-resolution.md) — custom merge strategies
+- [23. Multi-Recipient Delegated Encryption](23-multi-recipient-delegated.md) — keyring lifecycle
 - [Zustand Binding](05-state-zustand.md) — reactive state management on top of SyncManager

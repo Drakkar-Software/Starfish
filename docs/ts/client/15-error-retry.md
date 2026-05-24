@@ -96,7 +96,7 @@ import { StarfishClient } from "@drakkar.software/starfish-client"
 
 const client = new StarfishClient({
   baseUrl: "https://api.example.com/v1",
-  auth: async () => ({ Authorization: `Bearer ${token}` }),
+  capProvider: { getCap: async () => ({ cap, devEdPrivHex }) },
   fetch: createRetryFetch({ maxRetries: 3 }),
 })
 ```
@@ -221,21 +221,24 @@ function createAuthRefreshFetch(
 
 The `isRefreshing` guard prevents multiple concurrent refresh calls when several requests fail at once.
 
-**Important:** this wrapper retries the raw `fetch` call, but `StarfishClient` applies auth headers before calling `fetch`. To get new headers on the retry, the token refresh must update the state that `AuthProvider` reads (e.g., a variable or token store), and the retry must rebuild the request with fresh headers. A simpler approach is to handle 401 at the `AuthProvider` level:
+**Important:** this wrapper retries the raw `fetch` call, but `StarfishClient` applies auth headers before calling `fetch`. To get a fresh cap on the retry, the refresh must update the state that the `CapProvider` reads (e.g., a stored `creds`), and the retry must rebuild the request with fresh headers. A simpler approach is to handle 401 at the `CapProvider` level — when a cap is near its `exp`, refresh before returning:
 
 ```ts
 const client = new StarfishClient({
   baseUrl: "https://api.example.com/v1",
-  auth: async () => {
-    if (isTokenExpired()) {
-      await refreshToken()
-    }
-    return { Authorization: `Bearer ${getToken()}` }
+  capProvider: {
+    getCap: async () => {
+      if (capNearExpiry(currentCreds)) {
+        // Re-pair via QR/relay or re-bootstrap, replacing `currentCreds`.
+        currentCreds = await refreshCredentials()
+      }
+      return { cap: currentCreds.capCert, devEdPrivHex: currentCreds.device.edPriv }
+    },
   },
 })
 ```
 
-This is often preferable because `AuthProvider` is called for every request and naturally integrates with the token lifecycle.
+`CapProvider.getCap()` is called for every authenticated request and naturally integrates with the cap-cert lifecycle (TTL, rotation, pairing).
 
 ## Combining Strategies
 
@@ -248,9 +251,13 @@ Request → Auth refresh (401) → Circuit breaker → Retry (429/5xx/network) �
 ```ts
 const client = new StarfishClient({
   baseUrl: "https://api.example.com/v1",
-  auth: async () => {
-    if (isTokenExpired()) await refreshToken()
-    return { Authorization: `Bearer ${getToken()}` }
+  capProvider: {
+    getCap: async () => {
+      if (capNearExpiry(currentCreds)) {
+        currentCreds = await refreshCredentials()
+      }
+      return { cap: currentCreds.capCert, devEdPrivHex: currentCreds.device.edPriv }
+    },
   },
   fetch: createResilientFetch(
     { maxRetries: 3, initialDelayMs: 500 },

@@ -1,5 +1,15 @@
 /** Encryption modes supported by the Starfish server. */
-export type EncryptionMode = "none" | "identity" | "server" | "delegated"
+export type EncryptionMode = "none" | "delegated"
+
+/** Append-only configuration exposed via GET /config. */
+export interface AppendOnlyClientInfo {
+  /** Append-only strategy. Only `"by_timestamp"` is currently supported. */
+  type: "by_timestamp"
+  /** Array field name in the stored document. Defaults to "items". */
+  field?: string
+  /** false = no storage write (replaces queueOnly). true/absent = append to array. */
+  persist?: boolean
+}
 
 /** Append-only configuration exposed via GET /config. */
 export interface AppendOnlyClientInfo {
@@ -20,9 +30,6 @@ export interface CollectionClientInfo {
   pullOnly?: boolean
   pushOnly?: boolean
   appendOnly?: AppendOnlyClientInfo
-  clientEncrypted?: boolean
-  /** Base64-encoded public key for client-side encryption, if configured on the server. */
-  publicKey?: string
   ttlMs?: number
   forceFullFetch?: boolean
 }

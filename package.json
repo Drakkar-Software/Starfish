@@ -7,7 +7,8 @@
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
     "test:watch": "pnpm -r test:watch",
-    "publish:all": "pnpm -r publish --access public --no-git-checks"
+    "publish:all": "pnpm -r publish --access public --no-git-checks --tag latest",
+    "publish:all:alpha": "pnpm -r publish --access public --no-git-checks --tag alpha"
   },
   "devDependencies": {
     "@esbuild/darwin-arm64": "^0.27.4",

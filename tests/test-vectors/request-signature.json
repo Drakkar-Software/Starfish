@@ -1,0 +1,63 @@
+{
+  "description": "Cross-language vector for v3.0 per-request Ed25519 signatures. Locks the canonical input string and signature for several method/path/body combinations, plus negative cases for a tampered signer and a host-bind mismatch. The `h` field in the canonical input pins a signature to a single server host; verifiers reconstructing canonical with a different host must fail.",
+  "signer": {
+    "label": "alice_dev_1",
+    "edPub": "5333460b6cdb1dd4adc074c70ac38823c09153d430202406599f0b929a55f8ca"
+  },
+  "wrongSignerPub": {
+    "label": "bob_root",
+    "edPub": "4ab28c2400e6f24c7fdde3132045dc2058d3c2be159500995ec6c9c6012bd12b"
+  },
+  "cases": [
+    {
+      "label": "pull-empty-body",
+      "method": "GET",
+      "pathAndQuery": "/pull/notes/alice/0?checkpoint=0",
+      "bodyUtf8": "",
+      "host": "api.example.com",
+      "tsMs": 1747000000000,
+      "nonceBase64": "AAECAwQFBgcICQoLDA0ODw==",
+      "canonicalSigningInput": "{\"b\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"h\":\"api.example.com\",\"m\":\"GET\",\"nonce\":\"AAECAwQFBgcICQoLDA0ODw==\",\"p\":\"/pull/notes/alice/0?checkpoint=0\",\"ts\":1747000000000}",
+      "signatureBase64": "8WXdUTIJ4RGajOdkv3vYlPvxAS94f+G7uH+yNTPHJs0aDBcoFRL9PaCODe2fBBeUOeyceijrAselosebpJZSAg==",
+      "expectVerify": true
+    },
+    {
+      "label": "push-json-body",
+      "method": "POST",
+      "pathAndQuery": "/push/notes/alice/0",
+      "bodyUtf8": "{\"hello\":\"world\",\"n\":7}",
+      "host": "api.example.com",
+      "tsMs": 1747000000100,
+      "nonceBase64": "EBESExQVFhcYGaq7zN3u/w==",
+      "canonicalSigningInput": "{\"b\":\"950c36b63a1dc1a30ed2126ecf32443ec79f8ca2d9f89b4d9f3043e91fb69e08\",\"h\":\"api.example.com\",\"m\":\"POST\",\"nonce\":\"EBESExQVFhcYGaq7zN3u/w==\",\"p\":\"/push/notes/alice/0\",\"ts\":1747000000100}",
+      "signatureBase64": "3g40fbhoNMsnTiqQRWN1eU46IeYNB7bPaMRAwj9SZ3x+t7XFMHfcmIr9h8ha0jEvFyKdfeHxo0AMAOyj0KorAQ==",
+      "expectVerify": true
+    },
+    {
+      "label": "wrong-signer",
+      "method": "POST",
+      "pathAndQuery": "/push/notes/alice/0",
+      "bodyUtf8": "{\"hello\":\"world\",\"n\":7}",
+      "host": "api.example.com",
+      "tsMs": 1747000000200,
+      "nonceBase64": "qrvM3e7/ABEiM0RVZneImQ==",
+      "canonicalSigningInput": "{\"b\":\"950c36b63a1dc1a30ed2126ecf32443ec79f8ca2d9f89b4d9f3043e91fb69e08\",\"h\":\"api.example.com\",\"m\":\"POST\",\"nonce\":\"qrvM3e7/ABEiM0RVZneImQ==\",\"p\":\"/push/notes/alice/0\",\"ts\":1747000000200}",
+      "signatureBase64": "AZ+M4VjIDzHKW0LgzFPbBTbnfW8Tlahm96t0PUQ0Tv3TnfVZ708sJiRJ0hUra3OqvpByRVkM29B6rUf3YSMNCA==",
+      "verifyPubkey": "alice_dev_1.edPub",
+      "expectVerify": false
+    },
+    {
+      "label": "host-mismatch",
+      "method": "POST",
+      "pathAndQuery": "/push/notes/alice/0",
+      "bodyUtf8": "{\"hello\":\"world\",\"n\":7}",
+      "host": "api.example.com",
+      "verifyHost": "evil.example.com",
+      "tsMs": 1747000000300,
+      "nonceBase64": "mYh3ZlVEMyIRAP/u3cy7qg==",
+      "canonicalSigningInput": "{\"b\":\"950c36b63a1dc1a30ed2126ecf32443ec79f8ca2d9f89b4d9f3043e91fb69e08\",\"h\":\"api.example.com\",\"m\":\"POST\",\"nonce\":\"mYh3ZlVEMyIRAP/u3cy7qg==\",\"p\":\"/push/notes/alice/0\",\"ts\":1747000000300}",
+      "signatureBase64": "15iFqbqQdzysLo+xzh9cqx9XoJzd1cEt0OjeFt46ZQaPXXdPSF2YHu/hJF602s2mgr64wVSYaxYYQcEnkWN9Dw==",
+      "expectVerify": false
+    }
+  ]
+}

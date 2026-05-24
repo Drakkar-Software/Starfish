@@ -13,21 +13,32 @@ npm install @drakkar.software/starfish-client
 ## First Sync — Low-Level
 
 ```ts
-import { StarfishClient } from "@drakkar.software/starfish-client"
+import {
+  StarfishClient,
+  bootstrapRootIdentity,
+} from "@drakkar.software/starfish-client"
+
+// One-time at startup: derive the user's root identity + self-signed device
+// cap-cert from a passphrase. Persist `creds` to local storage so it survives
+// process restarts.
+const creds = await bootstrapRootIdentity(passphrase)
 
 const client = new StarfishClient({
   baseUrl: "https://api.example.com/v1",
-  auth: async () => ({ Authorization: `Bearer ${token}` }),
+  capProvider: {
+    getCap: async () => ({ cap: creds.capCert, devEdPrivHex: creds.device.edPriv }),
+  },
 })
 
-// Pull current state
-const result = await client.pull(`/pull/users/${userId}/settings`)
+// Pull current state. `creds.userId` is the v3 short userId
+// (`sha256(rootEdPub)[0:32]`).
+const result = await client.pull(`/pull/users/${creds.userId}/settings`)
 // => { data: { theme: "light" }, hash: "a1b2c3...", timestamp: 1712345678 }
 
 // Push an update (baseHash = current hash for conflict detection)
 const updated = { ...result.data, theme: "dark" }
 const success = await client.push(
-  `/push/users/${userId}/settings`,
+  `/push/users/${creds.userId}/settings`,
   updated,
   result.hash,
 )
@@ -62,13 +73,15 @@ import { StarfishClient, SyncManager } from "@drakkar.software/starfish-client"
 
 const client = new StarfishClient({
   baseUrl: "https://api.example.com/v1",
-  auth: async () => ({ Authorization: `Bearer ${token}` }),
+  capProvider: {
+    getCap: async () => ({ cap: creds.capCert, devEdPrivHex: creds.device.edPriv }),
+  },
 })
 
 const sync = new SyncManager({
   client,
-  pullPath: `/pull/users/${userId}/settings`,
-  pushPath: `/push/users/${userId}/settings`,
+  pullPath: `/pull/users/${creds.userId}/settings`,
+  pushPath: `/push/users/${creds.userId}/settings`,
 })
 
 // Pull, modify, push — conflicts are retried automatically
@@ -84,24 +97,49 @@ await sync.update((current) => ({ ...current, theme: "light" }))
 
 ## Add Encryption
 
-Pass `encryptionSecret` and `encryptionSalt` — data is encrypted before push and decrypted after pull. The server never sees plaintext.
+Starfish 3.0 has one client-side encryption mode: `"delegated"` — N-recipient
+multi-device / group encryption backed by a sibling keyring document. Build
+an `Encryptor` via `createKeyringEncryptor` from the collection keyring and
+pass it to `SyncManager`. The server never sees plaintext.
 
 ```ts
+import {
+  SyncManager,
+  createKeyringEncryptor,
+  type Keyring,
+} from "@drakkar.software/starfish-client"
+
+const keyring = (
+  await client.pull(`users/${creds.userId}/notes/_keyring`)
+).data as Keyring
+const encryptor = await createKeyringEncryptor(keyring, {
+  kemPubHex: creds.device.kemPub,
+  kemPrivHex: creds.device.kemPriv,
+})
+
 const sync = new SyncManager({
   client,
-  pullPath: `/pull/users/${userId}/notes`,
-  pushPath: `/push/users/${userId}/notes`,
-  encryptionSecret: "user-generated-secret",
-  encryptionSalt: userId,
+  pullPath: `/pull/users/${creds.userId}/notes`,
+  pushPath: `/push/users/${creds.userId}/notes`,
+  encryptor,
 })
 
 await sync.push({ items: ["note 1", "note 2"] })
-// Server stores: { _encrypted: "base64..." }
+// Server stores: { _encrypted: "base64...", _epoch: 1 }
 ```
+
+The first device on a collection seeds the keyring with `createKeyring(...)`
+and pushes it. Subsequent devices are added as recipients via
+`addCollectionRecipient` (or assembled into the keyring as part of pairing).
+See [23. Multi-Recipient Delegated Encryption](23-multi-recipient-delegated.md)
+for the full algorithm.
 
 ## Next Steps
 
 - [StarfishClient](02-starfish-client.md) — full low-level API reference
 - [SyncManager](03-sync-manager.md) — encryption, conflict resolution, signing
+- [11. Identity & Key Derivation](11-identity-key-derivation.md) — `bootstrapRootIdentity`, cap-certs
+- [23. Multi-Recipient Delegated Encryption](23-multi-recipient-delegated.md) — keyring shape, recipient helpers
+- [24. Pairing](24-pairing.md) — QR and relay flows for additional devices
 - [Zustand Binding](05-state-zustand.md) — reactive state for React apps
 - [Legend State Binding](06-state-legend.md) — fine-grained observable state

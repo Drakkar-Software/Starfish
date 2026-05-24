@@ -1,15 +1,32 @@
 """Integration tests for SyncManager with encryption and signing."""
 
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from starfish_sdk.client import StarfishClient
-from starfish_sdk.crypto import Encryptor
 from starfish_sdk.sync import SyncManager
 from starfish_protocol.types import PullResult, PushSuccess
 from starfish_sdk.types import ConflictError
+
+
+class _StubEncryptor:
+    """Reversible stub matching the Encryptor protocol (sync encrypt/decrypt).
+
+    Exercises SyncManager's ``encryptor`` injection path — the v3 keyring path
+    (``create_keyring_encryptor``) conforms to the same contract.
+    """
+
+    def encrypt(self, data: dict) -> dict:
+        return {"_encrypted": json.dumps(data)}
+
+    def decrypt(self, wrapper: dict) -> dict:
+        blob = wrapper.get("_encrypted")
+        if not isinstance(blob, str):
+            raise ValueError("Expected encrypted data but received unencrypted document")
+        return json.loads(blob)
 
 
 def make_mock_client(
@@ -24,7 +41,7 @@ def make_mock_client(
 
 @pytest.mark.asyncio
 async def test_encrypt_push_pull_round_trip():
-    enc = Encryptor("secret", "user-salt")
+    enc = _StubEncryptor()
     original_data = {"name": "alice", "score": 42}
     encrypted = enc.encrypt(original_data)
 
@@ -32,10 +49,7 @@ async def test_encrypt_push_pull_round_trip():
         pull_responses=[PullResult(data=encrypted, hash="h1", timestamp=100)],
         push_responses=[PushSuccess(hash="h2", timestamp=200)],
     )
-    sync = SyncManager(
-        client, "/pull/test", "/push/test",
-        encryption_secret="secret", encryption_salt="user-salt",
-    )
+    sync = SyncManager(client, "/pull/test", "/push/test", encryptor=enc)
 
     result = await sync.pull()
     assert result.data == original_data
@@ -43,26 +57,10 @@ async def test_encrypt_push_pull_round_trip():
 
 
 @pytest.mark.asyncio
-async def test_push_sends_signature():
-    async def sign(data_str: str) -> str:
-        return "test-signature"
-
-    client = make_mock_client(
-        push_responses=[PushSuccess(hash="h1", timestamp=100)],
-    )
-    sync = SyncManager(client, "/pull/test", "/push/test", sign_data=sign)
-    sync.set_hash("base")
-
-    await sync.push({"key": "value"})
-
-    assert client.push.call_args.args[3] == "test-signature"
-
-
-@pytest.mark.asyncio
 async def test_conflict_retry_resolves():
     call_count = 0
 
-    async def push_side_effect(path, data, base_hash, sig=None):
+    async def push_side_effect(path, data, base_hash):
         nonlocal call_count
         call_count += 1
         if call_count == 1:
@@ -88,13 +86,13 @@ async def test_conflict_retry_resolves():
 
 @pytest.mark.asyncio
 async def test_encrypted_conflict_retry_decrypts_remote():
-    enc = Encryptor("secret", "user-salt")
+    enc = _StubEncryptor()
     remote_data = {"remote": True}
     encrypted_remote = enc.encrypt(remote_data)
 
     call_count = 0
 
-    async def push_side_effect(path, data, base_hash, sig=None):
+    async def push_side_effect(path, data, base_hash):
         nonlocal call_count
         call_count += 1
         if call_count == 1:
@@ -108,10 +106,7 @@ async def test_encrypted_conflict_retry_decrypts_remote():
     client.push = AsyncMock(side_effect=push_side_effect)
     client.pull = AsyncMock(side_effect=pull_side_effect)
 
-    sync = SyncManager(
-        client, "/pull/test", "/push/test",
-        encryption_secret="secret", encryption_salt="user-salt",
-    )
+    sync = SyncManager(client, "/pull/test", "/push/test", encryptor=enc)
     sync.set_hash("old-hash")
 
     with patch("starfish_sdk.sync.asyncio.sleep"):

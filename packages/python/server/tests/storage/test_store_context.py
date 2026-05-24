@@ -9,7 +9,6 @@ from starfish_server.config.schema import SyncConfig, CollectionConfig
 from starfish_server.router.route_builder import create_sync_router, SyncRouterOptions, AuthResult
 from starfish_server.storage.base import StoreContext
 from starfish_server.storage.memory import MemoryObjectStore, CustomObjectStore, _accepts_ctx
-from starfish_server.encryption.encrypted_store import EncryptedObjectStore
 
 
 # ---------------------------------------------------------------------------
@@ -319,37 +318,6 @@ async def test_namespace_route_ctx_namespace_field():
     assert ctx.namespace == "org"
     assert ctx.collection == "prefs"
     assert ctx.action == "pull"
-
-
-@pytest.mark.asyncio
-async def test_encrypted_store_forwards_same_ctx():
-    """EncryptedObjectStore must pass the same StoreContext object to its inner store."""
-    captured_inner: list[StoreContext] = []
-    mem = MemoryObjectStore(data={})
-
-    async def on_get(key, ctx):
-        captured_inner.append(ctx)
-        return mem._data.get(key)
-
-    async def on_put(key, body, ctx):
-        captured_inner.append(ctx)
-        mem._data[key] = body
-
-    inner = CustomObjectStore(on_get=on_get, on_put=on_put)
-    encrypted = EncryptedObjectStore(inner, secret="secret", salt="salt", info="starfish-data")
-
-    ctx = StoreContext(
-        collection="profile",
-        params={"identity": "alice"},
-        identity="alice",
-        roles=("self",),
-        action="push",
-    )
-    await encrypted.put("k", '{"x":1}', context=ctx)
-    await encrypted.get_string("k", context=ctx)
-
-    push_ctxs = [c for c in captured_inner if c is ctx]
-    assert len(push_ctxs) >= 2  # put + get both forwarded the same ctx object
 
 
 @pytest.mark.asyncio

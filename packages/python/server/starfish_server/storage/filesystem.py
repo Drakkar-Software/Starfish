@@ -19,7 +19,7 @@ _VALID_KEY = re.compile(r"^[a-zA-Z0-9._:@\-/]+$")
 
 
 def _validate_key(key: str) -> None:
-    if not key or not _VALID_KEY.match(key) or ".." in key.split("/"):
+    if not key or not _VALID_KEY.fullmatch(key) or ".." in key.split("/"):
         raise ValueError(f"Invalid storage key: {key!r}")
 
 

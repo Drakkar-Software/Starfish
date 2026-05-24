@@ -719,10 +719,16 @@ const settingsSync = new SyncManager({
   client, pullPath: "/pull/.../settings", pushPath: "/push/.../settings",
 })
 
+// For encrypted collections, build the encryptor from the keyring document.
+// See 23-multi-recipient-delegated.md for the full keyring lifecycle.
+const tasksKeyring = (await client.pull(`tasks/_keyring`)).data as Keyring
+const tasksEncryptor = await createKeyringEncryptor(tasksKeyring, {
+  kemPubHex: creds.device.kemPub,
+  kemPrivHex: creds.device.kemPriv,
+})
 const tasksSync = new SyncManager({
   client, pullPath: "/pull/.../tasks", pushPath: "/push/.../tasks",
-  encryptionSecret: secret,
-  encryptionSalt: salt,
+  encryptor: tasksEncryptor,
 })
 ```
 

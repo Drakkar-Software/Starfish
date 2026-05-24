@@ -6,103 +6,37 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-from starfish_server.constants import ENCRYPTION_NONE, ENCRYPTION_IDENTITY, ENCRYPTION_SERVER, ENCRYPTION_DELEGATED, ENCRYPTION_GROUP, APPEND_DEFAULT_FIELD
+from starfish_server.constants import ENCRYPTION_NONE, ENCRYPTION_DELEGATED, APPEND_DEFAULT_FIELD
 
-EncryptionMode = Literal["none", "identity", "server", "delegated", "group"]
-
-
-class WriteMode(StrEnum):
-    """Controls how local client writes are handled on a replica collection."""
-
-    PULL_ONLY = "pull_only"
-    """Only the ReplicaManager writes locally; local client pushes are rejected (405)."""
-
-    PUSH_THROUGH = "push_through"
-    """Local client pushes are forwarded to the primary; the replica syncs back afterwards."""
-
-    BIDIRECTIONAL = "bidirectional"
-    """Local client pushes are stored locally and merged (remote-wins) with the primary on sync."""
-
-    PUSH_ONLY = "push_only"
-    """Local client pushes are stored locally; pull requests are rejected (405).
-    The replica does not sync from the primary — data is managed entirely locally."""
+EncryptionMode = Literal["none", "delegated"]
 
 
-class SyncTrigger(StrEnum):
-    """Events that trigger a sync from the primary."""
+class AppendOnlyConfig(BaseModel):
+    """Append-only collection configuration.
 
-    SCHEDULED = "scheduled"
-    """Sync on a fixed interval (``interval_ms``)."""
+    Tagged by ``type`` so new strategies can be added later; only
+    ``"by_timestamp"`` is supported today (each element is stored as
+    ``{ts, data}`` and pulls filter by ``ts`` via ``?checkpoint=``).
 
-    ON_PULL = "on_pull"
-    """Sync before serving each local ``GET /pull/…`` request (lazy / always-fresh)."""
-
-
-class RemoteConfig(BaseModel):
-    """Declares that a collection should be replicated from a remote (primary) starfish server."""
-
-    model_config = {"populate_by_name": True}
-
-    url: str
-    """Base URL of the primary starfish server, e.g. ``https://primary.example.com/v1``."""
-
-    pull_path: str = Field(alias="pullPath")
-    """Pull endpoint path on the primary, e.g. ``/pull/posts/featured``.
-    Must be a static path — no template variables."""
-
-    push_path: str | None = Field(default=None, alias="pushPath")
-    """Push endpoint path on the primary. Required for ``push_through`` and ``bidirectional`` write modes."""
-
-    interval_ms: int = Field(default=60_000, gt=0, alias="intervalMs")
-    """Sync interval in milliseconds (used by the ``scheduled`` trigger). Defaults to 60 000 ms."""
-
-    headers: dict[str, str] = Field(default_factory=dict)
-    """Static HTTP headers sent to the primary on every request (e.g. ``Authorization: Bearer <token>``).
-    These credentials must satisfy the primary collection's ``readRoles`` (and ``writeRoles`` for write-through)."""
-
-    write_mode: WriteMode = Field(default=WriteMode.PULL_ONLY, alias="writeMode")
-    """How local client writes are handled. Defaults to ``pull_only``."""
-
-    sync_triggers: list[SyncTrigger] = Field(
-        default_factory=lambda: [SyncTrigger.SCHEDULED],
-        alias="syncTriggers",
-    )
-    """Which events trigger a sync from the primary. Defaults to ``[scheduled]``."""
-
-    on_pull_min_interval_ms: int | None = Field(default=None, gt=0, alias="onPullMinIntervalMs")
-    """Minimum time in milliseconds between two consecutive syncs triggered by ``on_pull``.
-
-    When a client pulls and this cooldown has not elapsed since the last sync, the replica
-    skips the round-trip to the primary and serves the locally cached data instead.
-
-    ``None`` (default) means every ``on_pull`` request always syncs from the primary.
-    Only relevant when ``on_pull`` is listed in ``sync_triggers``."""
-
-
-class QueueConfig(BaseModel):
-    """Per-collection queue publishing configuration.
-
-    When present on a :class:`CollectionConfig`, the server publishes a
-    change event to the configured queue after every successful push.
+    When set on a :class:`CollectionConfig`, every push appends the incoming data
+    object as the last element of a stored array, recorded as ``{ts, data}``.
     """
 
     model_config = {"populate_by_name": True}
 
-    topic: str | None = Field(default=None)
-    """NATS subject (or equivalent topic name) to publish to.
+    type: str
+    """Discriminator.  Only ``"by_timestamp"`` is currently supported; an unknown
+    value is rejected by :func:`validate_config` (mirrors the TS validator, which
+    types this as the ``"by_timestamp"`` literal but defers the runtime check)."""
 
-    Defaults to the collection ``name`` when ``None``."""
+    field: str | None = Field(default=APPEND_DEFAULT_FIELD)
+    """Array field name in the stored document.  Defaults to ``"items"``."""
 
-    include_params: bool = Field(default=False, alias="includeParams")
-    """Include resolved path parameters (e.g. ``{"identity": "user-1"}``) in the
-    published message payload."""
-
-    include_body: bool = Field(default=False, alias="includeBody")
-    """Include the full document data in the published message payload.
-
-    Only applies to JSON collections — binary push events never include body.
-    The ``body`` field contains the ``data`` from the push request body as sent
-    by the client (before server-side sanitization of prototype-pollution keys)."""
+    persist: bool | None = Field(default=True)
+    """``True`` (default) — append item to stored array as ``{ts, data}``.
+    ``False`` — compute hash and emit a write event without writing to storage
+    (consumed by a plugin such as ``starfish-queuing``; replaces the old
+    ``queueOnly`` behaviour)."""
 
 
 class AppendOnlyConfig(BaseModel):
@@ -208,19 +142,7 @@ class CollectionConfig(BaseModel):
     pull_only: bool | None = Field(default=None, alias="pullOnly")
     push_only: bool | None = Field(default=None, alias="pushOnly")
     force_full_fetch: bool | None = Field(default=None, alias="forceFullFetch")
-    client_encrypted: bool | None = Field(default=None, alias="clientEncrypted")
     bundle: str | None = Field(default=None, min_length=1)
-    remote: RemoteConfig | None = Field(default=None)
-    """When set, this collection is replicated from a remote primary starfish server.
-    All replica behavior (write mode, sync triggers, interval, auth) is fully described here."""
-
-    queue: QueueConfig | None = Field(default=None)
-    """When set, the server publishes a change event to the configured queue
-    after every successful push.
-
-    Accepts ``true`` (use defaults — topic is the collection name),
-    ``false``/``null`` (disabled), or an object ``{"topic": …, "includeParams": …}``
-    to customise."""
 
     append_only: "AppendOnlyConfig | None" = Field(default=None, alias="appendOnly")
     """When set, every push appends the incoming data object as the last item of a stored array.
@@ -246,11 +168,11 @@ class CollectionConfig(BaseModel):
         field_permissions={"secret": FieldPermission(write_roles=["admin"])}
     """
 
-    public_key: str | None = Field(default=None, alias="publicKey")
-    """Base64-encoded public key exposed via the ``GET /config`` endpoint for client-side encryption.
+    keyring_path: str | None = Field(default=None, alias="keyringPath")
+    """Optional override for the keyring storage path.
 
-    Clients that call ``fetch_server_config()`` receive this value and can use it to
-    encrypt data before pushing — without requiring a pre-shared secret."""
+    When omitted, defaults to ``<storage_path>/_keyring``.  Only relevant
+    for collections using ``"delegated"`` encryption."""
 
     listable: bool | None = Field(default=None)
     """When ``True``, exposes a ``GET /list/...`` endpoint for this collection.
@@ -263,6 +185,13 @@ class CollectionConfig(BaseModel):
     enumerated.  Requires at least one path parameter; incompatible with
     ``appendOnly`` (persist=False) and ``bundle``."""
 
+    root_only: bool | None = Field(default=None, alias="rootOnly")
+    """When ``True``, only the **root device** (a self-signed device cap,
+    ``iss == sub``) may access this collection; every paired/delegated device
+    cap and member cap is rejected with ``403``, in addition to the normal
+    read/write role checks.  Incompatible with public read/write roles
+    (rejected at config load)."""
+
     @field_validator("rate_limit", mode="before")
     @classmethod
     def _coerce_rate_limit(cls, v: object) -> object:
@@ -272,13 +201,19 @@ class CollectionConfig(BaseModel):
             return None
         return v
 
-    @field_validator("queue", mode="before")
+    @field_validator("append_only", mode="before")
     @classmethod
-    def _coerce_queue(cls, v: object) -> object:
+    def _coerce_append_only(cls, v: object) -> object:
+        # Boolean shorthand: ``True`` normalizes to ``{"type": "by_timestamp"}``.
         if v is True:
-            return QueueConfig()
+            return {"type": "by_timestamp"}
         if v is False:
             return None
+        # Dict without ``type``: default the discriminator so a ``{field: "events"}``
+        # shorthand still works. An explicit unknown ``type`` is preserved here and
+        # rejected by ``validate_config``.
+        if isinstance(v, dict) and "type" not in v:
+            return {**v, "type": "by_timestamp"}
         return v
 
     @field_validator("append_only", mode="before")

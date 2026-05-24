@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "starfish-queuing"
+version = "3.0.0a2"
+description = "Starfish change-event queuing extension (post-push publish hook, MemoryQueue/CustomQueue/NatsQueue backends, per-collection config)"
+requires-python = ">=3.11"
+dependencies = [
+  "starfish-protocol",
+]
+
+[project.optional-dependencies]
+nats = ["nats-py>=2.0"]
+dev = [
+  "pytest>=7.0",
+  "pytest-asyncio>=0.21",
+  "respx>=0.23.1",
+  "nats-py>=2.0",
+  "starfish-server",
+]
+
+[tool.uv.sources]
+starfish-protocol = { path = "../protocol", editable = true }
+starfish-server = { path = "../server", editable = true }
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

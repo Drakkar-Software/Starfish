@@ -121,6 +121,61 @@ describe("client.pull with AppendPullOptions", () => {
   })
 })
 
+describe("client.append (appendOnly)", () => {
+  it("posts { data } and returns PushSuccess (no ts)", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ hash: "abc123", timestamp: 1714000000 }),
+    })
+    const client = new StarfishClient({ baseUrl: "https://api.example.com/v1", fetch: fetchSpy })
+
+    const result = await client.append("/push/events", { type: "click" })
+
+    const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe("https://api.example.com/v1/push/events")
+    const sent = JSON.parse(init.body as string)
+    expect(sent).toEqual({ data: { type: "click" } })
+    expect(sent.ts).toBeUndefined()
+    expect(result).toEqual(PUSH_SUCCESS)
+  })
+
+  it("includes ts in the body when provided", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ hash: "abc123", timestamp: 1714000000 }),
+    })
+    const client = new StarfishClient({ baseUrl: "https://api.example.com/v1", fetch: fetchSpy })
+
+    await client.append("/push/events", { type: "click" }, { ts: 1714000123 })
+
+    const [, init] = fetchSpy.mock.calls[0] as [string, RequestInit]
+    expect(JSON.parse(init.body as string)).toEqual({ data: { type: "click" }, ts: 1714000123 })
+  })
+
+  it("throws StarfishHttpError on a 409 (non-monotonic ts)", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 409,
+      text: async () => JSON.stringify({ error: "non_monotonic_timestamp" }),
+    })
+    const client = new StarfishClient({ baseUrl: "https://api.example.com/v1", fetch: fetchSpy })
+    await expect(client.append("/push/events", { n: 1 }, { ts: 1 })).rejects.toThrow()
+  })
+
+  it("pull returns the {ts, data} envelopes for an appendOnly collection", async () => {
+    const result = await makeClient({
+      items: [
+        { ts: 100, data: { msg: "a" } },
+        { ts: 200, data: { msg: "b" } },
+      ],
+    }).pull("/pull/events", { appendField: "items" })
+    expect(result).toEqual([
+      { ts: 100, data: { msg: "a" } },
+      { ts: 200, data: { msg: "b" } },
+    ])
+  })
+})
+
 describe("client.pull input validation", () => {
   it("throws when since is negative", async () => {
     const client = new StarfishClient({ baseUrl: "https://api.example.com/v1", fetch: vi.fn() })

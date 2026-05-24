@@ -3,8 +3,8 @@
 
 import re
 
-from starfish_server.config.schema import SyncConfig, WriteMode, CollectionConfig
-from starfish_server.constants import ENCRYPTION_IDENTITY, ENCRYPTION_SERVER, ENCRYPTION_DELEGATED, ENCRYPTION_GROUP, IDENTITY_PARAM, ROLE_PUBLIC
+from starfish_server.config.schema import SyncConfig, CollectionConfig
+from starfish_server.constants import ROLE_PUBLIC, ROLE_SELF
 
 MIME_JSON = "application/json"
 
@@ -42,24 +42,20 @@ def _validate_collections(collections: list[CollectionConfig], scope_label: str)
 
         if col.append_only:
             persist = col.append_only.persist
+            if col.append_only.type != "by_timestamp":
+                errors.append(
+                    f'{prefix}Collection "{col.name}": appendOnly.type "{col.append_only.type}" '
+                    f'is not supported (expected "by_timestamp")'
+                )
             if _is_binary_collection(col.allowed_mime_types):
                 errors.append(f'{prefix}Collection "{col.name}": appendOnly cannot be used with binary collections')
             if col.pull_only:
                 errors.append(f'{prefix}Collection "{col.name}": appendOnly cannot be used with pullOnly (push routes are disabled)')
-            if col.remote:
-                errors.append(f'{prefix}Collection "{col.name}": appendOnly cannot be used with remote replication')
             if persist:
-                # persist=True (default) — additional restrictions for the stored-array path
-                if col.client_encrypted:
-                    errors.append(
-                        f'{prefix}Collection "{col.name}": appendOnly with persist=true cannot be used with '
-                        f'clientEncrypted (server cannot read ciphertext to append)'
-                    )
-                if col.encryption in (ENCRYPTION_DELEGATED, ENCRYPTION_GROUP):
-                    errors.append(
-                        f'{prefix}Collection "{col.name}": appendOnly with persist=true cannot be used with '
-                        f'"{col.encryption}" encryption (server cannot read ciphertext to append)'
-                    )
+                # persist=True (default) — the stored-array path. ``delegated``
+                # encryption is now supported: each element's ``data`` is stored
+                # opaquely, so the server never reads ciphertext to append (only
+                # the plaintext per-element ``ts`` envelope).
                 if col.bundle:
                     errors.append(
                         f'{prefix}Collection "{col.name}": appendOnly with persist=true cannot be used with bundle'
@@ -87,30 +83,15 @@ def _validate_collections(collections: list[CollectionConfig], scope_label: str)
                     f'{prefix}Collection "{col.name}": listable cannot be used with bundle (bundled collections share storage paths)'
                 )
 
-        # Public collections must not use identity-based encryption
-        if ROLE_PUBLIC in col.read_roles and col.encryption == ENCRYPTION_IDENTITY:
+        # rootOnly is incompatible with public access — a root-only collection
+        # can never be public.
+        if col.root_only and (
+            ROLE_PUBLIC in col.read_roles or ROLE_PUBLIC in col.write_roles
+        ):
             errors.append(
-                f'{prefix}Collection "{col.name}": public collections must not use '
-                f'"{ENCRYPTION_IDENTITY}" encryption (key would be derived from empty identity)'
-            )
-
-        # Public collections cannot use group encryption
-        if ROLE_PUBLIC in col.read_roles and col.encryption == ENCRYPTION_GROUP:
-            errors.append(
-                f'{prefix}Collection "{col.name}": public collections cannot use '
-                f'"{ENCRYPTION_GROUP}" encryption (group encryption requires authenticated access)'
-            )
-
-        # Bundled collections must use identity encryption
-        if col.bundle and col.encryption != ENCRYPTION_IDENTITY:
-            errors.append(
-                f'{prefix}Collection "{col.name}": bundled collections must use "{ENCRYPTION_IDENTITY}" encryption'
-            )
-
-        # Bundled collections must have {identity} in storagePath
-        if col.bundle and IDENTITY_PARAM not in col.storage_path:
-            errors.append(
-                f'{prefix}Collection "{col.name}": bundled collections must have {IDENTITY_PARAM} in storagePath'
+                f'{prefix}Collection "{col.name}": rootOnly cannot be combined with '
+                f'the "{ROLE_PUBLIC}" role in readRoles/writeRoles (a root-only '
+                f"collection is never public)"
             )
 
         # readRoles should not be empty (unless pullOnly)
@@ -122,11 +103,6 @@ def _validate_collections(collections: list[CollectionConfig], scope_label: str)
         # Binary collection constraints (allowedMimeTypes without application/json)
         is_binary = _is_binary_collection(col.allowed_mime_types)
         if is_binary:
-            if col.encryption in (ENCRYPTION_IDENTITY, ENCRYPTION_SERVER, ENCRYPTION_GROUP):
-                errors.append(
-                    f'{prefix}Collection "{col.name}": binary collections cannot use '
-                    f'"{col.encryption}" encryption (storage layer is string-based)'
-                )
             if col.object_schema is not None:
                 errors.append(
                     f'{prefix}Collection "{col.name}": binary collections cannot have objectSchema'
@@ -135,43 +111,10 @@ def _validate_collections(collections: list[CollectionConfig], scope_label: str)
                 errors.append(
                     f'{prefix}Collection "{col.name}": binary collections cannot be part of a bundle'
                 )
-            if col.remote:
-                errors.append(
-                    f'{prefix}Collection "{col.name}": binary collections cannot have remote replication'
-                )
         if not col.allowed_mime_types:
             errors.append(
                 f'{prefix}Collection "{col.name}": allowedMimeTypes must contain at least one pattern'
             )
-
-        # Remote collection constraints
-        if col.remote:
-            # storagePath must be static — template variables cannot be resolved for replication
-            if re.search(r"\{[^}]+\}", col.storage_path):
-                errors.append(
-                    f'{prefix}Collection "{col.name}": remote collections must have a static storagePath '
-                    f'with no template variables (found "{col.storage_path}")'
-                )
-            # pushOnly conflicts with replication (replica writes locally)
-            if col.push_only:
-                errors.append(f'{prefix}Collection "{col.name}": remote collections cannot be pushOnly')
-            # Bundle support would require coordinating multiple document keys
-            if col.bundle:
-                errors.append(f'{prefix}Collection "{col.name}": remote collections cannot be part of a bundle')
-            # Delegated and group encryption are opaque to the server — cannot replicate
-            if col.encryption in (ENCRYPTION_DELEGATED, ENCRYPTION_GROUP):
-                errors.append(
-                    f'{prefix}Collection "{col.name}": remote collections cannot use '
-                    f'"{col.encryption}" encryption '
-                    f'(server cannot replicate opaque client-encrypted blobs)'
-                )
-            # push_through and bidirectional require a push_path to forward writes to the primary
-            if col.remote.write_mode in (WriteMode.PUSH_THROUGH, WriteMode.BIDIRECTIONAL):
-                if not col.remote.push_path:
-                    errors.append(
-                        f'{prefix}Collection "{col.name}": write_mode "{col.remote.write_mode.value}" '
-                        f'requires remote.push_path to be set'
-                    )
 
     # Check bundles: all collections in same bundle must share storagePath
     bundles: dict[str, str] = {}
@@ -189,6 +132,75 @@ def _validate_collections(collections: list[CollectionConfig], scope_label: str)
     return errors
 
 
+_CAP_ROLE_RE = re.compile(r"^cap:(read|write|list):(.+)$")
+
+
+def _collect_collection_warnings(
+    collections: list[CollectionConfig], scope_label: str
+) -> list[str]:
+    """Non-fatal checks for likely access-widening misconfigurations.
+
+    - A ``public`` entry in ``write_roles`` lets *anonymous* clients write.
+    - A ``cap:<op>:<other>`` role naming a DIFFERENT collection is almost always
+      a copy-paste typo that grants cross-collection access (the cap-resolver
+      synthesizes ``cap:<op>:<collection>`` per the cert's scope).
+    """
+    warnings: list[str] = []
+    prefix = f"{scope_label}: " if scope_label else ""
+    for col in collections:
+        if ROLE_PUBLIC in (col.write_roles or []):
+            warnings.append(
+                f'{prefix}Collection "{col.name}": writeRoles contains "{ROLE_PUBLIC}" — '
+                "anonymous clients can WRITE this collection. Remove it unless public "
+                "writes are intended."
+            )
+
+        def _check_cross(roles: list[str] | None, label: str) -> None:
+            for r in roles or []:
+                m = _CAP_ROLE_RE.fullmatch(r)
+                if m and m.group(2) != col.name and m.group(2) != "*":
+                    warnings.append(
+                        f'{prefix}Collection "{col.name}": {label} references "{r}", a cap '
+                        f'role scoped to a different collection ("{m.group(2)}"). A cap-cert '
+                        f'for "{m.group(2)}" would gain access here — did you mean '
+                        f'"cap:{m.group(1)}:{col.name}"?'
+                    )
+
+        _check_cross(col.read_roles, "readRoles")
+        _check_cross(col.write_roles, "writeRoles")
+
+        # The "self" role is granted only when the "{identity}" path param
+        # equals the caller. A collection that uses "self" but whose storage_path
+        # has no "{identity}" segment (e.g. it used "{owner}"/"{userId}") will
+        # NEVER be granted "self" — likely a typo where per-user isolation was
+        # intended.
+        uses_self = ROLE_SELF in (col.read_roles or []) or ROLE_SELF in (col.write_roles or [])
+        if uses_self and "{identity}" not in col.storage_path:
+            warnings.append(
+                f'{prefix}Collection "{col.name}": uses the "{ROLE_SELF}" role but its '
+                'storagePath has no "{identity}" segment. "'
+                f'{ROLE_SELF}" is granted only when the "{{identity}}" path param equals '
+                "the caller, so it can never be granted here — did you mean to use "
+                '"{identity}" instead of another param name?'
+            )
+    return warnings
+
+
+def collect_config_warnings(config: SyncConfig) -> list[str]:
+    """Collect non-fatal config warnings (see :func:`_collect_collection_warnings`).
+
+    Returns an empty list for a clean config. Surfaced at load time by the
+    config loader; also exported so apps can lint configs themselves.
+    """
+    warnings = _collect_collection_warnings(config.collections, "")
+    if config.namespaces:
+        for ns_name, ns_config in config.namespaces.items():
+            warnings.extend(
+                _collect_collection_warnings(ns_config.collections, f'Namespace "{ns_name}"')
+            )
+    return warnings
+
+
 def validate_config(config: SyncConfig) -> list[str]:
     """Validate config semantics. Returns error messages (empty = valid)."""
     errors = _validate_collections(config.collections, "")
@@ -196,7 +208,7 @@ def validate_config(config: SyncConfig) -> list[str]:
     if config.namespaces:
         for ns_name, ns_config in config.namespaces.items():
             # Namespace name format: only letters, digits, hyphens, underscores
-            if not _NS_NAME_RE.match(ns_name):
+            if not _NS_NAME_RE.fullmatch(ns_name):
                 errors.append(
                     f'Namespace "{ns_name}": name must contain only letters, digits, hyphens, '
                     f'and underscores (got "{ns_name}")'

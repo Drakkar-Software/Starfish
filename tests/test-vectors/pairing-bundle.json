@@ -1,0 +1,127 @@
+{
+  "description": "Cross-language vector for v3.0 in-person QR pairing. Covers the full roundtrip: new device QR payload → root device mints cap-cert + wraps in-scope CEKs → new device installs by verifying the cap-cert and unwrapping each CEK. Locks both the cap-cert signature and the wrap format.",
+  "root": {
+    "edPub": "4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6",
+    "userId": "98341e0ad3e56672018cd761b99a2906"
+  },
+  "newDevice": {
+    "label": "alice-phone",
+    "edPub": "190f69aaf6aa0b4ee884e1fcb7cc8d5b087dbd5e17ccbe0424a426e2e0620d6f",
+    "edPriv": "c1e5919ccaace9404fd150e25a567f52d04ff4575c777ae6eda78c3224d5c30a",
+    "kemPub": "8993cf98a82e9029730b928dc686c8951fc4cf21880051bea0ca378b72091770",
+    "kemPriv": "71bf6a31c755646b1221e96374983d76fc821428a9597f3c00590ac54e224b42"
+  },
+  "qrPayload": {
+    "object": {
+      "v": 1,
+      "devEdPub": "190f69aaf6aa0b4ee884e1fcb7cc8d5b087dbd5e17ccbe0424a426e2e0620d6f",
+      "devKemPub": "8993cf98a82e9029730b928dc686c8951fc4cf21880051bea0ca378b72091770",
+      "requestedScope": {
+        "ops": [
+          "read",
+          "write",
+          "list"
+        ],
+        "collections": [
+          "notes",
+          "tasks"
+        ],
+        "paths": [
+          "notes/98341e0ad3e56672018cd761b99a2906/*",
+          "tasks/98341e0ad3e56672018cd761b99a2906/*"
+        ]
+      },
+      "qrNonce": "ASNFZ4mrze8BI0VniavN7w=="
+    },
+    "canonicalUtf8": "{\"devEdPub\":\"190f69aaf6aa0b4ee884e1fcb7cc8d5b087dbd5e17ccbe0424a426e2e0620d6f\",\"devKemPub\":\"8993cf98a82e9029730b928dc686c8951fc4cf21880051bea0ca378b72091770\",\"qrNonce\":\"ASNFZ4mrze8BI0VniavN7w==\",\"requestedScope\":{\"collections\":[\"notes\",\"tasks\"],\"ops\":[\"read\",\"write\",\"list\"],\"paths\":[\"notes/98341e0ad3e56672018cd761b99a2906/*\",\"tasks/98341e0ad3e56672018cd761b99a2906/*\"]},\"v\":1}",
+    "base64UrlEncoded": "eyJkZXZFZFB1YiI6IjE5MGY2OWFhZjZhYTBiNGVlODg0ZTFmY2I3Y2M4ZDViMDg3ZGJkNWUxN2NjYmUwNDI0YTQyNmUyZTA2MjBkNmYiLCJkZXZLZW1QdWIiOiI4OTkzY2Y5OGE4MmU5MDI5NzMwYjkyOGRjNjg2Yzg5NTFmYzRjZjIxODgwMDUxYmVhMGNhMzc4YjcyMDkxNzcwIiwicXJOb25jZSI6IkFTTkZaNG1yemU4QkkwVm5pYXZON3c9PSIsInJlcXVlc3RlZFNjb3BlIjp7ImNvbGxlY3Rpb25zIjpbIm5vdGVzIiwidGFza3MiXSwib3BzIjpbInJlYWQiLCJ3cml0ZSIsImxpc3QiXSwicGF0aHMiOlsibm90ZXMvOTgzNDFlMGFkM2U1NjY3MjAxOGNkNzYxYjk5YTI5MDYvKiIsInRhc2tzLzk4MzQxZTBhZDNlNTY2NzIwMThjZDc2MWI5OWEyOTA2LyoiXX0sInYiOjF9"
+  },
+  "capCert": {
+    "cert": {
+      "v": 1,
+      "kind": "device",
+      "iss": "4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6",
+      "issUserId": "98341e0ad3e56672018cd761b99a2906",
+      "sub": "190f69aaf6aa0b4ee884e1fcb7cc8d5b087dbd5e17ccbe0424a426e2e0620d6f",
+      "subKem": "8993cf98a82e9029730b928dc686c8951fc4cf21880051bea0ca378b72091770",
+      "scope": {
+        "ops": [
+          "read",
+          "write",
+          "list"
+        ],
+        "collections": [
+          "notes",
+          "tasks"
+        ],
+        "paths": [
+          "notes/98341e0ad3e56672018cd761b99a2906/*",
+          "tasks/98341e0ad3e56672018cd761b99a2906/*"
+        ]
+      },
+      "nbf": 1747000000,
+      "exp": 1749592000,
+      "nonce": "q83vASNFZ4mrze8BI0VniQ==",
+      "sig": "ybPV1bmA4FJ37QKQsmsXAPV9zW3p0rOgj4QFLlNnJMb/xKB3YjR/iCc+qW7jYcRdWzcXOKxWTnZF7MHC42hkAQ=="
+    },
+    "canonicalSigningInput": "{\"exp\":1749592000,\"iss\":\"4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6\",\"issUserId\":\"98341e0ad3e56672018cd761b99a2906\",\"kind\":\"device\",\"nbf\":1747000000,\"nonce\":\"q83vASNFZ4mrze8BI0VniQ==\",\"scope\":{\"collections\":[\"notes\",\"tasks\"],\"ops\":[\"read\",\"write\",\"list\"],\"paths\":[\"notes/98341e0ad3e56672018cd761b99a2906/*\",\"tasks/98341e0ad3e56672018cd761b99a2906/*\"]},\"sub\":\"190f69aaf6aa0b4ee884e1fcb7cc8d5b087dbd5e17ccbe0424a426e2e0620d6f\",\"subKem\":\"8993cf98a82e9029730b928dc686c8951fc4cf21880051bea0ca378b72091770\",\"v\":1}"
+  },
+  "ceks": {
+    "notes": "1111111111111111111111111111111111111111111111111111111111111111",
+    "tasks": "2222222222222222222222222222222222222222222222222222222222222222"
+  },
+  "bundle": {
+    "v": 1,
+    "capCert": {
+      "v": 1,
+      "kind": "device",
+      "iss": "4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6",
+      "issUserId": "98341e0ad3e56672018cd761b99a2906",
+      "sub": "190f69aaf6aa0b4ee884e1fcb7cc8d5b087dbd5e17ccbe0424a426e2e0620d6f",
+      "subKem": "8993cf98a82e9029730b928dc686c8951fc4cf21880051bea0ca378b72091770",
+      "scope": {
+        "ops": [
+          "read",
+          "write",
+          "list"
+        ],
+        "collections": [
+          "notes",
+          "tasks"
+        ],
+        "paths": [
+          "notes/98341e0ad3e56672018cd761b99a2906/*",
+          "tasks/98341e0ad3e56672018cd761b99a2906/*"
+        ]
+      },
+      "nbf": 1747000000,
+      "exp": 1749592000,
+      "nonce": "q83vASNFZ4mrze8BI0VniQ==",
+      "sig": "ybPV1bmA4FJ37QKQsmsXAPV9zW3p0rOgj4QFLlNnJMb/xKB3YjR/iCc+qW7jYcRdWzcXOKxWTnZF7MHC42hkAQ=="
+    },
+    "rootEdPub": "4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6",
+    "wrappedCEKs": {
+      "notes": {
+        "epoch": 1,
+        "ephKem": "5cdaa43a01497f36131d1e0bcb3fdd58b64d0805ce3f5ca7546c0484d436911f",
+        "ct": "m7s+WG3Nv2Z3bYIsADQbXghduQqX3awL2rpD8R8DLGM/ROSOPmWMIeaK+N29NQ+Ws2n54s6UUkXbvJQ+"
+      },
+      "tasks": {
+        "epoch": 1,
+        "ephKem": "1213f2280480418ae21cdb57f7b2f847b4598ab13221b95944fe3f89823b7a43",
+        "ct": "++peELaNvjWlH9JEKLLlWjGvwXNC4rLEiJUEqfj2ovJ7qI0T7ztg+eV2iGKf5M1qshM0lbYAhQ/j7ur9"
+      }
+    },
+    "qrNonce": "ASNFZ4mrze8BI0VniavN7w=="
+  },
+  "unwrapChecks": [
+    {
+      "collection": "notes",
+      "expectedCekHex": "1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    {
+      "collection": "tasks",
+      "expectedCekHex": "2222222222222222222222222222222222222222222222222222222222222222"
+    }
+  ]
+}

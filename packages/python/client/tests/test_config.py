@@ -16,14 +16,13 @@ MOCK_BODY = {
             "maxBodyBytes": 65536,
             "encryption": "none",
             "allowedMimeTypes": ["application/json"],
-            "publicKey": "base64key==",
         },
         {
             "name": "events",
             "maxBodyBytes": 16384,
             "encryption": "none",
             "allowedMimeTypes": ["application/json"],
-            "appendOnly": {"persist": False},
+            "appendOnly": {"type": "by_timestamp", "persist": False},
         },
     ]
 }
@@ -53,8 +52,7 @@ async def test_fetch_returns_typed_config_response():
     assert isinstance(result, ConfigResponse)
     assert len(result.collections) == 2
     assert result.collections[0].name == "posts"
-    assert result.collections[0].public_key == "base64key=="
-    assert result.collections[1].append_only == AppendOnlyClientInfo(persist=False)
+    assert result.collections[1].append_only == AppendOnlyClientInfo(type="by_timestamp", persist=False)
 
 
 @pytest.mark.asyncio

@@ -7,8 +7,6 @@ const ENTRIES = {
   "fetch":            "src/fetch.ts",
   "broadcast":        "src/broadcast.ts",
   "testing":          "src/testing.ts",
-  "identity":         "src/identity.ts",
-  "group-crypto":     "src/group-crypto.ts",
 }
 
 // Peer deps and the workspace dep stay external so consumers' bundlers dedupe
@@ -20,8 +18,6 @@ const EXTERNAL = [
   "@legendapp/state/*",
   "immer",
   "@drakkar.software/starfish-protocol",
-  "@noble/curves",
-  "@noble/curves/*",
 ]
 
 // esbuild treats `zustand` external as covering all `zustand/*` subpaths.

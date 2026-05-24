@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest"
 import { createSyncRouter, type SyncRouterOptions, type AuthResult } from "../../src/router/route-builder.js"
+import { jsonDepthWithin, MAX_DOC_DEPTH } from "../../src/router/helpers.js"
 import { MemoryObjectStore } from "../../src/storage/memory.js"
-import { MemoryQueue } from "../../src/queue/memory.js"
 import type { SyncConfig } from "../../src/config/schema.js"
 import { configurePlatform } from "@drakkar.software/starfish-protocol"
 import { webcrypto } from "node:crypto"
@@ -86,7 +86,7 @@ describe("pull endpoint", () => {
     expect(pullBody.hash).toBe(pushBody.hash)
   })
 
-  it("GET /pull with checkpoint filters data", async () => {
+  it("GET /pull on a regular collection ignores ?checkpoint= and returns the full document", async () => {
     const { app } = makeRouter()
     // First push
     await app.request("/push/users/user-1/settings", {
@@ -109,24 +109,27 @@ describe("pull endpoint", () => {
       body: JSON.stringify({ data: { a: 1, b: 3, c: 4 }, baseHash: hash }),
     })
 
+    // Incremental sync was removed for regular collections — a stale ?checkpoint=
+    // is ignored and the full document is returned (no 400, no field filtering).
     const pullRes2 = await app.request(
       `/pull/users/user-1/settings?checkpoint=${checkpoint}`,
     )
     expect(pullRes2.status).toBe(200)
     const body = await pullRes2.json()
-    expect(body.data).not.toHaveProperty("a")
-    expect(body.data.b).toBe(3)
-    expect(body.data.c).toBe(4)
+    expect(body.data).toEqual({ a: 1, b: 3, c: 4 })
   })
 
-  it("GET /pull with invalid checkpoint returns 400", async () => {
+  it("GET /pull on a regular collection accepts a non-numeric ?checkpoint= (ignored, 200)", async () => {
     const { app } = makeRouter()
-    const res = await app.request(
-      "/pull/users/user-1/settings?checkpoint=abc",
-    )
-    expect(res.status).toBe(400)
+    await app.request("/push/users/user-1/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ data: { theme: "dark" }, baseHash: null }),
+    })
+    const res = await app.request("/pull/users/user-1/settings?checkpoint=abc")
+    expect(res.status).toBe(200)
     const body = await res.json()
-    expect(body.error).toBe("Invalid checkpoint")
+    expect(body.data).toEqual({ theme: "dark" })
   })
 })
 
@@ -142,6 +145,18 @@ describe("push endpoint", () => {
     const body = await res.json()
     expect(body.hash).toHaveLength(64)
     expect(typeof body.timestamp).toBe("number")
+  })
+
+  it("POST /push rejects a deeply-nested body with 400 (no stack overflow)", async () => {
+    const { app } = makeRouter()
+    const depth = 5000 // far past MAX_DOC_DEPTH (64) and any safe recursion limit
+    const nested = '{"a":'.repeat(depth) + "1" + "}".repeat(depth)
+    const res = await app.request("/push/users/user-1/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: `{"data":${nested},"baseHash":null}`,
+    })
+    expect(res.status).toBe(400)
   })
 
   it("POST /push returns 409 on hash mismatch", async () => {
@@ -372,247 +387,6 @@ describe("read-only / write-only", () => {
   })
 })
 
-describe("queue events", () => {
-  it("publishes event after successful push", async () => {
-    const queue = new MemoryQueue()
-    const { app } = makeRouter({
-      queue,
-      config: {
-        version: 1,
-        collections: [
-          {
-            name: "events",
-            storagePath: "users/{identity}/events",
-            readRoles: ["self"],
-            writeRoles: ["self"],
-            encryption: "none",
-            maxBodyBytes: 1_000_000,
-            allowedMimeTypes: ["application/json"],
-            queue: { includeParams: true },
-          },
-        ],
-      },
-    })
-
-    await app.request("/push/users/user-1/events", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ data: { x: 1 }, baseHash: null }),
-    })
-
-    expect(queue.messages).toHaveLength(1)
-    const [subject, payload] = queue.messages[0]!
-    expect(subject).toBe("events")
-    const msg = JSON.parse(new TextDecoder().decode(payload))
-    expect(msg.collection).toBe("events")
-    expect(msg.hash).toHaveLength(64)
-    expect(msg.params).toEqual({ identity: "user-1" })
-  })
-
-  it("includes body when includeBody is true", async () => {
-    const queue = new MemoryQueue()
-    const { app } = makeRouter({
-      queue,
-      config: {
-        version: 1,
-        collections: [
-          {
-            name: "docs",
-            storagePath: "docs/{docId}",
-            readRoles: ["self"],
-            writeRoles: ["self"],
-            encryption: "none",
-            maxBodyBytes: 1_000_000,
-            allowedMimeTypes: ["application/json"],
-            queue: { includeParams: false, includeBody: true },
-          },
-        ],
-      },
-    })
-
-    await app.request("/push/docs/doc-1", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ data: { title: "Hello", value: 42 }, baseHash: null }),
-    })
-
-    expect(queue.messages).toHaveLength(1)
-    const msg = JSON.parse(new TextDecoder().decode(queue.messages[0]![1]))
-    expect(msg.body).toEqual({ title: "Hello", value: 42 })
-    expect(msg.params).toBeUndefined()
-  })
-
-  it("omits body by default", async () => {
-    const queue = new MemoryQueue()
-    const { app } = makeRouter({
-      queue,
-      config: {
-        version: 1,
-        collections: [
-          {
-            name: "docs",
-            storagePath: "docs/{docId}",
-            readRoles: ["self"],
-            writeRoles: ["self"],
-            encryption: "none",
-            maxBodyBytes: 1_000_000,
-            allowedMimeTypes: ["application/json"],
-            queue: { includeParams: false },
-          },
-        ],
-      },
-    })
-
-    await app.request("/push/docs/doc-1", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ data: { x: 1 }, baseHash: null }),
-    })
-
-    expect(queue.messages).toHaveLength(1)
-    const msg = JSON.parse(new TextDecoder().decode(queue.messages[0]![1]))
-    expect(msg.body).toBeUndefined()
-  })
-
-  it("includes both body and params when both flags set", async () => {
-    const queue = new MemoryQueue()
-    const { app } = makeRouter({
-      queue,
-      config: {
-        version: 1,
-        collections: [
-          {
-            name: "docs",
-            storagePath: "users/{identity}/docs/{docId}",
-            readRoles: ["self"],
-            writeRoles: ["self"],
-            encryption: "none",
-            maxBodyBytes: 1_000_000,
-            allowedMimeTypes: ["application/json"],
-            queue: { includeParams: true, includeBody: true },
-          },
-        ],
-      },
-    })
-
-    await app.request("/push/users/user-1/docs/doc-99", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ data: { content: "world" }, baseHash: null }),
-    })
-
-    expect(queue.messages).toHaveLength(1)
-    const msg = JSON.parse(new TextDecoder().decode(queue.messages[0]![1]))
-    expect(msg.body).toEqual({ content: "world" })
-    expect(msg.params).toEqual({ identity: "user-1", docId: "doc-99" })
-  })
-
-  it("binary collection with includeBody never emits body", async () => {
-    const queue = new MemoryQueue()
-    const { app } = makeRouter({
-      queue,
-      config: {
-        version: 1,
-        collections: [
-          {
-            name: "avatar",
-            storagePath: "users/{identity}/avatar",
-            readRoles: ["self"],
-            writeRoles: ["self"],
-            encryption: "none",
-            maxBodyBytes: 1_000_000,
-            allowedMimeTypes: ["image/png"],
-            queue: { includeParams: false, includeBody: true },
-          },
-        ],
-      },
-    })
-
-    await app.request("/push/users/user-1/avatar", {
-      method: "POST",
-      headers: { "Content-Type": "image/png" },
-      body: new Uint8Array([137, 80, 78, 71]),
-    })
-
-    expect(queue.messages).toHaveLength(1)
-    const msg = JSON.parse(new TextDecoder().decode(queue.messages[0]![1]))
-    expect(msg.body).toBeUndefined()
-    expect(msg.collection).toBe("avatar")
-  })
-
-  it("queue publish failure does not break the push response", async () => {
-    let publishCalls = 0
-    const failingQueue = {
-      async publish() {
-        publishCalls++
-        throw new Error("NATS connection lost")
-      },
-    }
-    const { app } = makeRouter({
-      queue: failingQueue,
-      config: {
-        version: 1,
-        collections: [
-          {
-            name: "docs",
-            storagePath: "docs/{docId}",
-            readRoles: ["self"],
-            writeRoles: ["self"],
-            encryption: "none",
-            maxBodyBytes: 1_000_000,
-            allowedMimeTypes: ["application/json"],
-            queue: { includeParams: false },
-          },
-        ],
-      },
-    })
-
-    const res = await app.request("/push/docs/doc-1", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ data: { x: 1 }, baseHash: null }),
-    })
-
-    expect(res.status).toBe(200)
-    expect(publishCalls).toBe(1)
-    const body = await res.json()
-    expect(body.hash).toHaveLength(64)
-  })
-
-  it("bundle collection with includeBody emits body", async () => {
-    const queue = new MemoryQueue()
-    const { app } = makeRouter({
-      queue,
-      config: {
-        version: 1,
-        collections: [
-          {
-            name: "prefs",
-            storagePath: "users/{identity}/data",
-            readRoles: ["self"],
-            writeRoles: ["self"],
-            encryption: "none",
-            maxBodyBytes: 1_000_000,
-            allowedMimeTypes: ["application/json"],
-            bundle: "userdata",
-            queue: { includeParams: false, includeBody: true },
-          },
-        ],
-      },
-    })
-
-    await app.request("/push/users/user-1/data/prefs", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ data: { theme: "dark" }, baseHash: null }),
-    })
-
-    expect(queue.messages).toHaveLength(1)
-    const msg = JSON.parse(new TextDecoder().decode(queue.messages[0]![1]))
-    expect(msg.collection).toBe("prefs")
-    expect(msg.body).toEqual({ theme: "dark" })
-  })
-})
 
 describe("cache control", () => {
   it("sets Cache-Control header when cacheDurationMs is set", async () => {
@@ -650,7 +424,7 @@ describe("bundled collections", () => {
             storagePath: "users/{identity}/data",
             readRoles: ["self"],
             writeRoles: ["self"],
-            encryption: "identity",
+            encryption: "none",
             maxBodyBytes: 1_000_000,
             allowedMimeTypes: ["application/json"],
             bundle: "userdata",
@@ -660,14 +434,13 @@ describe("bundled collections", () => {
             storagePath: "users/{identity}/data",
             readRoles: ["self"],
             writeRoles: ["self"],
-            encryption: "identity",
+            encryption: "none",
             maxBodyBytes: 1_000_000,
             allowedMimeTypes: ["application/json"],
             bundle: "userdata",
           },
         ],
       },
-      encryptionSecret: "test-secret",
     })
 
     const res = await app.request("/pull/users/user-1/data")
@@ -689,14 +462,13 @@ describe("bundled collections", () => {
             storagePath: "users/{identity}/data",
             readRoles: ["self"],
             writeRoles: ["self"],
-            encryption: "identity",
+            encryption: "none",
             maxBodyBytes: 1_000_000,
             allowedMimeTypes: ["application/json"],
             bundle: "userdata",
           },
         ],
       },
-      encryptionSecret: "test-secret",
     })
 
     const res = await app.request("/push/users/user-1/data/prefs", {
@@ -707,5 +479,207 @@ describe("bundled collections", () => {
     expect(res.status).toBe(200)
     const body = await res.json()
     expect(body.hash).toHaveLength(64)
+  })
+})
+
+describe("bundle / batch per-collection authorization + field permissions", () => {
+  const jsonHeaders = { "Content-Type": "application/json" }
+  const push = (app: ReturnType<typeof createSyncRouter>, path: string, data: unknown) =>
+    app.request(path, { method: "POST", headers: jsonHeaders, body: JSON.stringify({ data, baseHash: null }) })
+
+  it("omits a bundle member the caller is not authorized to read", async () => {
+    const config: SyncConfig = {
+      version: 1,
+      collections: [
+        { name: "prefs", storagePath: "users/{identity}/data", readRoles: ["self"], writeRoles: ["self"], encryption: "none", maxBodyBytes: 1_000_000, allowedMimeTypes: ["application/json"], bundle: "ud" },
+        { name: "secret", storagePath: "users/{identity}/data", readRoles: ["admin"], writeRoles: ["admin"], encryption: "none", maxBodyBytes: 1_000_000, allowedMimeTypes: ["application/json"], bundle: "ud" },
+      ],
+    }
+    const store = new MemoryObjectStore(new Map())
+    const seed = createSyncRouter({ store, config, roleResolver: async () => ({ identity: "user-1", roles: ["self", "admin"] }) })
+    expect((await push(seed, "/push/users/user-1/data/prefs", { color: "blue" })).status).toBe(200)
+    expect((await push(seed, "/push/users/user-1/data/secret", { ssn: "123" })).status).toBe(200)
+
+    const selfApp = createSyncRouter({ store, config, roleResolver: async () => ({ identity: "user-1", roles: ["self"] }) })
+    const res = await selfApp.request("/pull/users/user-1/data")
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.collections.prefs?.data).toEqual({ color: "blue" })
+    expect(body.collections.secret).toBeUndefined() // caller lacks `admin` → omitted, not leaked
+  })
+
+  it("a public bundle member does not make a private sibling public", async () => {
+    const config: SyncConfig = {
+      version: 1,
+      collections: [
+        { name: "pub", storagePath: "shared/data", readRoles: ["public"], writeRoles: ["admin"], encryption: "none", maxBodyBytes: 1_000_000, allowedMimeTypes: ["application/json"], bundle: "sb" },
+        { name: "priv", storagePath: "shared/data", readRoles: ["admin"], writeRoles: ["admin"], encryption: "none", maxBodyBytes: 1_000_000, allowedMimeTypes: ["application/json"], bundle: "sb" },
+      ],
+    }
+    const store = new MemoryObjectStore(new Map())
+    const seed = createSyncRouter({ store, config, roleResolver: async () => ({ identity: "admin-1", roles: ["admin"] }) })
+    expect((await push(seed, "/push/shared/data/pub", { news: "hi" })).status).toBe(200)
+    expect((await push(seed, "/push/shared/data/priv", { secret: "x" })).status).toBe(200)
+
+    const anonApp = createSyncRouter({ store, config, roleResolver: async () => ({ identity: "", roles: ["public"] }) })
+    const res = await anonApp.request("/pull/shared/data")
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.collections.pub?.data).toEqual({ news: "hi" })
+    expect(body.collections.priv).toBeUndefined() // private sibling NOT exposed to anonymous
+  })
+
+  it("bundle push enforces field-level write permissions", async () => {
+    const config: SyncConfig = {
+      version: 1,
+      collections: [
+        { name: "doc", storagePath: "users/{identity}/data", readRoles: ["self"], writeRoles: ["self"], encryption: "none", maxBodyBytes: 1_000_000, allowedMimeTypes: ["application/json"], bundle: "fb", fieldPermissions: { adminNote: { writeRoles: ["admin"] } } },
+        { name: "other", storagePath: "users/{identity}/data", readRoles: ["self"], writeRoles: ["self"], encryption: "none", maxBodyBytes: 1_000_000, allowedMimeTypes: ["application/json"], bundle: "fb" },
+      ],
+    }
+    const store = new MemoryObjectStore(new Map())
+    const selfApp = createSyncRouter({ store, config, roleResolver: async () => ({ identity: "user-1", roles: ["self"] }) })
+    const res = await push(selfApp, "/push/users/user-1/data/doc", { adminNote: "x" })
+    expect(res.status).toBe(403) // self caller cannot write an admin-only field via the bundle push path
+  })
+
+  it("bundle pull strips fields the caller cannot read", async () => {
+    const config: SyncConfig = {
+      version: 1,
+      collections: [
+        { name: "doc", storagePath: "users/{identity}/data", readRoles: ["self"], writeRoles: ["self"], encryption: "none", maxBodyBytes: 1_000_000, allowedMimeTypes: ["application/json"], bundle: "frb", fieldPermissions: { ssn: { readRoles: ["admin"] } } },
+      ],
+    }
+    const store = new MemoryObjectStore(new Map())
+    const seed = createSyncRouter({ store, config, roleResolver: async () => ({ identity: "user-1", roles: ["self", "admin"] }) })
+    expect((await push(seed, "/push/users/user-1/data/doc", { name: "Bob", ssn: "123" })).status).toBe(200)
+
+    const selfApp = createSyncRouter({ store, config, roleResolver: async () => ({ identity: "user-1", roles: ["self"] }) })
+    const res = await selfApp.request("/pull/users/user-1/data")
+    const body = await res.json()
+    expect(body.collections.doc?.data?.name).toBe("Bob")
+    expect(body.collections.doc?.data?.ssn).toBeUndefined() // admin-only field stripped on bundle pull
+  })
+
+  it("batch pull strips fields the caller cannot read", async () => {
+    const config: SyncConfig = {
+      version: 1,
+      collections: [
+        { name: "notes", storagePath: "shared/notes", readRoles: ["public"], writeRoles: ["admin"], encryption: "none", maxBodyBytes: 1_000_000, allowedMimeTypes: ["application/json"], fieldPermissions: { ssn: { readRoles: ["admin"] } } },
+      ],
+    }
+    const store = new MemoryObjectStore(new Map())
+    const seed = createSyncRouter({ store, config, roleResolver: async () => ({ identity: "admin-1", roles: ["admin"] }) })
+    expect((await push(seed, "/push/shared/notes", { name: "Bob", ssn: "123" })).status).toBe(200)
+
+    const anonApp = createSyncRouter({ store, config, roleResolver: async () => ({ identity: "", roles: ["public"] }) })
+    const res = await anonApp.request("/batch/pull?collections=notes")
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.collections.notes?.data?.name).toBe("Bob")
+    expect(body.collections.notes?.data?.ssn).toBeUndefined() // admin-only field stripped on batch pull
+  })
+})
+
+describe("push-through write auditing", () => {
+  it("records an audit entry for a proxied (interceptPush respond) write", async () => {
+    const records: Array<Record<string, unknown>> = []
+    const auditLogger = { record: (e: Record<string, unknown>) => { records.push(e) } }
+    // A plugin that proxies the write elsewhere and responds on the route's behalf.
+    const proxyPlugin = {
+      name: "proxy",
+      interceptPush: () => ({ action: "respond" as const, status: 200, body: { hash: "primary-hash", timestamp: 5 } }),
+    }
+    const config: SyncConfig = {
+      version: 1,
+      collections: [
+        { name: "data", storagePath: "users/{identity}/data", readRoles: ["self"], writeRoles: ["self"], encryption: "none", maxBodyBytes: 1_000_000, allowedMimeTypes: ["application/json"] },
+      ],
+    }
+    const store = new MemoryObjectStore(new Map())
+    const app = createSyncRouter({
+      store,
+      config,
+      roleResolver: async () => ({ identity: "user-1", roles: ["self"] }),
+      plugins: [proxyPlugin] as unknown as SyncRouterOptions["plugins"],
+      auditLogger: auditLogger as unknown as SyncRouterOptions["auditLogger"],
+    })
+    const res = await app.request("/push/users/user-1/data", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ data: { x: 1 }, baseHash: null }),
+    })
+    expect(res.status).toBe(200)
+    // The proxied write must be visible in the audit log.
+    const pushRecords = records.filter((r) => r.action === "push" && r.collection === "data")
+    expect(pushRecords).toHaveLength(1)
+    expect(pushRecords[0]!.success).toBe(true)
+    expect(pushRecords[0]!.statusCode).toBe(200)
+  })
+
+  it("records an audit entry for an auth-denied (403) write", async () => {
+    const records: Array<Record<string, unknown>> = []
+    const auditLogger = { record: (e: Record<string, unknown>) => { records.push(e) } }
+    const config: SyncConfig = {
+      version: 1,
+      collections: [
+        { name: "data", storagePath: "users/{identity}/data", readRoles: ["admin"], writeRoles: ["admin"], encryption: "none", maxBodyBytes: 1_000_000, allowedMimeTypes: ["application/json"] },
+      ],
+    }
+    const store = new MemoryObjectStore(new Map())
+    const app = createSyncRouter({
+      store,
+      config,
+      roleResolver: async () => ({ identity: "user-1", roles: [] }), // no roles → denied
+      auditLogger: auditLogger as unknown as SyncRouterOptions["auditLogger"],
+    })
+    const res = await app.request("/push/users/user-1/data", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ data: { x: 1 }, baseHash: null }),
+    })
+    expect(res.status).toBe(403)
+    const denied = records.filter((r) => r.action === "push" && r.collection === "data")
+    expect(denied).toHaveLength(1)
+    expect(denied[0]!.success).toBe(false)
+    expect(denied[0]!.statusCode).toBe(403)
+  })
+})
+
+describe("jsonDepthWithin — exact default boundary", () => {
+  function nestedObject(levels: number): unknown {
+    let node: unknown = 1
+    for (let i = 0; i < levels; i++) node = { a: node }
+    return node
+  }
+  function nestedMixed(levels: number): unknown {
+    // Alternate object/array so both branches of the iterative walker are hit.
+    let node: unknown = 1
+    for (let i = 0; i < levels; i++) node = i % 2 === 0 ? { a: node } : [node]
+    return node
+  }
+
+  it("accepts nesting to exactly MAX_DOC_DEPTH and rejects one level deeper", () => {
+    expect(jsonDepthWithin(nestedObject(MAX_DOC_DEPTH))).toBe(true)
+    expect(jsonDepthWithin(nestedObject(MAX_DOC_DEPTH + 1))).toBe(false)
+    expect(jsonDepthWithin(nestedMixed(MAX_DOC_DEPTH))).toBe(true)
+    expect(jsonDepthWithin(nestedMixed(MAX_DOC_DEPTH + 1))).toBe(false)
+  })
+})
+
+describe("path params — Unicode / homograph / RTL containment", () => {
+  // Identical ASCII-only `SAFE_PARAM` to the Python server; validateAllParams runs
+  // before auth, so a spoofing identity never reaches the resolver or a storage key.
+  it.each([
+    ["rtl-override", "‮admin"], // RIGHT-TO-LEFT OVERRIDE (Trojan-source)
+    ["cyrillic-homograph", "аdmin"], // Cyrillic 'а' that looks like ASCII 'a'
+    ["non-ascii-letter", "café"], // é
+    ["dot-leader", "user․settings"], // ONE DOT LEADER, looks like '.'
+  ])("rejects a %s identity with 400 before auth", async (_label, ident) => {
+    const { app } = makeRouter()
+    const res = await app.request(`/pull/users/${encodeURIComponent(ident)}/settings`)
+    expect(res.status).toBe(400)
+    const body = await res.json()
+    expect(body.error).toBe("Invalid path parameter")
   })
 })

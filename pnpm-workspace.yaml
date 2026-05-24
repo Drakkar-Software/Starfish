@@ -1,5 +1,6 @@
 packages:
   - packages/ts/*
+  - examples/app/frontend
 
 onlyBuiltDependencies:
   - esbuild

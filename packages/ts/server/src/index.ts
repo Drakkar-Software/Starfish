@@ -3,38 +3,30 @@ export type {
   SyncConfig,
   CollectionConfig,
   NamespaceConfig,
-  RemoteConfig,
-  QueueConfig,
   CollectionRateLimitConfig,
   RateLimitConfig,
   EncryptionMode,
-  WriteMode,
-  SyncTrigger,
   FieldPermission,
 } from "./config/schema.js"
-export { validateConfig } from "./config/validate.js"
+export { validateConfig, collectConfigWarnings } from "./config/validate.js"
 export { parseConfigJson, loadConfig, saveConfig } from "./config/loader.js"
 
 // Storage
 export type { ObjectStore, StoreContext } from "./storage/base.js"
 export { MemoryObjectStore, CustomObjectStore } from "./storage/memory.js"
 
-// Encryption
-export { EncryptedObjectStore } from "./encryption/encrypted-store.js"
-
 // Protocol
 export type {
   StoredDocument,
-  Timestamps,
+  AppendElement,
   PullResult,
   PushSuccess,
   PushConflict,
   PushResult,
 } from "./protocol/types.js"
 export { DOCUMENT_VERSION } from "./protocol/types.js"
-export { computeTimestamps, filterByCheckpoint } from "./protocol/timestamps.js"
 export { pull } from "./protocol/pull.js"
-export { push, type Author } from "./protocol/push.js"
+export { push, appendItem, type Author, type AppendConflict, type AppendOutcome } from "./protocol/push.js"
 
 // Router
 export {
@@ -48,7 +40,6 @@ export {
   type CollectionClientInfo,
   type ConfigResponse,
 } from "./router/route-builder.js"
-export type { SignatureVerifier } from "./router/helpers.js"
 export {
   handleSyncPull,
   handleSyncPush,
@@ -68,23 +59,7 @@ export {
 export { matchesAllowedMime, isJsonCollection } from "./router/mime.js"
 
 // Enrichers
-export {
-  createGroupRoleEnricher,
-  type GroupRoleEnricherOptions,
-} from "./enrichers/group-role-enricher.js"
-export {
-  createEntitlementRoleEnricher,
-  type EntitlementRoleEnricherOptions,
-} from "./enrichers/entitlement-role-enricher.js"
 export { composeEnrichers } from "./enrichers/compose.js"
-
-// Queue
-export type { Queue } from "./queue/base.js"
-export type { QueueMessage } from "./queue/message.js"
-export { MemoryQueue, CustomQueue } from "./queue/memory.js"
-
-// Replica
-export { ReplicaManager } from "./replica/manager.js"
 
 // Lifecycle
 export { createGracefulShutdown, type GracefulShutdownOptions, type ShutdownHandle } from "./lifecycle.js"
@@ -92,14 +67,41 @@ export { createGracefulShutdown, type GracefulShutdownOptions, type ShutdownHand
 // Logger
 export { createConsoleLogger, createJsonLogger, createNoopLogger, type LogLevel, type LogEntry, type ServerLogger } from "./logger.js"
 
-// Audit
-export { createConsoleAuditLogger, createCallbackAuditLogger, createNoopAuditLogger, type AuditEntry, type AuditLogger } from "./audit.js"
-
 // TTL
 export { isExpired } from "./ttl.js"
 
 // OpenAPI
 export { generateOpenApiSpec } from "./openapi.js"
+
+// Cap-cert auth (v3, opt-in)
+export {
+  createInMemoryNonceCache,
+  type NonceCache,
+  type NonceCacheOptions,
+} from "./auth/nonce-cache.js"
+export {
+  createInMemoryRevocationStore,
+  revocationRetainUntilSec,
+  REVOCATION_RETAIN_SKEW_SEC,
+  type RevocationStore,
+  type RevocationList,
+  type RevocationEntry,
+  type RevokedSubject,
+} from "./auth/revocation-store.js"
+export {
+  createCapCertRoleResolver,
+  CapAuthError,
+  type CapResolverOptions,
+} from "./router/cap-resolver.js"
+export {
+  defaultServerPlugin,
+  composePluginValidators,
+  dispatchAfterWrite,
+  type ServerPlugin,
+  type CapCertValidator,
+  type WriteEvent,
+  type AfterWriteHook,
+} from "./plugins.js"
 
 // Errors
 export { StartupError, AuthError, ConflictError, NotFoundError } from "./errors.js"
@@ -111,8 +113,6 @@ export {
   OP_READ,
   OP_WRITE,
   ENCRYPTION_NONE,
-  ENCRYPTION_IDENTITY,
-  ENCRYPTION_SERVER,
   ENCRYPTION_DELEGATED,
   ACTION_PULL,
   ACTION_PUSH,
@@ -121,8 +121,6 @@ export {
   IDENTITY_KEY,
   QUERY_CHECKPOINT,
   HKDF_INFO_DEFAULT,
-  HKDF_INFO_IDENTITY,
-  HKDF_INFO_SERVER,
   DEFAULT_CONFIG_KEY,
   ERROR_HASH_MISMATCH,
   CONTENT_TYPE_JSON,

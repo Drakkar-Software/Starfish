@@ -10,19 +10,12 @@ describe("createGracefulShutdown", () => {
     handle.unregister()
   })
 
-  it("stops replica manager on shutdown", async () => {
-    const replicaManager = { stop: vi.fn(async () => {}) } as any
-    const handle = createGracefulShutdown({ replicaManager, signals: [] })
+  it("runs plugin shutdown hooks on shutdown", async () => {
+    const shutdown = vi.fn(async () => {})
+    const plugin = { name: "test-plugin", shutdown }
+    const handle = createGracefulShutdown({ plugins: [plugin], signals: [] })
     await handle.shutdown()
-    expect(replicaManager.stop).toHaveBeenCalledOnce()
-    handle.unregister()
-  })
-
-  it("closes queue on shutdown", async () => {
-    const queue = { close: vi.fn(async () => {}), publish: vi.fn() } as any
-    const handle = createGracefulShutdown({ queue, signals: [] })
-    await handle.shutdown()
-    expect(queue.close).toHaveBeenCalledOnce()
+    expect(shutdown).toHaveBeenCalledOnce()
     handle.unregister()
   })
 

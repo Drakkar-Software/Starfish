@@ -302,7 +302,7 @@ describe("listable config validation", () => {
   it("listable with appendOnly+persist=false is rejected", () => {
     const errors = validateConfig({
       version: 1,
-      collections: [makeCol({ appendOnly: { persist: false } })],
+      collections: [makeCol({ appendOnly: { type: "by_timestamp", persist: false } })],
     })
     expect(errors.some((e) => e.includes("listable cannot be used with appendOnly+persist=false"))).toBe(true)
   })
@@ -311,7 +311,7 @@ describe("listable config validation", () => {
     const errors = validateConfig({
       version: 1,
       collections: [
-        makeCol({ bundle: "my-bundle", encryption: "identity", storagePath: "data/{identity}/{day}" }),
+        makeCol({ bundle: "my-bundle", encryption: "none", storagePath: "data/{identity}/{day}" }),
       ],
     })
     expect(errors.some((e) => e.includes("listable cannot be used with bundle"))).toBe(true)

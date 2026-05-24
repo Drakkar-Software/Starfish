@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable", "WebWorker"],
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@drakkar.software/starfish-protocol": ["../../packages/ts/protocol/src/index.ts"],
+      "@drakkar.software/starfish-client": ["../../packages/ts/client/src/index.ts"],
+      "@drakkar.software/starfish-client/zustand": ["../../packages/ts/client/src/bindings/zustand.ts"],
+      "@drakkar.software/starfish-client/legend": ["../../packages/ts/client/src/bindings/legend.ts"],
+      "@drakkar.software/starfish-client/broadcast": ["../../packages/ts/client/src/broadcast.ts"],
+      "@drakkar.software/starfish-client/fetch": ["../../packages/ts/client/src/fetch.ts"],
+      "@drakkar.software/starfish-server": ["../../packages/ts/server/src/index.ts"],
+      "@drakkar.software/starfish-server/node": ["../../packages/ts/server/src/storage/filesystem.ts"]
+    }
+  },
+  "include": ["./*.ts", "./*.tsx"]
+}

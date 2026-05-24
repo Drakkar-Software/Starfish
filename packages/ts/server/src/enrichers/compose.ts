@@ -5,14 +5,18 @@ import type { RoleEnricher, AuthResult } from "../router/route-builder.js"
  *
  * All enrichers run in parallel (`Promise.all`) and their results are merged into
  * a single flat array. Use this when `SyncRouterOptions.roleEnricher` needs to
- * combine several enrichers — for example a group membership enricher together
- * with an entitlement enricher.
+ * combine several application-level enrichers — for example a custom team-membership
+ * enricher together with an entitlement enricher.
  *
  * ```ts
- * import { composeEnrichers, createGroupRoleEnricher, createEntitlementRoleEnricher } from "@drakkar.software/starfish-server"
+ * import { composeEnrichers, type RoleEnricher } from "@drakkar.software/starfish-server"
+ * import { createEntitlementRoleEnricher } from "@drakkar.software/starfish-entitlements"
+ *
+ * const teamEnricher: RoleEnricher = async (auth, params) =>
+ *   (await isTeamMember(auth.identity, params.teamId)) ? ["team-member"] : []
  *
  * const roleEnricher = composeEnrichers(
- *   createGroupRoleEnricher({ store, membersPath: "groups/{groupId}/members", groupParam: "groupId" }),
+ *   teamEnricher,
  *   createEntitlementRoleEnricher({ store }),
  * )
  *

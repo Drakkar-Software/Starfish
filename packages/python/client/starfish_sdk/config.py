@@ -11,14 +11,14 @@ import httpx
 class AppendOnlyClientInfo:
     """Append-only configuration exposed via ``GET /config``."""
 
+    type: str | None = None
+    """Append-only strategy discriminator. Only ``"by_timestamp"`` is supported today."""
+
     field: str | None = None
     """Array field name in the stored document. ``None`` means the server default (``"items"``)."""
 
     persist: bool | None = None
     """``False`` = no storage write (replaces ``queueOnly``). ``None``/``True`` = append to array."""
-
-    check_last_item: bool | None = None
-    """When ``True``, server validates client's ``baseHash`` against ``hash(lastItem)``."""
 
 
 @dataclass
@@ -32,8 +32,6 @@ class CollectionClientInfo:
     pull_only: bool | None = None
     push_only: bool | None = None
     append_only: AppendOnlyClientInfo | None = None
-    client_encrypted: bool | None = None
-    public_key: str | None = None
     ttl_ms: int | None = None
     force_full_fetch: bool | None = None
 
@@ -57,9 +55,9 @@ def _parse_append_only(raw: dict[str, Any] | None) -> AppendOnlyClientInfo | Non
     if raw is None:
         return None
     return AppendOnlyClientInfo(
+        type=raw.get("type"),
         field=raw.get("field"),
         persist=raw.get("persist"),
-        check_last_item=raw.get("checkLastItem"),
     )
 
 
@@ -72,8 +70,6 @@ def _parse_collection(raw: dict) -> CollectionClientInfo:
         pull_only=raw.get("pullOnly") or None,
         push_only=raw.get("pushOnly") or None,
         append_only=_parse_append_only(raw.get("appendOnly")),
-        client_encrypted=raw.get("clientEncrypted") or None,
-        public_key=raw.get("publicKey"),
         ttl_ms=raw.get("ttlMs"),
         force_full_fetch=raw.get("forceFullFetch") or None,
     )

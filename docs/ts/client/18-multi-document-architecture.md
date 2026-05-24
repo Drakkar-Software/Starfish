@@ -52,25 +52,29 @@ Each entity gets its own sync endpoint. Good when entities are large or independ
 Create `SyncManager` instances dynamically for per-entity documents:
 
 ```ts
-import { StarfishClient, SyncManager } from "@drakkar.software/starfish-client"
+import {
+  StarfishClient,
+  SyncManager,
+  type Encryptor,
+} from "@drakkar.software/starfish-client"
 
 function createNoteSyncManager(
   client: StarfishClient,
   userId: string,
   noteId: string,
-  encryptionSecret?: string,
+  encryptor?: Encryptor,
 ): SyncManager {
   return new SyncManager({
     client,
     pullPath: `/pull/users/${userId}/notes/${noteId}`,
     pushPath: `/push/users/${userId}/notes/${noteId}`,
-    encryptionSecret,
-    encryptionSalt: encryptionSecret ? `${userId}:${noteId}` : undefined,
+    encryptor,
   })
 }
 
-// Create a manager when the user opens a note
-const noteSync = createNoteSyncManager(client, userId, "note-42", secret)
+// The encryptor is shared across every per-note manager — it's built from
+// the collection's single `_keyring` document (see 23-multi-recipient-delegated.md).
+const noteSync = createNoteSyncManager(client, userId, "note-42", notesEncryptor)
 await noteSync.pull()
 ```
 
@@ -152,13 +156,17 @@ const profileSync = new SyncManager({
   pushPath: `/push/users/${userId}/profile`,
 })
 
-// Private notes (encrypted, owner-only)
+// Private notes (encrypted, owner-only via per-collection keyring)
+const notesKeyring = (await client.pull(`users/${userId}/notes/_keyring`)).data as Keyring
+const notesEncryptor = await createKeyringEncryptor(notesKeyring, {
+  kemPubHex: creds.device.kemPub,
+  kemPrivHex: creds.device.kemPriv,
+})
 const notesSync = new SyncManager({
   client,
   pullPath: `/pull/users/${userId}/notes`,
   pushPath: `/push/users/${userId}/notes`,
-  encryptionSecret: secret,
-  encryptionSalt: userId,
+  encryptor: notesEncryptor,
 })
 ```
 
@@ -213,12 +221,13 @@ function openProject(projectId: string): SyncManager {
     return activeSyncs.get(projectId)!
   }
 
+  // The encryptor is shared across every per-project manager — it comes from
+  // the projects collection's single `_keyring` document.
   const sync = new SyncManager({
     client,
     pullPath: `/pull/users/${userId}/projects/${projectId}`,
     pushPath: `/push/users/${userId}/projects/${projectId}`,
-    encryptionSecret: secret,
-    encryptionSalt: `${userId}:${projectId}`,
+    encryptor: projectsEncryptor,
   })
 
   activeSyncs.set(projectId, sync)

@@ -15,21 +15,13 @@ async def test_shutdown_calls_on_shutdown():
 
 
 @pytest.mark.asyncio
-async def test_shutdown_stops_replica_manager():
-    rm = AsyncMock()
-    rm.stop = AsyncMock()
-    gs = GracefulShutdown(GracefulShutdownOptions(replica_manager=rm, signals=[]))
+async def test_shutdown_runs_plugin_shutdown_hooks():
+    shutdown_hook = AsyncMock()
+    plugin = MagicMock()
+    plugin.shutdown = shutdown_hook
+    gs = GracefulShutdown(GracefulShutdownOptions(plugins=[plugin], signals=[]))
     await gs.shutdown()
-    rm.stop.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_shutdown_closes_queue():
-    queue = AsyncMock()
-    queue.close = AsyncMock()
-    gs = GracefulShutdown(GracefulShutdownOptions(queue=queue, signals=[]))
-    await gs.shutdown()
-    queue.close.assert_awaited_once()
+    shutdown_hook.assert_awaited_once()
 
 
 @pytest.mark.asyncio

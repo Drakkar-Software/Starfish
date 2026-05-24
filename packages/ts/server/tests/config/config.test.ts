@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { validateConfig } from "../../src/config/validate.js"
+import { validateConfig, collectConfigWarnings } from "../../src/config/validate.js"
 import { parseConfigJson, loadConfig, saveConfig } from "../../src/config/loader.js"
 import { createIsolatedStore } from "../helpers.js"
 import type { SyncConfig, CollectionConfig } from "../../src/config/schema.js"
@@ -23,7 +23,7 @@ function makeCol(overrides: Partial<CollectionConfig> = {}): CollectionConfig {
     storagePath: "users/{identity}/settings",
     readRoles: ["self"],
     writeRoles: ["self"],
-    encryption: "identity",
+    encryption: "none",
     maxBodyBytes: 1_000_000,
     allowedMimeTypes: ["application/json"],
     ...overrides,
@@ -33,6 +33,52 @@ function makeCol(overrides: Partial<CollectionConfig> = {}): CollectionConfig {
 function makeConfig(collections: CollectionConfig[] = [makeCol()]): SyncConfig {
   return { version: 1, collections }
 }
+
+describe("collectConfigWarnings (non-fatal)", () => {
+  it("returns no warnings for a clean config", () => {
+    const cfg = makeConfig([makeCol({ name: "notes", readRoles: ["cap:read:notes"], writeRoles: ["cap:write:notes"] })])
+    expect(collectConfigWarnings(cfg)).toEqual([])
+  })
+
+  it("warns when writeRoles contains 'public' (anonymous writes)", () => {
+    const cfg = makeConfig([makeCol({ name: "posts", readRoles: ["public"], writeRoles: ["public"] })])
+    const warnings = collectConfigWarnings(cfg)
+    expect(warnings.length).toBe(1)
+    expect(warnings[0]).toMatch(/writeRoles contains "public"/)
+  })
+
+  it("warns when a collection references another collection's cap role", () => {
+    // Copy-paste typo: 'secrets' lists 'cap:read:notes'.
+    const cfg = makeConfig([
+      makeCol({ name: "secrets", readRoles: ["cap:read:notes"], writeRoles: ["cap:write:secrets"] }),
+    ])
+    const warnings = collectConfigWarnings(cfg)
+    expect(warnings.length).toBe(1)
+    expect(warnings[0]).toMatch(/cap role scoped to a different collection \("notes"\)/)
+  })
+
+  it("does not warn for the collection's own cap role or a '*' wildcard", () => {
+    const cfg = makeConfig([
+      makeCol({ name: "notes", readRoles: ["cap:read:notes", "cap:read:*"], writeRoles: ["cap:write:notes"] }),
+    ])
+    expect(collectConfigWarnings(cfg)).toEqual([])
+  })
+
+  it("warns when a collection uses 'self' but its storagePath has no {identity} segment", () => {
+    const cfg = makeConfig([
+      makeCol({ name: "shared", storagePath: "rooms/{owner}/notes", readRoles: ["self"], writeRoles: ["self"] }),
+    ])
+    const warnings = collectConfigWarnings(cfg)
+    expect(warnings.some((w) => /"self" role.*\{identity\}/.test(w))).toBe(true)
+  })
+
+  it("does not warn for an {identity} storagePath", () => {
+    const cfg = makeConfig([
+      makeCol({ name: "mine", storagePath: "users/{identity}/notes", readRoles: ["self"], writeRoles: ["self"] }),
+    ])
+    expect(collectConfigWarnings(cfg)).toEqual([])
+  })
+})
 
 describe("validateConfig", () => {
   it("valid config returns no errors", () => {
@@ -57,59 +103,22 @@ describe("validateConfig", () => {
     expect(errors.some((e) => e.includes("pullOnly and pushOnly"))).toBe(true)
   })
 
-  it("detects public + identity encryption conflict", () => {
-    const errors = validateConfig(
-      makeConfig([makeCol({ readRoles: ["public"], encryption: "identity" })]),
-    )
-    expect(errors.some((e) => e.includes("public collections"))).toBe(true)
-  })
-
-  it("group encryption is valid on authenticated collection", () => {
-    const errors = validateConfig(
-      makeConfig([makeCol({ readRoles: ["group-member"], writeRoles: ["group-member"], encryption: "group" })]),
-    )
-    expect(errors).toEqual([])
-  })
-
-  it("detects public + group encryption conflict", () => {
-    const errors = validateConfig(
-      makeConfig([makeCol({ readRoles: ["public"], encryption: "group" })]),
-    )
-    expect(errors.some((e) => e.includes("public collections cannot use") && e.includes("group"))).toBe(true)
-  })
-
-  it("detects binary collection with group encryption", () => {
-    const errors = validateConfig(
-      makeConfig([makeCol({ allowedMimeTypes: ["image/png"], encryption: "group" })]),
-    )
-    expect(errors.some((e) => e.includes("binary collections cannot use"))).toBe(true)
-  })
-
-  it("detects remote collection with group encryption", () => {
+  it("accepts a listable collection whose storagePath has a trailing slash (parity with Python)", () => {
+    // "logs/{day}/" — the last meaningful segment is the "{day}" param. The TS
+    // validator used to read "" after the trailing slash and reject it, while
+    // the Python validator (rstrip) accepted it; both now agree.
     const errors = validateConfig(
       makeConfig([
         makeCol({
-          storagePath: "data/shared",
-          encryption: "group",
-          remote: {
-            url: "https://primary.example.com",
-            pullPath: "/pull/data",
-            intervalMs: 60000,
-            headers: {},
-            writeMode: "pull_only",
-            syncTriggers: ["scheduled"],
-          },
+          name: "logs",
+          storagePath: "logs/{day}/",
+          listable: true,
+          readRoles: ["cap:read:logs"],
+          writeRoles: ["cap:write:logs"],
         }),
       ]),
     )
-    expect(errors.some((e) => e.includes("group") && e.includes("remote"))).toBe(true)
-  })
-
-  it("detects bundled without identity encryption", () => {
-    const errors = validateConfig(
-      makeConfig([makeCol({ bundle: "grp", encryption: "none" })]),
-    )
-    expect(errors.some((e) => e.includes("bundled collections must use"))).toBe(true)
+    expect(errors).toEqual([])
   })
 
   it("detects empty allowedMimeTypes", () => {
@@ -117,37 +126,6 @@ describe("validateConfig", () => {
       makeConfig([makeCol({ allowedMimeTypes: [] })]),
     )
     expect(errors.some((e) => e.includes("allowedMimeTypes"))).toBe(true)
-  })
-
-  it("detects binary collection with identity encryption", () => {
-    const errors = validateConfig(
-      makeConfig([
-        makeCol({
-          allowedMimeTypes: ["image/png"],
-          encryption: "identity",
-        }),
-      ]),
-    )
-    expect(errors.some((e) => e.includes("binary collections cannot use"))).toBe(true)
-  })
-
-  it("detects remote collection with template storagePath", () => {
-    const errors = validateConfig(
-      makeConfig([
-        makeCol({
-          storagePath: "users/{identity}/data",
-          remote: {
-            url: "https://primary.example.com",
-            pullPath: "/pull/data",
-            intervalMs: 60000,
-            headers: {},
-            writeMode: "pull_only",
-            syncTriggers: ["scheduled"],
-          },
-        }),
-      ]),
-    )
-    expect(errors.some((e) => e.includes("static storagePath"))).toBe(true)
   })
 
   it("detects bundle storagePath mismatch", () => {
@@ -158,6 +136,27 @@ describe("validateConfig", () => {
       ]),
     )
     expect(errors.some((e) => e.includes("same storagePath"))).toBe(true)
+  })
+
+  it("rejects rootOnly combined with a public readRole", () => {
+    const errors = validateConfig(
+      makeConfig([makeCol({ name: "secret", rootOnly: true, readRoles: ["public"], writeRoles: ["self"] })]),
+    )
+    expect(errors.some((e) => e.includes("rootOnly cannot be combined"))).toBe(true)
+  })
+
+  it("rejects rootOnly combined with a public writeRole", () => {
+    const errors = validateConfig(
+      makeConfig([makeCol({ name: "secret", rootOnly: true, readRoles: ["cap:read:secret"], writeRoles: ["public"] })]),
+    )
+    expect(errors.some((e) => e.includes("rootOnly cannot be combined"))).toBe(true)
+  })
+
+  it("accepts rootOnly with non-public roles", () => {
+    const errors = validateConfig(
+      makeConfig([makeCol({ name: "secret", rootOnly: true, readRoles: ["cap:read:secret"], writeRoles: ["cap:write:secret"] })]),
+    )
+    expect(errors).toEqual([])
   })
 })
 
@@ -283,7 +282,7 @@ describe("parseConfigJson", () => {
           storagePath: "users/{identity}/settings",
           readRoles: ["self"],
           writeRoles: ["self"],
-          encryption: "identity",
+          encryption: "none",
           maxBodyBytes: 1000000,
         },
       ],

@@ -1,0 +1,41 @@
+{
+  "name": "@drakkar.software/starfish-keyring",
+  "version": "3.0.0-alpha.2",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Drakkar-Software/starfish.git",
+    "directory": "packages/ts/keyring"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "description": "Starfish multi-recipient encryption layer (delegated encryption, keyring documents, recipient management)",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@drakkar.software/starfish-protocol": "workspace:*",
+    "@drakkar.software/starfish-client": "workspace:*",
+    "@noble/curves": "^2.2.0"
+  },
+  "scripts": {
+    "build": "node build.mjs && tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@drakkar.software/starfish-client": "workspace:*",
+    "esbuild": "^0.27.4",
+    "typescript": "^5.5.0",
+    "vitest": "^3.0.0"
+  },
+  "files": [
+    "dist"
+  ]
+}

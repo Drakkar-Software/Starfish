@@ -1,0 +1,81 @@
+{
+  "description": "Cross-language vector for v3.0 signed revocation lists. Two sequential generations (gen2 supersedes gen1), plus a forged variant whose signature must fail verification.",
+  "issuer": {
+    "edPub": "4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6",
+    "userId": "98341e0ad3e56672018cd761b99a2906"
+  },
+  "subjects": {
+    "alice_dev_1": {
+      "edPub": "5333460b6cdb1dd4adc074c70ac38823c09153d430202406599f0b929a55f8ca",
+      "nonce": "ABEiM0RVZneImaq7zN3u/w=="
+    },
+    "alice_dev_2": {
+      "edPub": "190f69aaf6aa0b4ee884e1fcb7cc8d5b087dbd5e17ccbe0424a426e2e0620d6f",
+      "nonce": "/+7dzLuqmYh3ZlVEMyIRAA=="
+    }
+  },
+  "generations": {
+    "1": {
+      "list": {
+        "v": 1,
+        "iss": "4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6",
+        "issUserId": "98341e0ad3e56672018cd761b99a2906",
+        "generation": 1,
+        "revoked": [
+          {
+            "sub": "5333460b6cdb1dd4adc074c70ac38823c09153d430202406599f0b929a55f8ca",
+            "nonce": "ABEiM0RVZneImaq7zN3u/w==",
+            "exp": 1999999999
+          }
+        ],
+        "sig": "LGJftwFKNWEWB6JZZcx2JmGCICK7fWByuCWtv3/wdOpUyM9bsQ9C/esmRzXRZjkYJ8OouMx09MVs6QZIxMhkDA=="
+      },
+      "canonicalSigningInput": "{\"generation\":1,\"iss\":\"4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6\",\"issUserId\":\"98341e0ad3e56672018cd761b99a2906\",\"revoked\":[{\"exp\":1999999999,\"nonce\":\"ABEiM0RVZneImaq7zN3u/w==\",\"sub\":\"5333460b6cdb1dd4adc074c70ac38823c09153d430202406599f0b929a55f8ca\"}],\"v\":1}"
+    },
+    "2": {
+      "list": {
+        "v": 1,
+        "iss": "4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6",
+        "issUserId": "98341e0ad3e56672018cd761b99a2906",
+        "generation": 2,
+        "revoked": [
+          {
+            "sub": "5333460b6cdb1dd4adc074c70ac38823c09153d430202406599f0b929a55f8ca",
+            "nonce": "ABEiM0RVZneImaq7zN3u/w==",
+            "exp": 1999999999
+          },
+          {
+            "sub": "190f69aaf6aa0b4ee884e1fcb7cc8d5b087dbd5e17ccbe0424a426e2e0620d6f",
+            "nonce": "/+7dzLuqmYh3ZlVEMyIRAA==",
+            "exp": 1999999999
+          }
+        ],
+        "sig": "9zSSkJovAC3oy2KrM5Wltt55NlqW7IvLG5agrI8WfMnYMwRLxzNEhSonVbOw6XejhRfVQeza5eJ1Ou7CaCLnDA=="
+      },
+      "canonicalSigningInput": "{\"generation\":2,\"iss\":\"4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6\",\"issUserId\":\"98341e0ad3e56672018cd761b99a2906\",\"revoked\":[{\"exp\":1999999999,\"nonce\":\"ABEiM0RVZneImaq7zN3u/w==\",\"sub\":\"5333460b6cdb1dd4adc074c70ac38823c09153d430202406599f0b929a55f8ca\"},{\"exp\":1999999999,\"nonce\":\"/+7dzLuqmYh3ZlVEMyIRAA==\",\"sub\":\"190f69aaf6aa0b4ee884e1fcb7cc8d5b087dbd5e17ccbe0424a426e2e0620d6f\"}],\"v\":1}"
+    }
+  },
+  "forged": {
+    "list": {
+      "v": 1,
+      "iss": "4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6",
+      "issUserId": "98341e0ad3e56672018cd761b99a2906",
+      "generation": 2,
+      "revoked": [
+        {
+          "sub": "5333460b6cdb1dd4adc074c70ac38823c09153d430202406599f0b929a55f8ca",
+          "nonce": "ABEiM0RVZneImaq7zN3u/w==",
+          "exp": 1999999999
+        },
+        {
+          "sub": "190f69aaf6aa0b4ee884e1fcb7cc8d5b087dbd5e17ccbe0424a426e2e0620d6f",
+          "nonce": "/+7dzLuqmYh3ZlVEMyIRAA==",
+          "exp": 1999999999
+        }
+      ],
+      "sig": "7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7g=="
+    },
+    "canonicalSigningInput": "{\"generation\":2,\"iss\":\"4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6\",\"issUserId\":\"98341e0ad3e56672018cd761b99a2906\",\"revoked\":[{\"exp\":1999999999,\"nonce\":\"ABEiM0RVZneImaq7zN3u/w==\",\"sub\":\"5333460b6cdb1dd4adc074c70ac38823c09153d430202406599f0b929a55f8ca\"},{\"exp\":1999999999,\"nonce\":\"/+7dzLuqmYh3ZlVEMyIRAA==\",\"sub\":\"190f69aaf6aa0b4ee884e1fcb7cc8d5b087dbd5e17ccbe0424a426e2e0620d6f\"}],\"v\":1}",
+    "expectVerify": false
+  }
+}

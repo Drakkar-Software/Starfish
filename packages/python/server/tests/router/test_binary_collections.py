@@ -10,7 +10,6 @@ from starfish_server.config.schema import (
     SyncConfig,
     CollectionConfig,
     RateLimitConfig,
-    RemoteConfig,
 )
 from starfish_server.config.validate import validate_config
 from starfish_server.router.route_builder import (
@@ -160,16 +159,6 @@ def _config(*cols: CollectionConfig) -> SyncConfig:
 
 
 class TestBinaryCollectionValidation:
-    def test_binary_with_identity_encryption_rejected(self):
-        col = _binary_col(encryption="identity")
-        errors = validate_config(_config(col))
-        assert any("binary" in e and "encryption" in e for e in errors)
-
-    def test_binary_with_server_encryption_rejected(self):
-        col = _binary_col(encryption="server")
-        errors = validate_config(_config(col))
-        assert any("binary" in e and "encryption" in e for e in errors)
-
     def test_binary_with_none_encryption_passes(self):
         col = _binary_col(encryption="none")
         errors = validate_config(_config(col))
@@ -189,24 +178,6 @@ class TestBinaryCollectionValidation:
         col = _binary_col(bundle="my-bundle")
         errors = validate_config(_config(col))
         assert any("binary" in e and "bundle" in e for e in errors)
-
-    def test_binary_with_remote_rejected(self):
-        col = CollectionConfig(
-            name="logos",
-            storagePath="static/logos",
-            readRoles=["public"],
-            writeRoles=[],
-            encryption="none",
-            maxBodyBytes=65536,
-            allowedMimeTypes=["image/*"],
-            pullOnly=True,
-            remote=RemoteConfig(
-                url="https://primary.example.com/v1",
-                pullPath="/pull/static/logos",
-            ),
-        )
-        errors = validate_config(_config(col))
-        assert any("binary" in e and "remote" in e for e in errors)
 
     def test_empty_allowed_mime_types_rejected(self):
         col = CollectionConfig(
@@ -228,7 +199,7 @@ class TestBinaryCollectionValidation:
             storagePath="users/{identity}/settings",
             readRoles=["self"],
             writeRoles=["self"],
-            encryption="identity",
+            encryption="delegated",
             maxBodyBytes=65536,
         )
         errors = validate_config(_config(col))

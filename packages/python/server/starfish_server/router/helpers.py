@@ -6,8 +6,9 @@ import ipaddress
 import json
 import logging
 import re
+import socket
 import time
-from typing import Any, Callable, Awaitable
+from typing import Any
 from urllib.parse import urlparse
 
 from fastapi.responses import JSONResponse
@@ -16,7 +17,6 @@ from starfish_server.storage.base import AbstractObjectStore, StoreContext
 from starfish_server.protocol.pull import pull
 from starfish_server.protocol.push import push
 from starfish_server.protocol.push import Author
-from starfish_protocol.hash import stable_stringify
 from starfish_server.protocol.types import PushSuccess
 from starfish_server.constants import QUERY_CHECKPOINT, ERROR_HASH_MISMATCH, CONTENT_TYPE_JSON, APPEND_DEFAULT_FIELD
 
@@ -27,7 +27,51 @@ UNSAFE_KEY = re.compile(r"\.\.|[\x00-\x1f]|//")
 
 UNSAFE_KEYS = frozenset({"__proto__", "constructor", "prototype"})
 
-SignatureVerifier = Callable[[str, str, str], Awaitable[bool]]
+# Reject documents nested deeper than this. A deeply-nested body would otherwise
+# overflow the recursive ``deep_sanitize`` (and, in CPython, ``json.loads`` itself),
+# turning a tiny payload into an unhandled ``RecursionError`` → HTTP 500. Real
+# Starfish documents are shallow (a keyring with epochs is ~5 deep), so 64 is far
+# above any legitimate use while still well under the interpreter's recursion limit.
+MAX_DOC_DEPTH = 64
+
+
+def json_depth_within(obj: Any, limit: int = MAX_DOC_DEPTH) -> bool:
+    """Return ``True`` iff *obj*'s nesting depth is within *limit*.
+
+    Walks dicts and lists iteratively (an explicit stack, never the call stack) so
+    the check itself cannot recurse. The push path runs this on the parsed body and
+    rejects anything deeper than ``limit`` with HTTP 400 before sanitizing/storing.
+    """
+    stack = [(obj, 1)]
+    while stack:
+        node, depth = stack.pop()
+        if depth > limit:
+            return False
+        children = node.values() if isinstance(node, dict) else node if isinstance(node, list) else ()
+        for child in children:
+            if isinstance(child, (dict, list)):
+                stack.append((child, depth + 1))
+    return True
+
+
+def _parse_host_ip(hostname: str) -> "ipaddress._BaseAddress | None":
+    """Parse *hostname* to an IP address, canonicalising alternate IPv4
+    notations the way an HTTP client would.
+
+    ``ipaddress.ip_address`` only accepts canonical dotted-quad / IPv6, so
+    ``2130706433`` (decimal), ``0x7f000001`` (hex), ``0177.0.0.1`` (octal), and
+    ``127.1`` (short) — all of which resolve to ``127.0.0.1`` in common clients —
+    would otherwise slip past the loopback check. ``socket.inet_aton`` applies
+    the historical ``inet_addr`` rules and canonicalises them; genuine domain
+    names raise ``OSError`` and return ``None`` (treated as public)."""
+    try:
+        return ipaddress.ip_address(hostname)
+    except ValueError:
+        pass
+    try:
+        return ipaddress.ip_address(socket.inet_aton(hostname))
+    except (OSError, ValueError):
+        return None
 
 
 def validate_url_not_private(url: str) -> bool:
@@ -39,19 +83,32 @@ def validate_url_not_private(url: str) -> bool:
             return False
         if hostname in ("localhost", "127.0.0.1", "::1", "0.0.0.0"):
             return False
-        try:
-            addr = ipaddress.ip_address(hostname)
-            if addr.is_private or addr.is_loopback or addr.is_link_local:
-                return False
-        except ValueError:
-            pass
+        addr = _parse_host_ip(hostname)
+        if addr is not None and (
+            addr.is_private or addr.is_loopback or addr.is_link_local
+        ):
+            return False
         return True
     except Exception:  # noqa: BLE001
         return False
 
 
 def validate_path_segment(value: str) -> bool:
-    return bool(SAFE_PARAM.match(value))
+    # fullmatch (not match): Python's `$` also matches *before* a trailing
+    # newline, so SAFE_PARAM.match("alice\n") would wrongly pass. fullmatch
+    # anchors both ends and rejects it, matching JS `$` (no /m) in the TS twin.
+    return bool(SAFE_PARAM.fullmatch(value))
+
+
+def is_unsafe_document_key(document_key: str) -> bool:
+    """True when a resolved storage key contains a path-traversal or injection
+    sequence (``..``, control chars, or ``//``). The single guard every
+    read/write path must apply to its resolved ``document_key`` before touching
+    the store — ``validate_path_segment`` only constrains one param's charset
+    (it admits ``..``), so this is what actually blocks traversal in the
+    composed key.
+    """
+    return bool(UNSAFE_KEY.search(document_key))
 
 
 def deep_sanitize(obj: dict[str, Any]) -> dict[str, Any]:
@@ -67,6 +124,16 @@ def deep_sanitize(obj: dict[str, Any]) -> dict[str, Any]:
     return safe
 
 
+def is_with_keyring_enabled(raw: str | None) -> bool:
+    """Return True when the ``?withKeyring=`` query value should activate
+    the sibling-keyring fetch. Accepts ``"1"`` and ``"true"`` (case-insensitive);
+    any other value (including missing) is treated as off.
+    """
+    if raw is None:
+        return False
+    return raw.lower() in ("1", "true")
+
+
 async def handle_sync_pull(
     document_key: str,
     store: AbstractObjectStore,
@@ -76,21 +143,17 @@ async def handle_sync_pull(
     cache_duration_ms: int | None = None,
     is_public: bool = True,
     context: StoreContext | None = None,
+    with_keyring: bool = False,
 ) -> JSONResponse:
-    if UNSAFE_KEY.search(document_key):
+    if is_unsafe_document_key(document_key):
         return JSONResponse({"error": "Invalid path parameter"}, status_code=400)
 
-    checkpoint = 0
-    if not force_full_fetch and not client_encrypted and checkpoint_param is not None:
-        try:
-            parsed = int(checkpoint_param)
-        except ValueError:
-            return JSONResponse({"error": "Invalid checkpoint"}, status_code=400)
-        if parsed < 0 or str(parsed) != checkpoint_param:
-            return JSONResponse({"error": "Invalid checkpoint"}, status_code=400)
-        checkpoint = parsed
-
-    result = await pull(store, document_key, checkpoint, context)
+    # Regular collections always return the full document. ``?checkpoint=`` is
+    # ignored here (incremental sync is an appendOnly-only feature now); a stale
+    # checkpoint param from an older client is harmless — we do NOT 400 on it.
+    # ``force_full_fetch`` / ``client_encrypted`` are retained as inert no-ops
+    # for call-site compatibility.
+    result = await pull(store, document_key, context)
     body: dict[str, Any] = {
         "data": result.data,
         "hash": result.hash,
@@ -100,6 +163,43 @@ async def handle_sync_pull(
         body["authorPubkey"] = result.author_pubkey
     if result.author_signature:
         body["authorSignature"] = result.author_signature
+
+    # ``?withKeyring=1`` optimization: piggyback the collection's sibling
+    # keyring document at ``<document_key>/_keyring`` onto the pull response,
+    # saving a round-trip on cold start. The keyring projection drops author
+    # fields — the keyring document is unsigned in this model.
+    #
+    # NOTE: the sibling keyring read is authorized by the route layer, not here.
+    # The pull handler only sets ``with_keyring=True`` after checking
+    # ``<document_key>/_keyring`` against the caller's cap scope, so a cap that
+    # denies the keyring (e.g. ``scopes.writer(col)``) never reaches this read.
+    # This function only performs the storage read.
+    if with_keyring:
+        keyring_key = f"{document_key}/_keyring"
+        # Treat ANY store error as "no keyring" (e.g. a filesystem store raising
+        # NotADirectoryError when the data path is a leaf file and the app keeps its
+        # keyring in a separate namespace). The optimization must degrade gracefully,
+        # never crash the pull (HTTP 500).
+        try:
+            keyring_raw = await store.get_string(keyring_key, context=context)
+        except Exception as exc:  # noqa: BLE001 — defensive: any store failure ⇒ no keyring
+            logger.warning("withKeyring read failed for %r: %s", keyring_key, exc)
+            keyring_raw = None
+        if not keyring_raw:
+            body["keyring"] = None
+        else:
+            try:
+                parsed_kr = json.loads(keyring_raw)
+                body["keyring"] = {
+                    "data": parsed_kr.get("data", {}),
+                    "hash": parsed_kr.get("hash", ""),
+                    "timestamp": result.timestamp,
+                }
+            except (json.JSONDecodeError, ValueError) as exc:
+                logger.error(
+                    "Corrupt keyring document at key %r: %s", keyring_key, exc
+                )
+                body["keyring"] = None
 
     headers: dict[str, str] = {}
     if cache_duration_ms is not None:
@@ -127,11 +227,14 @@ async def handle_append_only_pull(
 ) -> JSONResponse:
     """Pull handler for appendOnly persist=true collections.
 
-    Filters data[append_field] to items whose per-item timestamp > checkpoint.
-    Falls back to full array for legacy docs without per-item timestamps.
-    When last_param is set, returns only the last K items (applied after checkpoint filter).
+    Each stored element is a ``{ts, data}`` envelope. When a checkpoint is
+    requested, returns only elements whose ``ts`` is strictly greater than the
+    checkpoint, found by binary search (the array is strictly increasing in
+    ``ts``). ``?last=K`` then trims to the last K. The full ``{ts, data}``
+    envelopes are returned — ``data`` is plaintext under "none" and an encryptor
+    wrapper under "delegated".
     """
-    if UNSAFE_KEY.search(document_key):
+    if is_unsafe_document_key(document_key):
         return JSONResponse({"error": "Invalid path parameter"}, status_code=400)
 
     checkpoint = 0
@@ -180,13 +283,14 @@ async def handle_append_only_pull(
         all_items = []
 
     if checkpoint > 0:
-        stored_ts = (stored.get("timestamps") or {}).get(append_field)
-        if isinstance(stored_ts, list):
-            # Timestamps are monotonically non-decreasing — binary search for first index > checkpoint
-            lo = bisect.bisect_right(stored_ts, checkpoint)
-            filtered_items = all_items[lo:]
-        else:
-            filtered_items = all_items
+        # Elements are strictly increasing in ``ts`` — binary search for the first
+        # index whose ts > checkpoint, then return that suffix.
+        element_ts = [
+            el["ts"] if isinstance(el, dict) and isinstance(el.get("ts"), int) else 0
+            for el in all_items
+        ]
+        lo = bisect.bisect_right(element_ts, checkpoint)
+        filtered_items = all_items[lo:]
     else:
         filtered_items = all_items
 
@@ -212,12 +316,11 @@ async def handle_sync_push(
     store: AbstractObjectStore,
     body: dict[str, Any],
     identity: str | None = None,
-    verify_signature: SignatureVerifier | None = None,
     skip_timestamps: bool = False,
     skip_storage: bool = False,
     context: StoreContext | None = None,
 ) -> JSONResponse:
-    if UNSAFE_KEY.search(document_key):
+    if is_unsafe_document_key(document_key):
         return JSONResponse({"error": "Invalid path parameter"}, status_code=400)
 
     data = body.get("data")
@@ -233,15 +336,7 @@ async def handle_sync_push(
     sanitized = deep_sanitize(data)
 
     author: Author | None = None
-    if verify_signature and identity:
-        if not isinstance(author_signature, str):
-            return JSONResponse({"error": "Missing required author signature"}, status_code=400)
-        canonical = stable_stringify(sanitized)
-        valid = await verify_signature(canonical, author_signature, identity)
-        if not valid:
-            return JSONResponse({"error": "Invalid author signature"}, status_code=400)
-        author = Author(pubkey=identity, signature=author_signature)
-    elif isinstance(author_signature, str) and identity:
+    if isinstance(author_signature, str) and identity:
         author = Author(pubkey=identity, signature=author_signature)
 
     result = await push(store, document_key, sanitized, base_hash, author, skip_timestamps, skip_storage, context=context)

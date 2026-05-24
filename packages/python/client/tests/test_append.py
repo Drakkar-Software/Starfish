@@ -5,6 +5,7 @@ import respx
 import httpx
 
 from starfish_sdk.client import StarfishClient
+from starfish_sdk.types import StarfishHttpError
 from starfish_protocol.types import PushSuccess, PullResult
 
 
@@ -134,3 +135,54 @@ async def test_pull_negative_last_raises():
     async with StarfishClient(BASE) as client:
         with pytest.raises(ValueError, match="last must be non-negative"):
             await client.pull("/pull/events", last=-1)
+
+
+# --- client.append (appendOnly) ---
+
+@pytest.mark.asyncio
+async def test_append_posts_data_and_returns_push_success_no_ts():
+    with respx.mock(base_url="https://api.example.com") as mock:
+        route = mock.post("/v1/push/events").mock(return_value=httpx.Response(
+            200, json={"hash": "abc123", "timestamp": 1714000000}
+        ))
+        async with StarfishClient(BASE) as client:
+            result = await client.append("/push/events", {"type": "click"})
+    import json as _json
+    sent = _json.loads(route.calls[0].request.content)
+    assert sent == {"data": {"type": "click"}}
+    assert "ts" not in sent
+    assert result == PUSH_SUCCESS
+
+
+@pytest.mark.asyncio
+async def test_append_includes_ts_when_provided():
+    with respx.mock(base_url="https://api.example.com") as mock:
+        route = mock.post("/v1/push/events").mock(return_value=httpx.Response(
+            200, json={"hash": "abc123", "timestamp": 1714000000}
+        ))
+        async with StarfishClient(BASE) as client:
+            await client.append("/push/events", {"type": "click"}, ts=1714000123)
+    import json as _json
+    sent = _json.loads(route.calls[0].request.content)
+    assert sent == {"data": {"type": "click"}, "ts": 1714000123}
+
+
+@pytest.mark.asyncio
+async def test_append_raises_on_409_non_monotonic():
+    with respx.mock(base_url="https://api.example.com") as mock:
+        mock.post("/v1/push/events").mock(return_value=httpx.Response(
+            409, json={"error": "non_monotonic_timestamp", "latest": 100}
+        ))
+        async with StarfishClient(BASE) as client:
+            with pytest.raises(StarfishHttpError):
+                await client.append("/push/events", {"n": 1}, ts=1)
+
+
+@pytest.mark.asyncio
+async def test_pull_returns_ts_data_envelopes_for_append_only():
+    envelopes = [{"ts": 100, "data": {"msg": "a"}}, {"ts": 200, "data": {"msg": "b"}}]
+    with respx.mock(base_url="https://api.example.com") as mock:
+        mock.get("/v1/pull/events").mock(return_value=_json_resp({"items": envelopes}))
+        async with StarfishClient(BASE) as client:
+            result = await client.pull("/pull/events", append_field="items")
+    assert result == envelopes

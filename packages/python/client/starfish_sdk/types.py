@@ -40,16 +40,46 @@ class StarfishHttpError(Exception):
         super().__init__(f"HTTP {status}: {body}")
 
 
-class AuthProvider(Protocol):
-    async def __call__(
-        self, *, method: str, path: str, body: str | None
-    ) -> dict[str, str]:
-        pass
+class CapProvider(Protocol):
+    """v3.0 cap-cert provider for :class:`StarfishClient`.
 
+    ``get_cap()`` returns the device's cap-cert (as a dict) and the matching
+    Ed25519 private key (hex). When configured on the client, every outgoing
+    request carries ``Authorization: Cap <base64(stable_stringify(cap))>``
+    plus ``X-Starfish-Sig`` / ``X-Starfish-Ts`` / ``X-Starfish-Nonce``.
 
-class DataSigner(Protocol):
-    async def __call__(self, data: str) -> str:
-        pass
+    Implementations are expected to cache; the client may call this once
+    per authenticated request.
+
+    For an ``audience`` (public-link) cap, which binds no single subject, also
+    return ``pub_hex`` — the redeemer's own Ed25519 pubkey matching
+    ``dev_ed_priv_hex``. The client then sends it as ``X-Starfish-Pub`` so the
+    server can verify the request signature against it and check the cap's
+    ``aud`` allow-list. Omit ``pub_hex`` for device/member caps.
+    """
+
+    async def get_cap(self) -> dict[str, Any]:
+        """Return ``{"cap": <CapCert dict>, "dev_ed_priv_hex": <str>}`` and,
+        for audience caps, an optional ``"pub_hex": <str>``."""
+        ...
 
 
 ConflictResolver = Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]
+
+
+@dataclass
+class ClientPlugin:
+    """Client-side plugin contract.
+
+    A placeholder shape: the dataclass intentionally has no required
+    hooks yet; extensions declare a plugin object with ``name`` and opt
+    into specific lifecycle hooks once those exist. Apps wire plugins
+    via ``StarfishClient(..., plugins=[...])``.
+
+    Reserved for future hook fields. Hook additions are additive —
+    extensions implementing a future hook will populate the relevant
+    optional attribute without affecting existing zero-hook plugins.
+    """
+
+    name: str
+

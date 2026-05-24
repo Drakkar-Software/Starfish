@@ -2,13 +2,16 @@
 
 
 import json
+import logging
 from pathlib import Path
 
 from starfish_server.storage.base import AbstractObjectStore
 from starfish_server.config.schema import SyncConfig
-from starfish_server.config.validate import validate_config
+from starfish_server.config.validate import collect_config_warnings, validate_config
 from starfish_server.errors import StartupError
 from starfish_server.constants import DEFAULT_CONFIG_KEY, CONTENT_TYPE_JSON
+
+_log = logging.getLogger(__name__)
 
 
 def parse_config_json(raw: str) -> SyncConfig:
@@ -22,6 +25,8 @@ def parse_config_json(raw: str) -> SyncConfig:
     errors = validate_config(parsed)
     if errors:
         raise StartupError(f"Invalid sync config:\n" + "\n".join(errors))
+    for warning in collect_config_warnings(parsed):
+        _log.warning("config warning: %s", warning)
     return parsed
 
 

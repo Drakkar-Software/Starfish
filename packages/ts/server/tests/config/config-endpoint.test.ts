@@ -68,23 +68,6 @@ describe("GET /config — auth: public", () => {
     expect(body.collections[1].name).toBe("comments")
   })
 
-  it("includes publicKey when set on collection", async () => {
-    const app = makeRouter(
-      [makeCol({ publicKey: "base64encodedkey==" })],
-      { configEndpoint: { auth: "public" } },
-    )
-    const res = await app.request("/config")
-    const body = await res.json()
-    expect(body.collections[0].publicKey).toBe("base64encodedkey==")
-  })
-
-  it("omits publicKey when not set", async () => {
-    const app = makeRouter([makeCol()], { configEndpoint: { auth: "public" } })
-    const res = await app.request("/config")
-    const body = await res.json()
-    expect(body.collections[0].publicKey).toBeUndefined()
-  })
-
   it("includes correct capability flags", async () => {
     const app = makeRouter(
       [makeCol({ pullOnly: true, ttlMs: 3600000 })],

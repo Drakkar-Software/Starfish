@@ -1,6 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { buildAppendOnlyData, checkLastItemConflict } from "../../src/protocol/append.js"
-import { push } from "../../src/protocol/push.js"
+import { appendItem, type AppendConflict } from "../../src/protocol/push.js"
 import { computeHash } from "@drakkar.software/starfish-protocol"
 import { createIsolatedStore } from "../helpers.js"
 import { configurePlatform } from "@drakkar.software/starfish-protocol"
@@ -14,154 +13,111 @@ configurePlatform({
   },
 })
 
-const NOW = 1714000000
+async function readDoc(store: ReturnType<typeof createIsolatedStore>, key: string) {
+  const raw = await (store as any).getString(key)
+  return raw ? JSON.parse(raw) : null
+}
 
-describe("buildAppendOnlyData", () => {
-  it("empty store → single-item array with empty baseHash", async () => {
+describe("appendItem", () => {
+  it("empty store → single {ts, data} element; hash = hash({n:1, last})", async () => {
     const store = createIsolatedStore()
-    const { data, baseHash } = await buildAppendOnlyData(store, "col/doc", { msg: "hello" }, "items", NOW)
-    expect(data).toEqual({ items: [{ msg: "hello" }] })
-    expect(baseHash).toBe("")
+    const item = { msg: "hello" }
+    const out = await appendItem(store, "col/doc", item, "items", undefined)
+    expect("error" in out).toBe(false)
+    const doc = await readDoc(store, "col/doc")
+    expect(doc.data.items).toHaveLength(1)
+    expect(doc.data.items[0].data).toEqual(item)
+    expect(typeof doc.data.items[0].ts).toBe("number")
+    expect((out as any).timestamp).toBe(doc.data.items[0].ts)
+    expect((out as any).hash).toBe(await computeHash({ n: 1, last: item }))
+    expect(doc.ts).toBe(doc.data.items[0].ts)
   })
 
-  it("existing doc with array → appends to end", async () => {
+  it("provided ts is stored verbatim (not now)", async () => {
     const store = createIsolatedStore()
-    await push(store, "col/doc", { items: [{ msg: "first" }] }, null)
-    const { data } = await buildAppendOnlyData(store, "col/doc", { msg: "second" }, "items", NOW)
-    expect(data).toEqual({ items: [{ msg: "first" }, { msg: "second" }] })
+    const out = await appendItem(store, "col/doc", { a: 1 }, "items", 5000)
+    expect((out as any).timestamp).toBe(5000)
+    const doc = await readDoc(store, "col/doc")
+    expect(doc.data.items[0].ts).toBe(5000)
   })
 
-  it("returns current hash from existing doc as baseHash", async () => {
+  it("auto ts is strictly increasing across appends", async () => {
     const store = createIsolatedStore()
-    const r = await push(store, "col/doc", { items: [] }, null) as any
-    const { baseHash } = await buildAppendOnlyData(store, "col/doc", { msg: "x" }, "items", NOW)
-    expect(baseHash).toBe(r.hash)
+    await appendItem(store, "col/doc", { n: 1 }, "items", undefined)
+    await appendItem(store, "col/doc", { n: 2 }, "items", undefined)
+    const doc = await readDoc(store, "col/doc")
+    expect(doc.data.items).toHaveLength(2)
+    expect(doc.data.items[1].ts).toBeGreaterThan(doc.data.items[0].ts)
   })
 
-  it("existing doc with non-array items → recovers with single-item array", async () => {
+  it("provided ts > latest is accepted", async () => {
     const store = createIsolatedStore()
-    await push(store, "col/doc", { items: "not-an-array" }, null)
-    const { data } = await buildAppendOnlyData(store, "col/doc", { msg: "x" }, "items", NOW)
-    expect(data).toEqual({ items: [{ msg: "x" }] })
+    await appendItem(store, "col/doc", { n: 1 }, "items", 100)
+    const out = await appendItem(store, "col/doc", { n: 2 }, "items", 200)
+    expect((out as any).timestamp).toBe(200)
   })
 
-  it("corrupt JSON in store → recovers as empty doc", async () => {
+  it("provided ts == latest → non_monotonic_timestamp conflict", async () => {
     const store = createIsolatedStore()
-    await (store as any).put("col/doc", "NOT_JSON", { contentType: "application/json" })
-    const { data, baseHash } = await buildAppendOnlyData(store, "col/doc", { a: 1 }, "items", NOW)
-    expect(data).toEqual({ items: [{ a: 1 }] })
-    expect(baseHash).toBe("")
+    await appendItem(store, "col/doc", { n: 1 }, "items", 100)
+    const out = await appendItem(store, "col/doc", { n: 2 }, "items", 100)
+    expect("error" in out).toBe(true)
+    expect((out as AppendConflict).error).toBe("non_monotonic_timestamp")
+    expect((out as AppendConflict).latest).toBe(100)
+    // rejected append must not be stored
+    const doc = await readDoc(store, "col/doc")
+    expect(doc.data.items).toHaveLength(1)
+  })
+
+  it("provided ts < latest → non_monotonic_timestamp conflict", async () => {
+    const store = createIsolatedStore()
+    await appendItem(store, "col/doc", { n: 1 }, "items", 100)
+    const out = await appendItem(store, "col/doc", { n: 2 }, "items", 50)
+    expect((out as AppendConflict).error).toBe("non_monotonic_timestamp")
+  })
+
+  it("auto ts after a future provided ts stays strictly increasing", async () => {
+    const store = createIsolatedStore()
+    const future = Date.now() + 1_000_000
+    await appendItem(store, "col/doc", { n: 1 }, "items", future)
+    const out = await appendItem(store, "col/doc", { n: 2 }, "items", undefined)
+    expect((out as any).timestamp).toBe(future + 1) // max(now, latest+1) === latest+1
+  })
+
+  it("hash reflects length and last item after multiple appends", async () => {
+    const store = createIsolatedStore()
+    await appendItem(store, "col/doc", { n: 1 }, "items", 1)
+    const item2 = { n: 2 }
+    const out = await appendItem(store, "col/doc", item2, "items", 2)
+    expect((out as any).hash).toBe(await computeHash({ n: 2, last: item2 }))
   })
 
   it("custom appendField", async () => {
     const store = createIsolatedStore()
-    const { data } = await buildAppendOnlyData(store, "col/doc", { x: 1 }, "events", NOW)
-    expect(data).toEqual({ events: [{ x: 1 }] })
+    await appendItem(store, "col/doc", { x: 1 }, "events", undefined)
+    const doc = await readDoc(store, "col/doc")
+    expect(doc.data.events).toHaveLength(1)
+    expect(doc.data.events[0].data).toEqual({ x: 1 })
   })
 
-  it("preserves other top-level data fields", async () => {
+  it("opaque data payload (e.g. ciphertext string) is stored as-is", async () => {
     const store = createIsolatedStore()
-    await push(store, "col/doc", { items: [{ a: 1 }], meta: "info" }, null)
-    const { data } = await buildAppendOnlyData(store, "col/doc", { a: 2 }, "items", NOW)
-    expect((data as any).meta).toBe("info")
-    expect((data as any).items).toEqual([{ a: 1 }, { a: 2 }])
+    // delegated-style payload: an encryptor wrapper object
+    const wrapper = { _encrypted: "BASE64CIPHERTEXT", epoch: 1 }
+    await appendItem(store, "col/doc", wrapper, "items", undefined)
+    const doc = await readDoc(store, "col/doc")
+    expect(doc.data.items[0].data).toEqual(wrapper)
   })
 
-  it("returns parallel timestamps array with one entry per item", async () => {
+  it("concurrent appends to the same key both land (no lost write)", async () => {
     const store = createIsolatedStore()
-    const { timestamps } = await buildAppendOnlyData(store, "col/doc", { msg: "first" }, "items", NOW)
-    expect((timestamps as any)["items"]).toEqual([NOW])
-  })
-
-  it("appends NOW to existing timestamps array", async () => {
-    const store = createIsolatedStore()
-    // First append via buildAppendOnlyData to establish per-item shape
-    const r1 = await buildAppendOnlyData(store, "col/doc", { n: 1 }, "items", NOW)
-    await push(store, "col/doc", r1.data, r1.baseHash, undefined, false, false, r1.lastItemHash, r1.timestamps)
-    const r2 = await buildAppendOnlyData(store, "col/doc", { n: 2 }, "items", NOW + 1)
-    expect((r2.timestamps as any)["items"]).toEqual([NOW, NOW + 1])
-  })
-
-  it("returns length-tagged lastItemHash: hash({ n, last })", async () => {
-    const store = createIsolatedStore()
-    const item = { msg: "hello" }
-    const { lastItemHash } = await buildAppendOnlyData(store, "col/doc", item, "items", NOW)
-    const expected = await computeHash({ n: 1, last: item })
-    expect(lastItemHash).toBe(expected)
-  })
-
-  it("lastItemHash reflects correct length after multiple appends", async () => {
-    const store = createIsolatedStore()
-    const item1 = { n: 1 }
-    const item2 = { n: 2 }
-    const r1 = await buildAppendOnlyData(store, "col/doc", item1, "items", NOW)
-    await push(store, "col/doc", r1.data, r1.baseHash, undefined, false, false, r1.lastItemHash, r1.timestamps)
-    const r2 = await buildAppendOnlyData(store, "col/doc", item2, "items", NOW + 1)
-    const expected = await computeHash({ n: 2, last: item2 })
-    expect(r2.lastItemHash).toBe(expected)
-  })
-})
-
-// Helper: write a doc as the appendOnly push path would (length-tagged stored hash)
-async function storeAsAppendOnly(
-  store: ReturnType<typeof createIsolatedStore>,
-  key: string,
-  items: Record<string, unknown>[],
-  field = "items",
-) {
-  if (items.length === 0) {
-    // Use push with a placeholder hash
-    await push(store, key, { [field]: [] }, null)
-    return
-  }
-  const r = await buildAppendOnlyData(store, key, items[0], field, NOW)
-  await push(store, key, r.data, r.baseHash, undefined, false, false, r.lastItemHash, r.timestamps)
-  for (let i = 1; i < items.length; i++) {
-    const ri = await buildAppendOnlyData(store, key, items[i], field, NOW + i)
-    await push(store, key, ri.data, ri.baseHash, undefined, false, false, ri.lastItemHash, ri.timestamps)
-  }
-}
-
-describe("checkLastItemConflict", () => {
-  it("empty store + empty clientBaseHash → no conflict", async () => {
-    const store = createIsolatedStore()
-    const result = await checkLastItemConflict(store, "col/doc", "", "items")
-    expect(result).toBeNull()
-  })
-
-  it("empty store + non-empty clientBaseHash → hash_mismatch", async () => {
-    const store = createIsolatedStore()
-    const result = await checkLastItemConflict(store, "col/doc", "somehash", "items")
-    expect(result).toBe("hash_mismatch")
-  })
-
-  it("stored doc + matching stored hash → no conflict", async () => {
-    const store = createIsolatedStore()
-    const item = { msg: "hello" }
-    await storeAsAppendOnly(store, "col/doc", [item])
-    const storedHash = await computeHash({ n: 1, last: item })
-    const result = await checkLastItemConflict(store, "col/doc", storedHash, "items")
-    expect(result).toBeNull()
-  })
-
-  it("stored doc + stale hash → hash_mismatch", async () => {
-    const store = createIsolatedStore()
-    await storeAsAppendOnly(store, "col/doc", [{ msg: "hello" }])
-    const result = await checkLastItemConflict(store, "col/doc", "stalehash", "items")
-    expect(result).toBe("hash_mismatch")
-  })
-
-  it("stored doc + null clientBaseHash → hash_mismatch (doc exists)", async () => {
-    const store = createIsolatedStore()
-    await storeAsAppendOnly(store, "col/doc", [{ msg: "hello" }])
-    const result = await checkLastItemConflict(store, "col/doc", null, "items")
-    expect(result).toBe("hash_mismatch")
-  })
-
-  it("corrupt JSON → hash_mismatch", async () => {
-    const store = createIsolatedStore()
-    await (store as any).put("col/doc", "NOT_JSON", { contentType: "application/json" })
-    const result = await checkLastItemConflict(store, "col/doc", "", "items")
-    expect(result).toBe("hash_mismatch")
+    await Promise.all([
+      appendItem(store, "col/doc", { n: 1 }, "items", undefined),
+      appendItem(store, "col/doc", { n: 2 }, "items", undefined),
+    ])
+    const doc = await readDoc(store, "col/doc")
+    expect(doc.data.items).toHaveLength(2)
+    // serialised by the per-key write chain → strictly increasing ts preserved
+    expect(doc.data.items[1].ts).toBeGreaterThan(doc.data.items[0].ts)
   })
 })

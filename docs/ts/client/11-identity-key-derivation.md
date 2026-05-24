@@ -1,195 +1,130 @@
 # Identity & Key Derivation
 
-Patterns for deriving authentication tokens and encryption keys from user credentials.
+Starfish 3.0 binds every user to a **root key pair** derived deterministically from a passphrase. The root key signs capability certificates (cap-certs); each device runs under its own per-device key pair authorized by such a cert.
 
-> **Prerequisites:** [StarfishClient](02-starfish-client.md), [Encryption](04-encryption.md)
+> **Prerequisites:** [StarfishClient](02-starfish-client.md), [Encryption](04-encryption.md), [Capability Certificates](25-capability-certs.md)
 
-## Auth Provider Patterns
+## Root identity
 
-The `AuthProvider` is your integration point for any authentication scheme. It receives request metadata and returns HTTP headers.
+A user's root identity consists of:
 
-### Bearer Token (OAuth / JWT)
+| Field | Type | Purpose |
+|-------|------|---------|
+| `userId` | 32 hex chars | First 32 hex chars of `sha256(rootEdPub)`. Stable across devices. Used in URL paths via `{identity}`. |
+| `keys.edPriv` / `keys.edPub` | 64-char lowercase hex (Ed25519) | Signs cap-certs, the revocation list, and (on the first device only) authenticates requests. |
+| `keys.kemPriv` / `keys.kemPub` | 64-char lowercase hex (X25519) | Unwraps keyring entries. The root pubkey doubles as the first device's KEM pubkey. |
+
+All four key fields are 32-byte values rendered as 64-character lowercase hex strings.
+
+### Derivation
+
+```
+master      = Argon2id(password = utf8(passphrase),
+                       salt     = utf8("starfish-v3-root"),
+                       m = 47104 KiB, t = 3, p = 1,
+                       len = 32)                  ← memory-hard password stretch
+
+rootEdSeed  = HKDF-SHA256(ikm  = master,
+                          salt = utf8("starfish-root-sign"),
+                          info = utf8("ed25519"),
+                          len  = 32)
+rootEdPub   = Ed25519.publicKey(rootEdSeed)
+
+rootKemSeed = HKDF-SHA256(ikm  = master,
+                          salt = utf8("starfish-root-kem"),
+                          info = utf8("x25519"),
+                          len  = 32)
+rootKemPub  = X25519.publicKey(rootKemSeed)
+
+userId      = hex(sha256(rootEdPub))[0:32]
+```
+
+The derivation is a two-stage chain. **Stage 1 — Argon2id** (memory-hard, `m=47104 KiB ≈ 46 MiB, t=3, p=1`, fixed UTF-8 salt `"starfish-v3-root"`) stretches the passphrase into a 32-byte `master` secret. This is the brute-force gate: it raises the offline cost for low-entropy passphrases far above a plain hash. The salt is global (not per-user) so the same passphrase yields the same identity on every device. **Stage 2 — HKDF-SHA256** expands `master` into two domain-separated seeds. The two independent HKDF derivations give complete domain separation between the signing and KEM key — a compromise of one (or future cryptanalysis against one curve) does not leak the other. The Ed25519 seed and the X25519 scalar both come out of HKDF directly; `@noble/curves` clamps the X25519 scalar internally during point multiplication. `deriveRootIdentity` zeroes `master` once both seeds are derived.
+
+The Argon2id parameters are locked (`ARGON2_PARAMS` in `starfish-identities`) — changing them changes every derived identity, so they are pinned by the cross-language test vectors below.
+
+Cross-language test vectors lock the derivation: [`tests/test-vectors/identity-derivation.json`](../../../tests/test-vectors/identity-derivation.json). Both the TypeScript and Python implementations must produce byte-identical seeds and `userId` values for every fixture.
+
+### `deriveRootIdentity(passphrase)`
 
 ```ts
-const client = new StarfishClient({
-  baseUrl: "https://api.example.com/v1",
-  auth: async () => ({
-    Authorization: `Bearer ${await getAccessToken()}`,
-  }),
-})
+import { deriveRootIdentity } from "@drakkar.software/starfish-client"
+
+const root = await deriveRootIdentity("paragraph-loud-yarn-river-cabin-tundra")
+// root = {
+//   userId: "cc99505e6697f7ac",
+//   keys: { edPriv, edPub, kemPriv, kemPub },   // all 64-char hex
+// }
 ```
 
-The auth function is called on every request, so it can refresh expired tokens dynamically.
+This is the lower-level primitive: it returns just the key material. It does **not** mint a cap-cert or set up any device state. Use it when you need the keys for an ad-hoc operation (re-signing a revocation list, granting a member cap, recovering a userId from a passphrase, etc.).
 
-### Static API Key
+## Bootstrap: passphrase → ready-to-use device
+
+For the first device of a user, `bootstrapRootIdentity` runs `deriveRootIdentity` and then self-signs a full-scope `kind: "device"` cap-cert. The returned device pair **is** the root pair on the first device — there is no separate per-device key on a brand-new account.
 
 ```ts
-auth: () => ({ "X-API-Key": apiKey })
+import { bootstrapRootIdentity } from "@drakkar.software/starfish-client"
+
+const creds = await bootstrapRootIdentity("paragraph-loud-yarn-river-cabin-tundra")
+// creds = {
+//   rootEdPub,                                    // hex
+//   userId,                                       // hex 32
+//   device: { edPriv, edPub, kemPriv, kemPub },   // hex; equals the root keys here
+//   capCert,                                      // self-signed kind:"device" full-scope cap
+// }
 ```
 
-### Password-Derived Token
+After bootstrap, plug `creds` into a `StarfishClient` `capProvider` and a `SyncManager` `signer`. See [25. Capability Certificates](25-capability-certs.md) for the cap-cert schema and [03. SyncManager](03-sync-manager.md) for the `signer` interface.
 
-Derive a deterministic token from a user password so the same password always produces the same identity:
+## Per-device identities
+
+Every device added after the first one runs under **freshly generated** Ed25519 + X25519 key pairs — they are not derived from the passphrase.
 
 ```ts
-async function deriveAuthToken(password: string): Promise<string> {
-  const encoded = new TextEncoder().encode(password.trim())
-  const hash = await crypto.subtle.digest("SHA-256", encoded)
-  return Array.from(new Uint8Array(hash))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("")
-}
+import { ed25519, x25519 } from "@noble/curves/ed25519.js"
 
-const token = await deriveAuthToken(userPassword)
-const userId = token.slice(0, 16)
-
-const client = new StarfishClient({
-  baseUrl: "https://api.example.com/v1",
-  auth: () => ({ Authorization: `Bearer ${token}` }),
-})
-```
-
-This allows multiple devices to derive the same token independently — no account creation or server-side registration needed.
-
-## Encryption Key Derivation
-
-### From a Password
-
-Derive `encryptionSecret` from a user password, using a unique salt:
-
-```ts
-async function deriveEncryptionKey(password: string, salt: string): Promise<string> {
-  const encoded = new TextEncoder().encode(`${password.trim()}:${salt}`)
-  const hash = await crypto.subtle.digest("SHA-256", encoded)
-  return Array.from(new Uint8Array(hash))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("")
-}
-
-const encryptionKey = await deriveEncryptionKey(userPassword, userId)
-
-const sync = new SyncManager({
-  client,
-  pullPath: `/pull/users/${userId}/data`,
-  pushPath: `/push/users/${userId}/data`,
-  encryptionSecret: encryptionKey,
-  encryptionSalt: userId,
-})
-```
-
-### Key Derivation Chain
-
-A common pattern derives both auth and encryption from a single secret:
-
-```
-password / passphrase
-├── authToken = SHA-256(password)              → Bearer header
-├── userId = authToken.slice(0, 16)            → server path + encryption salt
-└── encryptionKey = SHA-256(password:userId)   → passed to SyncManager
-```
-
-Each derived value serves a different purpose, and the chain is deterministic — any device with the password can reconstruct all keys.
-
-### From a Passphrase
-
-Generate a human-readable passphrase for sharing:
-
-```ts
-function generatePassphrase(wordList: string[], wordCount = 12): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(wordCount))
-  return Array.from(bytes)
-    .map((b) => wordList[b % wordList.length])
-    .join("-")
-}
-
-// "apple-arrow-atlas-bridge-canyon-drift-ember-frost-grove-haven-ivory-jade"
-```
-
-Users share the passphrase to grant access. Each device derives the same keys from it.
-
-## Salt Best Practices
-
-The `encryptionSalt` should be unique per user (or per collection) to ensure different keys even if two users share the same password:
-
-| Salt Source | Example | Use Case |
-|-------------|---------|----------|
-| User ID | `userId` | One collection per user |
-| User ID + collection | `${userId}:settings` | Multiple collections with different keys |
-| Auth token prefix | `authToken.slice(0, 16)` | Derived from the same password |
-
-## Key Rotation
-
-To rotate encryption keys (e.g., after a password change):
-
-```ts
-// 1. Pull and decrypt with the old key
-const oldSync = new SyncManager({
-  client, pullPath, pushPath,
-  encryptionSecret: oldKey,
-  encryptionSalt: oldSalt,
-})
-await oldSync.pull()
-const data = oldSync.getData()
-
-// 2. Push re-encrypted with the new key
-const newSync = new SyncManager({
-  client, pullPath, pushPath,
-  encryptionSecret: newKey,
-  encryptionSalt: newSalt,
-})
-await newSync.push(data)
-```
-
-## Sharing Encrypted Data
-
-To share encrypted data between users, share the `(encryptionSecret, encryptionSalt)` pair. This works with the server's "delegated" encryption mode, where the server stores encrypted blobs without knowing the key.
-
-Sharing methods:
-- **Passphrase**: share a human-readable passphrase from which both values are derived
-- **Deep link**: encode credentials in a URL — see [Invite links](#invite-links) below
-- **QR code**: encode the passphrase or credentials
-
-## Invite links
-
-`buildInviteUrl` and `parseInviteUrl` encode an arbitrary payload as a URL-safe base64 token appended to any base URL. Use this to share a generated passphrase (or any other onboarding data) as a tappable deep link or QR code.
-
-```ts
-import { generatePassphrase, deriveCredentials, buildInviteUrl, parseInviteUrl } from "@drakkar.software/starfish-client"
-
-// ── Sending device ─────────────────────────────────────────────────────────
-
-const passphrase = generatePassphrase()
-const creds = await deriveCredentials(passphrase)
-
-// Encode anything serialisable into a ?t=... token
-const inviteUrl = buildInviteUrl("myapp://join", {
-  p: passphrase,        // the passphrase itself — never log or store cleartext in prod
-  displayName: "Alice",
-})
-// → "myapp://join?t=eyJwIjoiYWJsZSBhY2lkIC4uLiIsImRpc3BsYXlOYW1lIjoiQWxpY2UifQ"
-
-// Works with HTTPS deep links too
-const webInvite = buildInviteUrl("https://myapp.example.com/join?ref=email", { p: passphrase })
-
-// ── Receiving device ───────────────────────────────────────────────────────
-
-// parseInviteUrl returns the decoded object, or null on any error
-const payload = parseInviteUrl(inviteUrl)
-
-if (payload) {
-  const joinCreds = await deriveCredentials(payload.p as string)
-  // joinCreds.userId / authToken / encryptionSecret are now identical to the sender's
-  console.log("joined as", joinCreds.userId)
-} else {
-  console.error("invalid or expired invite link")
+function generateDeviceKeys() {
+  const edPriv = ed25519.utils.randomSecretKey()
+  const kemPriv = x25519.utils.randomSecretKey()
+  return {
+    edPriv:  hex(edPriv),
+    edPub:   hex(ed25519.getPublicKey(edPriv)),
+    kemPriv: hex(kemPriv),
+    kemPub:  hex(x25519.getPublicKey(kemPriv)),
+  }
 }
 ```
 
-**Security notes:**
-- The token is base64url-encoded JSON — it is **not encrypted**. Do not embed secrets beyond the passphrase itself (which already grants full access).
-- Links are single-use by convention only — Starfish does not invalidate them server-side. For one-time links, rotate the passphrase after the recipient connects.
+Why generate locally instead of deriving from the passphrase?
+
+- The per-device key never has to leave the device — not even encrypted in the keyring. A passphrase-derived device key would be re-derivable on any other device that learned the passphrase, defeating the per-device compromise boundary.
+- Revoking a device means revoking *its* cap-cert. With a derived key the same key reappears on the next bootstrap; with a generated key revocation is final.
+- Per-device generated keys are what makes [24. Pairing](24-pairing.md) meaningful: the new device shows its freshly-generated pubkey in the QR / relay request; the root device mints a cap-cert binding that pubkey.
+
+## userId stability
+
+`userId` is a function of the root Ed25519 public key alone. It is stable across:
+
+- The same passphrase on any device.
+- Cap-cert rotations (the cert changes; `iss` and `issUserId` do not).
+- Per-device key changes (only the root key drives `userId`).
+
+It changes only if the user changes their passphrase. There is no separate `encryptionSalt` — the keyring's per-entry ephemeral ECDH makes a global salt unnecessary.
+
+## Encoding conventions
+
+| Value | Encoding |
+|-------|----------|
+| Any 32-byte key (Ed25519 priv/pub, X25519 priv/pub, CEK) | 64-char **lowercase** hex |
+| Cap-cert signatures, AES-GCM ciphertext, nonces | standard base64 (padded) |
+| `userId` | first 32 chars of `hex(sha256(rootEdPub))` — lowercase hex |
+
+Lowercase hex is canonical. Mixed-case input is not accepted by the wire-format validators.
 
 ## Next Steps
 
-- [Encryption](04-encryption.md) — how the keys are used for AES-256-GCM
-- [Platform Setup](10-platform-setup.md) — crypto provider for React Native
+- [25. Capability Certificates](25-capability-certs.md) — minting `device` and `member` caps with these keys
+- [24. Pairing](24-pairing.md) — bootstrap, QR pairing, server-relay invite
+- [04. Encryption](04-encryption.md) — how the X25519 KEM key feeds the per-collection keyring
+- [10. Platform Setup](10-platform-setup.md) — crypto provider configuration for React Native

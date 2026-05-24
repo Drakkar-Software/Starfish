@@ -46,23 +46,6 @@ describe("StarfishClient.pullBlob", () => {
     await expect(client.pullBlob("/pull/blobs/missing")).rejects.toThrow(StarfishHttpError)
   })
 
-  it("sends auth headers", async () => {
-    const mockFetch = vi.fn(async () => new Response(new ArrayBuffer(0), {
-      status: 200,
-      headers: { "Content-Type": "image/jpeg" },
-    }))
-
-    const client = new StarfishClient({
-      baseUrl: "https://api.example.com/v1",
-      auth: () => ({ Authorization: "Bearer token123" }),
-      fetch: mockFetch,
-    })
-
-    await client.pullBlob("/pull/avatars/user1")
-
-    const [, init] = mockFetch.mock.calls[0]
-    expect((init!.headers as Record<string, string>).Authorization).toBe("Bearer token123")
-  })
 })
 
 describe("StarfishClient.pushBlob", () => {

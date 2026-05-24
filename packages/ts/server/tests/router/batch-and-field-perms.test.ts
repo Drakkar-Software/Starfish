@@ -1,7 +1,6 @@
 import { describe, it, expect, vi } from "vitest"
 import { createSyncRouter, type SyncRouterOptions } from "../../src/router/route-builder.js"
 import { MemoryObjectStore } from "../../src/storage/memory.js"
-import { createCallbackAuditLogger } from "../../src/audit.js"
 import { configurePlatform } from "@drakkar.software/starfish-protocol"
 import { webcrypto } from "node:crypto"
 
@@ -35,6 +34,15 @@ describe("batch pull endpoint", () => {
             storagePath: "private/data",
             readRoles: ["admin"],
             writeRoles: ["admin"],
+            encryption: "none",
+            maxBodyBytes: 1_000_000,
+            allowedMimeTypes: ["application/json"],
+          },
+          {
+            name: "user-doc",
+            storagePath: "users/{identity}/doc",
+            readRoles: ["public"],
+            writeRoles: ["self"],
             encryption: "none",
             maxBodyBytes: 1_000_000,
             allowedMimeTypes: ["application/json"],
@@ -97,6 +105,89 @@ describe("batch pull endpoint", () => {
     expect(res.status).toBe(200)
     const body = await res.json()
     expect(body.collections["private-data"].data).toBeDefined()
+  })
+
+  it("reports parameterized collections as not batch-pullable (no masked error)", async () => {
+    const { app } = makeRouter()
+    const res = await app.request("/batch/pull?collections=user-doc,public-data")
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    // The {identity}-templated collection can't be addressed without params.
+    expect(body.collections["user-doc"].data).toBeUndefined()
+    expect(body.collections["user-doc"].error).toContain("not batch-pullable")
+    // A singleton collection in the same request is still served.
+    expect(body.collections["public-data"].data).toBeDefined()
+  })
+
+  it("drops empty slots in the collections CSV like the Python handler does", async () => {
+    // Empty slots (leading/trailing/double commas) are filtered, so a malformed CSV
+    // never produces spurious `""` → "Collection not found" entries — matching Python.
+    const { app } = makeRouter()
+    const res = await app.request("/batch/pull?collections=,public-data,,")
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(Object.keys(body.collections)).toEqual(["public-data"])
+    expect(body.collections["public-data"].data).toBeDefined()
+  })
+
+  it("returns an empty result set for an all-empty CSV (parity with Python, not 400)", async () => {
+    // `,,` is present-but-all-empty: the param guard only fires when the param itself
+    // is absent/empty, so this resolves to no names and 200 `{ collections: {} }`.
+    const { app } = makeRouter()
+    const res = await app.request("/batch/pull?collections=,,")
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.collections).toEqual({})
+  })
+})
+
+describe("batch pull TTL expiry", () => {
+  function makeTtlRouter() {
+    const store = new MemoryObjectStore(new Map())
+    const app = createSyncRouter({
+      store,
+      config: {
+        version: 1,
+        collections: [
+          {
+            name: "ephemeral",
+            storagePath: "ephemeral/data",
+            readRoles: ["public"],
+            writeRoles: ["admin"],
+            encryption: "none",
+            maxBodyBytes: 1_000_000,
+            allowedMimeTypes: ["application/json"],
+            ttlMs: 1000,
+          },
+        ],
+      },
+      roleResolver: async () => ({ identity: "u", roles: ["viewer"] }),
+    })
+    return { app, store }
+  }
+
+  it("omits data for a document past its ttlMs (parity with the standalone + Python paths)", async () => {
+    const { app, store } = makeTtlRouter()
+    // Seed an expired doc: its stored write-time is far in the past.
+    await store.put(
+      "ephemeral/data",
+      JSON.stringify({ data: { v: 1 }, hash: "h", ts: Date.now() - 999_999 }),
+    )
+    const res = await app.request("/batch/pull?collections=ephemeral")
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.collections.ephemeral.data).toEqual({})
+  })
+
+  it("returns data for a fresh document within ttlMs", async () => {
+    const { app, store } = makeTtlRouter()
+    await store.put(
+      "ephemeral/data",
+      JSON.stringify({ data: { v: 1 }, hash: "h", ts: Date.now() }),
+    )
+    const res = await app.request("/batch/pull?collections=ephemeral")
+    const body = await res.json()
+    expect(body.collections.ephemeral.data).toEqual({ v: 1 })
   })
 })
 
@@ -235,6 +326,54 @@ describe("field-level permissions", () => {
     expect(body.error).toContain("email")
   })
 
+  it("allows any authenticated user to write a field whose writeRoles is public", async () => {
+    // writeRoles:["public"] marks the field unrestricted; an authenticated user with
+    // role "self" (not the literal "public") must still be allowed. The field-write
+    // check honors ROLE_PUBLIC (route-builder.ts:439). See test_ttl_and_field_permissions.py
+    // for the Python twin — currently xfailed, as the Python write check omits ROLE_PUBLIC.
+    const store = new MemoryObjectStore(new Map())
+    const app = createSyncRouter({
+      store,
+      config: {
+        version: 1,
+        collections: [
+          {
+            name: "settings",
+            storagePath: "users/{identity}/settings",
+            readRoles: ["self"],
+            writeRoles: ["self"],
+            encryption: "none",
+            maxBodyBytes: 1_000_000,
+            allowedMimeTypes: ["application/json"],
+            fieldPermissions: { openField: { writeRoles: ["public"] } },
+          },
+        ],
+      },
+      roleResolver: async () => ({ identity: "user-1", roles: ["self"] }),
+    })
+    const res = await app.request("/push/users/user-1/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ data: { openField: "anyone-can-write" }, baseHash: null }),
+    })
+    expect(res.status).toBe(200)
+  })
+
+  it("treats an explicit null on a restricted field as a write (presence, not truthiness)", async () => {
+    // Setting an admin-only field to `null` must still be rejected — the guard keys on
+    // the field being PRESENT in `data`, so a non-admin cannot blank/no-op-touch it by
+    // sending null; only omitting the key avoids the check. Pins null can't slip past.
+    const { app } = makeRouter()
+    const res = await app.request("/push/users/user-1/profile", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ data: { name: "Alice", email: null }, baseHash: null }),
+    })
+    expect(res.status).toBe(403)
+    const body = await res.json()
+    expect(body.error).toContain("email")
+  })
+
   it("allows writes to unrestricted fields", async () => {
     const { app } = makeRouter()
     const res = await app.request("/push/users/user-1/profile", {
@@ -247,73 +386,25 @@ describe("field-level permissions", () => {
     })
     expect(res.status).toBe(200)
   })
-})
 
-describe("audit logging integration", () => {
-  it("records pull events to audit logger", async () => {
-    const entries: any[] = []
-    const auditLogger = createCallbackAuditLogger((e) => { entries.push(e) })
-    const store = new MemoryObjectStore(new Map())
-    const app = createSyncRouter({
-      store,
-      config: {
-        version: 1,
-        collections: [
-          {
-            name: "settings",
-            storagePath: "users/{identity}/settings",
-            readRoles: ["self"],
-            writeRoles: ["self"],
-            encryption: "none",
-            maxBodyBytes: 1_000_000,
-            allowedMimeTypes: ["application/json"],
-          },
-        ],
-      },
-      roleResolver: async () => ({ identity: "user-1", roles: ["self"] }),
-      auditLogger,
-    })
-
-    await app.request("/pull/users/user-1/settings")
-    expect(entries).toHaveLength(1)
-    expect(entries[0].action).toBe("pull")
-    expect(entries[0].collection).toBe("settings")
-    expect(entries[0].identity).toBe("user-1")
-    expect(entries[0].success).toBe(true)
-  })
-
-  it("records push events to audit logger", async () => {
-    const entries: any[] = []
-    const auditLogger = createCallbackAuditLogger((e) => { entries.push(e) })
-    const store = new MemoryObjectStore(new Map())
-    const app = createSyncRouter({
-      store,
-      config: {
-        version: 1,
-        collections: [
-          {
-            name: "settings",
-            storagePath: "users/{identity}/settings",
-            readRoles: ["self"],
-            writeRoles: ["self"],
-            encryption: "none",
-            maxBodyBytes: 1_000_000,
-            allowedMimeTypes: ["application/json"],
-          },
-        ],
-      },
-      roleResolver: async () => ({ identity: "user-1", roles: ["self"] }),
-      auditLogger,
-    })
-
-    await app.request("/push/users/user-1/settings", {
+  it("keeps the ETag (and 304) through field-read filtering", async () => {
+    // The field filter mutates `data` in place and leaves `hash` intact, so the
+    // hash-derived ETag survives and conditional requests still 304. (The Python twin
+    // currently drops the ETag on its rebuild — pinned there as a strict xfail.)
+    const { app } = makeRouter()
+    await app.request("/push/users/user-1/profile", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ data: { x: 1 }, baseHash: null }),
+      body: JSON.stringify({ data: { name: "Alice", bio: "Hello" }, baseHash: null }),
     })
-    expect(entries).toHaveLength(1)
-    expect(entries[0].action).toBe("push")
-    expect(entries[0].success).toBe(true)
+    const res1 = await app.request("/pull/users/user-1/profile")
+    expect(res1.status).toBe(200)
+    const etag = res1.headers.get("etag")
+    expect(etag).toBeTruthy()
+    const res2 = await app.request("/pull/users/user-1/profile", {
+      headers: { "If-None-Match": etag! },
+    })
+    expect(res2.status).toBe(304)
   })
 })
 

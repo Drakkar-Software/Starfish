@@ -1,0 +1,57 @@
+{
+  "description": "Cross-language vector for v3.0 root-identity derivation. Pipeline: Argon2id(passphrase) → master; HKDF-SHA256(master) → Ed25519 + X25519 seeds; sha256(rootEdPub)[0:16] → userId. Both TS and Python implementations must reproduce these outputs.",
+  "constants": {
+    "argon2": {
+      "memoryKiB": 47104,
+      "iterations": 3,
+      "parallelism": 1,
+      "hashLength": 32,
+      "saltUtf8": "starfish-v3-root",
+      "type": "argon2id"
+    },
+    "edHkdfSaltUtf8": "starfish-root-sign",
+    "edHkdfInfoUtf8": "ed25519",
+    "kemHkdfSaltUtf8": "starfish-root-kem",
+    "kemHkdfInfoUtf8": "x25519",
+    "userIdHexLen": 16,
+    "userIdSource": "sha256(rootEdPub) truncated to first 16 hex chars"
+  },
+  "vectors": [
+    {
+      "passphrase": "test-passphrase",
+      "argon2Master": "1f6443d820588ec9047724ff45eb34f93229ffcea2ad78ff6224813a4fcbace0",
+      "rootEdPriv": "b9622053b0876fcc95365267bc50ee728016127620844ed9f78f5e08285ac631",
+      "rootEdPub": "51c25f10f6c67988df723747bcba4346db88d53d94a8b6210b1bf95b3a36225e",
+      "rootKemPriv": "51a6d88329d1e98f99c2f17fe863ce59b5982fb3036d2a548a2830ab8a147c5d",
+      "rootKemPub": "3bfd40fb42cc2b0d08c9d032a875f48e2749e61284e6d84bcb8f1a2a83a54300",
+      "userId": "8983b7ca6369fc0c25b379ef97a6f9a1"
+    },
+    {
+      "passphrase": "the quick brown fox jumps over the lazy dog",
+      "argon2Master": "694aa58b1a335c3f5908b136cb38949c4d1af8d9f935b356127bd414c3ad7159",
+      "rootEdPriv": "23790eb9a3883574371a8995f5e7f2f8c18dde37e450b82ef633d456152dfadc",
+      "rootEdPub": "8fb7b8e888e45ce81e33c684815faa1afb27ee146b87fc1ba37361801c1e104d",
+      "rootKemPriv": "32d76e4dfec1ee02af5add0f1006b511c44df03a8837538998f7bea1c6d72028",
+      "rootKemPub": "4104d3a117b15f5a9642213ca9ce83cafaadfc00daf108097c51e6152c839b13",
+      "userId": "1395cb446562e6214080c0c95c82e520"
+    },
+    {
+      "passphrase": "café-passphrase-🔑",
+      "argon2Master": "864eb3960ff429aef8c098d59a0e7e48fb64a2a24a4cef0b7f2d57c176fbc4e9",
+      "rootEdPriv": "ccb57358c2dcee297e7d45ff14fd90a9e89f71a848601edfe334ff2a74a8d546",
+      "rootEdPub": "0b5f10329c9751f6e7d05593642763f6f02c4f11896b7af0ea97f30e27a6a9a8",
+      "rootKemPriv": "c3474b2631d5d53c2d3bf10037b74795892b60626af69e552579eb6632b86610",
+      "rootKemPub": "d08ba4cc9e3060d01695027ecfeaf4e269afa0e878e0370b066a1bc2f2df4462",
+      "userId": "a252a7c9b9860ff885a759ea93394622"
+    },
+    {
+      "passphrase": "able acid bald beam cake calm card cell ego envy face fact",
+      "argon2Master": "a45f8e3207f4e61a69ac40efb1f3d9317ec5ef08ac469bd5ed15e658f920549e",
+      "rootEdPriv": "3358baef71fc1e0f03b81659d249eb07510c3947e9e371d52bdf4ef01ce6646f",
+      "rootEdPub": "e2d16ca14944a6ec90e1393f9427f80c56c8366c5a59f81a94d43cba913c8895",
+      "rootKemPriv": "54cd714ebd29b292e05dfc5393d2f0e82f43ea13aec3305f3e9b067a19dffd27",
+      "rootKemPub": "98ed6a72f49700b81fda74c51382b9ebcd6722d4c92abcfda8713a2499653c25",
+      "userId": "af07a3e2e29fc8cc98d409abe9df58ff"
+    }
+  ]
+}

@@ -6,7 +6,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from starfish_server.config.schema import SyncConfig, CollectionConfig
-from starfish_server.config.validate import validate_config
+from starfish_server.config.validate import collect_config_warnings, validate_config
 from starfish_server.config.loader import load_config, save_config, parse_config_json, load_config_file
 from starfish_server.errors import StartupError
 from tests.helpers import MemoryObjectStore
@@ -27,7 +27,7 @@ VALID_CONFIG = SyncConfig(
             storagePath="users/{identity}/settings",
             readRoles=["self", "admin"],
             writeRoles=["self"],
-            encryption="identity",
+            encryption="delegated",
             maxBodyBytes=131072,
         ),
     ],
@@ -93,67 +93,62 @@ class TestValidateConfig:
         errors = validate_config(bad)
         assert any("pullOnly" in e for e in errors)
 
-    def test_group_encryption_valid_on_authenticated_collection(self):
-        config = SyncConfig(
+    def test_accepts_listable_storage_path_with_trailing_slash(self):
+        # "logs/{day}/" — the last meaningful segment is the "{day}" param.
+        # Parity guard with the TS validator, which now strips the trailing
+        # slash before taking the last segment (as Python's rstrip already did).
+        cfg = SyncConfig(
             version=1,
             collections=[
                 CollectionConfig(
-                    name="a", storagePath="groups/{groupId}/data",
-                    readRoles=["group-member"], writeRoles=["group-member"],
-                    encryption="group", maxBodyBytes=1024,
+                    name="logs", storagePath="logs/{day}/",
+                    readRoles=["cap:read:logs"], writeRoles=["cap:write:logs"],
+                    encryption="none", maxBodyBytes=1024, listable=True,
                 ),
             ],
         )
-        assert validate_config(config) == []
+        assert validate_config(cfg) == []
 
-    def test_detects_public_plus_group_encryption_conflict(self):
+    def test_rejects_root_only_with_public_read_role(self):
         bad = SyncConfig(
             version=1,
             collections=[
                 CollectionConfig(
-                    name="a", storagePath="x", readRoles=["public"],
-                    writeRoles=["admin"], encryption="group", maxBodyBytes=1024,
+                    name="secret", storagePath="secret/{slot}", readRoles=["public"],
+                    writeRoles=["self"], encryption="none", maxBodyBytes=1024,
+                    rootOnly=True,
                 ),
             ],
         )
         errors = validate_config(bad)
-        assert any("public collections cannot use" in e and "group" in e for e in errors)
+        assert any("rootOnly cannot be combined" in e for e in errors)
 
-    def test_detects_binary_collection_with_group_encryption(self):
+    def test_rejects_root_only_with_public_write_role(self):
         bad = SyncConfig(
             version=1,
             collections=[
                 CollectionConfig(
-                    name="a", storagePath="x", readRoles=["self"],
-                    writeRoles=["self"], encryption="group", maxBodyBytes=1024,
-                    allowedMimeTypes=["image/png"],
+                    name="secret", storagePath="secret/{slot}",
+                    readRoles=["cap:read:secret"], writeRoles=["public"],
+                    encryption="none", maxBodyBytes=1024, rootOnly=True,
                 ),
             ],
         )
         errors = validate_config(bad)
-        assert any("binary collections cannot use" in e for e in errors)
+        assert any("rootOnly cannot be combined" in e for e in errors)
 
-    def test_detects_remote_collection_with_group_encryption(self):
-        bad = SyncConfig(
+    def test_accepts_root_only_with_non_public_roles(self):
+        ok = SyncConfig(
             version=1,
             collections=[
                 CollectionConfig(
-                    name="a", storagePath="data/shared",
-                    readRoles=["group-member"], writeRoles=["group-member"],
-                    encryption="group", maxBodyBytes=1024,
-                    remote={
-                        "url": "https://primary.example.com",
-                        "pullPath": "/pull/data",
-                        "intervalMs": 60000,
-                        "headers": {},
-                        "writeMode": "pull_only",
-                        "syncTriggers": ["scheduled"],
-                    },
+                    name="secret", storagePath="secret/{slot}",
+                    readRoles=["cap:read:secret"], writeRoles=["cap:write:secret"],
+                    encryption="none", maxBodyBytes=1024, rootOnly=True,
                 ),
             ],
         )
-        errors = validate_config(bad)
-        assert any("group" in e and "remote" in e for e in errors)
+        assert validate_config(ok) == []
 
 
 class TestLoadSaveConfig:
@@ -194,7 +189,7 @@ VALID_JSON = json.dumps({
             "storagePath": "users/{identity}/settings",
             "readRoles": ["self", "admin"],
             "writeRoles": ["self"],
-            "encryption": "identity",
+            "encryption": "delegated",
             "maxBodyBytes": 131072,
         },
     ],
@@ -417,3 +412,93 @@ class TestLoadConfigFile:
     def test_raises_on_missing_file(self):
         with pytest.raises(FileNotFoundError):
             load_config_file("/nonexistent/config.json")
+
+
+class TestConfigWarnings:
+    """Non-fatal warnings for access-widening misconfigurations."""
+
+    def _config(self, col: CollectionConfig) -> SyncConfig:
+        return SyncConfig(version=1, collections=[col])
+
+    def test_clean_config_has_no_warnings(self):
+        cfg = self._config(
+            CollectionConfig(
+                name="notes",
+                storagePath="users/{identity}/notes",
+                readRoles=["cap:read:notes"],
+                writeRoles=["cap:write:notes"],
+                encryption="none",
+                maxBodyBytes=65536,
+            )
+        )
+        assert collect_config_warnings(cfg) == []
+
+    def test_warns_on_public_write_roles(self):
+        cfg = self._config(
+            CollectionConfig(
+                name="posts",
+                storagePath="posts/{id}",
+                readRoles=["public"],
+                writeRoles=["public"],
+                encryption="none",
+                maxBodyBytes=65536,
+            )
+        )
+        warnings = collect_config_warnings(cfg)
+        assert len(warnings) == 1
+        assert 'writeRoles contains "public"' in warnings[0]
+
+    def test_warns_on_cross_collection_cap_role(self):
+        cfg = self._config(
+            CollectionConfig(
+                name="secrets",
+                storagePath="users/{identity}/secrets",
+                readRoles=["cap:read:notes"],  # copy-paste typo
+                writeRoles=["cap:write:secrets"],
+                encryption="none",
+                maxBodyBytes=65536,
+            )
+        )
+        warnings = collect_config_warnings(cfg)
+        assert len(warnings) == 1
+        assert 'different collection ("notes")' in warnings[0]
+
+    def test_allows_own_cap_role_and_wildcard(self):
+        cfg = self._config(
+            CollectionConfig(
+                name="notes",
+                storagePath="users/{identity}/notes",
+                readRoles=["cap:read:notes", "cap:read:*"],
+                writeRoles=["cap:write:notes"],
+                encryption="none",
+                maxBodyBytes=65536,
+            )
+        )
+        assert collect_config_warnings(cfg) == []
+
+    def test_warns_on_self_role_without_identity_param(self):
+        cfg = self._config(
+            CollectionConfig(
+                name="shared",
+                storagePath="rooms/{owner}/notes",
+                readRoles=["self"],
+                writeRoles=["self"],
+                encryption="none",
+                maxBodyBytes=65536,
+            )
+        )
+        warnings = collect_config_warnings(cfg)
+        assert any('"self" role' in w and "{identity}" in w for w in warnings)
+
+    def test_no_self_warning_with_identity_param(self):
+        cfg = self._config(
+            CollectionConfig(
+                name="mine",
+                storagePath="users/{identity}/notes",
+                readRoles=["self"],
+                writeRoles=["self"],
+                encryption="none",
+                maxBodyBytes=65536,
+            )
+        )
+        assert collect_config_warnings(cfg) == []

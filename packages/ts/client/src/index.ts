@@ -1,22 +1,30 @@
 export { configurePlatform } from "@drakkar.software/starfish-protocol"
 export type { CryptoProvider, Base64Provider, PlatformConfig } from "@drakkar.software/starfish-protocol"
 export { stableStringify, computeHash } from "@drakkar.software/starfish-protocol"
-export type { PullResult, PushSuccess } from "@drakkar.software/starfish-protocol"
+export { buildRevocationList, revocationListCanonicalSigningInput } from "@drakkar.software/starfish-protocol"
+export type {
+  RevocationList,
+  RevocationEntry,
+  RevokedSubject,
+  BuildRevocationListOpts,
+} from "@drakkar.software/starfish-protocol"
+export type { PullResult, PushSuccess, PullKeyringProjection } from "@drakkar.software/starfish-protocol"
 
 export { StarfishClient } from "./client.js"
-export type { BlobPullResult, BlobPushResult, AppendPullOptions } from "./client.js"
+export type { BlobPullResult, BlobPushResult, AppendPullOptions, PullOptions } from "./client.js"
 export { SyncManager, AbortError } from "./sync.js"
-export type { SyncManagerOptions } from "./sync.js"
-export { createEncryptor, ENCRYPTED_KEY } from "./crypto.js"
-export type { Encryptor } from "./crypto.js"
+export type { SyncManagerOptions, SyncSigner } from "./sync.js"
+export { ENCRYPTED_KEY } from "@drakkar.software/starfish-protocol"
+export type { Encryptor } from "@drakkar.software/starfish-protocol"
 export {
   ConflictError,
   StarfishHttpError,
 } from "./types.js"
 export type {
   StarfishClientOptions,
-  AuthProvider,
+  StarfishCapProvider,
   ConflictResolver,
+  ClientPlugin,
 } from "./types.js"
 export { consoleSyncLogger, noopSyncLogger, createMetricsCollector } from "./logger.js"
 export type { SyncLogger, SyncMetrics, MetricsCollector } from "./logger.js"
@@ -62,17 +70,4 @@ export type {
   MultiStoreSyncOptions,
   MultiStoreSync,
 } from "./multi-store.js"
-export {
-  deriveGroupKeyPair,
-  generateGroupKey,
-  wrapGroupKey,
-  unwrapGroupKey,
-  createGroupKeyring,
-  addGroupMember,
-  rotateGroupKey,
-  createGroupEncryptor,
-} from "./group-crypto.js"
-export type { GroupKeyPair, EpochKeyring, GroupKeyring } from "./group-crypto.js"
-export { pullEntitlements } from "./entitlements.js"
-export type { PullEntitlementsOptions } from "./entitlements.js"
 export type { AppendOnlyClientInfo } from "./config.js"

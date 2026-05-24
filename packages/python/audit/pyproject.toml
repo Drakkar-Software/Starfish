@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "starfish-audit"
+version = "3.0.0a2"
+description = "Starfish audit logging extension (console / callback / no-op audit loggers for server pull/push events)"
+requires-python = ">=3.11"
+dependencies = [
+  "starfish-protocol",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.0",
+  "pytest-asyncio>=0.21",
+  "httpx>=0.27",
+  "starfish-server",
+]
+
+[tool.uv.sources]
+starfish-protocol = { path = "../protocol", editable = true }
+starfish-server = { path = "../server", editable = true }
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

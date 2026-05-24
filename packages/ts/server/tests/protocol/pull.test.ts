@@ -30,31 +30,17 @@ describe("pull", () => {
     expect(pullResult.hash).toBe(pushResult.hash)
   })
 
-  it("pull with checkpoint filters to newer keys", async () => {
+  it("regular pull always returns the full document (no checkpoint filtering)", async () => {
     const store = createIsolatedStore()
     await push(store, "doc/1", { a: 1, b: 2 }, null) as any
-    const checkpoint = Date.now()
-
-    // Small delay to ensure timestamp difference
-    await new Promise((r) => setTimeout(r, 5))
-
     const r1 = await pull(store, "doc/1")
     await push(store, "doc/1", { a: 1, b: 3, c: 4 }, r1.hash) as any
 
-    const filtered = await pull(store, "doc/1", checkpoint)
-    // b changed, c is new — a is unchanged (should be filtered)
-    expect(filtered.data).toHaveProperty("b", 3)
-    expect(filtered.data).toHaveProperty("c", 4)
-    expect(filtered.data).not.toHaveProperty("a")
-    // Hash is always the full document hash
-    expect(filtered.hash).toHaveLength(64)
-  })
-
-  it("pull with checkpoint=0 returns full data", async () => {
-    const store = createIsolatedStore()
-    await push(store, "doc/1", { x: 1 }, null)
-    const result = await pull(store, "doc/1", 0)
-    expect(result.data).toEqual({ x: 1 })
+    // Incremental sync was removed for regular collections — the whole document
+    // comes back regardless of how recently each field changed.
+    const result = await pull(store, "doc/1")
+    expect(result.data).toEqual({ a: 1, b: 3, c: 4 })
+    expect(result.hash).toHaveLength(64)
   })
 
   it("preserves author fields", async () => {

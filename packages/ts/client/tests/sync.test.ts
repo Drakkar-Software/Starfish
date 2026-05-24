@@ -1,5 +1,4 @@
 import { describe, it, expect, vi } from "vitest"
-import { stableStringify } from "@drakkar.software/starfish-protocol"
 import { StarfishClient } from "../src/client.js"
 import { SyncManager } from "../src/sync.js"
 import { ConflictError } from "../src/types.js"
@@ -57,7 +56,6 @@ describe("SyncManager", () => {
       "/push/test",
       { newKey: "newValue" },
       null,
-      undefined
     )
   })
 
@@ -86,6 +84,26 @@ describe("SyncManager", () => {
     expect(sync.getData()).toEqual({ a: 1, b: 3 })
   })
 
+  it("incremental pull replaces an array wholesale and preserves local-only keys", async () => {
+    // deepMerge is not element-wise: a remote array replaces the local one (not
+    // concatenated), while a local-only key survives. Pins the merge contract
+    // through the client's incremental path. Mirrors test_sync.py.
+    let callCount = 0
+    const client = mockClient({
+      pull: async () => {
+        callCount++
+        if (callCount === 1) return { data: { items: [1, 2, 3], k: "v" }, hash: "h1", timestamp: 100 }
+        return { data: { items: [9] }, hash: "h2", timestamp: 200 }
+      },
+    })
+    const sync = new SyncManager({ client, pullPath: "/pull/test", pushPath: "/push/test" })
+
+    await sync.pull()
+    expect(sync.getData()).toEqual({ items: [1, 2, 3], k: "v" })
+    await sync.pull() // incremental merge
+    expect(sync.getData()).toEqual({ items: [9], k: "v" })
+  })
+
   it("update does pull-modify-push", async () => {
     const pushFn = vi.fn(async () => ({ hash: "updated", timestamp: 500 }))
     const client = mockClient({ push: pushFn as any })
@@ -102,72 +120,6 @@ describe("SyncManager", () => {
 
     expect(result.hash).toBe("updated")
     expect(pushFn).toHaveBeenCalled()
-  })
-
-  it("signData signs the encrypted payload, not the plaintext", async () => {
-    const signedStrings: string[] = []
-    const signData = async (data: string) => {
-      signedStrings.push(data)
-      return "dummy-sig"
-    }
-
-    const pushFn = vi.fn(async () => ({ hash: "h1", timestamp: 1 }))
-    const client = mockClient({ push: pushFn as any })
-
-    const plaintext = { hello: "world", nested: { a: 1 } }
-
-    const sync = new SyncManager({
-      client,
-      pullPath: "/pull/test",
-      pushPath: "/push/test",
-      encryptionSecret: "a]cZ#8=6gT{>w$Q}",
-      encryptionSalt: "user-public-key-abc123",
-      encryptionInfo: "starfish-e2e",
-      signData,
-    })
-
-    await sync.push(plaintext)
-
-    // signData was called exactly once
-    expect(signedStrings).toHaveLength(1)
-
-    // The push call's second arg is the actual payload sent to the server
-    const actualPayload = pushFn.mock.calls[0][1]
-
-    // The signed string must be stableStringify of the encrypted payload
-    expect(signedStrings[0]).toBe(stableStringify(actualPayload))
-
-    // And it must NOT be the plaintext stringification
-    expect(signedStrings[0]).not.toBe(stableStringify(plaintext))
-
-    // The payload must be an encrypted wrapper
-    expect(actualPayload).toHaveProperty("_encrypted")
-  })
-
-  it("signData signs the raw data when no encryption is configured", async () => {
-    const signedStrings: string[] = []
-    const signData = async (data: string) => {
-      signedStrings.push(data)
-      return "dummy-sig"
-    }
-
-    const pushFn = vi.fn(async () => ({ hash: "h1", timestamp: 1 }))
-    const client = mockClient({ push: pushFn as any })
-
-    const plaintext = { key: "value" }
-
-    const sync = new SyncManager({
-      client,
-      pullPath: "/pull/test",
-      pushPath: "/push/test",
-      signData,
-    })
-
-    await sync.push(plaintext)
-
-    expect(signedStrings).toHaveLength(1)
-    // Without encryption, payload == plaintext
-    expect(signedStrings[0]).toBe(stableStringify(plaintext))
   })
 
   it("push retries on conflict, merges via onConflict, and succeeds", async () => {
@@ -209,6 +161,25 @@ describe("SyncManager", () => {
     expect(sync.getHash()).toBe("merged-hash")
   })
 
+  it("propagates an error thrown by a custom conflict resolver (not swallowed)", async () => {
+    // A resolver that rejects the merge (e.g. a validation failure) must surface
+    // its error to the caller rather than be silently swallowed. Mirrors test_sync.py.
+    const pushFn = vi.fn(async () => { throw new ConflictError() })
+    const pullFn = vi.fn(async () => ({ data: { a: 1 }, hash: "h1", timestamp: 100 }))
+    const onConflict = vi.fn(() => { throw new Error("merge rejected by validator") })
+    const client = mockClient({ pull: pullFn as any, push: pushFn as any })
+    const sync = new SyncManager({
+      client,
+      pullPath: "/pull/test",
+      pushPath: "/push/test",
+      onConflict,
+    })
+
+    await sync.pull()
+    await expect(sync.push({ a: 2 })).rejects.toThrow("merge rejected by validator")
+    expect(onConflict).toHaveBeenCalled()
+  })
+
   it("push throws ConflictError after exhausting maxRetries", async () => {
     const pushFn = vi.fn(async () => { throw new ConflictError() })
     const pullFn = vi.fn(async () => ({
@@ -229,6 +200,47 @@ describe("SyncManager", () => {
     await expect(sync.push({ local: true })).rejects.toThrow("hash_mismatch")
     // 1 initial + 1 retry = 2 attempts
     expect(pushFn).toHaveBeenCalledTimes(2)
+  })
+
+  // A faithful stateful "server": a push succeeds only when its baseHash equals
+  // the server's current hash (push.ts: `baseHash !== currentHash` → 409
+  // ConflictError); the loser conflict-retries (pull → default deepMerge → retry).
+  function statefulClient(initialHash: string, initialData: Record<string, unknown>) {
+    const state = { hash: initialHash, data: initialData }
+    const push = vi.fn(async (_p: string, data: Record<string, unknown>, baseHash: string | null) => {
+      if (baseHash !== state.hash) throw new ConflictError()
+      state.data = data
+      state.hash = "h-" + JSON.stringify(data)
+      return { hash: state.hash, timestamp: 1 }
+    })
+    const pull = vi.fn(async () => ({ data: state.data, hash: state.hash, timestamp: 1 }))
+    return { client: mockClient({ pull: pull as any, push: push as any }), state, push, pull }
+  }
+
+  it("two concurrent push() calls on the same manager both land (no lost write)", async () => {
+    const { client, state, push } = statefulClient("h0", {})
+    const sync = new SyncManager({ client, pullPath: "/pull/test", pushPath: "/push/test" })
+    sync.setHash("h0") // both pushes start from the same baseHash
+    await Promise.all([sync.push({ x: 1 }), sync.push({ y: 2 })])
+    // Observable invariant: the loser conflict-retries and the default deepMerge
+    // unions both writes — neither is lost. (One push lands directly, the other
+    // takes a second attempt.)
+    expect(state.data).toEqual({ x: 1, y: 2 })
+    expect(push.mock.calls.length).toBeGreaterThanOrEqual(3) // 1 winner + (1 conflict + 1 retry)
+  })
+
+  it("a stale/corrupt persisted hash self-heals through the conflict-retry loop", async () => {
+    // Rehydrating a truncated/garbage hash from storage makes the first push 409
+    // (it can't match the real current hash); the retry loop pulls, merges, and
+    // re-pushes against the real hash. The server treats *any* non-matching
+    // baseHash as a conflict (not a 400), so recovery is automatic.
+    const { client, state, push } = statefulClient("real-hash", { a: 1 })
+    const sync = new SyncManager({ client, pullPath: "/pull/test", pushPath: "/push/test" })
+    sync.setHash("truncated-garbage")
+    const result = await sync.push({ b: 2 })
+    expect(push).toHaveBeenCalledTimes(2) // 1 conflict + 1 successful retry
+    expect(state.data).toEqual({ a: 1, b: 2 })
+    expect(result.hash).toBe(state.hash)
   })
 
   it("push logs conflict resolution failure when re-pull fails", async () => {
@@ -268,22 +280,39 @@ describe("SyncManager", () => {
     )
   })
 
-  it("push forwards the signature to client.push()", async () => {
-    const signData = async () => "test-signature-abc"
-    const pushFn = vi.fn(async () => ({ hash: "h1", timestamp: 1 }))
+})
+
+// ── setHash ───────────────────────────────────────────────────────────────────
+
+describe("SyncManager.setHash", () => {
+  function makeSync() {
+    const client = mockClient()
+    return new SyncManager({ client, pullPath: "/pull/test", pushPath: "/push/test" })
+  }
+
+  it("sets the hash returned by getHash()", () => {
+    const sync = makeSync()
+    sync.setHash("h1")
+    expect(sync.getHash()).toBe("h1")
+  })
+
+  it("accepts null to clear the hash", () => {
+    const sync = makeSync()
+    sync.setHash("h1")
+    sync.setHash(null)
+    expect(sync.getHash()).toBeNull()
+  })
+
+  it("next push sends the restored hash as baseHash", async () => {
+    const pushFn = vi.fn(async () => ({ hash: "h2", timestamp: 200 }))
     const client = mockClient({ push: pushFn as any })
+    const sync = new SyncManager({ client, pullPath: "/pull/test", pushPath: "/push/test" })
 
-    const sync = new SyncManager({
-      client,
-      pullPath: "/pull/test",
-      pushPath: "/push/test",
-      signData,
-    })
-
+    sync.setHash("restored-hash")
     await sync.push({ foo: "bar" })
 
-    // Fourth positional arg to client.push is the signature
-    expect(pushFn.mock.calls[0][3]).toBe("test-signature-abc")
+    // Third positional arg to client.push is baseHash
+    expect(pushFn.mock.calls[0][2]).toBe("restored-hash")
   })
 })
 

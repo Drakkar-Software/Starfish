@@ -31,9 +31,28 @@ jobs:
       - name: Run tests
         run: pnpm test
 
-  publish-protocol:
+  setup:
     needs: test
     if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      npm_tag: ${{ steps.meta.outputs.npm_tag }}
+    steps:
+      - name: Compute version and dist-tag
+        id: meta
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if echo "$VERSION" | grep -qE '(alpha|beta|rc)'; then
+            NPM_TAG=$(echo "$VERSION" | grep -oE 'alpha|beta|rc' | head -1)
+          else
+            NPM_TAG=latest
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "npm_tag=$NPM_TAG" >> $GITHUB_OUTPUT
+
+  publish-protocol:
+    needs: setup
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -55,17 +74,16 @@ jobs:
 
       - name: Set version from tag
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${{ needs.setup.outputs.version }}"
           cd packages/ts/protocol
           npm pkg set "version=$VERSION"
 
       - name: Publish starfish-protocol
         working-directory: packages/ts/protocol
-        run: npx npm@latest publish --provenance --access public
+        run: npx npm@latest publish --provenance --access public --tag ${{ needs.setup.outputs.npm_tag }}
 
   publish-client:
-    needs: publish-protocol
-    if: startsWith(github.ref, 'refs/tags/')
+    needs: [setup, publish-protocol]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -87,18 +105,17 @@ jobs:
 
       - name: Set version from tag
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${{ needs.setup.outputs.version }}"
           cd packages/ts/client
           npm pkg set "version=$VERSION"
           npm pkg set "dependencies.@drakkar.software/starfish-protocol=$VERSION"
 
       - name: Publish starfish-client
         working-directory: packages/ts/client
-        run: npx npm@latest publish --provenance --access public
+        run: npx npm@latest publish --provenance --access public --tag ${{ needs.setup.outputs.npm_tag }}
 
   publish-server:
-    needs: publish-protocol
-    if: startsWith(github.ref, 'refs/tags/')
+    needs: [setup, publish-protocol]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -120,11 +137,242 @@ jobs:
 
       - name: Set version from tag
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${{ needs.setup.outputs.version }}"
           cd packages/ts/server
           npm pkg set "version=$VERSION"
           npm pkg set "dependencies.@drakkar.software/starfish-protocol=$VERSION"
 
       - name: Publish starfish-server
         working-directory: packages/ts/server
-        run: npx npm@latest publish --provenance --access public
+        run: npx npm@latest publish --provenance --access public --tag ${{ needs.setup.outputs.npm_tag }}
+
+  publish-keyring:
+    needs: [setup, publish-client]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v5
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: pnpm
+          registry-url: "https://registry.npmjs.org"
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm build
+
+      - name: Set version from tag
+        run: |
+          VERSION="${{ needs.setup.outputs.version }}"
+          cd packages/ts/keyring
+          npm pkg set "version=$VERSION"
+          npm pkg set "dependencies.@drakkar.software/starfish-protocol=$VERSION"
+          npm pkg set "dependencies.@drakkar.software/starfish-client=$VERSION"
+
+      - name: Publish starfish-keyring
+        working-directory: packages/ts/keyring
+        run: npx npm@latest publish --provenance --access public --tag ${{ needs.setup.outputs.npm_tag }}
+
+  publish-identities:
+    needs: [setup, publish-keyring]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v5
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: pnpm
+          registry-url: "https://registry.npmjs.org"
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm build
+
+      - name: Set version from tag
+        run: |
+          VERSION="${{ needs.setup.outputs.version }}"
+          cd packages/ts/identities
+          npm pkg set "version=$VERSION"
+          npm pkg set "dependencies.@drakkar.software/starfish-protocol=$VERSION"
+          npm pkg set "dependencies.@drakkar.software/starfish-client=$VERSION"
+          npm pkg set "dependencies.@drakkar.software/starfish-keyring=$VERSION"
+
+      - name: Publish starfish-identities
+        working-directory: packages/ts/identities
+        run: npx npm@latest publish --provenance --access public --tag ${{ needs.setup.outputs.npm_tag }}
+
+  publish-sharing:
+    needs: [setup, publish-keyring]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v5
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: pnpm
+          registry-url: "https://registry.npmjs.org"
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm build
+
+      - name: Set version from tag
+        run: |
+          VERSION="${{ needs.setup.outputs.version }}"
+          cd packages/ts/sharing
+          npm pkg set "version=$VERSION"
+          npm pkg set "dependencies.@drakkar.software/starfish-protocol=$VERSION"
+          npm pkg set "dependencies.@drakkar.software/starfish-client=$VERSION"
+          npm pkg set "dependencies.@drakkar.software/starfish-keyring=$VERSION"
+
+      - name: Publish starfish-sharing
+        working-directory: packages/ts/sharing
+        run: npx npm@latest publish --provenance --access public --tag ${{ needs.setup.outputs.npm_tag }}
+
+  publish-entitlements:
+    needs: [setup, publish-client, publish-server]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v5
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: pnpm
+          registry-url: "https://registry.npmjs.org"
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm build
+
+      - name: Set version from tag
+        run: |
+          VERSION="${{ needs.setup.outputs.version }}"
+          cd packages/ts/entitlements
+          npm pkg set "version=$VERSION"
+          npm pkg set "dependencies.@drakkar.software/starfish-client=$VERSION"
+          npm pkg set "dependencies.@drakkar.software/starfish-server=$VERSION"
+
+      - name: Publish starfish-entitlements
+        working-directory: packages/ts/entitlements
+        run: npx npm@latest publish --provenance --access public --tag ${{ needs.setup.outputs.npm_tag }}
+
+  publish-audit:
+    needs: [setup, publish-protocol]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v5
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: pnpm
+          registry-url: "https://registry.npmjs.org"
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm build
+
+      - name: Set version from tag
+        run: |
+          VERSION="${{ needs.setup.outputs.version }}"
+          cd packages/ts/audit
+          npm pkg set "version=$VERSION"
+          npm pkg set "dependencies.@drakkar.software/starfish-protocol=$VERSION"
+
+      - name: Publish starfish-audit
+        working-directory: packages/ts/audit
+        run: npx npm@latest publish --provenance --access public --tag ${{ needs.setup.outputs.npm_tag }}
+
+  publish-queuing:
+    needs: [setup, publish-protocol]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v5
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: pnpm
+          registry-url: "https://registry.npmjs.org"
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm build
+
+      - name: Set version from tag
+        run: |
+          VERSION="${{ needs.setup.outputs.version }}"
+          cd packages/ts/queuing
+          npm pkg set "version=$VERSION"
+          npm pkg set "dependencies.@drakkar.software/starfish-protocol=$VERSION"
+
+      - name: Publish starfish-queuing
+        working-directory: packages/ts/queuing
+        run: npx npm@latest publish --provenance --access public --tag ${{ needs.setup.outputs.npm_tag }}
+
+  publish-replica:
+    needs: [setup, publish-server]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v5
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: pnpm
+          registry-url: "https://registry.npmjs.org"
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm build
+
+      - name: Set version from tag
+        run: |
+          VERSION="${{ needs.setup.outputs.version }}"
+          cd packages/ts/replica
+          npm pkg set "version=$VERSION"
+          npm pkg set "dependencies.@drakkar.software/starfish-protocol=$VERSION"
+          npm pkg set "dependencies.@drakkar.software/starfish-server=$VERSION"
+
+      - name: Publish starfish-replica
+        working-directory: packages/ts/replica
+        run: npx npm@latest publish --provenance --access public --tag ${{ needs.setup.outputs.npm_tag }}

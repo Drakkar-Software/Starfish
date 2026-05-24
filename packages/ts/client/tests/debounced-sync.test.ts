@@ -91,7 +91,6 @@ describe("createDebouncedSync", () => {
       expect.any(String),
       { custom: "doc" },
       null,   // baseHash is null before first push
-      undefined,
     )
   })
 

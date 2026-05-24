@@ -34,18 +34,17 @@ export class RateLimiter {
 
   check(
     identity: string | null,
-    headers?: { get(name: string): string | null | undefined },
+    forwardedFor: string | null = null,
+    clientIp: string | null = null,
   ): { error: string; status: number } | null {
+    // Bucket-key precedence: authenticated identity → first X-Forwarded-For hop →
+    // direct client IP → shared "anonymous". Identical to the Python RateLimiter; the
+    // only difference is which signals a runtime can supply (Hono has no portable socket
+    // IP, so TS callers pass clientIp=null and direct anonymous traffic shares a bucket).
     let bucketKey = identity
-    if (!bucketKey && headers) {
-      const forwarded = headers.get("x-forwarded-for")
-      if (forwarded) {
-        bucketKey = forwarded.split(",")[0]!.trim()
-      }
-    }
-    if (!bucketKey) {
-      bucketKey = "anonymous"
-    }
+    if (!bucketKey && forwardedFor) bucketKey = forwardedFor.split(",")[0]!.trim()
+    if (!bucketKey && clientIp) bucketKey = clientIp
+    if (!bucketKey) bucketKey = "anonymous"
 
     const now = Date.now()
     let entry = this._buckets.get(bucketKey)

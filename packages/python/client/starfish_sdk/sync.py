@@ -1,15 +1,39 @@
 """High-level sync manager with automatic conflict resolution."""
 
 import asyncio
+import base64
 import random
-from typing import Any
+from typing import Any, Protocol
 
 from starfish_protocol.hash import stable_stringify
 from starfish_protocol.merge import deep_merge
 from starfish_protocol.types import PullResult
+from starfish_protocol.crypto import Encryptor
 from starfish_sdk.client import StarfishClient
-from starfish_sdk.crypto import Encryptor, create_encryptor
-from starfish_sdk.types import ConflictError, ConflictResolver, DataSigner
+from starfish_sdk.types import ConflictError, ConflictResolver
+
+
+class SyncSigner(Protocol):
+    """v3.0 author-signature plumbing for :class:`SyncManager`.
+
+    ``get_signer()`` returns ``{"dev_ed_pub_hex": <str>, "sign": async fn}``.
+    The ``sign`` function receives the canonical signing-input bytes and
+    must return the raw 64-byte Ed25519 signature.
+
+    Typical implementations wrap the same Ed25519 private key used by
+    :class:`CapProvider` so that ``cap.sub == dev_ed_pub_hex``.
+    """
+
+    async def get_signer(self) -> dict[str, Any]:
+        """Return ``{"dev_ed_pub_hex": <str>, "sign": <async (bytes) -> bytes>}``."""
+        ...
+
+
+class AbortError(Exception):
+    """Raised when a SyncManager operation is cancelled via abort()."""
+
+    def __init__(self) -> None:
+        super().__init__("SyncManager was aborted")
 
 
 class AbortError(Exception):
@@ -34,28 +58,16 @@ class SyncManager:
         *,
         on_conflict: ConflictResolver | None = None,
         max_retries: int = 3,
-        encryption_secret: str | None = None,
-        encryption_salt: str | None = None,
-        encryption_info: str = "starfish-e2e",
         encryptor: Encryptor | None = None,
-        sign_data: DataSigner | None = None,
+        signer: SyncSigner | None = None,
     ) -> None:
         self._client = client
         self._pull_path = pull_path
         self._push_path = push_path
         self._on_conflict = on_conflict or deep_merge
         self._max_retries = max_retries
-        self._sign_data = sign_data
-        if (encryption_secret is None) != (encryption_salt is None):
-            raise ValueError("Both encryption_secret and encryption_salt must be provided together")
-        if encryptor is not None:
-            self._encryptor: Encryptor | None = encryptor
-        else:
-            self._encryptor = (
-                create_encryptor(encryption_secret, encryption_salt, encryption_info)
-                if encryption_secret is not None and encryption_salt is not None
-                else None
-            )
+        self._signer = signer
+        self._encryptor: Encryptor | None = encryptor
 
         self._last_hash: str | None = None
         self._last_checkpoint: int = 0
@@ -122,7 +134,7 @@ class SyncManager:
 
         while attempt <= self._max_retries:
             try:
-                payload = (
+                sealed = (
                     self._encryptor.encrypt(pending_data)
                     if self._encryptor is not None
                     else pending_data
@@ -130,16 +142,28 @@ class SyncManager:
                 if self._aborted:
                     raise AbortError()
 
-                sig = (
-                    await self._sign_data(stable_stringify(payload))
-                    if self._sign_data is not None
-                    else None
-                )
-                if self._aborted:
-                    raise AbortError()
+                # v3 signer path: sign over stable_stringify(payload-without-author-fields)
+                # and attach authorPubkey + authorSignature INSIDE the sealed
+                # payload (data field).
+                payload: dict[str, Any] = sealed
+                if self._signer is not None:
+                    ctx = await self._signer.get_signer()
+                    if self._aborted:
+                        raise AbortError()
+                    dev_ed_pub_hex = ctx["dev_ed_pub_hex"]
+                    sign_fn = ctx["sign"]
+                    canonical = stable_stringify(sealed).encode("utf-8")
+                    sig_bytes = await sign_fn(canonical)
+                    if self._aborted:
+                        raise AbortError()
+                    payload = {
+                        **sealed,
+                        "authorPubkey": dev_ed_pub_hex,
+                        "authorSignature": base64.b64encode(sig_bytes).decode("ascii"),
+                    }
 
                 result = await self._client.push(
-                    self._push_path, payload, self._last_hash, sig
+                    self._push_path, payload, self._last_hash
                 )
                 if self._aborted:
                     raise AbortError()

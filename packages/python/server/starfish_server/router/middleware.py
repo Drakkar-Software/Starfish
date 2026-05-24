@@ -37,21 +37,32 @@ class _BucketEntry:
 class RateLimiter:
     """In-memory rate limiter keyed by identity or client IP."""
 
-    def __init__(self, window_ms: int = 60_000, max_requests: int = 100) -> None:
+    def __init__(
+        self, window_ms: int = 60_000, max_requests: int = 100, max_buckets: int = 10_000
+    ) -> None:
         self._window_ms = window_ms
         self._max_requests = max_requests
+        self._max_buckets = max_buckets
         self._buckets: dict[str, _BucketEntry] = {}
 
-    def check(self, identity: str | None, request: Request | None = None) -> JSONResponse | None:
-        """Return an error response if the rate limit is exceeded."""
-        # Use identity if available, otherwise fall back to client IP
+    def check(
+        self,
+        identity: str | None,
+        forwarded_for: str | None = None,
+        client_ip: str | None = None,
+    ) -> JSONResponse | None:
+        """Return an error response if the rate limit is exceeded.
+
+        Bucket-key precedence: authenticated identity → first X-Forwarded-For hop →
+        direct client IP → shared ``"anonymous"``. Identical to the TS RateLimiter; the
+        only difference is which signals a runtime supplies (the Python server can pass
+        the socket ``request.client.host`` as ``client_ip``; Hono cannot).
+        """
         bucket_key = identity
-        if not bucket_key and request is not None:
-            forwarded = request.headers.get("x-forwarded-for")
-            if forwarded:
-                bucket_key = forwarded.split(",")[0].strip()
-            else:
-                bucket_key = request.client.host if request.client else "anonymous"
+        if not bucket_key and forwarded_for:
+            bucket_key = forwarded_for.split(",")[0].strip()
+        if not bucket_key and client_ip:
+            bucket_key = client_ip
         if not bucket_key:
             bucket_key = "anonymous"
 
@@ -63,6 +74,11 @@ class RateLimiter:
             self._buckets = {
                 k: v for k, v in self._buckets.items() if v.reset_at > now
             }
+            # Evict the oldest bucket if at capacity, to bound memory under a flood of
+            # distinct keys (e.g. spoofed X-Forwarded-For). dict preserves insertion
+            # order, so the first key is the oldest. Mirrors the TS RateLimiter.
+            if len(self._buckets) >= self._max_buckets:
+                del self._buckets[next(iter(self._buckets))]
             entry = _BucketEntry(count=0, reset_at=now + self._window_ms)
             self._buckets[bucket_key] = entry
 

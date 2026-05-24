@@ -311,7 +311,7 @@ describe("bundled collections inside namespace", () => {
             bundle: "userdata",
             readRoles: ["self"],
             writeRoles: ["self"],
-            encryption: "identity",
+            encryption: "none",
             maxBodyBytes: 1_000_000,
             allowedMimeTypes: ["application/json"],
           },
@@ -321,7 +321,7 @@ describe("bundled collections inside namespace", () => {
             bundle: "userdata",
             readRoles: ["self"],
             writeRoles: ["self"],
-            encryption: "identity",
+            encryption: "none",
             maxBodyBytes: 1_000_000,
             allowedMimeTypes: ["application/json"],
           },
@@ -336,7 +336,6 @@ describe("bundled collections inside namespace", () => {
       store,
       config: bundleConfig,
       roleResolver: async () => ({ identity: "user-1", roles: ["self"] }),
-      encryptionSecret: "test-secret",
     })
   }
 

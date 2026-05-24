@@ -8,10 +8,11 @@ import {
 } from "zustand/middleware"
 import type { DevtoolsOptions } from "zustand/middleware"
 import { useEffect, useRef, useState, useCallback } from "react"
+import type { Encryptor } from "@drakkar.software/starfish-protocol"
 import { StarfishClient } from "../client.js"
 import { SyncManager } from "../sync.js"
 import { setupCrossTabSync, type BroadcastableStore } from "../broadcast.js"
-import type { AuthProvider, ConflictResolver } from "../types.js"
+import type { StarfishCapProvider, ConflictResolver } from "../types.js"
 import type { SyncLogger } from "../logger.js"
 import type { Validator } from "../validate.js"
 
@@ -315,11 +316,11 @@ export function useLastSynced(store: StoreApi<StarfishStore>): string {
 
 export interface SyncInitConfig {
   serverUrl: string
-  auth?: AuthProvider
+  capProvider?: StarfishCapProvider
   pullPath: string
   pushPath: string
-  encryptionSecret?: string
-  encryptionSalt?: string
+  /** Pre-built encryptor for E2E collections (build via `createKeyringEncryptor`). */
+  encryptor?: Encryptor
   onConflict?: ConflictResolver
   /** Called when pulled data arrives. Use to restore domain stores. */
   onData?: (data: Record<string, unknown>) => void
@@ -352,7 +353,7 @@ export function useSyncInit(config: SyncInitConfig | null): StoreApi<StarfishSto
 
     const client = new StarfishClient({
       baseUrl: config.serverUrl,
-      auth: config.auth,
+      capProvider: config.capProvider,
       fetch: config.fetch,
     })
 
@@ -360,8 +361,7 @@ export function useSyncInit(config: SyncInitConfig | null): StoreApi<StarfishSto
       client,
       pullPath: config.pullPath,
       pushPath: config.pushPath,
-      encryptionSecret: config.encryptionSecret,
-      encryptionSalt: config.encryptionSalt,
+      encryptor: config.encryptor,
       onConflict: config.onConflict,
       logger: config.logger,
       validate: config.validate,
@@ -398,8 +398,7 @@ export function useSyncInit(config: SyncInitConfig | null): StoreApi<StarfishSto
     config?.serverUrl,
     config?.pullPath,
     config?.pushPath,
-    config?.encryptionSecret,
-    config?.encryptionSalt,
+    config?.encryptor,
     config?.storeName,
   ])
 
