@@ -82,31 +82,39 @@ import { StarfishClient } from "@drakkar.software/starfish-client"
 
 const client = new StarfishClient({
   baseUrl: "https://api.example.com/v1",
-  auth: async () => ({ Authorization: `Bearer ${token}` }),
+  capProvider: { getCap: async () => ({ cap: creds.capCert, devEdPrivHex: creds.device.edPriv }) },
 })
 
-// This returns the raw server data, including { _encrypted: "..." }
+// This returns the raw server data, including { _encrypted: "...", _epoch: N }
 const result = await client.pull(`/pull/users/${userId}/notes`)
 const encryptedJson = JSON.stringify(result.data, null, 2)
 ```
 
 ### Re-encrypting for sharing
 
-Decrypt with the original key, then encrypt with a new key:
+In v3 the typical "share" flow is to add the recipient's X25519 pubkey to
+the collection's keyring rather than re-encrypting documents:
 
 ```ts
-import { createEncryptor } from "@drakkar.software/starfish-client"
+import {
+  addCollectionRecipient,
+  type RecipientRef,
+} from "@drakkar.software/starfish-client"
 
-const original = createEncryptor(originalSecret, originalSalt)
-const shared = createEncryptor(sharedSecret, sharedSalt)
-
-// Pull the raw encrypted blob
-const result = await client.pull(`/pull/users/${userId}/notes`)
-const decrypted = await original.decrypt(result.data)
-const reEncrypted = await shared.encrypt(decrypted)
+const recipient: RecipientRef = { subKem: bobDeviceKemPubHex }
+await addCollectionRecipient(client, "notes", recipient, {
+  edPriv: creds.device.edPriv,
+  edPub: creds.device.edPub,
+  kemPriv: creds.device.kemPriv,
+})
+// Bob can now decrypt every document under the current epoch.
 ```
 
-See [Identity & Key Derivation](11-identity-key-derivation.md#sharing-encrypted-data) for key sharing patterns.
+If you need a one-off re-encrypt under a separate CEK (e.g., to hand a
+single dump to an external party without modifying the live keyring),
+build a second keyring + encryptor for the external recipient and re-seal
+each document. See [23. Multi-Recipient Delegated Encryption](23-multi-recipient-delegated.md)
+for the keyring lifecycle.
 
 ## Importing Data
 
@@ -227,63 +235,78 @@ The `_exportVersion` field lets you evolve the export format independently from 
 
 ## Account Migration
 
-Move data from one account to another by pulling with old credentials and pushing with new ones:
+Move data from one v3 account to another by pulling with the old user's
+encryptor and pushing with the new user's encryptor:
 
 ```ts
-import { StarfishClient, SyncManager } from "@drakkar.software/starfish-client"
+import {
+  StarfishClient,
+  SyncManager,
+  bootstrapRootIdentity,
+  createKeyringEncryptor,
+  type Keyring,
+} from "@drakkar.software/starfish-client"
 
 async function migrateCollection(
   oldClient: StarfishClient,
   newClient: StarfishClient,
-  pullPath: string,
-  pushPath: string,
-  encryptionSecret?: string,
-  oldSalt?: string,
-  newSalt?: string,
+  oldEnc: Awaited<ReturnType<typeof createKeyringEncryptor>>,
+  newEnc: Awaited<ReturnType<typeof createKeyringEncryptor>>,
+  oldPath: string,
+  newPath: string,
 ) {
-  // Pull from old account (decrypt with old salt)
+  // Pull from old account, decrypt with old encryptor.
   const oldSync = new SyncManager({
     client: oldClient,
-    pullPath,
-    pushPath,
-    encryptionSecret,
-    encryptionSalt: oldSalt,
+    pullPath: `/pull/${oldPath}`,
+    pushPath: `/push/${oldPath}`,
+    encryptor: oldEnc,
   })
   await oldSync.pull()
   const data = oldSync.getData()
 
-  // Push to new account (encrypt with new salt)
+  // Push to the new account's path, encrypted under the new keyring.
   const newSync = new SyncManager({
     client: newClient,
-    pullPath,
-    pushPath,
-    encryptionSecret,
-    encryptionSalt: newSalt,
+    pullPath: `/pull/${newPath}`,
+    pushPath: `/push/${newPath}`,
+    encryptor: newEnc,
   })
   await newSync.push(data)
 }
 
 // Usage
+const oldCreds = await loadOldCreds()         // your existing persisted DeviceCredentials
+const newCreds = await bootstrapRootIdentity(newPassphrase)
+
 const oldClient = new StarfishClient({
   baseUrl: "https://api.example.com/v1",
-  auth: async () => ({ Authorization: `Bearer ${oldToken}` }),
+  capProvider: { getCap: async () => ({ cap: oldCreds.capCert, devEdPrivHex: oldCreds.device.edPriv }) },
 })
-
 const newClient = new StarfishClient({
   baseUrl: "https://api.example.com/v1",
-  auth: async () => ({ Authorization: `Bearer ${newToken}` }),
+  capProvider: { getCap: async () => ({ cap: newCreds.capCert, devEdPrivHex: newCreds.device.edPriv }) },
 })
 
 const collections = ["settings", "notes", "tasks"]
 for (const name of collections) {
+  const oldKr = (await oldClient.pull(`${name}/_keyring`)).data as Keyring
+  const newKr = (await newClient.pull(`${name}/_keyring`)).data as Keyring
+  const oldEnc = await createKeyringEncryptor(oldKr, {
+    kemPubHex: oldCreds.device.kemPub,
+    kemPrivHex: oldCreds.device.kemPriv,
+  })
+  const newEnc = await createKeyringEncryptor(newKr, {
+    kemPubHex: newCreds.device.kemPub,
+    kemPrivHex: newCreds.device.kemPriv,
+  })
   await migrateCollection(
     oldClient,
     newClient,
-    `/pull/users/${oldUserId}/${name}`,
-    `/push/users/${newUserId}/${name}`,
-    encryptionSecret,
-    oldUserId, // old salt for decryption
-    newUserId, // new salt for encryption
+    oldEnc,
+    newEnc,
+    `users/${oldCreds.userId}/${name}`,
+    `users/${newCreds.userId}/${name}`,
   )
 }
 ```

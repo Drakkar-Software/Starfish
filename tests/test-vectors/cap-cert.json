@@ -1,0 +1,172 @@
+{
+  "description": "Cross-language vector for v3.0 capability certificates. Locks the canonical signing input (stable_stringify of the cert minus `sig`) and the Ed25519 signature. Verifies `device` (proxy), `member` (scoped grant), and `audience` (public-link, no single subject — open and allow-list-restricted) kinds, plus a forged variant that must fail signature verification. The audience caps carry no `sub`/`subKem`/`subUserId`; their absence is part of the locked canonical input.",
+  "issuer": {
+    "label": "alice_root",
+    "edPub": "4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6",
+    "userId": "98341e0ad3e56672018cd761b99a2906"
+  },
+  "subjects": {
+    "alice_dev_1": {
+      "edPub": "5333460b6cdb1dd4adc074c70ac38823c09153d430202406599f0b929a55f8ca",
+      "kemPub": "3eff30609e9818588e2c2923ee5b532efe18af1f192c6443148c8b55bba75c1c"
+    },
+    "bob_root": {
+      "edPub": "4ab28c2400e6f24c7fdde3132045dc2058d3c2be159500995ec6c9c6012bd12b",
+      "kemPub": "1a52d1496448f8956c12157a6263a7fa62ec4700c11b4ed141ad2f1fd79c4651",
+      "userId": "d949a496d17da76cff668aff82837928"
+    }
+  },
+  "deviceCap": {
+    "cert": {
+      "v": 1,
+      "kind": "device",
+      "iss": "4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6",
+      "issUserId": "98341e0ad3e56672018cd761b99a2906",
+      "sub": "5333460b6cdb1dd4adc074c70ac38823c09153d430202406599f0b929a55f8ca",
+      "subKem": "3eff30609e9818588e2c2923ee5b532efe18af1f192c6443148c8b55bba75c1c",
+      "scope": {
+        "ops": [
+          "read",
+          "write",
+          "list"
+        ],
+        "collections": [
+          "*"
+        ],
+        "paths": [
+          "*"
+        ]
+      },
+      "nbf": 1747000000,
+      "exp": 1749592000,
+      "nonce": "ABEiM0RVZneImaq7zN3u/w==",
+      "sig": "pCJ8hElfkn3Zpa4qjNsIugTAmut7d9KouPb3IZnzaReqLiMoAGSYtcEtHfN6/qTd7uXxN+V0VY2rNTbcGh4EDQ=="
+    },
+    "canonicalSigningInput": "{\"exp\":1749592000,\"iss\":\"4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6\",\"issUserId\":\"98341e0ad3e56672018cd761b99a2906\",\"kind\":\"device\",\"nbf\":1747000000,\"nonce\":\"ABEiM0RVZneImaq7zN3u/w==\",\"scope\":{\"collections\":[\"*\"],\"ops\":[\"read\",\"write\",\"list\"],\"paths\":[\"*\"]},\"sub\":\"5333460b6cdb1dd4adc074c70ac38823c09153d430202406599f0b929a55f8ca\",\"subKem\":\"3eff30609e9818588e2c2923ee5b532efe18af1f192c6443148c8b55bba75c1c\",\"v\":1}",
+    "signatureBase64": "pCJ8hElfkn3Zpa4qjNsIugTAmut7d9KouPb3IZnzaReqLiMoAGSYtcEtHfN6/qTd7uXxN+V0VY2rNTbcGh4EDQ==",
+    "expectVerify": true
+  },
+  "memberCap": {
+    "cert": {
+      "v": 1,
+      "kind": "member",
+      "iss": "4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6",
+      "issUserId": "98341e0ad3e56672018cd761b99a2906",
+      "sub": "4ab28c2400e6f24c7fdde3132045dc2058d3c2be159500995ec6c9c6012bd12b",
+      "subKem": "1a52d1496448f8956c12157a6263a7fa62ec4700c11b4ed141ad2f1fd79c4651",
+      "scope": {
+        "ops": [
+          "read",
+          "write"
+        ],
+        "collections": [
+          "shared-notes"
+        ],
+        "paths": [
+          "shared-notes/*"
+        ]
+      },
+      "nbf": 1747000000,
+      "exp": 1749592000,
+      "nonce": "/+7dzLuqmYh3ZlVEMyIRAA==",
+      "subUserId": "d949a496d17da76cff668aff82837928",
+      "sig": "6hoqEpuXk/Or/Jwje4vEw6QbdYtkAy69lw6qWm5DSfEvos26zX0mAw5OU1Xb1aNlt/nMgCxN9Dsgbvb/PZu/BA=="
+    },
+    "canonicalSigningInput": "{\"exp\":1749592000,\"iss\":\"4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6\",\"issUserId\":\"98341e0ad3e56672018cd761b99a2906\",\"kind\":\"member\",\"nbf\":1747000000,\"nonce\":\"/+7dzLuqmYh3ZlVEMyIRAA==\",\"scope\":{\"collections\":[\"shared-notes\"],\"ops\":[\"read\",\"write\"],\"paths\":[\"shared-notes/*\"]},\"sub\":\"4ab28c2400e6f24c7fdde3132045dc2058d3c2be159500995ec6c9c6012bd12b\",\"subKem\":\"1a52d1496448f8956c12157a6263a7fa62ec4700c11b4ed141ad2f1fd79c4651\",\"subUserId\":\"d949a496d17da76cff668aff82837928\",\"v\":1}",
+    "signatureBase64": "6hoqEpuXk/Or/Jwje4vEw6QbdYtkAy69lw6qWm5DSfEvos26zX0mAw5OU1Xb1aNlt/nMgCxN9Dsgbvb/PZu/BA==",
+    "expectVerify": true
+  },
+  "audienceCapOpen": {
+    "cert": {
+      "v": 1,
+      "kind": "audience",
+      "iss": "4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6",
+      "issUserId": "98341e0ad3e56672018cd761b99a2906",
+      "scope": {
+        "ops": [
+          "read",
+          "list"
+        ],
+        "collections": [
+          "broadcast"
+        ],
+        "paths": [
+          "broadcast/**",
+          "!broadcast/_members"
+        ]
+      },
+      "nbf": 1747000000,
+      "exp": 1749592000,
+      "nonce": "CgsMDQ4PABEiM0RVZneImQ==",
+      "sig": "zPO3GIVir+C8CmKgp4QWDpaVt92H4rguaNksBr4WpiF6n1H/WiepcBiHfyw+y1zOqrRKKHCR5cu/LcPxb+/9Aw=="
+    },
+    "canonicalSigningInput": "{\"exp\":1749592000,\"iss\":\"4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6\",\"issUserId\":\"98341e0ad3e56672018cd761b99a2906\",\"kind\":\"audience\",\"nbf\":1747000000,\"nonce\":\"CgsMDQ4PABEiM0RVZneImQ==\",\"scope\":{\"collections\":[\"broadcast\"],\"ops\":[\"read\",\"list\"],\"paths\":[\"broadcast/**\",\"!broadcast/_members\"]},\"v\":1}",
+    "signatureBase64": "zPO3GIVir+C8CmKgp4QWDpaVt92H4rguaNksBr4WpiF6n1H/WiepcBiHfyw+y1zOqrRKKHCR5cu/LcPxb+/9Aw==",
+    "expectVerify": true
+  },
+  "audienceCapRestricted": {
+    "cert": {
+      "v": 1,
+      "kind": "audience",
+      "iss": "4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6",
+      "issUserId": "98341e0ad3e56672018cd761b99a2906",
+      "scope": {
+        "ops": [
+          "read",
+          "list"
+        ],
+        "collections": [
+          "broadcast"
+        ],
+        "paths": [
+          "broadcast/**",
+          "!broadcast/_members"
+        ]
+      },
+      "nbf": 1747000000,
+      "exp": 1749592000,
+      "nonce": "mYh3ZlVEMyIRAP/u3cy7qg==",
+      "aud": [
+        "4ab28c2400e6f24c7fdde3132045dc2058d3c2be159500995ec6c9c6012bd12b",
+        "5333460b6cdb1dd4adc074c70ac38823c09153d430202406599f0b929a55f8ca"
+      ],
+      "sig": "tGs6Ao/rnNItGHlrdb8wz46Vtm2vGNcU4Jb/dPJzrQc4cxiCm4QVfP88uMlHsXg2XbjDRlTT57ag1rsAdSH6Cg=="
+    },
+    "canonicalSigningInput": "{\"aud\":[\"4ab28c2400e6f24c7fdde3132045dc2058d3c2be159500995ec6c9c6012bd12b\",\"5333460b6cdb1dd4adc074c70ac38823c09153d430202406599f0b929a55f8ca\"],\"exp\":1749592000,\"iss\":\"4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6\",\"issUserId\":\"98341e0ad3e56672018cd761b99a2906\",\"kind\":\"audience\",\"nbf\":1747000000,\"nonce\":\"mYh3ZlVEMyIRAP/u3cy7qg==\",\"scope\":{\"collections\":[\"broadcast\"],\"ops\":[\"read\",\"list\"],\"paths\":[\"broadcast/**\",\"!broadcast/_members\"]},\"v\":1}",
+    "signatureBase64": "tGs6Ao/rnNItGHlrdb8wz46Vtm2vGNcU4Jb/dPJzrQc4cxiCm4QVfP88uMlHsXg2XbjDRlTT57ag1rsAdSH6Cg==",
+    "audience": [
+      "4ab28c2400e6f24c7fdde3132045dc2058d3c2be159500995ec6c9c6012bd12b",
+      "5333460b6cdb1dd4adc074c70ac38823c09153d430202406599f0b929a55f8ca"
+    ],
+    "expectVerify": true
+  },
+  "forgedDeviceCap": {
+    "cert": {
+      "v": 1,
+      "kind": "device",
+      "iss": "4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6",
+      "issUserId": "98341e0ad3e56672018cd761b99a2906",
+      "sub": "5333460b6cdb1dd4adc074c70ac38823c09153d430202406599f0b929a55f8ca",
+      "subKem": "3eff30609e9818588e2c2923ee5b532efe18af1f192c6443148c8b55bba75c1c",
+      "scope": {
+        "ops": [
+          "read",
+          "write",
+          "list"
+        ],
+        "collections": [
+          "*"
+        ],
+        "paths": [
+          "*"
+        ]
+      },
+      "nbf": 1747000000,
+      "exp": 1749592000,
+      "nonce": "ABEiM0RVZneImaq7zN3u/w==",
+      "sig": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
+    },
+    "canonicalSigningInput": "{\"exp\":1749592000,\"iss\":\"4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6\",\"issUserId\":\"98341e0ad3e56672018cd761b99a2906\",\"kind\":\"device\",\"nbf\":1747000000,\"nonce\":\"ABEiM0RVZneImaq7zN3u/w==\",\"scope\":{\"collections\":[\"*\"],\"ops\":[\"read\",\"write\",\"list\"],\"paths\":[\"*\"]},\"sub\":\"5333460b6cdb1dd4adc074c70ac38823c09153d430202406599f0b929a55f8ca\",\"subKem\":\"3eff30609e9818588e2c2923ee5b532efe18af1f192c6443148c8b55bba75c1c\",\"v\":1}",
+    "expectVerify": false
+  }
+}

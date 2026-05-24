@@ -1,0 +1,237 @@
+# @drakkar.software/starfish-server
+
+TypeScript server for [Starfish](../../../README.md). Hono-based, compatible with Cloudflare Workers, Node, and Bun.
+
+## Install
+
+```bash
+pnpm add @drakkar.software/starfish-server @drakkar.software/starfish-protocol hono
+```
+
+Optional storage adapters: `npm install @aws-sdk/client-s3` (for `S3ObjectStore`).
+
+## What's in v3.0
+
+Starfish 3.0 removes server-held encryption entirely. The two encryption modes are:
+
+```ts
+export type EncryptionMode = "none" | "delegated"
+```
+
+- `"none"` — server stores plaintext.
+- `"delegated"` — server stores opaque `{_encrypted, _epoch}` ciphertext and a plaintext keyring document at `<storagePath>/_keyring` (or the explicit `keyringPath`). The server never sees a CEK.
+
+The v2 `"identity"`, `"server"`, and `"group"` modes are gone. So are the `encryptionSecret`, `serverEncryptionSecret`, `serverIdentity`, `identityEncryptionInfo`, `serverEncryptionInfo`, `signatureVerifier`, `EncryptedObjectStore`, `clientEncrypted`, and `publicKey` symbols. See [docs/migration/v2-to-v3.md](../../../docs/migration/v2-to-v3.md).
+
+## Quickstart (v3)
+
+```ts
+import { Hono } from "hono"
+import {
+  createSyncRouter,
+  MemoryObjectStore,
+  parseConfigJson,
+  createCapCertRoleResolver,
+  createInMemoryNonceCache,
+  createInMemoryRevocationStore,
+} from "@drakkar.software/starfish-server"
+
+const store = new MemoryObjectStore(new Map())
+
+const config = parseConfigJson(JSON.stringify({
+  version: 1,
+  collections: [
+    {
+      name: "notes",
+      storagePath: "notes/{identity}",
+      readRoles:  ["cap:read:notes", "self"],
+      writeRoles: ["cap:write:notes", "self"],
+      encryption: "delegated",
+      maxBodyBytes: 65_536,
+      // keyringPath defaults to `notes/_keyring`
+    },
+  ],
+}))
+
+const sync = createSyncRouter({
+  store,
+  config,
+  roleResolver: createCapCertRoleResolver({
+    nonceCache: createInMemoryNonceCache(),
+    revocationStore: createInMemoryRevocationStore(),
+    allowAnonymous: true,
+  }),
+})
+
+const app = new Hono()
+app.route("/v1", sync)
+export default app
+```
+
+## Cap-cert auth
+
+`createCapCertRoleResolver` is the v3 default `RoleResolver`. For every authenticated request it:
+
+1. Parses `Authorization: Cap <base64(stableStringify(cap))>`.
+2. Verifies the cap-cert (signature, `nbf`/`exp` ± skew, `userId` derivation, kind-specific well-formedness).
+3. Verifies the per-request signature using `X-Starfish-Sig` / `X-Starfish-Ts` / `X-Starfish-Nonce`.
+4. Checks the nonce against an LRU cache (replay protection) and the timestamp against a ±5 min clock skew.
+5. Consults the `RevocationStore` for the cap's `nonce` and (for member caps) the subject.
+6. Binds `auth.identity` per `kind`: `device` → `issUserId`, `member` → `subUserId`.
+7. Synthesizes roles: `cap:<op>:<collection>` for each (op, collection) pair; `delegated:<issUserId>:<collection>` for member caps. `"self"` is added by the route-builder when `params.identity === auth.identity`.
+
+```ts
+import {
+  createCapCertRoleResolver,
+  createInMemoryNonceCache,
+  createInMemoryRevocationStore,
+  CapAuthError,
+  type CapResolverOptions,
+  type NonceCache,
+  type RevocationStore,
+  type RevocationList,
+  type RevocationEntry,
+} from "@drakkar.software/starfish-server"
+```
+
+`createInMemoryNonceCache` and `createInMemoryRevocationStore` are development-grade; for multi-process deployments you implement the `NonceCache` / `RevocationStore` interfaces against a shared backend (Redis, SQL, etc.).
+
+`CapAuthError` is thrown for surfaceable 4xx auth failures (`401`, `403`).
+
+Anonymous mode: `allowAnonymous: true` (default) returns `{ identity: "", roles: ["public"] }` when the `Authorization` header is missing or empty, so collections gated by `readRoles: ["public"]` keep working.
+
+### Required request headers (cap-cert auth)
+
+| Header | Value |
+|---|---|
+| `Authorization` | `Cap <base64(stableStringify(cap))>` |
+| `X-Starfish-Sig` | base64 Ed25519 signature over `requestSigningCanonicalInput` |
+| `X-Starfish-Ts` | Unix milliseconds (±5 min server clock skew) |
+| `X-Starfish-Nonce` | base64 random 16 bytes — server-side LRU prevents reuse |
+
+The matching client wiring is in [`@drakkar.software/starfish-client`](../client/README.md) via `StarfishCapProvider`.
+
+### Keeping a custom resolver
+
+The `roleResolver` extension point is preserved. Any function `(c: Context) => Promise<AuthResult>` is acceptable — useful when tying Starfish identities to an existing OAuth provider, mTLS, or service-mesh JWTs. The cap-cert resolver is the **default**, not the only option.
+
+## Collection config
+
+```ts
+import type { SyncConfig, CollectionConfig, EncryptionMode } from "@drakkar.software/starfish-server"
+```
+
+The relevant v3 fields:
+
+| Field | Type | Notes |
+|---|---|---|
+| `encryption` | `"none" \| "delegated"` | Two modes only. |
+| `keyringPath` | `string?` | Override for the keyring document path. Defaults to `<storagePath>/_keyring`. Only relevant for `"delegated"`. |
+| `readRoles` / `writeRoles` | `string[]` | Match against either resolver roles (e.g. `cap:read:notes`, `delegated:<userId>:notes`) or enricher roles (e.g. `team-member`). |
+
+### Path-scope rules
+
+Scope `paths` entries are globs against `<collection>/<rest>`. `*` matches any run of non-slash characters; `**` matches across slashes. A leading `!` is a denylist — explicit deny beats wildcard allow. Substitutions: `{identity}` resolves to `auth.identity` before matching.
+
+For `kind: "member"` caps, the resolver verifies (after substitution) that no scope path enters the issuer's `users/<issUserId>/*` namespace — a member cap cannot be used to escalate into the issuer's private data.
+
+## Public surface (selected)
+
+```ts
+// Router
+export {
+  createSyncRouter,
+  handleSyncPull, handleSyncPush,
+  validatePathSegment, validateUrlNotPrivate, deepSanitize,
+  checkBodyLimit, RateLimiter,
+  corsMiddleware, securityHeadersMiddleware, requestTimeoutMiddleware,
+  type SyncRouterOptions, type AuthResult, type RoleResolver, type RoleEnricher,
+  type ConfigEndpointOptions, type CollectionClientInfo, type ConfigResponse,
+}
+
+// Auth (v3)
+export {
+  createCapCertRoleResolver, CapAuthError, type CapResolverOptions,
+  createInMemoryNonceCache, type NonceCache, type NonceCacheOptions,
+  createInMemoryRevocationStore, type RevocationStore, type RevocationList, type RevocationEntry,
+}
+
+// Storage
+export {
+  type ObjectStore, type StoreContext,
+  MemoryObjectStore, CustomObjectStore,
+}
+// Filesystem and S3 live on the `/node` and `/s3` subpaths.
+
+// Enrichers
+export {
+  createEntitlementRoleEnricher, type EntitlementRoleEnricherOptions,
+  composeEnrichers,
+}
+
+// Config
+export type {
+  SyncConfig, CollectionConfig, NamespaceConfig, RemoteConfig,
+  QueueConfig, CollectionRateLimitConfig, RateLimitConfig,
+  EncryptionMode, WriteMode, SyncTrigger, FieldPermission,
+}
+export { validateConfig, parseConfigJson, loadConfig, saveConfig }
+
+// Misc
+export { ReplicaManager }
+export { createGracefulShutdown }
+export { createConsoleLogger, createJsonLogger, createNoopLogger }
+export { generateOpenApiSpec }
+
+// Errors / constants
+export { StartupError, AuthError, ConflictError, NotFoundError }
+export { ROLE_PUBLIC, ROLE_SELF, OP_READ, OP_WRITE, ENCRYPTION_NONE, ENCRYPTION_DELEGATED, … }
+```
+
+## Composing with enrichers
+
+`createCapCertRoleResolver` produces the baseline role set. `roleEnricher` layers application-level roles on top — team membership, feature entitlements, custom RBAC. Both kinds of role match against `readRoles` / `writeRoles`. (Starfish no longer ships a group-membership enricher; write your own — it's a few lines — or use member caps from `@drakkar.software/starfish-sharing`.)
+
+```ts
+import {
+  createCapCertRoleResolver,
+  composeEnrichers,
+  type RoleEnricher,
+} from "@drakkar.software/starfish-server"
+
+// Bring your own application-level enricher.
+const teamEnricher: RoleEnricher = async (auth, params) =>
+  (await isTeamMember(auth.identity, params.teamId)) ? ["team-member"] : []
+
+const router = createSyncRouter({
+  store,
+  config,
+  roleResolver: createCapCertRoleResolver({ nonceCache, revocationStore, plugins }),
+  roleEnricher: composeEnrichers(teamEnricher),
+})
+```
+
+Full pattern catalog: [docs/ts/server/group-access.md](../../../docs/ts/server/group-access.md), [docs/ts/server/entitlements.md](../../../docs/ts/server/entitlements.md).
+
+## Root-only collections
+
+Set `rootOnly: true` on a `CollectionConfig` to restrict it to the **root device** (a
+self-signed device cap, `iss === sub`). Paired/provisioned device caps and member caps are
+rejected with `403` — on standalone pull/list/push and on bundle pulls — in addition to the
+collection's normal `readRoles` / `writeRoles`. Combining `rootOnly` with a `"public"` role
+is rejected at config load. The predicate is `isRootDeviceCap` (in `starfish-protocol`,
+re-exported from `starfish-identities`), surfaced as the `ROLE_ROOT_DEVICE` role. See
+[docs/ts/server/root-only-collections.md](../../../docs/ts/server/root-only-collections.md).
+
+## Removed in v3.0
+
+| Symbol | Replacement |
+|---|---|
+| `EncryptedObjectStore` | `encryption: "delegated"` (client-side keyring) |
+| `encryptionSecret`, `serverEncryptionSecret`, `serverIdentity`, `identityEncryptionInfo`, `serverEncryptionInfo` | n/a — server no longer holds keys |
+| `signatureVerifier` | `createCapCertRoleResolver` |
+| `CollectionConfig.clientEncrypted` | `encryption: "delegated"` |
+| `CollectionConfig.publicKey` | n/a — public keys live in the keyring document |
+| `createGroupRoleEnricher`, `GroupRoleEnricherOptions` | member caps (`@drakkar.software/starfish-sharing`), or your own `RoleEnricher` for list-based RBAC |
+
+Migration runbook: [docs/migration/v2-to-v3.md](../../../docs/migration/v2-to-v3.md).

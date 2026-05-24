@@ -623,3 +623,115 @@ describe("subscribeSyncStatus", () => {
     expect(statuses).not.toContain("offline")
   })
 })
+
+// ── hash persistence ──────────────────────────────────────────────────────────
+
+describe("hash persistence", () => {
+  function makeMemoryStorage() {
+    const map = new Map<string, string>()
+    return {
+      getItem: (key: string) => map.get(key) ?? null,
+      setItem: (key: string, value: string) => { map.set(key, value) },
+      removeItem: (key: string) => { map.delete(key) },
+      snapshot: () => {
+        const raw = map.get("starfish-hash-test")
+        return raw ? JSON.parse(raw) as { state: { hash: string | null } } : null
+      },
+    }
+  }
+
+  function makeHashStore(storage = makeMemoryStorage(), clientOverrides?: Parameters<typeof mockClient>[0]) {
+    const client = mockClient(clientOverrides)
+    const syncManager = new SyncManager({ client, pullPath: "/pull/t", pushPath: "/push/t" })
+    const store = createStarfishStore({ name: "hash-test", syncManager, storage })
+    return { store, syncManager, client, storage }
+  }
+
+  it("pull/success writes state.hash from syncManager.getHash()", async () => {
+    const { store } = makeHashStore()
+    expect(store.getState().hash).toBeNull()
+    await store.getState().pull()
+    expect(store.getState().hash).toBe("abc123")
+  })
+
+  it("flush/success writes state.hash from syncManager.getHash()", async () => {
+    const { store } = makeHashStore()
+    store.getState().set((d) => ({ ...d, x: 1 }))
+    await vi.waitFor(() => expect(store.getState().dirty).toBe(false))
+    expect(store.getState().hash).toBe("def456")
+  })
+
+  it("hash is included in the partialize snapshot written to storage", async () => {
+    const storage = makeMemoryStorage()
+    const { store } = makeHashStore(storage)
+    await store.getState().pull()
+    const snap = storage.snapshot()
+    expect(snap).not.toBeNull()
+    expect(snap!.state.hash).toBe("abc123")
+  })
+
+  it("hash null does not pollute partialize snapshot before any sync", () => {
+    const storage = makeMemoryStorage()
+    // Just creating the store should not write a hash
+    makeHashStore(storage)
+    const snap = storage.snapshot()
+    // If nothing has been written, snapshot is null; if written, hash must be null
+    if (snap !== null) expect(snap.state.hash).toBeNull()
+  })
+
+  it("onRehydrateStorage calls syncManager.setHash with the persisted hash", async () => {
+    const storage = makeMemoryStorage()
+
+    // First session: pull to populate hash in storage
+    const { store: storeA, syncManager: smA } = makeHashStore(storage)
+    await storeA.getState().pull()
+    expect(smA.getHash()).toBe("abc123")
+
+    // Second session: create a fresh syncManager + store over the same storage
+    const clientB = mockClient()
+    const smB = new SyncManager({ client: clientB, pullPath: "/pull/t", pushPath: "/push/t" })
+    expect(smB.getHash()).toBeNull() // starts fresh
+
+    createStarfishStore({ name: "hash-test", syncManager: smB, storage })
+
+    // Hydration is synchronous when storage.getItem is sync; yield a microtask to be safe
+    await Promise.resolve()
+    expect(smB.getHash()).toBe("abc123")
+  })
+
+  it("onRehydrateStorage does NOT call setHash when persisted hash is absent", async () => {
+    const storage = makeMemoryStorage()
+    // Write state without hash to simulate a 2.0.0-era persisted entry
+    storage.setItem("starfish-hash-test", JSON.stringify({ state: { data: {}, dirty: false }, version: 0 }))
+
+    const smC = new SyncManager({ client: mockClient(), pullPath: "/pull/t", pushPath: "/push/t" })
+    createStarfishStore({ name: "hash-test", syncManager: smC, storage })
+
+    await Promise.resolve()
+    expect(smC.getHash()).toBeNull()
+  })
+
+  it("onRehydrateStorage does not overwrite a hash already set by a completed pull()", async () => {
+    // Simulate async storage: getItem returns a Promise that resolves only after pull() has run.
+    let resolveGet!: (v: string | null) => void
+    const asyncStorage = {
+      getItem: (_key: string) => new Promise<string | null>((r) => { resolveGet = r }),
+      setItem: vi.fn(),
+      removeItem: vi.fn(),
+    }
+
+    const sm = new SyncManager({ client: mockClient(), pullPath: "/pull/t", pushPath: "/push/t" })
+    const store = createStarfishStore({ name: "race-test", syncManager: sm, storage: asyncStorage })
+
+    // pull() completes first — server returns hash "abc123"
+    await store.getState().pull()
+    expect(sm.getHash()).toBe("abc123")
+
+    // Async storage resolves afterward with a stale persisted hash
+    resolveGet(JSON.stringify({ state: { data: {}, dirty: false, hash: "stale-hash" }, version: 0 }))
+    await Promise.resolve()
+
+    // Server hash must not be clobbered
+    expect(sm.getHash()).toBe("abc123")
+  })
+})

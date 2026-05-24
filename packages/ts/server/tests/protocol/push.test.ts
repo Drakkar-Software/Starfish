@@ -70,10 +70,39 @@ describe("push", () => {
     expect(pulled.hash).toHaveLength(64)
   })
 
-  it("skipTimestamps stores empty timestamps", async () => {
+  it("stores a single doc-level ts and no per-field timestamps tree", async () => {
     const store = createIsolatedStore()
-    await push(store, "doc/1", { a: 1 }, null, undefined, true)
+    const before = Date.now()
+    await push(store, "doc/1", { a: 1 }, null)
     const raw = JSON.parse((await store.getString("doc/1"))!)
-    expect(raw.timestamps).toEqual({})
+    expect(typeof raw.ts).toBe("number")
+    expect(raw.ts).toBeGreaterThanOrEqual(before)
+    expect(raw.timestamps).toBeUndefined()
+  })
+
+  it("precomputedHash is used instead of computing hash", async () => {
+    const store = createIsolatedStore()
+    const sentinel = "a".repeat(64)
+    await push(store, "doc/1", { a: 1 }, null, undefined, false, false, sentinel)
+    const raw = JSON.parse((await store.getString("doc/1"))!)
+    expect(raw.hash).toBe(sentinel)
+  })
+
+  it("a corrupt stored document does not crash push (returns a conflict, not a throw)", async () => {
+    // Mirrors test_push.py — a non-JSON stored value must be handled gracefully.
+    const store = createIsolatedStore()
+    await store.put("doc/corrupt", "NOT_VALID_JSON")
+    // Corrupt doc → currentHash = "" → baseHash=null with a present doc → conflict.
+    const result = await push(store, "doc/corrupt", { a: 1 }, null) as any
+    expect(result.error).toBe("hash_mismatch")
+  })
+
+  it("a corrupt stored document is overwritable with baseHash=''", async () => {
+    // Mirrors test_push.py — baseHash="" matches the "" hash of a corrupt doc, so a
+    // client that knows the doc is unreadable can recover it by overwriting.
+    const store = createIsolatedStore()
+    await store.put("doc/corrupt", "NOT_VALID_JSON")
+    const result = await push(store, "doc/corrupt", { recovered: true }, "") as any
+    expect(result.hash).toHaveLength(64)
   })
 })

@@ -1,17 +1,26 @@
 # StarfishClient
 
-Low-level HTTP client for the Starfish sync protocol. Handles authentication, request formatting, and response parsing.
+Low-level HTTP client for the Starfish sync protocol. Handles cap-cert
+authentication, per-request Ed25519 signing, request formatting, and
+response parsing.
 
 > **Prerequisites:** [Getting Started](01-getting-started.md)
 
 ## Constructor
 
 ```ts
-import { StarfishClient } from "@drakkar.software/starfish-client"
+import {
+  StarfishClient,
+  bootstrapRootIdentity,
+} from "@drakkar.software/starfish-client"
+
+const creds = await bootstrapRootIdentity(passphrase)
 
 const client = new StarfishClient({
   baseUrl: "https://api.example.com/v1",
-  auth: async (req) => ({ Authorization: `Bearer ${token}` }),
+  capProvider: {
+    getCap: async () => ({ cap: creds.capCert, devEdPrivHex: creds.device.edPriv }),
+  },
 })
 ```
 
@@ -21,61 +30,57 @@ const client = new StarfishClient({
 interface StarfishClientOptions {
   /** Base URL of the Starfish server (e.g. "https://api.example.com/v1") */
   baseUrl: string
-  /** Auth provider that returns headers for authenticated requests */
-  auth?: AuthProvider
+  /**
+   * Cap-cert provider. When set, the client signs every outgoing request:
+   * each call carries `Authorization: Cap <base64(stableStringify(cap))>`
+   * plus `X-Starfish-Sig` / `X-Starfish-Ts` / `X-Starfish-Nonce` headers.
+   * Omit for unauthenticated public-read collections.
+   */
+  capProvider?: StarfishCapProvider
   /** Custom fetch implementation (defaults to global fetch) */
   fetch?: typeof fetch
 }
 ```
 
-## Auth Providers
+The v2 `auth: AuthProvider` option (Bearer-token headers) was removed in
+3.0. All authenticated requests now use the `capProvider` shape below;
+there is no `Authorization: Bearer` path. See
+[the migration guide](../../migration/v2-to-v3.md) if you're coming from
+2.x.
 
-The `AuthProvider` receives request metadata and returns headers:
+## Cap Provider
 
-```ts
-type AuthProvider = (req: {
-  method: string
-  path: string
-  body: string | null
-}) => Record<string, string> | Promise<Record<string, string>>
-```
-
-### Bearer token
-
-```ts
-auth: async () => ({
-  Authorization: `Bearer ${await getToken()}`,
-})
-```
-
-### API key
+`capProvider.getCap()` returns the device's cap-cert and its Ed25519
+private key. The client uses the cap-cert as the `Authorization: Cap …`
+header value, and signs every request with the private key (request hash
++ ts + nonce → `X-Starfish-Sig` etc.).
 
 ```ts
-auth: () => ({
-  "X-API-Key": apiKey,
-})
-```
-
-### Request signature
-
-The `method`, `path`, and `body` parameters enable request signing:
-
-```ts
-auth: async (req) => {
-  const payload = `${req.method}:${req.path}:${req.body ?? ""}`
-  const signature = await sign(payload, privateKey)
-  return {
-    "X-Public-Key": publicKey,
-    "X-Signature": signature,
-  }
+interface StarfishCapProvider {
+  getCap(): Promise<{ cap: CapCert; devEdPrivHex: string }>
 }
 ```
+
+Implementations are expected to cache; the client may call `getCap()` once
+per authenticated request, so a typical implementation reads `creds` from
+local storage and returns the already-derived cap.
+
+```ts
+const capProvider: StarfishCapProvider = {
+  getCap: async () => ({ cap: creds.capCert, devEdPrivHex: creds.device.edPriv }),
+}
+```
+
+For a deeper look at the cap-cert shape, scopes, and TTLs see
+[25. Capability Certs](25-capability-certs.md). For request-signing
+details see [03. SyncManager](03-sync-manager.md) and
+`packages/ts/protocol/src/request-signing.ts`.
 
 ## Methods
 
 ### `pull(path, checkpoint?)`
 
-Fetches synced data from the server.
+Fetches synced data from the server. A regular collection always returns the **full document** — incremental `?checkpoint=` sync is now an append-only-only feature (use `pull(path, { appendField, since })` for append logs). The `checkpoint` number is still accepted for wire-compatibility but is ignored by regular collections.
 
 ```ts
 const result = await client.pull(`/pull/users/${userId}/settings`)
@@ -86,7 +91,7 @@ const result = await client.pull(`/pull/users/${userId}/settings`)
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `path` | `string` | Server endpoint path |
-| `checkpoint` | `number` | Optional. Timestamp for incremental pull. `0` or omitted = full pull |
+| `checkpoint` | `number` | Optional, accepted for back-compat. Ignored by regular collections (they always return the full document). |
 
 **Returns:** `Promise<PullResult>`
 
@@ -104,7 +109,10 @@ interface PullResult {
 
 ```
 GET {baseUrl}{path}?checkpoint={timestamp}
-Authorization: Bearer {token}
+Authorization: Cap {base64(stableStringify(capCert))}
+X-Starfish-Sig:   {base64(ed25519 sig)}
+X-Starfish-Ts:    {unix-ms}
+X-Starfish-Nonce: {base64(16 random bytes)}
 Accept: application/json
 
 Response 200:
@@ -149,7 +157,10 @@ interface PushSuccess {
 
 ```
 POST {baseUrl}{path}
-Authorization: Bearer {token}
+Authorization: Cap {base64(stableStringify(capCert))}
+X-Starfish-Sig:   {base64(ed25519 sig)}
+X-Starfish-Ts:    {unix-ms}
+X-Starfish-Nonce: {base64(16 random bytes)}
 Content-Type: application/json
 
 {
@@ -203,6 +214,7 @@ Pass a custom `fetch` implementation for environments without a global `fetch`, 
 ```ts
 const client = new StarfishClient({
   baseUrl: "https://api.example.com/v1",
+  capProvider,
   fetch: myCustomFetch,
 })
 ```
@@ -211,5 +223,6 @@ const client = new StarfishClient({
 
 - [SyncManager](03-sync-manager.md) — wraps `StarfishClient` with encryption, conflict retry, and state tracking
 - [Encryption](04-encryption.md) — E2E encryption details
+- [25. Capability Certs](25-capability-certs.md) — cap-cert shape, scopes, TTLs
 - [Error Classification & Retry](15-error-retry.md) — retry wrapper and circuit breaker via custom `fetch`
 - [Logging & Observability](16-logging-observability.md) — request logging via custom `fetch`

@@ -8,51 +8,61 @@ import json
 import re
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable, Awaitable
+from typing import Any, Callable, Awaitable
 
-import httpx
 import jsonschema
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 
-from starfish_server.storage.base import AbstractObjectStore
-from starfish_server.config.schema import SyncConfig, CollectionConfig, SyncTrigger, WriteMode, CollectionRateLimitConfig, NamespaceConfig, ConfigEndpointOptions
-from starfish_server.encryption.encrypted_store import EncryptedObjectStore
+from starfish_server.storage.base import AbstractObjectStore, StoreContext
+from starfish_server.config.schema import SyncConfig, CollectionConfig, CollectionRateLimitConfig, NamespaceConfig, ConfigEndpointOptions, AppendOnlyConfig
 from starfish_server.protocol.pull import pull
 from starfish_server.router.helpers import (
     handle_sync_pull,
     handle_sync_push,
+    handle_append_only_pull,
+    deep_sanitize,
+    json_depth_within,
     validate_path_segment,
-    SignatureVerifier,
+    is_unsafe_document_key,
+    is_with_keyring_enabled,
 )
+from starfish_server.protocol.push import append_item, AppendConflict
+from starfish_server.protocol.types import PushSuccess
+from starfish_protocol.hash import compute_hash
 from starfish_server.router.middleware import check_body_limit, RateLimiter
 from starfish_server.router.mime import matches_allowed_mime, is_json_collection
-from starfish_server.queue.message import QueueMessage
+from starfish_server.router.cap_resolver import match_scope_path
+from starfish_protocol.plugins import (
+    PullHookContext,
+    PushHookContext,
+    ServerPlugin,
+    WriteEvent,
+)
+from starfish_server.plugins import (
+    dispatch_after_write,
+    dispatch_before_pull,
+    dispatch_intercept_push,
+)
 from starfish_server.ttl import is_expired as _is_expired
+from starfish_protocol import AuditLogger, AuditEntry as _AuditEntry
 from starfish_server.constants import (
     ROLE_PUBLIC,
+    ROLE_ROOT_DEVICE,
     ROLE_SELF,
     OP_READ,
     OP_WRITE,
-    ENCRYPTION_IDENTITY,
-    ENCRYPTION_SERVER,
     ENCRYPTION_DELEGATED,
-    ENCRYPTION_GROUP,
     ACTION_PULL,
     ACTION_PUSH,
     ACTION_LIST,
     IDENTITY_PARAM,
     IDENTITY_KEY,
     QUERY_CHECKPOINT,
-    HKDF_INFO_IDENTITY,
-    HKDF_INFO_SERVER,
+    APPEND_DEFAULT_FIELD,
+    APPEND_MAX_FUTURE_TS_SKEW_MS,
 )
-
-if TYPE_CHECKING:
-    from starfish_server.replica.manager import ReplicaManager
-    from starfish_server.queue.base import AbstractQueue
-
 
 @dataclass
 class AuthResult:
@@ -60,6 +70,10 @@ class AuthResult:
 
     identity: str
     roles: list[str]
+    # Expanded cap-cert scope paths ({identity} already substituted), or None for
+    # resolvers that carry no path scope (e.g. pure role-based auth). Used to
+    # authorize the sibling ``_keyring`` read of the ?withKeyring=1 optimization.
+    scope_paths: list[str] | None = None
 
 
 RoleResolver = Callable[[Request], Awaitable[AuthResult]]
@@ -72,16 +86,10 @@ class SyncRouterOptions:
     config: SyncConfig
     role_resolver: RoleResolver
     role_enricher: RoleEnricher | None = None
-    encryption_secret: str | None = None
-    server_encryption_secret: str | None = None
-    server_identity: str | None = None
-    identity_encryption_info: str | None = None
-    server_encryption_info: str | None = None
-    signature_verifier: SignatureVerifier | None = None
-    replica_manager: "ReplicaManager | None" = None
-    queue: "AbstractQueue | None" = None
+    plugins: list[ServerPlugin] | None = None
     role_resolver_timeout: float = 5.0
     config_endpoint: ConfigEndpointOptions | None = None
+    audit_logger: AuditLogger | None = None
 
 
 from pydantic import BaseModel as _BaseModel
@@ -96,9 +104,7 @@ class CollectionClientInfo(_BaseModel):
     allowedMimeTypes: list[str]
     pullOnly: bool | None = None
     pushOnly: bool | None = None
-    queueOnly: bool | None = None
-    clientEncrypted: bool | None = None
-    publicKey: str | None = None
+    appendOnly: AppendOnlyConfig | None = None
     ttlMs: int | None = None
     forceFullFetch: bool | None = None
 
@@ -124,26 +130,10 @@ def _to_collection_client_info(col: CollectionConfig) -> CollectionClientInfo:
         allowedMimeTypes=col.allowed_mime_types,
         pullOnly=col.pull_only or None,
         pushOnly=col.push_only or None,
-        queueOnly=col.queue_only or None,
-        clientEncrypted=col.client_encrypted or None,
-        publicKey=col.public_key,
+        appendOnly=col.append_only or None,
         ttlMs=col.ttl_ms,
         forceFullFetch=col.force_full_fetch or None,
     )
-
-
-def _max_stored_timestamp(timestamps: Any) -> int:
-    """Recursively find the maximum leaf timestamp in a timestamps tree.
-
-    The stored ``timestamps`` dict maps field names to either an integer
-    (leaf timestamp) or a nested dict (sub-object timestamps).  The document's
-    last-modified time is the maximum of all leaf timestamps.
-    """
-    if isinstance(timestamps, int):
-        return timestamps
-    if isinstance(timestamps, dict):
-        return max((_max_stored_timestamp(v) for v in timestamps.values()), default=0)
-    return 0
 
 
 def _validate_object_schema(data: dict, schema: dict) -> JSONResponse | None:
@@ -224,6 +214,108 @@ def _extract_path_params(storage_path: str, request_path: str, action: str) -> d
     return match.groupdict()
 
 
+async def _resolve_effective_roles(
+    request: Request,
+    params: dict[str, str],
+    opts: SyncRouterOptions,
+    storage_path: str,
+) -> tuple[str | None, frozenset[str], JSONResponse | None]:
+    """Run the role resolver ONCE and fold in the conditional ``self`` role and
+    any enricher roles. Returns ``(identity, effective_roles, error)`` without
+    checking against a specific collection — callers do that themselves.
+
+    Extracted so a bundle pull can authorize many collections from a single
+    resolver invocation: the resolver consumes the request nonce (replay
+    protection) and must run at most once per request.
+    """
+    try:
+        auth = await asyncio.wait_for(
+            opts.role_resolver(request), timeout=opts.role_resolver_timeout
+        )
+    except asyncio.TimeoutError:
+        return None, frozenset(), JSONResponse({"error": "Unauthorized"}, status_code=503)
+    except Exception as exc:
+        # Honour a resolver-supplied ``.status`` (used by CapAuthError to
+        # signal 403 / 413 vs the default 401). Fall back to 401 otherwise.
+        status = getattr(exc, "status", None)
+        if status == 403:
+            return None, frozenset(), JSONResponse({"error": "Forbidden"}, status_code=403)
+        if status == 413:
+            message = str(exc) if str(exc) else "Payload too large"
+            return None, frozenset(), JSONResponse({"error": message}, status_code=413)
+        logging.getLogger(__name__).error(
+            "_resolve_effective_roles: role_resolver raised: %s", exc, exc_info=True
+        )
+        return None, frozenset(), JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+    # Stash the cap scope (if any) for sibling-read authorization downstream
+    # (e.g. the ?withKeyring=1 keyring shortcut in the pull handler). None for
+    # role-based resolvers that carry no path scope.
+    request.state.cap_scope_paths = auth.scope_paths
+
+    effective_roles: set[str] = set(auth.roles)
+    if IDENTITY_PARAM in storage_path:
+        if params.get(IDENTITY_KEY) == auth.identity:
+            effective_roles.add(ROLE_SELF)
+    if opts.role_enricher:
+        try:
+            extra = await opts.role_enricher(auth, params)
+            effective_roles.update(extra)
+        except Exception as exc:
+            logging.getLogger(__name__).error(
+                "_resolve_effective_roles: role_enricher raised: %s", exc, exc_info=True
+            )
+            return (
+                auth.identity,
+                frozenset(effective_roles),
+                JSONResponse({"error": "Authorization error"}, status_code=500),
+            )
+    return auth.identity, frozenset(effective_roles), None
+
+
+def _apply_field_read_filter(
+    data: Any,
+    field_permissions: Any,
+    roles: frozenset[str] | set[str],
+) -> None:
+    """Strip fields the caller's roles cannot read from ``data``, in place.
+
+    Shared by the standalone, bundle, and batch pull paths so field-read
+    permissions are enforced identically everywhere (the bundle path previously
+    skipped this, leaking restricted fields).
+    """
+    if not field_permissions or not isinstance(data, dict):
+        return
+    for field_name, fp in field_permissions.items():
+        if fp.read_roles:
+            has_access = any(r in roles or r == ROLE_PUBLIC for r in fp.read_roles)
+            if not has_access:
+                data.pop(field_name, None)
+
+
+def _is_access_allowed(
+    col: CollectionConfig,
+    operation: str,
+    effective_roles: frozenset[str] | set[str],
+) -> bool:
+    """The per-collection access decision shared by every authorized path
+    (``_check_auth``, the bundle-pull handler).
+
+    Centralizing it keeps ``rootOnly`` and the read/write role + public rules
+    from drifting between call sites — a divergence would let one route enforce
+    a rule another silently skips. ``rootOnly`` is an additive gate: the caller
+    must hold ``ROLE_ROOT_DEVICE`` (a self-signed device cap) on top of the
+    normal role check. Config validation forbids ``rootOnly`` + public, so a
+    root-only collection never short-circuits on ``ROLE_PUBLIC`` here.
+    """
+    if col.root_only and ROLE_ROOT_DEVICE not in effective_roles:
+        return False
+    required_roles = col.read_roles if operation == OP_READ else col.write_roles
+    if ROLE_PUBLIC in required_roles:
+        return True
+    return any(r in effective_roles for r in required_roles)
+
+
 async def _check_auth(
     col: CollectionConfig,
     operation: str,
@@ -234,116 +326,39 @@ async def _check_auth(
     """Check authorization. Returns (identity, effective_roles, error_response)."""
     required_roles = col.read_roles if operation == OP_READ else col.write_roles
 
-    if ROLE_PUBLIC in required_roles:
+    # A rootOnly collection is never public (enforced at config load), so it must
+    # always resolve the caller's roles rather than short-circuit anonymous here.
+    if not col.root_only and ROLE_PUBLIC in required_roles:
         return None, frozenset(), None
 
-    try:
-        auth = await asyncio.wait_for(
-            opts.role_resolver(request), timeout=opts.role_resolver_timeout
-        )
-    except asyncio.TimeoutError:
-        return None, frozenset(), JSONResponse({"error": "Unauthorized"}, status_code=503)
-    except Exception as exc:
-        logging.getLogger(__name__).error(
-            "_check_auth: role_resolver raised: %s", exc, exc_info=True
-        )
-        return None, frozenset(), JSONResponse({"error": "Unauthorized"}, status_code=401)
+    async def _audit_denial(ident: str | None, err: JSONResponse) -> None:
+        # Record auth-layer denials (401/403/…) so the trail is not blind to them —
+        # otherwise only requests that reach the handler are ever logged.
+        if opts.audit_logger is not None:
+            await opts.audit_logger.record(_AuditEntry(
+                timestamp=time.time() * 1000,
+                action="pull" if operation == OP_READ else "push",
+                collection=col.name,
+                identity=ident,
+                document_key="",
+                success=False,
+                status_code=err.status_code,
+                params=dict(params),
+            ))
 
-    effective_roles: set[str] = set(auth.roles)
-
-    if IDENTITY_PARAM in col.storage_path:
-        if params.get(IDENTITY_KEY) == auth.identity:
-            effective_roles.add(ROLE_SELF)
-
-    if opts.role_enricher:
-        try:
-            extra = await opts.role_enricher(auth, params)
-            effective_roles.update(extra)
-        except Exception as exc:
-            logging.getLogger(__name__).error(
-                "_check_auth: role_enricher raised: %s", exc, exc_info=True
-            )
-            return auth.identity, frozenset(effective_roles), JSONResponse({"error": "Authorization error"}, status_code=500)
-
-    has_access = any(r in effective_roles for r in required_roles)
-    if not has_access:
-        return auth.identity, frozenset(effective_roles), JSONResponse({"error": "Forbidden"}, status_code=403)
-
-    return auth.identity, frozenset(effective_roles), None
-
-
-def _resolve_store(
-    col: CollectionConfig,
-    base_store: AbstractObjectStore,
-    params: dict[str, str],
-    identity: str | None,
-    opts: SyncRouterOptions,
-) -> AbstractObjectStore:
-    if col.encryption == ENCRYPTION_IDENTITY:
-        if not opts.encryption_secret:
-            raise RuntimeError(f'Collection "{col.name}" requires encryption_secret')
-        salt = identity or params.get(IDENTITY_KEY, "")
-        return EncryptedObjectStore(
-            base_store,
-            opts.encryption_secret,
-            salt,
-            opts.identity_encryption_info or HKDF_INFO_IDENTITY,
-        )
-    if col.encryption == ENCRYPTION_SERVER:
-        if not opts.server_encryption_secret:
-            raise RuntimeError(f'Collection "{col.name}" requires server_encryption_secret')
-        if not opts.server_identity:
-            raise RuntimeError(f'Collection "{col.name}" requires server_identity')
-        return EncryptedObjectStore(
-            base_store,
-            opts.server_encryption_secret,
-            opts.server_identity,
-            opts.server_encryption_info or HKDF_INFO_SERVER,
-        )
-    return base_store
-
-
-async def _proxy_push_to_primary(
-    col: CollectionConfig,
-    request: Request,
-    replica_manager: "ReplicaManager",
-) -> JSONResponse:
-    remote = col.remote  # type: ignore[union-attr]
-    primary_url = f"{remote.url.rstrip('/')}{remote.push_path}"
-
-    raw_body = await request.body()
-    headers = {
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-        **remote.headers,
-    }
-
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        try:
-            resp = await client.post(primary_url, content=raw_body, headers=headers)
-        except httpx.HTTPError as exc:
-            logging.getLogger(__name__).error(
-                "Failed to reach primary for %r: %s", col.name, exc
-            )
-            return JSONResponse({"error": "Failed to reach primary"}, status_code=502)
-
-    if resp.status_code == 409:
-        return JSONResponse({"error": "hash_mismatch"}, status_code=409)
-    if not resp.is_success:
-        return JSONResponse(
-            {"error": f"Primary returned {resp.status_code}"},
-            status_code=resp.status_code,
-        )
-
-    _task = asyncio.create_task(replica_manager.sync_now(col.name))
-    _logger = logging.getLogger(__name__)
-    _task.add_done_callback(
-        lambda t: _logger.error("replica sync_now failed for %r: %s", col.name, t.exception())
-        if not t.cancelled() and t.exception() is not None
-        else None
+    identity, effective_roles, error = await _resolve_effective_roles(
+        request, params, opts, col.storage_path
     )
+    if error:
+        await _audit_denial(identity, error)
+        return identity, effective_roles, error
 
-    return JSONResponse(resp.json(), status_code=resp.status_code)
+    if not _is_access_allowed(col, operation, effective_roles):
+        error = JSONResponse({"error": "Forbidden"}, status_code=403)
+        await _audit_denial(identity, error)
+        return identity, effective_roles, error
+
+    return identity, effective_roles, None
 
 
 async def _run_push(
@@ -355,6 +370,7 @@ async def _run_push(
     effective_roles: frozenset[str],
     rate_limiter: RateLimiter | None,
     opts: SyncRouterOptions,
+    context: StoreContext | None = None,
 ) -> JSONResponse:
     content_length = request.headers.get("content-length")
     limit_error = check_body_limit(content_length, col.max_body_bytes)
@@ -362,7 +378,11 @@ async def _run_push(
         return limit_error
 
     if rate_limiter:
-        rate_error = rate_limiter.check(identity, request)
+        rate_error = rate_limiter.check(
+            identity,
+            request.headers.get("x-forwarded-for"),
+            request.client.host if request.client else None,
+        )
         if rate_error:
             return rate_error
 
@@ -370,15 +390,30 @@ async def _run_push(
     if "application/json" not in content_type:
         return JSONResponse({"error": "Content-Type must be application/json"}, status_code=415)
 
-    body = await request.json()
+    # Parse defensively: a deeply-nested body overflows the recursive JSON parser
+    # (CPython) with `RecursionError`. The exception unwinds the deep parse frames
+    # back to this shallow handler, so catching it here is safe — return 400 rather
+    # than letting it surface as an unhandled 500.
+    try:
+        body = await request.json()
+    except RecursionError:
+        return JSONResponse({"error": "Body nesting too deep"}, status_code=400)
+    except (ValueError, UnicodeDecodeError):
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
     if not isinstance(body, dict):
         return JSONResponse({"error": "Body must be a JSON object"}, status_code=400)
+    # Enforce a hard nesting bound (iteratively, so the check itself can't recurse)
+    # before `deep_sanitize` walks the structure recursively.
+    if not json_depth_within(body):
+        return JSONResponse({"error": "Body nesting too deep"}, status_code=400)
 
     # Field-level write permission check
     if col.field_permissions and isinstance(body.get("data"), dict):
         for field_name, fp in col.field_permissions.items():
             if fp.write_roles and field_name in body["data"]:
-                if not any(r in effective_roles for r in fp.write_roles):
+                # `ROLE_PUBLIC` in a field's writeRoles means "unrestricted" — honor it
+                # here exactly as the field-READ check (above) and the TS server do.
+                if not any(r in effective_roles or r == ROLE_PUBLIC for r in fp.write_roles):
                     return JSONResponse(
                         {"error": f'Forbidden: field "{field_name}" requires roles: {", ".join(fp.write_roles)}'},
                         status_code=403,
@@ -391,12 +426,54 @@ async def _run_push(
             if schema_error:
                 return schema_error
 
-    store = _resolve_store(col, opts.store, params, identity, opts)
-    is_client_encrypted = bool(col.client_encrypted) or col.encryption in (ENCRYPTION_DELEGATED, ENCRYPTION_GROUP)
+    store = opts.store
+    is_client_encrypted = col.encryption == ENCRYPTION_DELEGATED
+
+    if col.append_only:
+        append_cfg = col.append_only
+        append_field = append_cfg.field or APPEND_DEFAULT_FIELD
+
+        # The element payload. Opaque to the server: plaintext under "none", an
+        # encryptor wrapper under "delegated" (both are JSON objects).
+        item = body.get("data")
+        if not isinstance(item, dict):
+            return JSONResponse({"error": "Missing or invalid data"}, status_code=400)
+        sanitized_item = deep_sanitize(item)
+
+        # Optional client-supplied element timestamp (ms since epoch). When present
+        # it must be a non-negative integer and strictly greater than the latest
+        # stored element's ts (enforced in append_item); otherwise the server assigns one.
+        provided_ts: int | None = None
+        raw_ts = body.get("ts")
+        if raw_ts is not None:
+            # bool is a subclass of int — reject it explicitly.
+            if not isinstance(raw_ts, int) or isinstance(raw_ts, bool) or raw_ts < 0:
+                return JSONResponse({"error": "ts must be a non-negative integer"}, status_code=400)
+            if raw_ts > int(time.time_ns() // 1_000_000) + APPEND_MAX_FUTURE_TS_SKEW_MS:
+                # Reject far-future timestamps so a writer can't poison the monotonic
+                # counter and detach the log from wall-clock (breaking time checkpoints).
+                return JSONResponse({"error": "ts is too far in the future"}, status_code=400)
+            provided_ts = raw_ts
+
+        if not append_cfg.persist:
+            # queue-only path: no storage write. Resolve the element ts and return
+            # its hash; the write event is emitted by the outer push handler.
+            ts = provided_ts if provided_ts is not None else int(time.time_ns() // 1_000_000)
+            item_hash = compute_hash(sanitized_item)
+            return JSONResponse({"hash": item_hash, "timestamp": ts})
+
+        # persist=true (default): append the element under the per-key write lock.
+        # No hash/conflict check — an authorized append is always accepted (content-wise).
+        outcome = await append_item(store, document_key, sanitized_item, append_field, provided_ts, context)
+        if isinstance(outcome, AppendConflict):
+            # Don't echo `latest` — it would leak the most-recent element's timestamp
+            # to a write-only credential that has no read access to the log.
+            return JSONResponse({"error": outcome.error}, status_code=409)
+        return JSONResponse({"hash": outcome.hash, "timestamp": outcome.timestamp})
+
     return await handle_sync_push(
         document_key, store, body, identity,
-        opts.signature_verifier, is_client_encrypted,
-        bool(col.queue_only),
+        is_client_encrypted, False, context,
     )
 
 
@@ -407,6 +484,7 @@ async def _run_binary_push(
     identity: str | None,
     rate_limiter: RateLimiter | None,
     opts: SyncRouterOptions,
+    context: StoreContext | None = None,
 ) -> Response:
     """Handle a binary push: validate MIME type, store raw bytes."""
 
@@ -416,7 +494,11 @@ async def _run_binary_push(
         return limit_error
 
     if rate_limiter:
-        rate_error = rate_limiter.check(identity, request)
+        rate_error = rate_limiter.check(
+            identity,
+            request.headers.get("x-forwarded-for"),
+            request.client.host if request.client else None,
+        )
         if rate_error:
             return rate_error
 
@@ -432,48 +514,51 @@ async def _run_binary_push(
     content_hash = hashlib.sha256(body).hexdigest()
 
     media_type = content_type.split(";")[0].strip()
-    await opts.store.put_bytes(document_key, body, content_type=media_type)
+    await opts.store.put_bytes(document_key, body, content_type=media_type, context=context)
 
     return JSONResponse({"hash": content_hash})
 
 
-async def _publish_change_event(
+async def _emit_write_event(
     opts: SyncRouterOptions,
     col: CollectionConfig,
     response: JSONResponse | Response,
     params: dict[str, str],
     body_data: dict[str, Any] | None = None,
+    namespace_name: str | None = None,
 ) -> None:
-    """Publish a queue event after a successful push.
+    """Build a :class:`WriteEvent` from a successful push and dispatch it to
+    every registered plugin's ``after_write`` hook.
 
-    Errors are logged but never propagate — a queue outage must not
-    break client writes.
+    No-op when there are no plugins or the push did not return 200. Plugin
+    failures are logged, never propagated.
     """
-    if opts.queue is None or col.queue is None or response.status_code != 200:
+    if not opts.plugins or response.status_code != 200:
         return
     try:
         resp_body = json.loads(response.body)
-        subject = col.queue.topic or col.name
-        msg: QueueMessage = {
-            "collection": col.name,
-            "hash": resp_body.get("hash", ""),
-            "timestamp": resp_body.get("timestamp", 0),
-        }
-        if col.queue.include_params and params:
-            msg["params"] = params
-        if col.queue.include_body and body_data is not None:
-            msg["body"] = body_data
-        await opts.queue.publish(subject, json.dumps(msg).encode())
     except Exception:
-        logging.getLogger(__name__).warning(
-            "Failed to publish queue event for %s", col.name, exc_info=True,
+        logging.getLogger(__name__).error(
+            "Failed to parse push response for write event on %s", col.name,
+            exc_info=True,
         )
+        return
+    event = WriteEvent(
+        collection=col.name,
+        hash=resp_body.get("hash", ""),
+        timestamp=resp_body.get("timestamp", 0),
+        params=dict(params),
+        body=body_data,
+        namespace=namespace_name,
+    )
+    await dispatch_after_write(opts.plugins, event)
 
 
 def _make_push_handler(
     col: CollectionConfig,
     rate_limiter: RateLimiter | None,
     opts: SyncRouterOptions,
+    namespace_name: str | None = None,
 ) -> Callable:
     """Create a push handler with *col* and *rate_limiter* captured in a closure."""
     async def push_handler(request: Request) -> JSONResponse:
@@ -485,48 +570,88 @@ def _make_push_handler(
         if error:
             return error
 
-        if (
-            col.remote is not None
-            and col.remote.write_mode == WriteMode.PUSH_THROUGH
-            and opts.replica_manager is not None
-        ):
-            return await _proxy_push_to_primary(col, request, opts.replica_manager)
-
-        if col.remote is not None and col.remote.write_mode == WriteMode.PULL_ONLY:
-            return JSONResponse(
-                {"error": "This collection is read-only on this server"},
-                status_code=405,
+        # Push-intercepting plugins (e.g. starfish-replica): reject read-only
+        # collections, or respond on the route's behalf (e.g. proxy to a primary).
+        if any(p.intercept_push is not None for p in (opts.plugins or [])):
+            raw_body = (await request.body()).decode() if is_json_collection(col.allowed_mime_types) else ""
+            decision = await dispatch_intercept_push(
+                opts.plugins,
+                PushHookContext(
+                    collection=col.name,
+                    params=dict(params),
+                    raw_body=raw_body,
+                    namespace=namespace_name,
+                ),
             )
+            if decision.action in ("reject", "respond"):
+                # Push-through / rejected writes still pass local auth, so record
+                # them in the audit log (they otherwise returned before the audit
+                # call below, leaving proxied writes invisible). No write event is
+                # emitted: the write lands on the primary, not the local store, so
+                # the primary owns that change event.
+                if opts.audit_logger is not None:
+                    await opts.audit_logger.record(_AuditEntry(
+                        timestamp=time.time() * 1000,
+                        action="push",
+                        collection=col.name,
+                        identity=identity,
+                        document_key=_resolve_document_key(col.storage_path, params),
+                        success=200 <= decision.status < 300,
+                        status_code=decision.status,
+                        params=dict(params),
+                    ))
+                if decision.action == "reject":
+                    return JSONResponse({"error": decision.error}, status_code=decision.status)
+                return JSONResponse(decision.body, status_code=decision.status)
 
         document_key = _resolve_document_key(col.storage_path, params)
+        push_ctx = StoreContext(
+            collection=col.name,
+            params=dict(params),
+            identity=identity,
+            roles=tuple(effective_roles),
+            action=ACTION_PUSH,
+            namespace=namespace_name,
+        )
 
         if not is_json_collection(col.allowed_mime_types):
             response = await _run_binary_push(
-                request, col, document_key, identity, rate_limiter, opts,
+                request, col, document_key, identity, rate_limiter, opts, push_ctx,
             )
-            await _publish_change_event(opts, col, response, params)
+            await _emit_write_event(opts, col, response, params, None, namespace_name)
             return response
 
+        # Pre-extract the request `data` object so plugins' after_write hooks can
+        # see the pushed body. Starlette caches the parsed JSON, so _run_push's
+        # own parse below does not re-read the stream. A plugin decides whether
+        # to use it.
         body_data: dict[str, Any] | None = None
-        if col.queue is not None and col.queue.include_body:
+        if any(p.after_write is not None for p in (opts.plugins or [])):
             try:
                 raw = await request.json()  # Safe: Starlette.Request caches body in self._json after first read
                 if isinstance(raw, dict) and isinstance(raw.get("data"), dict):
                     body_data = raw["data"]
-                else:
-                    logging.getLogger(__name__).warning(
-                        "includeBody enabled for %r but request data is not a dict; omitting body from queue message",
-                        col.name,
-                    )
+                # Non-dict data → body_data stays None; a plugin that wanted the
+                # body warns on its side.
             except Exception:
-                logging.getLogger(__name__).warning(
-                    "includeBody: failed to extract body for queue message on collection %r",
-                    col.name,
-                    exc_info=True,
-                )
+                # Parse failure → body_data stays None. _run_push re-parses and
+                # rejects with 400, so the non-200 guard skips dispatch anyway.
+                pass
 
-        response = await _run_push(request, col, params, document_key, identity, effective_roles, rate_limiter, opts)
-        await _publish_change_event(opts, col, response, params, body_data)
+        response = await _run_push(request, col, params, document_key, identity, effective_roles, rate_limiter, opts, push_ctx)
+        await _emit_write_event(opts, col, response, params, body_data, namespace_name)
+        # Emit audit entry for every push (success or conflict).
+        if opts.audit_logger is not None:
+            await opts.audit_logger.record(_AuditEntry(
+                timestamp=time.time() * 1000,
+                action="push",
+                collection=col.name,
+                identity=identity,
+                document_key=document_key,
+                success=response.status_code == 200,
+                status_code=response.status_code,
+                params=dict(params),
+            ))
         return response
 
     return push_handler
@@ -536,6 +661,7 @@ def _add_collection_routes(
     router: APIRouter,
     col: CollectionConfig,
     opts: SyncRouterOptions,
+    namespace_name: str | None = None,
 ) -> None:
     if not col.push_only:
         pull_path = _to_route_path(ACTION_PULL, col.storage_path)
@@ -549,24 +675,41 @@ def _add_collection_routes(
             if error:
                 return error
 
-            if col.remote is not None and col.remote.write_mode == WriteMode.PUSH_ONLY:
-                return JSONResponse(
-                    {"error": "This collection is write-only on this server"},
-                    status_code=405,
-                )
+            pull_ctx = StoreContext(
+                collection=col.name,
+                params=dict(params),
+                identity=identity,
+                roles=tuple(effective_roles),
+                action=ACTION_PULL,
+                namespace=namespace_name,
+            )
 
-            if (
-                opts.replica_manager is not None
-                and col.remote is not None
-                and SyncTrigger.ON_PULL in col.remote.sync_triggers
-            ):
-                await opts.replica_manager.on_pull(col.name)
+            # Pull-gating plugins (e.g. starfish-replica): reject write-only
+            # collections, or sync from a primary before the local read.
+            if any(p.before_pull is not None for p in (opts.plugins or [])):
+                decision = await dispatch_before_pull(
+                    opts.plugins,
+                    PullHookContext(
+                        collection=col.name,
+                        params=dict(params),
+                        namespace=namespace_name,
+                    ),
+                )
+                if decision.action == "reject":
+                    return JSONResponse({"error": decision.error}, status_code=decision.status)
 
             document_key = _resolve_document_key(col.storage_path, params)
+            # Guard the resolved key before any store read. The JSON branch
+            # re-checks inside handle_sync_pull, but the binary ``get_bytes``
+            # branch below reads the store directly — without this, a
+            # non-``{identity}`` param of ``..`` (which passes the per-segment
+            # charset check) would traverse the composed key.
+            if is_unsafe_document_key(document_key):
+                return JSONResponse({"error": "Invalid path parameter"}, status_code=400)
 
             # Binary collection: return raw bytes
             if not is_json_collection(col.allowed_mime_types):
-                result = await opts.store.get_bytes(document_key)
+                result = await opts.store.get_bytes(document_key, context=pull_ctx)
                 if result is None:
                     return Response(status_code=404)
                 raw_bytes, stored_content_type = result
@@ -586,29 +729,60 @@ def _add_collection_routes(
                     headers["Cache-Control"] = directive
                 return Response(content=raw_bytes, media_type=stored_content_type, headers=headers)
 
-            store = _resolve_store(col, opts.store, params, identity, opts)
+            store = opts.store
             checkpoint_param = request.query_params.get(QUERY_CHECKPOINT)
-            is_client_encrypted = bool(col.client_encrypted) or col.encryption in (ENCRYPTION_DELEGATED, ENCRYPTION_GROUP)
-            response = await handle_sync_pull(
-                document_key, store, checkpoint_param,
-                bool(col.force_full_fetch), is_client_encrypted,
-                col.cache_duration_ms,
-                is_public=ROLE_PUBLIC in col.read_roles,
+            last_param = request.query_params.get("last")
+            with_keyring = is_with_keyring_enabled(
+                request.query_params.get("withKeyring")
             )
+            # The sibling ``<key>/_keyring`` read must be authorized like any
+            # other path: a cap that denies the keyring (e.g. scopes.writer)
+            # must not read it via this shortcut. Drop the optimization when the
+            # caller's cap scope does not cover the keyring key. ``None`` scope
+            # (role-based auth, no path scope) leaves the optimization enabled.
+            if with_keyring:
+                cap_scope_paths = getattr(request.state, "cap_scope_paths", None)
+                if cap_scope_paths is not None and not match_scope_path(
+                    f"{document_key}/_keyring", cap_scope_paths
+                ):
+                    with_keyring = False
+            is_client_encrypted = col.encryption == ENCRYPTION_DELEGATED
+            is_public = ROLE_PUBLIC in col.read_roles
+
+            # AppendOnly persist=true uses custom per-item checkpoint filtering
+            if col.append_only is not None and col.append_only.persist:
+                response = await handle_append_only_pull(
+                    document_key, store, checkpoint_param,
+                    col.append_only.field,
+                    col.cache_duration_ms,
+                    is_public=is_public,
+                    last_param=last_param,
+                    context=pull_ctx,
+                )
+            else:
+                response = await handle_sync_pull(
+                    document_key, store, checkpoint_param,
+                    bool(col.force_full_fetch), is_client_encrypted,
+                    col.cache_duration_ms,
+                    is_public=is_public,
+                    context=pull_ctx,
+                    with_keyring=with_keyring,
+                )
 
             # TTL: if the document has expired, return empty data.
             # Python pull() returns the current time, not the stored timestamp,
-            # so read the stored timestamps directly to check expiry.
+            # so read the stored doc-level write-time (`ts`) directly to check expiry.
             # Use the resolved encrypted `store` (not opts.store) so encrypted
             # collections are decrypted before timestamp extraction.
             if col.ttl_ms is not None and response.status_code == 200:
-                raw_doc = await store.get_string(document_key)
+                raw_doc = await store.get_string(document_key, context=pull_ctx)
                 if raw_doc:
                     stored = json.loads(raw_doc)
-                    doc_timestamp = _max_stored_timestamp(stored.get("timestamps", {}))
+                    doc_timestamp = stored.get("ts") or 0
                     if _is_expired(doc_timestamp, col.ttl_ms):
                         resp_body = json.loads(response.body)
                         resp_body["data"] = {}
+                        resp_body["hash"] = ""  # zero hash so client can't clobber with stale baseHash
                         response = JSONResponse(resp_body, status_code=200)
                         if col.cache_duration_ms is not None:
                             max_age = col.cache_duration_ms // 1000
@@ -634,7 +808,19 @@ def _add_collection_routes(
                             ):
                                 del data[field_name]
                     resp_body["data"] = data
+                    # Field filtering changes the body VIEW, not the document version,
+                    # so the hash-derived ETag (and Cache-Control) still apply — carry
+                    # them across the rebuild instead of dropping them, otherwise
+                    # conditional 304 caching silently breaks for field-perm collections
+                    # (TS keeps the ETag by filtering `data` in place).
+                    preserved = {
+                        k: v
+                        for k, v in response.headers.items()
+                        if k.lower() in ("etag", "cache-control")
+                    }
                     response = JSONResponse(resp_body, status_code=200)
+                    for k, v in preserved.items():
+                        response.headers[k] = v
 
             # ETag conditional request support
             etag = response.headers.get("ETag")
@@ -651,13 +837,13 @@ def _add_collection_routes(
         push_path = _to_route_path(ACTION_PUSH, col.storage_path)
         rate_limiter = _build_rate_limiter(col.rate_limit, opts)
         router.add_api_route(
-            push_path, _make_push_handler(col, rate_limiter, opts), methods=["POST"],
+            push_path, _make_push_handler(col, rate_limiter, opts, namespace_name), methods=["POST"],
         )
 
     if col.listable:
         list_path = _to_list_route_path(col.storage_path)
 
-        def _make_list_handler(col: CollectionConfig) -> Callable:
+        def _make_list_handler(col: CollectionConfig, ns: str | None) -> Callable:
             async def list_handler(request: Request) -> JSONResponse:
                 # The list route has one fewer path param than storagePath.
                 # Resolve only the prefix portion.
@@ -668,9 +854,18 @@ def _add_collection_routes(
                 if not _validate_all_params(params):
                     return JSONResponse({"error": "Invalid path parameter"}, status_code=400)
 
-                _identity, _roles, error = await _check_auth(col, OP_READ, request, params, opts)
+                list_identity, list_roles, error = await _check_auth(col, OP_READ, request, params, opts)
                 if error:
                     return error
+
+                list_ctx = StoreContext(
+                    collection=col.name,
+                    params=params,
+                    identity=list_identity,
+                    roles=tuple(list_roles),
+                    action=ACTION_LIST,
+                    namespace=ns,
+                )
 
                 prefix = _to_list_prefix(col.storage_path, params)
 
@@ -693,7 +888,7 @@ def _add_collection_routes(
                     start_after = prefix + after_param
 
                 # Fetch one extra to detect hasMore
-                keys = await opts.store.list_keys(prefix, start_after=start_after, limit=limit + 1)
+                keys = await opts.store.list_keys(prefix, start_after=start_after, limit=limit + 1, context=list_ctx)
                 has_more = len(keys) > limit
                 page = keys[:limit] if has_more else keys
 
@@ -702,7 +897,7 @@ def _add_collection_routes(
 
             return list_handler
 
-        router.add_api_route(list_path, _make_list_handler(col), methods=["GET"])
+        router.add_api_route(list_path, _make_list_handler(col, namespace_name), methods=["GET"])
 
 
 def _add_bundled_routes(
@@ -710,48 +905,70 @@ def _add_bundled_routes(
     bundle_name: str,
     collections: list[CollectionConfig],
     opts: SyncRouterOptions,
+    namespace_name: str | None = None,
 ) -> None:
     storage_path = collections[0].storage_path
 
     pull_path = _to_route_path(ACTION_PULL, storage_path)
-    is_any_public = any(ROLE_PUBLIC in c.read_roles for c in collections)
+    # A bundle member is "public" when its own read_roles allow ROLE_PUBLIC.
+    # Non-public members (including rootOnly ones) are each authorized against
+    # the caller's resolved roles; a public member never relaxes a private
+    # sibling.
+    has_non_public = any(
+        c.root_only or ROLE_PUBLIC not in c.read_roles for c in collections
+    )
 
     async def bundle_pull_handler(request: Request) -> JSONResponse:
         params = request.path_params
         if not _validate_all_params(params):
             return JSONResponse({"error": "Invalid path parameter"}, status_code=400)
 
-        if not is_any_public:
-            identity, _roles, error = await _check_auth(collections[0], OP_READ, request, params, opts)
+        # Resolve the caller's effective roles ONCE (the resolver consumes the
+        # request nonce, so it must not run per-collection). Skipped entirely
+        # when every member is public, preserving anonymous access to all-public
+        # bundles.
+        identity: str | None = None
+        effective_roles: frozenset[str] = frozenset()
+        if has_non_public:
+            identity, effective_roles, error = await _resolve_effective_roles(
+                request, params, opts, storage_path
+            )
             if error:
                 return error
-        else:
-            identity = None
 
         base_key = _resolve_document_key(storage_path, params)
-        store = _resolve_store(collections[0], opts.store, params, identity, opts)
+        # Guard the resolved key: the per-member loop below reads the store
+        # directly (it does not go through handle_sync_pull), so a ``..`` in a
+        # non-``{identity}`` param would otherwise traverse the composed key.
+        if is_unsafe_document_key(base_key):
+            return JSONResponse({"error": "Invalid path parameter"}, status_code=400)
+        store = opts.store
 
-        any_client_encrypted = any(
-            c.client_encrypted or c.encryption in (ENCRYPTION_DELEGATED, ENCRYPTION_GROUP)
-            for c in collections
-        )
-        checkpoint_param = request.query_params.get(QUERY_CHECKPOINT)
-        checkpoint = 0
-        if not any_client_encrypted and checkpoint_param is not None:
-            try:
-                parsed = int(checkpoint_param)
-            except ValueError:
-                return JSONResponse({"error": "Invalid checkpoint"}, status_code=400)
-            if parsed < 0 or str(parsed) != checkpoint_param:
-                return JSONResponse({"error": "Invalid checkpoint"}, status_code=400)
-            checkpoint = parsed
-
+        # Bundles contain only regular collections, which always return the full
+        # document — ``?checkpoint=`` is no longer honored (appendOnly-only feature).
         result: dict[str, Any] = {}
         latest_timestamp = 0
 
         for col in collections:
+            # Per-collection authorization via the shared decision so a bundle
+            # pull enforces exactly what the standalone pull does (read_roles,
+            # public, and rootOnly). Denied members are omitted so a bundle never
+            # leaks a collection the caller can't read.
+            if not _is_access_allowed(col, OP_READ, effective_roles):
+                continue
+
             document_key = f"{base_key}/{col.name}"
-            pull_result = await pull(store, document_key, checkpoint)
+            bundle_pull_ctx = StoreContext(
+                collection=col.name,
+                params=dict(params),
+                identity=identity,
+                roles=tuple(effective_roles),
+                action=ACTION_PULL,
+                namespace=namespace_name,
+            )
+            pull_result = await pull(store, document_key, bundle_pull_ctx)
+            # Strip fields the caller cannot read (parity with the standalone path).
+            _apply_field_read_filter(pull_result.data, col.field_permissions, effective_roles)
             result[col.name] = {
                 "data": pull_result.data,
                 "hash": pull_result.hash,
@@ -770,7 +987,7 @@ def _add_bundled_routes(
         push_path = _to_route_path(ACTION_PUSH, storage_path) + f"/{col.name}"
         rate_limiter = _build_rate_limiter(col.rate_limit, opts)
 
-        def _make_bundle_push(col: CollectionConfig, rl: RateLimiter | None) -> Callable:
+        def _make_bundle_push(col: CollectionConfig, rl: RateLimiter | None, ns: str | None) -> Callable:
             async def bundle_push_handler(request: Request) -> JSONResponse:
                 params = request.path_params
                 if not _validate_all_params(params):
@@ -781,38 +998,43 @@ def _add_bundled_routes(
                     return error
 
                 document_key = f"{_resolve_document_key(storage_path, params)}/{col.name}"
+                bundle_push_ctx = StoreContext(
+                    collection=col.name,
+                    params=dict(params),
+                    identity=identity,
+                    roles=tuple(effective_roles),
+                    action=ACTION_PUSH,
+                    namespace=ns,
+                )
 
+                # See the JSON-push handler: pre-extract `data` for plugins'
+                # after_write hooks; Starlette caches the parse so _run_push below
+                # does not re-read.
                 bundle_body_data: dict[str, Any] | None = None
-                if col.queue is not None and col.queue.include_body:
+                if any(p.after_write is not None for p in (opts.plugins or [])):
                     try:
                         raw = await request.json()  # Safe: Starlette.Request caches body in self._json after first read
                         if isinstance(raw, dict) and isinstance(raw.get("data"), dict):
                             bundle_body_data = raw["data"]
-                        else:
-                            logging.getLogger(__name__).warning(
-                                "includeBody enabled for %r but request data is not a dict; omitting body from queue message",
-                                col.name,
-                            )
                     except Exception:
-                        logging.getLogger(__name__).warning(
-                            "includeBody: failed to extract body for queue message on collection %r",
-                            col.name,
-                            exc_info=True,
-                        )
+                        # Parse failure → bundle_body_data stays None; non-200 guard
+                        # skips dispatch anyway.
+                        pass
 
-                response = await _run_push(request, col, params, document_key, identity, effective_roles, rl, opts)
-                await _publish_change_event(opts, col, response, params, bundle_body_data)
+                response = await _run_push(request, col, params, document_key, identity, effective_roles, rl, opts, bundle_push_ctx)
+                await _emit_write_event(opts, col, response, params, bundle_body_data, ns)
                 return response
 
             return bundle_push_handler
 
-        router.add_api_route(push_path, _make_bundle_push(col, rate_limiter), methods=["POST"])
+        router.add_api_route(push_path, _make_bundle_push(col, rate_limiter, namespace_name), methods=["POST"])
 
 
 def _register_collections_on_router(
     router: APIRouter,
     collections: list[CollectionConfig],
     opts: SyncRouterOptions,
+    namespace_name: str | None = None,
 ) -> None:
     """Register standalone and bundled collection routes on *router*."""
     bundles: dict[str, list[CollectionConfig]] = {}
@@ -825,15 +1047,16 @@ def _register_collections_on_router(
             standalone.append(col)
 
     for col in standalone:
-        _add_collection_routes(router, col, opts)
+        _add_collection_routes(router, col, opts, namespace_name)
 
     for bundle_name, bundle_collections in bundles.items():
-        _add_bundled_routes(router, bundle_name, bundle_collections, opts)
+        _add_bundled_routes(router, bundle_name, bundle_collections, opts, namespace_name)
 
 
 def _make_batch_pull_handler(
     collections_by_name: dict[str, CollectionConfig],
     opts: SyncRouterOptions,
+    namespace_name: str | None = None,
 ) -> Callable:
     """Create a ``/batch/pull`` handler scoped to *collections_by_name*."""
     async def batch_pull_handler(request: Request) -> JSONResponse:
@@ -853,22 +1076,39 @@ def _make_batch_pull_handler(
                 results[name] = {"error": "Collection not found"}
                 continue
 
+            # Batch pull resolves storage paths with no params, so a collection whose
+            # storage_path has a `{param}` placeholder cannot be addressed here — the
+            # unresolved template is not a valid key. Report it explicitly instead of
+            # attempting a doomed store read that surfaces as a masked "Internal error".
+            if "{" in col.storage_path:
+                results[name] = {"error": "Collection requires path parameters; not batch-pullable"}
+                continue
+
             try:
                 identity, effective_roles, error = await _check_auth(col, OP_READ, request, {}, opts)
                 if error:
                     results[name] = {"error": "Forbidden"}
                     continue
 
-                store = _resolve_store(col, opts.store, {}, identity, opts)
-                pull_result = await pull(store, col.storage_path, 0)
+                store = opts.store
+                batch_ctx = StoreContext(
+                    collection=col.name,
+                    params={},
+                    identity=identity,
+                    roles=tuple(effective_roles),
+                    action=ACTION_PULL,
+                    namespace=namespace_name,
+                )
+                pull_result = await pull(store, col.storage_path, batch_ctx)
                 data = pull_result.data
 
-                # TTL check: use stored timestamps (Python pull() returns current time)
+                # TTL check: pull() returns now as its timestamp, so read the stored
+                # doc-level write-time (`ts`) to expire stale documents.
                 if col.ttl_ms is not None:
-                    raw_doc = await opts.store.get_string(col.storage_path)
+                    raw_doc = await opts.store.get_string(col.storage_path, context=batch_ctx)
                     if raw_doc:
                         stored = json.loads(raw_doc)
-                        doc_timestamp = _max_stored_timestamp(stored.get("timestamps", {}))
+                        doc_timestamp = stored.get("ts") or 0
                         if _is_expired(doc_timestamp, col.ttl_ms):
                             data = {}
 
@@ -904,12 +1144,12 @@ def _mount_namespace(
 ) -> None:
     """Create a sub-router for *ns_name* and mount it on *router*."""
     ns_router = APIRouter()
-    _register_collections_on_router(ns_router, ns_config.collections, opts)
+    _register_collections_on_router(ns_router, ns_config.collections, opts, ns_name)
 
     collections_by_name = {col.name: col for col in ns_config.collections if not col.bundle}
     ns_router.add_api_route(
         "/batch/pull",
-        _make_batch_pull_handler(collections_by_name, opts),
+        _make_batch_pull_handler(collections_by_name, opts, ns_name),
         methods=["GET"],
     )
 
@@ -920,10 +1160,30 @@ def create_sync_router(opts: SyncRouterOptions) -> APIRouter:
     """Create a FastAPI APIRouter with sync pull/push routes.
 
     CORS is not configured here — add CORSMiddleware to your FastAPI app if needed.
-    Register ``await replica_manager.stop()`` in your app shutdown handler if using replicas.
+    Register replica/queuing plugins via ``GracefulShutdownOptions(plugins=[...])``
+    so their ``shutdown`` hooks (e.g. ``starfish-replica`` stopping its sync timers) run.
     """
     router = APIRouter()
     config = opts.config
+
+    # `appendOnly.persist=False` computes a hash and emits a write event without
+    # writing to storage — it only does something useful when a plugin consumes
+    # the event (e.g. ``starfish-queuing``). Warn if no after_write hook is wired.
+    if not any(p.after_write is not None for p in (opts.plugins or [])):
+        all_cols = list(config.collections)
+        for ns in (config.namespaces or {}).values():
+            all_cols.extend(ns.collections)
+        queue_only = [
+            c for c in all_cols
+            if c.append_only is not None and c.append_only.persist is False
+        ]
+        if queue_only:
+            logging.getLogger(__name__).warning(
+                "appendOnly.persist=False on collection(s) %s but no plugin with an "
+                "after_write hook is registered; pushes will be neither stored nor "
+                "published.",
+                ", ".join(repr(c.name) for c in queue_only),
+            )
 
     @router.get("/health")
     async def health() -> dict:

@@ -1,0 +1,79 @@
+{
+  "description": "Cross-language vector for passphrase-sealed envelopes. key = Argon2id(NFC(passphrase), salt) → AES-256-GCM(key, iv, plaintext) with the 16-byte tag appended to ct. Both TS and Python must open each envelope to plaintextUtf8 and reproduce the exact envelope from (passphrase, plaintext, salt, iv).",
+  "constants": {
+    "argon2": {
+      "memoryKiB": 47104,
+      "iterations": 3,
+      "parallelism": 1,
+      "hashLength": 32,
+      "type": "argon2id"
+    },
+    "saltBytes": 16,
+    "ivBytes": 12,
+    "aead": "AES-256-GCM",
+    "passphraseNormalization": "NFC",
+    "base64": "standard (padded)"
+  },
+  "vectors": [
+    {
+      "label": "numeric-pin",
+      "passphrase": "1234",
+      "plaintextUtf8": "{\"hello\":\"world\",\"n\":42}",
+      "saltB64": "gRYtUF010MtwKdivqjSSXQ==",
+      "ivB64": "S9qiR2ZJGFmCFBBW",
+      "envelope": {
+        "v": 1,
+        "enc": "passphrase",
+        "kdf": {
+          "alg": "argon2id",
+          "memKiB": 47104,
+          "iter": 3,
+          "par": 1,
+          "salt": "gRYtUF010MtwKdivqjSSXQ=="
+        },
+        "iv": "S9qiR2ZJGFmCFBBW",
+        "ct": "DJPnaSVhpfq0beHOngi67Dmrtd5nCuJSvuL5MzMExipaf62J0d9g5w=="
+      }
+    },
+    {
+      "label": "passphrase",
+      "passphrase": "correct horse battery staple",
+      "plaintextUtf8": "one-way device setup code payload",
+      "saltB64": "c9a+gAPM9UbKhfzQiQj4Hg==",
+      "ivB64": "cIVJhjt1eq5yHmm+",
+      "envelope": {
+        "v": 1,
+        "enc": "passphrase",
+        "kdf": {
+          "alg": "argon2id",
+          "memKiB": 47104,
+          "iter": 3,
+          "par": 1,
+          "salt": "c9a+gAPM9UbKhfzQiQj4Hg=="
+        },
+        "iv": "cIVJhjt1eq5yHmm+",
+        "ct": "D6/1IFIbtg65G7YBCuQ+dFIaj5QssoedVWMEDL2qQZgtOfwh3/CRi+4H5N5ERSfL8Q=="
+      }
+    },
+    {
+      "label": "unicode",
+      "passphrase": "café-🔑-passphrase",
+      "plaintextUtf8": "café ☕ secret — déjà vu",
+      "saltB64": "YJhmWQ/e7U4a60XNFt7Liw==",
+      "ivB64": "hsrVA9oCmsA2jRmL",
+      "envelope": {
+        "v": 1,
+        "enc": "passphrase",
+        "kdf": {
+          "alg": "argon2id",
+          "memKiB": 47104,
+          "iter": 3,
+          "par": 1,
+          "salt": "YJhmWQ/e7U4a60XNFt7Liw=="
+        },
+        "iv": "hsrVA9oCmsA2jRmL",
+        "ct": "EVbLrYiwoy58xGQwDNAnvZJs1gE/WScyRdOYKvPVcL/8V7Ns8Ptdo1vbrsBUpw=="
+      }
+    }
+  ]
+}

@@ -1,14 +1,15 @@
 """Tests for SyncManager."""
 
 
-from typing import Any
+import asyncio
+import json
 from unittest.mock import AsyncMock
 
 import pytest
 
-from starfish_protocol.hash import stable_stringify
 from starfish_sdk.client import StarfishClient
 from starfish_sdk.sync import SyncManager
+from starfish_sdk.types import ConflictError
 from starfish_protocol.types import PullResult, PushSuccess
 
 
@@ -50,107 +51,8 @@ async def test_push_sends_data():
     assert result["timestamp"] == 2000
     assert sync.hash == "def456"
     client.push.assert_called_once_with(  # type: ignore
-        "/push/test", {"newKey": "newValue"}, None, None
+        "/push/test", {"newKey": "newValue"}, None
     )
-
-
-def test_sync_manager_rejects_partial_encryption_config():
-    client = mock_client()
-    with pytest.raises(ValueError, match="encryption"):
-        SyncManager(client, "/pull/test", "/push/test", encryption_secret="secret")
-
-
-@pytest.mark.asyncio
-async def test_sign_data_signs_encrypted_payload():
-    """Regression: sign_data must sign the encrypted payload, not the plaintext.
-
-    When both encryption and signing are active, the server verifies the
-    signature against the ciphertext wrapper it receives.  The SDK must
-    therefore sign stable_stringify(encrypted_payload).
-    """
-    signed_strings: list[str] = []
-
-    async def capture_signer(data: str) -> str:
-        signed_strings.append(data)
-        return "dummy-sig"
-
-    secret = "a]cZ#8=6gT{>w$Q}"
-    salt = "user-public-key-abc123"
-    info = "starfish-e2e"
-    plaintext = {"hello": "world", "nested": {"a": 1}}
-
-    client = mock_client()
-    manager = SyncManager(
-        client=client,
-        pull_path="/pull/test",
-        push_path="/push/test",
-        encryption_secret=secret,
-        encryption_salt=salt,
-        encryption_info=info,
-        sign_data=capture_signer,
-    )
-
-    await manager.push(plaintext)
-
-    # Verify signer was called exactly once
-    assert len(signed_strings) == 1
-
-    # The push call's second arg is the actual payload sent to the server
-    actual_payload = client.push.call_args[0][1]  # type: ignore
-
-    # The signed string must be stable_stringify of the encrypted payload
-    assert signed_strings[0] == stable_stringify(actual_payload)
-
-    # And it must NOT be the plaintext stringification
-    assert signed_strings[0] != stable_stringify(plaintext)
-
-    # The payload must be an encrypted wrapper (has _encrypted key)
-    assert "_encrypted" in actual_payload
-
-
-@pytest.mark.asyncio
-async def test_sign_data_signs_plaintext_when_no_encryption():
-    """When no encryptor is configured, sign_data signs the raw data dict."""
-    signed_strings: list[str] = []
-
-    async def capture_signer(data: str) -> str:
-        signed_strings.append(data)
-        return "dummy-sig"
-
-    plaintext = {"key": "value"}
-    client = mock_client()
-    manager = SyncManager(
-        client=client,
-        pull_path="/pull/test",
-        push_path="/push/test",
-        sign_data=capture_signer,
-    )
-
-    await manager.push(plaintext)
-
-    assert len(signed_strings) == 1
-    # Without encryption, payload == pending_data, so signed string matches plaintext
-    assert signed_strings[0] == stable_stringify(plaintext)
-
-
-@pytest.mark.asyncio
-async def test_push_sends_signature_to_server():
-    """The signature returned by sign_data must be forwarded to client.push()."""
-    async def fake_signer(data: str) -> str:
-        return "test-signature-abc"
-
-    client = mock_client()
-    manager = SyncManager(
-        client=client,
-        pull_path="/pull/test",
-        push_path="/push/test",
-        sign_data=fake_signer,
-    )
-
-    await manager.push({"foo": "bar"})
-
-    # Fourth positional arg to client.push is the signature
-    assert client.push.call_args[0][3] == "test-signature-abc"  # type: ignore
 
 
 @pytest.mark.asyncio
@@ -168,3 +70,94 @@ async def test_incremental_pull_merges():
 
     await sync.pull()  # incremental — merges
     assert sync.data == {"a": 1, "b": 3}
+
+
+@pytest.mark.asyncio
+async def test_incremental_pull_replaces_array_wholesale_and_keeps_local_only_keys():
+    # deep_merge is not element-wise: a remote list replaces the local one (not
+    # concatenated), while a local-only key survives. Pins the merge contract
+    # through the client's incremental path. Mirrors sync.test.ts.
+    client = mock_client(
+        pull_responses=[
+            PullResult(data={"items": [1, 2, 3], "k": "v"}, hash="h1", timestamp=100),
+            PullResult(data={"items": [9]}, hash="h2", timestamp=200),
+        ]
+    )
+    sync = SyncManager(client, "/pull/test", "/push/test")
+
+    await sync.pull()
+    assert sync.data == {"items": [1, 2, 3], "k": "v"}
+    await sync.pull()  # incremental merge
+    assert sync.data == {"items": [9], "k": "v"}
+
+
+def _stateful_client(initial_hash: str, initial_data: dict) -> tuple[StarfishClient, dict]:
+    """A faithful stateful 'server': a push succeeds only when its base_hash equals
+    the current hash (push.py: ``base_hash != current_hash`` → ConflictError); the
+    loser conflict-retries (pull → default deep_merge → retry). The ``asyncio.sleep(0)``
+    models real network I/O yielding so two gathered pushes interleave the way httpx
+    would — a synchronous mock would run them serially and hide the conflict path."""
+    state = {"hash": initial_hash, "data": dict(initial_data)}
+
+    async def push(path: str, data: dict, base_hash: str | None) -> PushSuccess:
+        await asyncio.sleep(0)
+        if base_hash != state["hash"]:
+            raise ConflictError()
+        state["data"] = data
+        state["hash"] = "h-" + json.dumps(data, sort_keys=True)
+        return PushSuccess(hash=state["hash"], timestamp=1)
+
+    async def pull(path: str, *args, **kwargs) -> PullResult:
+        await asyncio.sleep(0)
+        return PullResult(data=dict(state["data"]), hash=state["hash"], timestamp=1)
+
+    client = StarfishClient.__new__(StarfishClient)
+    client.push = push  # type: ignore
+    client.pull = pull  # type: ignore
+    return client, state
+
+
+@pytest.mark.asyncio
+async def test_two_concurrent_pushes_both_land():
+    # asyncio.gather of two pushes on the same manager: the loser conflict-retries
+    # and the default deep_merge unions both writes — no lost update (TS parity).
+    client, state = _stateful_client("h0", {})
+    sync = SyncManager(client, "/pull/test", "/push/test")
+    sync.set_hash("h0")  # both pushes start from the same base_hash
+    await asyncio.gather(sync.push({"x": 1}), sync.push({"y": 2}))
+    assert state["data"] == {"x": 1, "y": 2}
+
+
+@pytest.mark.asyncio
+async def test_stale_or_corrupt_hash_self_heals_via_conflict_retry():
+    # A rehydrated truncated/garbage hash makes the first push conflict (it can't
+    # match the real current hash); the retry loop pulls, merges, and re-pushes
+    # against the real hash. The server treats any non-matching base_hash as a
+    # conflict (not a 400), so recovery is automatic. TS parity.
+    client, state = _stateful_client("real-hash", {"a": 1})
+    sync = SyncManager(client, "/pull/test", "/push/test")
+    sync.set_hash("truncated-garbage")
+    result = await sync.push({"b": 2})
+    assert state["data"] == {"a": 1, "b": 2}
+    assert result["hash"] == state["hash"]
+
+
+@pytest.mark.asyncio
+async def test_conflict_resolver_error_propagates():
+    # A resolver that rejects the merge (e.g. a validation failure) must surface its
+    # error to the caller rather than be silently swallowed. Mirrors sync.test.ts.
+    def _raising_resolver(local, remote):
+        raise ValueError("merge rejected by validator")
+
+    client = mock_client(
+        pull_responses=[
+            PullResult(data={"a": 1}, hash="h1", timestamp=100),  # initial pull
+            PullResult(data={"a": 1, "remote": True}, hash="h2", timestamp=200),  # conflict re-pull
+        ],
+        push_responses=[ConflictError()],  # AsyncMock side_effect raises this on the push attempt
+    )
+    sync = SyncManager(client, "/pull/test", "/push/test", on_conflict=_raising_resolver)
+
+    await sync.pull()
+    with pytest.raises(ValueError, match="merge rejected by validator"):
+        await sync.push({"a": 2})

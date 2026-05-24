@@ -1,4 +1,4 @@
-import type { ObjectStore } from "./base.js"
+import type { ObjectStore, StoreContext } from "./base.js"
 
 const _globalData = new Map<string, string>()
 
@@ -11,17 +11,18 @@ export class MemoryObjectStore implements ObjectStore {
     this._data = data ?? _globalData
   }
 
-  async getString(key: string): Promise<string | null> {
+  async getString(key: string, _context?: StoreContext): Promise<string | null> {
     return this._data.get(key) ?? null
   }
 
-  async put(key: string, body: string): Promise<void> {
+  async put(key: string, body: string, _opts?: { contentType?: string; cacheControl?: string }, _context?: StoreContext): Promise<void> {
     this._data.set(key, body)
   }
 
   async listKeys(
     prefix: string,
     opts?: { startAfter?: string; limit?: number },
+    _context?: StoreContext,
   ): Promise<string[]> {
     let keys = [...this._data.keys()].filter((k) => k.startsWith(prefix)).sort()
     if (opts?.startAfter) {
@@ -33,7 +34,7 @@ export class MemoryObjectStore implements ObjectStore {
     return keys
   }
 
-  async getBytes(key: string): Promise<{ body: Uint8Array; contentType: string } | null> {
+  async getBytes(key: string, _context?: StoreContext): Promise<{ body: Uint8Array; contentType: string } | null> {
     const body = this._binary.get(key)
     if (!body) return null
     return { body, contentType: this._binaryMeta.get(key) ?? "application/octet-stream" }
@@ -43,18 +44,19 @@ export class MemoryObjectStore implements ObjectStore {
     key: string,
     body: Uint8Array,
     opts: { contentType: string },
+    _context?: StoreContext,
   ): Promise<void> {
     this._binary.set(key, body)
     this._binaryMeta.set(key, opts.contentType)
   }
 
-  async delete(key: string): Promise<void> {
+  async delete(key: string, _context?: StoreContext): Promise<void> {
     this._data.delete(key)
     this._binary.delete(key)
     this._binaryMeta.delete(key)
   }
 
-  async deleteMany(keys: string[]): Promise<void> {
+  async deleteMany(keys: string[], _context?: StoreContext): Promise<void> {
     for (const key of keys) {
       this._data.delete(key)
       this._binary.delete(key)
@@ -65,14 +67,15 @@ export class MemoryObjectStore implements ObjectStore {
 
 type MaybeAsync<T> = T | Promise<T>
 
-type GetFn = (key: string) => MaybeAsync<string | null>
-type PutFn = (key: string, body: string) => MaybeAsync<void>
+type GetFn = (key: string, context?: StoreContext) => MaybeAsync<string | null>
+type PutFn = (key: string, body: string, context?: StoreContext) => MaybeAsync<void>
 type ListFn = (
   prefix: string,
   startAfter: string | undefined,
   limit: number | undefined,
+  context?: StoreContext,
 ) => MaybeAsync<string[]>
-type DeleteFn = (key: string) => MaybeAsync<void>
+type DeleteFn = (key: string, context?: StoreContext) => MaybeAsync<void>
 
 export class CustomObjectStore implements ObjectStore {
   private _onGet?: GetFn
@@ -92,30 +95,31 @@ export class CustomObjectStore implements ObjectStore {
     this._onDelete = opts.onDelete
   }
 
-  async getString(key: string): Promise<string | null> {
+  async getString(key: string, context?: StoreContext): Promise<string | null> {
     if (!this._onGet) return null
-    return this._onGet(key)
+    return this._onGet(key, context)
   }
 
-  async put(key: string, body: string): Promise<void> {
-    if (this._onPut) await this._onPut(key, body)
+  async put(key: string, body: string, _opts?: { contentType?: string; cacheControl?: string }, context?: StoreContext): Promise<void> {
+    if (this._onPut) await this._onPut(key, body, context)
   }
 
   async listKeys(
     prefix: string,
     opts?: { startAfter?: string; limit?: number },
+    context?: StoreContext,
   ): Promise<string[]> {
     if (!this._onList) return []
-    return this._onList(prefix, opts?.startAfter, opts?.limit)
+    return this._onList(prefix, opts?.startAfter, opts?.limit, context)
   }
 
-  async delete(key: string): Promise<void> {
-    if (this._onDelete) await this._onDelete(key)
+  async delete(key: string, context?: StoreContext): Promise<void> {
+    if (this._onDelete) await this._onDelete(key, context)
   }
 
-  async deleteMany(keys: string[]): Promise<void> {
+  async deleteMany(keys: string[], context?: StoreContext): Promise<void> {
     for (const key of keys) {
-      await this.delete(key)
+      await this.delete(key, context)
     }
   }
 }

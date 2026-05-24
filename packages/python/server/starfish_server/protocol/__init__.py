@@ -2,21 +2,24 @@
 
 from starfish_protocol.hash import stable_stringify, compute_hash
 from starfish_protocol.merge import deep_merge
-from starfish_server.protocol.types import StoredDocument, PullResult, PushResult, Timestamps
-from starfish_server.protocol.timestamps import compute_timestamps, filter_by_checkpoint
+from starfish_server.protocol.types import (
+    StoredDocument,
+    AppendElement,
+    PullResult,
+    PushResult,
+)
 from starfish_server.protocol.pull import pull
-from starfish_server.protocol.push import push
+from starfish_server.protocol.push import push, append_item
 
 __all__ = [
     "stable_stringify",
     "compute_hash",
     "StoredDocument",
+    "AppendElement",
     "PullResult",
     "PushResult",
-    "Timestamps",
-    "compute_timestamps",
-    "filter_by_checkpoint",
     "pull",
     "push",
+    "append_item",
     "deep_merge",
 ]

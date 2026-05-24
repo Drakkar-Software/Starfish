@@ -23,6 +23,11 @@ export interface CryptoProvider {
       extractable: boolean,
       keyUsages: KeyUsage[],
     ): Promise<CryptoKey>
+    deriveBits(
+      algorithm: HkdfParams,
+      baseKey: CryptoKey,
+      length: number,
+    ): Promise<ArrayBuffer>
     encrypt(
       algorithm: AesGcmParams,
       key: CryptoKey,

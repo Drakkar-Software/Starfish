@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "starfish-server"
-version = "1.18.1"
+version = "3.0.0a2"
 description = "Python server for the Starfish sync protocol"
 requires-python = ">=3.11"
 dependencies = [
@@ -20,15 +20,22 @@ dependencies = [
 
 [project.optional-dependencies]
 s3 = ["aiobotocore>=2.5.0"]
-nats = ["nats-py>=2.0"]
 dev = [
   "pytest>=7.0",
   "pytest-asyncio>=0.21",
   "respx>=0.20",
+  "starfish-sdk",
+  "starfish-keyring",
+  "starfish-identities",
+  "starfish-sharing",
 ]
 
 [tool.uv.sources]
 starfish-protocol = { path = "../protocol", editable = true }
+starfish-sdk = { path = "../client", editable = true }
+starfish-keyring = { path = "../keyring", editable = true }
+starfish-identities = { path = "../identities", editable = true }
+starfish-sharing = { path = "../sharing", editable = true }
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

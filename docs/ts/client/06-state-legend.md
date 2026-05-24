@@ -14,20 +14,28 @@ npm install immer  # optional, for draft-based mutations
 ## Setup
 
 ```ts
-import { StarfishClient, SyncManager } from "@drakkar.software/starfish-client"
+import {
+  StarfishClient,
+  SyncManager,
+  bootstrapRootIdentity,
+} from "@drakkar.software/starfish-client"
 import { createStarfishObservable } from "@drakkar.software/starfish-client/legend"
+
+const creds = await bootstrapRootIdentity(passphrase)
 
 const client = new StarfishClient({
   baseUrl: "https://api.example.com/v1",
-  auth: async () => ({ Authorization: `Bearer ${await getToken()}` }),
+  capProvider: {
+    getCap: async () => ({ cap: creds.capCert, devEdPrivHex: creds.device.edPriv }),
+  },
 })
 
 const settingsStore = createStarfishObservable({
   name: "settings",
   syncManager: new SyncManager({
     client,
-    pullPath: "/pull/users/abc/settings",
-    pushPath: "/push/users/abc/settings",
+    pullPath: `/pull/users/${creds.userId}/settings`,
+    pushPath: `/push/users/${creds.userId}/settings`,
   }),
 })
 ```

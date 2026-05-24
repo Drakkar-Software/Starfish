@@ -312,40 +312,67 @@ expect(calls[3].init?.method).toBe("POST")
 
 ## Testing Encryption Round-Trip
 
-Use `createEncryptor` directly to verify encrypt/decrypt without any network:
+Build a one-recipient keyring + `createKeyringEncryptor` to verify
+encrypt/decrypt without any network. This mirrors the v3 production path.
 
 ```ts
-import { createEncryptor } from "@drakkar.software/starfish-client"
+import {
+  createKeyring,
+  createKeyringEncryptor,
+} from "@drakkar.software/starfish-client"
+import { ed25519, x25519 } from "@noble/curves/ed25519.js"
+
+function makeDevice() {
+  const edPriv = crypto.getRandomValues(new Uint8Array(32))
+  const edPub = ed25519.getPublicKey(edPriv)
+  const kemPriv = crypto.getRandomValues(new Uint8Array(32))
+  const kemPub = x25519.getPublicKey(kemPriv)
+  const hex = (b: Uint8Array) =>
+    [...b].map((x) => x.toString(16).padStart(2, "0")).join("")
+  return { edPriv: hex(edPriv), edPub: hex(edPub), kemPriv: hex(kemPriv), kemPub: hex(kemPub) }
+}
 
 describe("Encryption", () => {
   it("round-trips data", async () => {
-    const encryptor = createEncryptor("test-secret", "test-salt")
-    const original = { items: [1, 2, 3], nested: { key: "value" } }
+    const dev = makeDevice()
+    const { keyring } = await createKeyring(
+      { edPrivHex: dev.edPriv, edPubHex: dev.edPub },
+      [{ subKemHex: dev.kemPub }],
+    )
+    const encryptor = await createKeyringEncryptor(keyring, {
+      kemPubHex: dev.kemPub,
+      kemPrivHex: dev.kemPriv,
+    })
 
+    const original = { items: [1, 2, 3], nested: { key: "value" } }
     const encrypted = await encryptor.encrypt(original)
     expect(encrypted).toHaveProperty("_encrypted")
+    expect(encrypted).toHaveProperty("_epoch")
     expect(encrypted).not.toHaveProperty("items")
 
     const decrypted = await encryptor.decrypt(encrypted)
     expect(decrypted).toEqual(original)
   })
 
-  it("fails with wrong key", async () => {
-    const enc1 = createEncryptor("correct-key", "salt")
-    const enc2 = createEncryptor("wrong-key", "salt")
+  it("a different recipient cannot decrypt", async () => {
+    const alice = makeDevice()
+    const bob = makeDevice()
+    const { keyring } = await createKeyring(
+      { edPrivHex: alice.edPriv, edPubHex: alice.edPub },
+      [{ subKemHex: alice.kemPub }],
+    )
+    const aliceEnc = await createKeyringEncryptor(keyring, {
+      kemPubHex: alice.kemPub,
+      kemPrivHex: alice.kemPriv,
+    })
+    const sealed = await aliceEnc.encrypt({ secret: "data" })
 
-    const encrypted = await enc1.encrypt({ secret: "data" })
-
-    await expect(enc2.decrypt(encrypted)).rejects.toThrow("Decryption failed")
-  })
-
-  it("fails with wrong salt", async () => {
-    const enc1 = createEncryptor("key", "salt-a")
-    const enc2 = createEncryptor("key", "salt-b")
-
-    const encrypted = await enc1.encrypt({ secret: "data" })
-
-    await expect(enc2.decrypt(encrypted)).rejects.toThrow("Decryption failed")
+    // Bob has no wrap entry — building an encryptor over this keyring throws.
+    await expect(
+      createKeyringEncryptor(keyring, { kemPubHex: bob.kemPub, kemPrivHex: bob.kemPriv }),
+    ).rejects.toThrow()
+    // (Even if Bob obtained the ciphertext, he has no CEK to decrypt with.)
+    void sealed
   })
 })
 ```

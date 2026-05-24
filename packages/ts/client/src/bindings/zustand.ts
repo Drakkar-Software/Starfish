@@ -8,10 +8,11 @@ import {
 } from "zustand/middleware"
 import type { DevtoolsOptions } from "zustand/middleware"
 import { useEffect, useRef, useState, useCallback } from "react"
+import type { Encryptor } from "@drakkar.software/starfish-protocol"
 import { StarfishClient } from "../client.js"
 import { SyncManager } from "../sync.js"
 import { setupCrossTabSync, type BroadcastableStore } from "../broadcast.js"
-import type { AuthProvider, ConflictResolver } from "../types.js"
+import type { StarfishCapProvider, ConflictResolver } from "../types.js"
 import type { SyncLogger } from "../logger.js"
 import type { Validator } from "../validate.js"
 
@@ -21,6 +22,8 @@ export interface StarfishState {
   online: boolean
   dirty: boolean
   error: string | null
+  /** Last-known server hash, persisted alongside `data`/`dirty`. Restored into the bound SyncManager on hydration. */
+  hash: string | null
 }
 
 export interface StarfishActions {
@@ -96,13 +99,14 @@ export function createStarfishStore(
     online: true,
     dirty: false,
     error: null,
+    hash: null,
 
     pull: async () => {
       set({ syncing: true, error: null }, false, "pull/start")
       try {
         await syncManager.pull()
         const newData = syncManager.getData()
-        set({ data: newData, syncing: false }, false, "pull/success")
+        set({ data: newData, syncing: false, hash: syncManager.getHash() }, false, "pull/success")
         // Fire after state update so domain stores can read the updated Starfish state if needed.
         // Calling set() inside onRemoteUpdate does NOT re-enter pull(), so no feedback loop.
         options.onRemoteUpdate?.(newData)
@@ -132,7 +136,7 @@ export function createStarfishStore(
       set({ syncing: true, error: null }, false, "flush/start")
       try {
         await syncManager.push(get().data)
-        set({ data: syncManager.getData(), syncing: false, dirty: false }, false, "flush/success")
+        set({ data: syncManager.getData(), syncing: false, dirty: false, hash: syncManager.getHash() }, false, "flush/success")
       } catch (err) {
         set({ syncing: false, error: err instanceof Error ? err.message : String(err) }, false, "flush/error")
       }
@@ -152,7 +156,14 @@ export function createStarfishStore(
         partialize: (state) => ({
           data: state.data,
           dirty: state.dirty,
+          hash: state.hash,
         }),
+        onRehydrateStorage: () => (state) => {
+          // Only restore if the manager hasn't already received a hash from a live pull/push.
+          // With async storage, pull() may resolve before hydration completes — the server's
+          // hash always wins over the persisted one.
+          if (state?.hash && syncManager.getHash() === null) syncManager.setHash(state.hash)
+        },
       })
 
   const withSelector = subscribeWithSelector(withPersist)
@@ -305,11 +316,11 @@ export function useLastSynced(store: StoreApi<StarfishStore>): string {
 
 export interface SyncInitConfig {
   serverUrl: string
-  auth?: AuthProvider
+  capProvider?: StarfishCapProvider
   pullPath: string
   pushPath: string
-  encryptionSecret?: string
-  encryptionSalt?: string
+  /** Pre-built encryptor for E2E collections (build via `createKeyringEncryptor`). */
+  encryptor?: Encryptor
   onConflict?: ConflictResolver
   /** Called when pulled data arrives. Use to restore domain stores. */
   onData?: (data: Record<string, unknown>) => void
@@ -342,7 +353,7 @@ export function useSyncInit(config: SyncInitConfig | null): StoreApi<StarfishSto
 
     const client = new StarfishClient({
       baseUrl: config.serverUrl,
-      auth: config.auth,
+      capProvider: config.capProvider,
       fetch: config.fetch,
     })
 
@@ -350,8 +361,7 @@ export function useSyncInit(config: SyncInitConfig | null): StoreApi<StarfishSto
       client,
       pullPath: config.pullPath,
       pushPath: config.pushPath,
-      encryptionSecret: config.encryptionSecret,
-      encryptionSalt: config.encryptionSalt,
+      encryptor: config.encryptor,
       onConflict: config.onConflict,
       logger: config.logger,
       validate: config.validate,
@@ -388,8 +398,7 @@ export function useSyncInit(config: SyncInitConfig | null): StoreApi<StarfishSto
     config?.serverUrl,
     config?.pullPath,
     config?.pushPath,
-    config?.encryptionSecret,
-    config?.encryptionSalt,
+    config?.encryptor,
     config?.storeName,
   ])
 

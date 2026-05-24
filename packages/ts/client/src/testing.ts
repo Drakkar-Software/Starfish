@@ -2,7 +2,7 @@ import type { PullResult, PushSuccess } from "@drakkar.software/starfish-protoco
 import { StarfishClient } from "./client.js"
 
 type PullFn = (path: string, checkpoint?: number) => Promise<PullResult>
-type PushFn = (path: string, data: Record<string, unknown>, baseHash: string | null, sig?: string) => Promise<PushSuccess>
+type PushFn = (path: string, data: Record<string, unknown>, baseHash: string | null) => Promise<PushSuccess>
 
 /**
  * Creates a mock StarfishClient for testing.
@@ -39,9 +39,9 @@ export function createMockClient(overrides?: {
       pullCalls.push({ path, checkpoint })
       return pull(path, checkpoint)
     },
-    push: async (path: string, data: Record<string, unknown>, baseHash: string | null, sig?: string) => {
+    push: async (path: string, data: Record<string, unknown>, baseHash: string | null) => {
       pushCalls.push({ path, data, baseHash })
-      return push(path, data, baseHash, sig)
+      return push(path, data, baseHash)
     },
     pullCalls,
     pushCalls,

@@ -1,7 +1,6 @@
 import { describe, it, expect } from "vitest"
 import { push } from "../../src/protocol/push.js"
 import { pull } from "../../src/protocol/pull.js"
-import { computeTimestamps, filterByCheckpoint } from "../../src/protocol/timestamps.js"
 import { createIsolatedStore } from "../helpers.js"
 import { configurePlatform } from "@drakkar.software/starfish-protocol"
 import { webcrypto } from "node:crypto"
@@ -14,9 +13,6 @@ const __dirname = dirname(__filename)
 
 const pushVectors = JSON.parse(
   readFileSync(resolve(__dirname, "../../../../../tests/test-vectors/protocol-push.json"), "utf-8"),
-)
-const tsVectors = JSON.parse(
-  readFileSync(resolve(__dirname, "../../../../../tests/test-vectors/protocol-timestamps.json"), "utf-8"),
 )
 
 configurePlatform({
@@ -100,7 +96,9 @@ describe("push vectors - push then pull", () => {
             lastHash = (result as any).hash
           }
         } else if (step.action === "pull") {
-          const result = await pull(store, scenario.documentKey, step.checkpoint)
+          // Regular pull always returns the full document; `step.checkpoint` is
+          // ignored (incremental sync is now appendOnly-only).
+          const result = await pull(store, scenario.documentKey)
           if (step.expect.data) {
             expect(result.data).toEqual(step.expect.data)
           }
@@ -113,29 +111,3 @@ describe("push vectors - push then pull", () => {
   }
 })
 
-describe("timestamp vectors - computeTimestamps", () => {
-  for (const scenario of tsVectors.computeTimestamps) {
-    it(scenario.description, () => {
-      const result = computeTimestamps(
-        scenario.oldData as any,
-        scenario.newData as any,
-        scenario.oldTimestamps as any,
-        scenario.now,
-      )
-      expect(result).toEqual(scenario.expected)
-    })
-  }
-})
-
-describe("timestamp vectors - filterByCheckpoint", () => {
-  for (const scenario of tsVectors.filterByCheckpoint) {
-    it(scenario.description, () => {
-      const result = filterByCheckpoint(
-        scenario.data as any,
-        scenario.timestamps as any,
-        scenario.checkpoint,
-      )
-      expect(result).toEqual(scenario.expected)
-    })
-  }
-})

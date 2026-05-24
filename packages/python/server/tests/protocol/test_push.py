@@ -1,12 +1,12 @@
 """Tests for push operation — ported from push.test.ts."""
 
-import asyncio
 import json
+import time
 
 import pytest
 
 from starfish_server.protocol.push import push
-from starfish_server.protocol.types import PushSuccess, PushConflict, StoredDocument
+from starfish_server.protocol.types import PushSuccess, PushConflict
 from tests.helpers import MemoryObjectStore
 
 
@@ -57,8 +57,9 @@ async def test_second_push_with_null_base_hash_fails():
 
 
 @pytest.mark.asyncio
-async def test_stores_correct_document_format():
+async def test_stores_single_doc_level_ts_and_no_timestamps_tree():
     store = MemoryObjectStore()
+    before = time.time_ns() // 1_000_000
     await push(store, "col/doc1", {"b": 2, "a": 1}, None)
 
     raw = await store.get_string("col/doc1")
@@ -67,53 +68,25 @@ async def test_stores_correct_document_format():
     assert doc["v"] == 1
     assert doc["data"] == {"b": 2, "a": 1}
     assert len(doc["hash"]) == 64
-    assert isinstance(doc["timestamps"]["a"], int)
-    assert isinstance(doc["timestamps"]["b"], int)
+    # A single document-level write timestamp, not a per-field timestamps tree.
+    assert isinstance(doc["ts"], int)
+    assert doc["ts"] >= before
+    assert "timestamps" not in doc
 
 
 @pytest.mark.asyncio
-async def test_skip_timestamps_stores_empty_timestamps():
+async def test_skip_timestamps_is_inert_no_op():
+    """`skip_timestamps` is retained for call-site compatibility but no longer
+    affects storage — the doc carries only the doc-level `ts`."""
     store = MemoryObjectStore()
     result = await push(store, "col/doc1", {"_encrypted": "blob"}, None, skip_timestamps=True)
     assert isinstance(result, PushSuccess)
 
     raw = await store.get_string("col/doc1")
     doc = json.loads(raw)
-    assert doc["timestamps"] == {}
-
-
-@pytest.mark.asyncio
-async def test_skip_timestamps_works_on_subsequent_pushes():
-    store = MemoryObjectStore()
-    r1 = await push(store, "col/doc1", {"_encrypted": "v1"}, None, skip_timestamps=True)
-    assert isinstance(r1, PushSuccess)
-
-    r2 = await push(store, "col/doc1", {"_encrypted": "v2"}, r1.hash, skip_timestamps=True)
-    assert isinstance(r2, PushSuccess)
-
-    raw = await store.get_string("col/doc1")
-    doc = json.loads(raw)
-    assert doc["timestamps"] == {}
-    assert doc["data"] == {"_encrypted": "v2"}
-
-
-@pytest.mark.asyncio
-async def test_preserves_timestamps_for_unchanged_values():
-    store = MemoryObjectStore()
-    r1 = await push(store, "col/doc1", {"a": 1, "b": 2}, None)
-    assert isinstance(r1, PushSuccess)
-
-    raw1 = await store.get_string("col/doc1")
-    doc1 = json.loads(raw1)
-    ts_a = doc1["timestamps"]["a"]
-
-    await asyncio.sleep(0.001)
-    await push(store, "col/doc1", {"a": 1, "b": 3}, r1.hash)
-
-    raw2 = await store.get_string("col/doc1")
-    doc2 = json.loads(raw2)
-    assert doc2["timestamps"]["a"] == ts_a
-    assert doc2["timestamps"]["b"] != ts_a
+    assert "timestamps" not in doc
+    assert isinstance(doc["ts"], int)
+    assert doc["data"] == {"_encrypted": "blob"}
 
 
 @pytest.mark.asyncio
@@ -138,3 +111,12 @@ async def test_corrupt_stored_document_overwritable_with_empty_base_hash():
     # Pass baseHash="" to match the "" current_hash that results from parse failure
     result = await push(store, "col/corrupt", {"recovered": True}, "")
     assert isinstance(result, PushSuccess), f"Expected PushSuccess, got {result!r}"
+
+
+@pytest.mark.asyncio
+async def test_precomputed_hash_is_stored():
+    store = MemoryObjectStore()
+    sentinel = "a" * 64
+    await push(store, "col/doc", {"a": 1}, None, precomputed_hash=sentinel)
+    raw = json.loads(await store.get_string("col/doc"))
+    assert raw["hash"] == sentinel

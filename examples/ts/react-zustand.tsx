@@ -1,17 +1,21 @@
 /**
- * Starfish + Zustand React example.
+ * Starfish v3.0 + Zustand + React.
+ *
+ * Demonstrates wiring a v3 cap-cert provider into Zustand-backed sync.
  *
  * Install:
- *   npm install @drakkar.software/starfish-client zustand
- *   npm install immer  # optional, for draft-based mutations
+ *   npm install @drakkar.software/starfish-client zustand react
  */
 
-import { useEffect } from "react"
+import { useEffect, useMemo } from "react"
 import {
   StarfishClient,
   SyncManager,
+  bootstrapRootIdentity,
   createUnionMerge,
   consoleSyncLogger,
+  type StarfishCapProvider,
+  type DeviceCredentials,
 } from "@drakkar.software/starfish-client"
 import {
   createStarfishStore,
@@ -20,38 +24,126 @@ import {
   useSyncStatus,
   useSyncInit,
 } from "@drakkar.software/starfish-client/zustand"
-import { createRetryFetch } from "@drakkar.software/starfish-client/fetch"
 import { setupCrossTabSync } from "@drakkar.software/starfish-client/broadcast"
 
 // ---------------------------------------------------------------------------
-// Example 1: Manual setup (one store per collection)
+// Cap-cert provider derived from the device's stored credentials.
+//
+// In a real app, credentials are persisted (encrypted-at-rest) after
+// `bootstrapRootIdentity` runs once, then loaded on subsequent launches.
+// Here we keep them in-memory for brevity.
 // ---------------------------------------------------------------------------
 
-const client = new StarfishClient({
-  baseUrl: "https://api.example.com/v1",
-  auth: async () => ({ Authorization: `Bearer ${await getToken()}` }),
-  fetch: createRetryFetch({ maxRetries: 3 }),
-})
+function makeCapProvider(creds: DeviceCredentials): StarfishCapProvider {
+  return {
+    async getCap() {
+      return { cap: creds.capCert, devEdPrivHex: creds.device.edPriv }
+    },
+  }
+}
 
-const settingsStore = createStarfishStore({
-  name: "settings",
-  syncManager: new SyncManager({
-    client,
-    pullPath: "/pull/users/abc/settings",
-    pushPath: "/push/users/abc/settings",
-    logger: consoleSyncLogger,
+// ---------------------------------------------------------------------------
+// Example 1: Manual store wiring — one Zustand store per collection.
+// ---------------------------------------------------------------------------
+
+// Bootstrap once at app startup and keep the credentials.
+const credentialsPromise = bootstrapRootIdentity("correct-horse-battery-staple")
+
+async function makeClient(): Promise<{ client: StarfishClient; creds: DeviceCredentials }> {
+  const creds = await credentialsPromise
+  const client = new StarfishClient({
+    baseUrl: "https://api.example.com/v1",
+    capProvider: makeCapProvider(creds),
+  })
+  return { client, creds }
+}
+
+// Create a store lazily so we can await the bootstrap.
+const settingsStoreInit = makeClient().then(({ client, creds }) =>
+  createStarfishStore({
+    name: "settings",
+    syncManager: new SyncManager({
+      client,
+      pullPath: `/pull/users/${creds.userId}/settings`,
+      pushPath: `/push/users/${creds.userId}/settings`,
+      logger: consoleSyncLogger,
+    }),
   }),
+)
+
+// Cross-tab sync — call this once your store is ready.
+settingsStoreInit.then((store) => {
+  setupCrossTabSync(store, "settings")
 })
 
-// Cross-tab sync (returns cleanup function)
-const cleanupBroadcast = setupCrossTabSync(settingsStore, "settings")
+// ---------------------------------------------------------------------------
+// Example 2: useSyncInit — single-call lifecycle for one collection.
+//
+// `useSyncInit` builds the client + SyncManager + Zustand store internally
+// and tears them down on unmount or config change. Pass null to disable.
+// ---------------------------------------------------------------------------
 
-export function Settings() {
-  const { data, syncing, pull, set } = useStarfish(settingsStore)
+export function SyncedApp({ creds }: { creds: DeviceCredentials | null }) {
+  // Memoize the capProvider so we don't re-init on every render.
+  const config = useMemo(() => {
+    if (!creds) return null
+    return {
+      serverUrl: "https://api.example.com/v1",
+      capProvider: makeCapProvider(creds),
+      pullPath: `/pull/users/${creds.userId}/data`,
+      pushPath: `/push/users/${creds.userId}/data`,
+      storeName: "user-data",
+      storage: false as const,
+      onConflict: createUnionMerge(),
+      logger: consoleSyncLogger,
+      onData: (data: Record<string, unknown>) => {
+        console.log("Received data from server:", data)
+      },
+    }
+  }, [creds])
+
+  const store = useSyncInit(config)
+  if (!store) return <p>Sync disabled</p>
+
+  return <DataView store={store} />
+}
+
+function DataView({ store }: { store: NonNullable<ReturnType<typeof useSyncInit>> }) {
+  const { data } = useStarfish(store)
+  const status = useSyncStatus(store)
+  return (
+    <div>
+      <p>Status: {status}</p>
+      <pre>{JSON.stringify(data, null, 2)}</pre>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Example 3: Theme badge component bound to a manually-created store.
+//
+// Use the `data` selector to limit re-renders to a single field.
+// ---------------------------------------------------------------------------
+
+export function ThemeBadge({
+  store,
+}: {
+  store: Awaited<typeof settingsStoreInit>
+}) {
+  const theme = useStarfishData(store, (d) => d.theme as string | undefined)
+  return <span>{theme ?? "default"}</span>
+}
+
+export function Settings({
+  store,
+}: {
+  store: Awaited<typeof settingsStoreInit>
+}) {
+  const { data, syncing, pull, set } = useStarfish(store)
 
   useEffect(() => {
     pull()
-  }, [])
+  }, [pull])
 
   return (
     <button
@@ -63,108 +155,20 @@ export function Settings() {
   )
 }
 
-// Fine-grained: only re-renders when theme changes
-export function ThemeBadge() {
-  const theme = useStarfishData(settingsStore, (d) => d.theme as string)
-  return <span>{theme}</span>
-}
-
-// Sync status indicator
-export function SyncBadge() {
-  const status = useSyncStatus(settingsStore)
-  return <span>{status}</span>
-}
-
 // ---------------------------------------------------------------------------
-// Example 2: useSyncInit — full lifecycle hook
+// Connectivity listener (browser).
 // ---------------------------------------------------------------------------
 
-export function SyncedApp({ userId }: { userId: string | null }) {
-  // Pass null to disable sync — returns null
-  const store = useSyncInit(
-    userId
-      ? {
-          serverUrl: "https://api.example.com/v1",
-          auth: async () => ({ Authorization: `Bearer ${await getToken()}` }),
-          pullPath: `/pull/users/${userId}/data`,
-          pushPath: `/push/users/${userId}/data`,
-          storeName: "user-data",
-          storage: false,
-          onConflict: createUnionMerge(),
-          logger: consoleSyncLogger,
-          // Called when pulled data arrives — restore into domain stores
-          onData: (data) => {
-            console.log("Received data from server:", data)
-          },
-        }
-      : null,
-  )
-
-  if (!store) return <p>Sync disabled</p>
-
-  return <DataView store={store} />
-}
-
-function DataView({ store }: { store: NonNullable<ReturnType<typeof useSyncInit>> }) {
-  const { data } = useStarfish(store)
-  const status = useSyncStatus(store)
-
-  return (
-    <div>
-      <p>Status: {status}</p>
-      <pre>{JSON.stringify(data, null, 2)}</pre>
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Example 3: restore() — update store without triggering push
-// ---------------------------------------------------------------------------
-
-export function RestoreExample() {
-  const { data, set, pull } = useStarfish(settingsStore)
-
-  const handlePull = async () => {
-    await pull()
-    // After pull, use restore() to update domain stores without re-pushing
-    const serverData = settingsStore.getState().data
-    settingsStore.getState().restore(serverData)
-  }
-
-  return (
-    <div>
-      <button onClick={handlePull}>Pull & Restore</button>
-      <button onClick={() => set((d) => ({ ...d, updated: true }))}>
-        Local Edit (will push)
-      </button>
-      <pre>{JSON.stringify(data, null, 2)}</pre>
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Connectivity listener (browser)
-// ---------------------------------------------------------------------------
-
-export function useConnectivity() {
+export function useConnectivity(store: Awaited<typeof settingsStoreInit>) {
   useEffect(() => {
-    const setOnline = (online: boolean) =>
-      settingsStore.getState().setOnline(online)
-
-    window.addEventListener("online", () => setOnline(true))
-    window.addEventListener("offline", () => setOnline(false))
-
+    const setOnline = (online: boolean) => store.getState().setOnline(online)
+    const onOnline = () => setOnline(true)
+    const onOffline = () => setOnline(false)
+    window.addEventListener("online", onOnline)
+    window.addEventListener("offline", onOffline)
     return () => {
-      window.removeEventListener("online", () => setOnline(true))
-      window.removeEventListener("offline", () => setOnline(false))
+      window.removeEventListener("online", onOnline)
+      window.removeEventListener("offline", onOffline)
     }
-  }, [])
-}
-
-// ---------------------------------------------------------------------------
-// Placeholder — replace with your actual token retrieval
-// ---------------------------------------------------------------------------
-
-async function getToken(): Promise<string> {
-  return "my-auth-token"
+  }, [store])
 }

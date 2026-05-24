@@ -1,6 +1,6 @@
 {
   "name": "@drakkar.software/starfish-client",
-  "version": "1.19.2",
+  "version": "3.0.0-alpha.2",
   "repository": {
     "type": "git",
     "url": "https://github.com/Drakkar-Software/starfish.git",
@@ -37,14 +37,6 @@
     "./testing": {
       "types": "./dist/testing.d.ts",
       "import": "./dist/testing.js"
-    },
-    "./identity": {
-      "types": "./dist/identity.d.ts",
-      "import": "./dist/identity.js"
-    },
-    "./group": {
-      "types": "./dist/group-crypto.d.ts",
-      "import": "./dist/group-crypto.js"
     }
   },
   "peerDependencies": {
@@ -68,8 +60,7 @@
     }
   },
   "dependencies": {
-    "@drakkar.software/starfish-protocol": "workspace:*",
-    "@noble/curves": "^2.2.0"
+    "@drakkar.software/starfish-protocol": "workspace:*"
   },
   "scripts": {
     "build": "node build.mjs && tsc -p tsconfig.build.json",
@@ -81,12 +72,12 @@
     "@testing-library/react": "^16.3.2",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
+    "esbuild": "^0.27.4",
     "hono": "^4.12.7",
     "immer": "^11.1.4",
     "jsdom": "^29.0.1",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
-    "esbuild": "^0.27.4",
     "typescript": "^5.5.0",
     "vitest": "^3.0.0",
     "zustand": "^5.0.11"

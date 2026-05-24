@@ -1,19 +1,12 @@
-import type { ObjectStore } from "../storage/base.js"
+import { UNSAFE_KEYS } from "@drakkar.software/starfish-protocol"
+import type { ObjectStore, StoreContext } from "../storage/base.js"
 import { pull } from "../protocol/pull.js"
 import { push, type Author } from "../protocol/push.js"
-import type { PushSuccess } from "../protocol/types.js"
-import { stableStringify } from "@drakkar.software/starfish-protocol"
+import type { PushSuccess, StoredDocument, AppendElement } from "../protocol/types.js"
 import { ERROR_HASH_MISMATCH } from "../constants.js"
 
 const SAFE_PARAM = /^[a-zA-Z0-9._:@-]+$/
 const UNSAFE_KEY = /\.\.|[\x00-\x1f]|\/\//
-const UNSAFE_KEYS = new Set(["__proto__", "constructor", "prototype"])
-
-export type SignatureVerifier = (
-  canonical: string,
-  signature: string,
-  identity: string,
-) => Promise<boolean>
 
 export function validateUrlNotPrivate(url: string): boolean {
   try {
@@ -37,6 +30,15 @@ export function validateUrlNotPrivate(url: string): boolean {
     const v4mapped = lower.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/)
     if (v4mapped) {
       return isPublicIPv4(v4mapped[1]!)
+    }
+    // IPv4-mapped IPv6 in compressed hex form (e.g. `::ffff:7f00:1`). `new URL`
+    // normalises `::ffff:127.0.0.1` to this, so the dotted-quad branch above
+    // misses it — without this, `http://[::ffff:127.0.0.1]/` (loopback) passes.
+    const v4mappedHex = lower.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/)
+    if (v4mappedHex) {
+      const hi = parseInt(v4mappedHex[1]!, 16)
+      const lo = parseInt(v4mappedHex[2]!, 16)
+      return isPublicIPv4(`${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`)
     }
 
     // IPv4 checks
@@ -69,6 +71,17 @@ export function validatePathSegment(value: string): boolean {
   return SAFE_PARAM.test(value)
 }
 
+/**
+ * True when a resolved storage key contains a path-traversal or injection
+ * sequence (`..`, control chars, or `//`). The single guard every read/write
+ * path must apply to its resolved `documentKey` before touching the store —
+ * `validatePathSegment` only constrains a single param's charset (it admits
+ * `..`), so this is what actually blocks traversal in the composed key.
+ */
+export function isUnsafeDocumentKey(documentKey: string): boolean {
+  return UNSAFE_KEY.test(documentKey)
+}
+
 export function deepSanitize(obj: Record<string, unknown>): Record<string, unknown> {
   const safe: Record<string, unknown> = {}
   for (const [key, val] of Object.entries(obj)) {
@@ -82,35 +95,69 @@ export function deepSanitize(obj: Record<string, unknown>): Record<string, unkno
   return safe
 }
 
+/**
+ * Reject documents nested deeper than this. V8's `JSON.parse` is iterative (it does
+ * not overflow on deep input), but the recursive `deepSanitize` would blow the call
+ * stack with a `RangeError` → a tiny payload becomes an unhandled crash. Real
+ * Starfish documents are shallow (a keyring with epochs is ~5 deep), so 64 is far
+ * above any legitimate use. Mirrors `MAX_DOC_DEPTH` in the Python server.
+ */
+export const MAX_DOC_DEPTH = 64
+
+/**
+ * Returns `true` iff `obj`'s nesting depth is within `limit`. Walks objects and
+ * arrays iteratively (an explicit stack, never the call stack) so the check itself
+ * cannot overflow. The push path runs this on the parsed body and rejects anything
+ * deeper than `limit` with HTTP 400 before the recursive `deepSanitize` runs.
+ */
+export function jsonDepthWithin(obj: unknown, limit: number = MAX_DOC_DEPTH): boolean {
+  const stack: Array<[unknown, number]> = [[obj, 1]]
+  while (stack.length > 0) {
+    const [node, depth] = stack.pop()!
+    if (depth > limit) return false
+    if (node != null && typeof node === "object") {
+      const children = Array.isArray(node) ? node : Object.values(node as Record<string, unknown>)
+      for (const child of children) {
+        if (child != null && typeof child === "object") stack.push([child, depth + 1])
+      }
+    }
+  }
+  return true
+}
+
 export interface PullResponse {
   body: Record<string, unknown>
   status: number
   headers?: Record<string, string>
 }
 
+/**
+ * Returns true when the `?withKeyring=` query value should activate the
+ * sibling-keyring fetch. Accepts `"1"` or `"true"` (case-insensitive); any
+ * other value (including missing) is treated as off.
+ */
+export function isWithKeyringEnabled(raw: string | null | undefined): boolean {
+  if (raw == null) return false
+  const v = raw.toLowerCase()
+  return v === "1" || v === "true"
+}
+
 export async function handleSyncPull(
   documentKey: string,
   store: ObjectStore,
-  checkpointParam?: string | null,
-  forceFullFetch: boolean = false,
-  clientEncrypted: boolean = false,
   cacheDurationMs?: number,
   isPublic: boolean = true,
+  context?: StoreContext,
+  withKeyring: boolean = false,
 ): Promise<PullResponse> {
-  if (UNSAFE_KEY.test(documentKey)) {
+  if (isUnsafeDocumentKey(documentKey)) {
     return { body: { error: "Invalid path parameter" }, status: 400 }
   }
 
-  let checkpoint = 0
-  if (!forceFullFetch && !clientEncrypted && checkpointParam != null) {
-    const parsed = parseInt(checkpointParam, 10)
-    if (isNaN(parsed) || parsed < 0 || String(parsed) !== checkpointParam) {
-      return { body: { error: "Invalid checkpoint" }, status: 400 }
-    }
-    checkpoint = parsed
-  }
-
-  const result = await pull(store, documentKey, checkpoint)
+  // Regular collections always return the full document. `?checkpoint=` is
+  // ignored here (incremental sync is an appendOnly-only feature now); a stale
+  // checkpoint param from an older client is harmless.
+  const result = await pull(store, documentKey, context)
   const body: Record<string, unknown> = {
     data: result.data,
     hash: result.hash,
@@ -118,6 +165,45 @@ export async function handleSyncPull(
   }
   if (result.authorPubkey) body["authorPubkey"] = result.authorPubkey
   if (result.authorSignature) body["authorSignature"] = result.authorSignature
+
+  // ?withKeyring=1 optimization: piggyback the collection's sibling keyring
+  // doc at `<documentKey>/_keyring` onto the pull response, saving a round-
+  // trip on cold start. The keyring projection drops author fields — the
+  // keyring document is unsigned in this model.
+  //
+  // NOTE: the sibling keyring read is authorized by the route layer, not here.
+  // The pull handler only sets `withKeyring=true` after checking
+  // `<documentKey>/_keyring` against the caller's cap scope, so a cap that
+  // denies the keyring (e.g. `scopes.writer(col)`) never reaches this read.
+  // This function just performs the storage read.
+  if (withKeyring) {
+    const keyringKey = `${documentKey}/_keyring`
+    // Treat ANY store error as "no keyring" (e.g. a store throwing when the data
+    // path is a leaf file and the app keeps its keyring in a separate namespace).
+    // The optimization must degrade gracefully, never crash the pull (HTTP 500).
+    let keyringRaw: string | null = null
+    try {
+      keyringRaw = await store.getString(keyringKey, context)
+    } catch (e) {
+      console.warn(`[Starfish] withKeyring read failed for "${keyringKey}":`, e)
+      keyringRaw = null
+    }
+    if (!keyringRaw) {
+      body["keyring"] = null
+    } else {
+      try {
+        const parsed = JSON.parse(keyringRaw) as StoredDocument
+        body["keyring"] = {
+          data: parsed.data,
+          hash: parsed.hash,
+          timestamp: result.timestamp,
+        }
+      } catch (e) {
+        console.error(`[Starfish] Corrupt keyring document at key "${keyringKey}":`, e)
+        body["keyring"] = null
+      }
+    }
+  }
 
   let headers: Record<string, string> | undefined
   if (cacheDurationMs != null) {
@@ -127,6 +213,100 @@ export async function handleSyncPull(
   }
 
   return { body, status: 200, headers }
+}
+
+/**
+ * Pull handler for appendOnly persist=true collections.
+ *
+ * Each stored element is a `{ts, data}` envelope. When a checkpoint is requested,
+ * returns only elements whose `ts` is strictly greater than the checkpoint, found
+ * by binary search (the array is strictly increasing in `ts`). `?last=K` then
+ * trims to the last K of those. The full `{ts, data}` envelopes are returned —
+ * `data` is plaintext under "none" and an encryptor wrapper under "delegated".
+ */
+export async function handleAppendOnlyPull(
+  documentKey: string,
+  store: ObjectStore,
+  checkpointParam: string | null | undefined,
+  appendField: string,
+  cacheDurationMs?: number,
+  isPublic: boolean = true,
+  lastParam?: string | null,
+  context?: StoreContext,
+): Promise<PullResponse> {
+  if (isUnsafeDocumentKey(documentKey)) {
+    return { body: { error: "Invalid path parameter" }, status: 400 }
+  }
+
+  let checkpoint = 0
+  if (checkpointParam != null) {
+    const parsed = parseInt(checkpointParam, 10)
+    if (isNaN(parsed) || parsed < 0 || String(parsed) !== checkpointParam) {
+      return { body: { error: "Invalid checkpoint" }, status: 400 }
+    }
+    checkpoint = parsed
+  }
+
+  let last: number | null = null
+  if (lastParam != null) {
+    const parsed = parseInt(lastParam, 10)
+    if (isNaN(parsed) || parsed < 0 || String(parsed) !== lastParam) {
+      return { body: { error: "Invalid last" }, status: 400 }
+    }
+    last = parsed
+  }
+
+  const now = Date.now()
+  const raw = await store.getString(documentKey, context)
+
+  if (!raw) {
+    return { body: { data: { [appendField]: [] }, hash: "", timestamp: now }, status: 200 }
+  }
+
+  let stored: StoredDocument
+  try {
+    stored = JSON.parse(raw) as StoredDocument
+  } catch (e) {
+    console.error(`[Starfish] Corrupt stored document at key "${documentKey}":`, e)
+    return { body: { data: { [appendField]: [] }, hash: "", timestamp: now }, status: 200 }
+  }
+
+  const storedData = (stored.data as Record<string, unknown>) ?? {}
+  const storedHash = stored.hash ?? ""
+  const allItems = Array.isArray(storedData[appendField]) ? (storedData[appendField] as AppendElement[]) : []
+
+  let filteredItems: AppendElement[]
+  if (checkpoint > 0) {
+    // Elements are strictly increasing in `ts` — binary search for the first
+    // index whose ts > checkpoint, then return that suffix.
+    let lo = 0, hi = allItems.length
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1
+      if ((allItems[mid]?.ts ?? 0) <= checkpoint) lo = mid + 1
+      else hi = mid
+    }
+    filteredItems = lo < allItems.length ? allItems.slice(lo) : []
+  } else {
+    filteredItems = allItems
+  }
+
+  if (last !== null) {
+    filteredItems = last === 0 ? [] : filteredItems.slice(-last)
+  }
+
+  const responseData = { ...storedData, [appendField]: filteredItems }
+
+  const headers: Record<string, string> = {}
+  if (cacheDurationMs != null) {
+    const maxAge = Math.floor(cacheDurationMs / 1000)
+    const directive = isPublic ? `max-age=${maxAge}` : `private, max-age=${maxAge}`
+    headers["Cache-Control"] = directive
+  }
+  if (storedHash) {
+    headers["ETag"] = `"${storedHash}"`
+  }
+
+  return { body: { data: responseData, hash: storedHash, timestamp: now }, status: 200, headers: Object.keys(headers).length ? headers : undefined }
 }
 
 export interface PushResponse {
@@ -139,11 +319,11 @@ export async function handleSyncPush(
   store: ObjectStore,
   body: Record<string, unknown>,
   identity?: string | null,
-  verifySignature?: SignatureVerifier,
   skipTimestamps: boolean = false,
   skipStorage: boolean = false,
+  context?: StoreContext,
 ): Promise<PushResponse> {
-  if (UNSAFE_KEY.test(documentKey)) {
+  if (isUnsafeDocumentKey(documentKey)) {
     return { body: { error: "Invalid path parameter" }, status: 400 }
   }
 
@@ -162,17 +342,7 @@ export async function handleSyncPush(
   const sanitized = deepSanitize(data as Record<string, unknown>)
 
   let author: Author | undefined
-  if (verifySignature && identity) {
-    if (typeof authorSignature !== "string") {
-      return { body: { error: "Missing required author signature" }, status: 400 }
-    }
-    const canonical = stableStringify(sanitized)
-    const valid = await verifySignature(canonical, authorSignature, identity)
-    if (!valid) {
-      return { body: { error: "Invalid author signature" }, status: 400 }
-    }
-    author = { pubkey: identity, signature: authorSignature }
-  } else if (typeof authorSignature === "string" && identity) {
+  if (typeof authorSignature === "string" && identity) {
     author = { pubkey: identity, signature: authorSignature }
   }
 
@@ -184,6 +354,8 @@ export async function handleSyncPush(
     author,
     skipTimestamps,
     skipStorage,
+    undefined, // precomputedHash
+    context,
   )
 
   if (!("hash" in result) || !("timestamp" in result)) {

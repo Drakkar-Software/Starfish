@@ -15,8 +15,8 @@ The list endpoint lets clients discover which documents exist under a collection
 {
   name: "chat",
   storagePath: "chats/{groupId}/{day}",
-  readRoles: ["group-member"],
-  writeRoles: ["group-member"],
+  readRoles: ["cap:read:chat"],
+  writeRoles: ["cap:write:chat"],
   encryption: "none",
   maxBodyBytes: 65536,
   listable: true,   // ← opt in
@@ -86,7 +86,7 @@ roleEnricher receives params: { groupId: "abc" }   ← groupId present
 |---|---|
 | `listable` with no path params in `storagePath` | `listable requires at least one path parameter` |
 | `listable` when the last segment is not a `{param}` | `listable requires the last storagePath segment to be a path parameter` |
-| `listable: true` + `queueOnly: true` | `listable cannot be used with queueOnly` |
+| `listable: true` + `appendOnly: { type: "by_timestamp", persist: false }` | `listable cannot be used with appendOnly+persist=false` |
 | `listable: true` + `bundle: "..."` | `listable cannot be used with bundle` |
 
 ## Python
@@ -95,8 +95,8 @@ roleEnricher receives params: { groupId: "abc" }   ← groupId present
 CollectionConfig(
     name="chat",
     storage_path="chats/{groupId}/{day}",
-    read_roles=["group-member"],
-    write_roles=["group-member"],
+    read_roles=["cap:read:chat"],
+    write_roles=["cap:write:chat"],
     encryption="none",
     max_body_bytes=65536,
     listable=True,
@@ -108,5 +108,5 @@ The list route and response shape are identical to the TypeScript server.
 ## Next Steps
 
 - [Group Access](group-access.md) — grant access based on a member list stored in another collection
-- [Queue](queue.md) — publish change events when documents are pushed
+- [Queuing](../queuing/01-overview.md) — publish change events when documents are pushed
 - [Multi-Document Architecture](../client/18-multi-document-architecture.md) — partitioning data across documents

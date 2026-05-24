@@ -50,7 +50,7 @@ The server returns **415 Unsupported Media Type** if the `Content-Type` header d
 ### Constraints
 
 - `encryption` must be `"none"` or `"delegated"` — `"identity"`, `"server"`, and `"group"` are rejected by the config validator
-- `objectSchema`, `bundle`, `remote`, and `queueOnly` cannot be combined with binary collections
+- `objectSchema`, `bundle`, `remote`, and `appendOnly` cannot be combined with binary collections
 - The `GET /config` endpoint exposes `allowedMimeTypes` so clients can discover it at runtime
 
 ---
@@ -60,11 +60,18 @@ The server returns **415 Unsupported Media Type** if the `Content-Type` header d
 ### TypeScript
 
 ```ts
-import { StarfishClient } from "@drakkar.software/starfish-client"
+import {
+  StarfishClient,
+  bootstrapRootIdentity,
+} from "@drakkar.software/starfish-client"
+
+const creds = await bootstrapRootIdentity(passphrase)
 
 const client = new StarfishClient({
   baseUrl: "https://api.example.com/v1",
-  auth: async () => ({ Authorization: `Bearer ${token}` }),
+  capProvider: {
+    getCap: async () => ({ cap: creds.capCert, devEdPrivHex: creds.device.edPriv }),
+  },
 })
 
 // ── Push a file upload ──────────────────────────────────────────────────────
@@ -191,7 +198,7 @@ Because `readRoles` contains `"public"`, the `Cache-Control` header is emitted w
 | JSON Schema validation | No |
 | Field-level permissions | No |
 | Replica / remote collections | No |
-| `queueOnly` | No |
+| `appendOnly` | No |
 
 ---
 
@@ -199,4 +206,4 @@ Because `readRoles` contains `"public"`, the `Cache-Control` header is emitted w
 
 - [StarfishClient](02-starfish-client.md) — `pullBlob` / `pushBlob` method signatures
 - [Collection Patterns](19-collection-patterns.md) — JSON collection design patterns
-- [Group Encryption](21-group-encryption.md) — incompatible with binary collections
+- [Multi-Recipient Delegated Encryption](23-multi-recipient-delegated.md) — incompatible with binary collections

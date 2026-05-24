@@ -287,7 +287,8 @@ def test_listable_with_static_last_segment_rejected():
     assert any("last storagePath segment" in e for e in errors)
 
 
-def test_listable_with_queueonly_rejected():
-    col = _make_col(queue_only=True)
+def test_listable_with_append_only_no_persist_rejected():
+    from starfish_server.config.schema import AppendOnlyConfig
+    col = _make_col(appendOnly=AppendOnlyConfig(type="by_timestamp", persist=False))
     errors = validate_config(SyncConfig(version=1, collections=[col]))
-    assert any("listable cannot be used with queueOnly" in e for e in errors)
+    assert any("listable cannot be used with appendOnly+persist=false" in e for e in errors)

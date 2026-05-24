@@ -14,12 +14,20 @@ npm install immer  # optional, for draft-based mutations
 ## Setup
 
 ```ts
-import { StarfishClient, SyncManager } from "@drakkar.software/starfish-client"
+import {
+  StarfishClient,
+  SyncManager,
+  bootstrapRootIdentity,
+} from "@drakkar.software/starfish-client"
 import { createStarfishStore } from "@drakkar.software/starfish-client/zustand"
+
+const creds = await bootstrapRootIdentity(passphrase)
 
 const client = new StarfishClient({
   baseUrl: "https://api.example.com/v1",
-  auth: async () => ({ Authorization: `Bearer ${await getToken()}` }),
+  capProvider: {
+    getCap: async () => ({ cap: creds.capCert, devEdPrivHex: creds.device.edPriv }),
+  },
 })
 
 // One store per collection — each syncs independently
@@ -27,8 +35,8 @@ const settingsStore = createStarfishStore({
   name: "settings",
   syncManager: new SyncManager({
     client,
-    pullPath: "/pull/users/abc/settings",
-    pushPath: "/push/users/abc/settings",
+    pullPath: `/pull/users/${creds.userId}/settings`,
+    pushPath: `/push/users/${creds.userId}/settings`,
   }),
 })
 ```
@@ -179,7 +187,13 @@ const store = createStarfishStore({
 })
 ```
 
-Only `data` and `dirty` are persisted — `syncing`, `online`, and `error` are transient.
+`data`, `dirty`, and `hash` are persisted — `syncing`, `online`, and `error` are transient. The persisted JSON shape is:
+
+```json
+{ "state": { "data": { "items": [] }, "dirty": false, "hash": "<server-hash>" }, "version": 0 }
+```
+
+On hydration, the stored `hash` is automatically restored into the bound `SyncManager` via `syncManager.setHash(hash)` before any pull or push runs. This means that after a page reload, wallet lock/unlock, or app restart, the first push sends `baseHash:<lastKnownHash>` instead of `null` — avoiding a spurious 409 conflict + recovery roundtrip.
 
 ## Redux DevTools
 
@@ -238,14 +252,20 @@ const settingsStore = createStarfishStore({
   syncManager: new SyncManager({ client, pullPath: "/pull/.../settings", pushPath: "/push/.../settings" }),
 })
 
+// For an encrypted collection, build the encryptor from the keyring document.
+// See 23-multi-recipient-delegated.md for keyring lifecycle.
+const keyring = (await client.pull(`users/${creds.userId}/notes/_keyring`)).data as Keyring
+const encryptor = await createKeyringEncryptor(keyring, {
+  kemPubHex: creds.device.kemPub,
+  kemPrivHex: creds.device.kemPriv,
+})
 const notesStore = createStarfishStore({
   name: "notes",
   syncManager: new SyncManager({
     client,
-    pullPath: "/pull/.../notes",
-    pushPath: "/push/.../notes",
-    encryptionSecret: secret,
-    encryptionSalt: salt,
+    pullPath: `/pull/users/${creds.userId}/notes`,
+    pushPath: `/push/users/${creds.userId}/notes`,
+    encryptor,
   }),
 })
 ```

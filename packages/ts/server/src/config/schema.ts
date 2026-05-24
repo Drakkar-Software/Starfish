@@ -1,25 +1,4 @@
-export type EncryptionMode = "none" | "identity" | "server" | "delegated" | "group"
-
-export type WriteMode = "pull_only" | "push_through" | "bidirectional" | "push_only"
-
-export type SyncTrigger = "scheduled" | "on_pull"
-
-export interface RemoteConfig {
-  url: string
-  pullPath: string
-  pushPath?: string
-  intervalMs: number
-  headers: Record<string, string>
-  writeMode: WriteMode
-  syncTriggers: SyncTrigger[]
-  onPullMinIntervalMs?: number
-}
-
-export interface QueueConfig {
-  topic?: string
-  includeParams: boolean
-  includeBody?: boolean
-}
+export type EncryptionMode = "none" | "delegated"
 
 export interface CollectionRateLimitConfig {
   windowMs?: number
@@ -29,6 +8,20 @@ export interface CollectionRateLimitConfig {
 export interface FieldPermission {
   readRoles?: string[]
   writeRoles?: string[]
+}
+
+/** Append-only strategy. Tagged by `type` so new strategies can be added later;
+ *  only `"by_timestamp"` is supported today (each element is stored as `{ts, data}`
+ *  and pulls filter by `ts` via `?checkpoint=`). */
+export interface AppendOnlyConfig {
+  /** Discriminator. Only `"by_timestamp"` is currently supported. */
+  type: "by_timestamp"
+  /** Array field name in the stored document. Defaults to "items". */
+  field?: string
+  /** true (default) — append the incoming item to the stored array as `{ts, data}`.
+   *  false — compute a hash and emit a write event without writing to storage
+   *  (consumed by a plugin such as starfish-queuing; replaces queueOnly). */
+  persist?: boolean
 }
 
 export interface CollectionConfig {
@@ -45,22 +38,26 @@ export interface CollectionConfig {
   pullOnly?: boolean
   pushOnly?: boolean
   forceFullFetch?: boolean
-  clientEncrypted?: boolean
   bundle?: string
-  remote?: RemoteConfig
-  queue?: QueueConfig
-  /** When true, pushes compute and return a hash but do not write to storage. Use for event-only collections where only the queue consumer matters. */
-  queueOnly?: boolean
+  /** When set, every push appends the incoming `data` as the last element of a stored array,
+   *  recorded as `{ts, data}`. Pass `true` as shorthand for `{ type: "by_timestamp" }`. */
+  appendOnly?: AppendOnlyConfig
   /** Document time-to-live in milliseconds. Expired documents return empty data on pull. */
   ttlMs?: number
   /** Per-field read/write permissions. Keys are top-level field names. */
   fieldPermissions?: Record<string, FieldPermission>
-  /** Base64-encoded public key exposed via the /config endpoint for client-side encryption. */
-  publicKey?: string
+  /** Optional override for the keyring storage path. When omitted, defaults to
+   *  `<storagePath>/_keyring`. Only relevant for `"delegated"` encryption. */
+  keyringPath?: string
   /** When true, exposes a GET /list/... endpoint that returns the keys of existing documents
    *  under this collection's prefix. The last path parameter in storagePath is the one being
-   *  enumerated. Requires at least one path parameter; incompatible with queueOnly and bundle. */
+   *  enumerated. Requires at least one path parameter; incompatible with appendOnly and bundle. */
   listable?: boolean
+  /** When true, only the **root device** (a self-signed device cap, `iss === sub`) may access
+   *  this collection; every paired/delegated device cap and member cap is rejected with 403,
+   *  in addition to the normal readRoles/writeRoles checks. Incompatible with public
+   *  read/write roles (rejected at config load). */
+  rootOnly?: boolean
 }
 
 export interface RateLimitConfig {

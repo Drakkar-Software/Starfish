@@ -1,5 +1,11 @@
 """
-Basic Starfish server using FastAPI and filesystem storage.
+Starfish v3.0 server using FastAPI and filesystem storage.
+
+v3 changes vs. v2:
+    • No `encryption_secret` on SyncRouterOptions — the server holds no keys.
+    • Auth is cap-cert based: `create_cap_cert_role_resolver` + a nonce cache +
+      a revocation store.
+    • Collections use `encryption="none"` or `"delegated"` only.
 
 Install:
     pip install starfish-server fastapi uvicorn
@@ -8,9 +14,10 @@ Run:
     uvicorn server:app --reload
 """
 
-import os
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request
+
+from fastapi import FastAPI
+
 from starfish_server import (
     FilesystemObjectStore,
     FilesystemStorageOptions,
@@ -18,51 +25,41 @@ from starfish_server import (
     CollectionConfig,
     NamespaceConfig,
     save_config,
-    create_group_role_enricher,
-    GroupRoleEnricherOptions,
-    create_entitlement_role_enricher,
-    EntitlementRoleEnricherOptions,
-    compose_enrichers,
+    create_cap_cert_role_resolver,
+    create_in_memory_nonce_cache,
+    create_in_memory_revocation_store,
+    GracefulShutdown,
 )
-from starfish_server.audit import CallbackAuditLogger, AuditEntry
-from starfish_server.lifecycle import GracefulShutdown, GracefulShutdownOptions
-from starfish_server.router import SyncRouterOptions, AuthResult, create_sync_router
+from starfish_audit import CallbackAuditLogger, AuditEntry
+from starfish_identities import identities_server_plugin
+from starfish_sharing import sharing_server_plugin
+from starfish_server.router import SyncRouterOptions, create_sync_router
+
+
+# ── Storage ─────────────────────────────────────────────────────────────────
 
 store = FilesystemObjectStore(FilesystemStorageOptions(base_dir="./data"))
 
 # For production: swap FilesystemObjectStore for S3ObjectStore
-# (requires: pip install starfish-server[s3])
+# (requires `pip install starfish-server[s3]`)
 #
 # from starfish_server.storage.s3 import S3ObjectStore, S3StorageOptions
-# store = S3ObjectStore(S3StorageOptions(
-#     access_key_id=os.environ["S3_ACCESS_KEY_ID"],
-#     secret_access_key=os.environ["S3_SECRET_ACCESS_KEY"],
-#     endpoint=os.environ.get("S3_ENDPOINT", "https://s3.amazonaws.com"),
-#     bucket=os.environ["S3_BUCKET"],
-#     region=os.environ.get("S3_REGION", "us-east-1"),
-# ))
+# store = S3ObjectStore(S3StorageOptions(...))
+
+
+# ── Collections — v3 encryption is "none" or "delegated" only. ──────────────
 
 
 def _make_tenant_namespace(tenant_id: str) -> NamespaceConfig:
-    """Create a namespace for a single tenant with a per-tenant storagePath prefix."""
     return NamespaceConfig(
         collections=[
             CollectionConfig(
                 name="settings",
-                # Prefix the storagePath with the tenant id to achieve true storage isolation.
                 storage_path=f"{tenant_id}/users/{{identity}}/settings",
-                read_roles=["self"],
-                write_roles=["self"],
+                read_roles=["cap:read:settings"],
+                write_roles=["cap:write:settings"],
                 encryption="none",
                 max_body_bytes=65_536,
-            ),
-            CollectionConfig(
-                name="notes",
-                storage_path=f"{tenant_id}/users/{{identity}}/notes",
-                read_roles=["self"],
-                write_roles=["self"],
-                encryption="identity",  # per-user server-side encryption
-                max_body_bytes=131_072,
             ),
         ],
     )
@@ -70,99 +67,93 @@ def _make_tenant_namespace(tenant_id: str) -> NamespaceConfig:
 
 config = SyncConfig(
     version=1,
-    # Root-level collections are accessible at /pull/… and /push/…
     collections=[
+        # Public-read posts.
         CollectionConfig(
             name="posts",
             storage_path="posts/{postId}",
             read_roles=["public"],
-            write_roles=["admin"],
+            write_roles=["cap:write:posts"],
             encryption="none",
             max_body_bytes=65_536,
         ),
-
-        # Group keyring — plaintext, admin-write, member-read.
-        # Contains per-member ECDH-wrapped copies of the Group Encryption Key.
+        # Per-user notes — server stores opaque ciphertext, clients use
+        # createKeyringEncryptor() to read/write.
         CollectionConfig(
-            name="keyring",
-            storage_path="groups/{groupId}/keyring",
-            read_roles=["group-member"],
-            write_roles=["group-admin"],
+            name="notes",
+            storage_path="users/{identity}/notes",
+            read_roles=["cap:read:notes"],
+            write_roles=["cap:write:notes"],
+            encryption="delegated",
+            max_body_bytes=131_072,
+        ),
+        # The keyring document is plaintext but read-restricted to recipients.
+        CollectionConfig(
+            name="notes-keyring",
+            storage_path="users/{identity}/notes/_keyring",
+            read_roles=["cap:read:notes"],
+            write_roles=["cap:write:notes"],
             encryption="none",
             max_body_bytes=65_536,
         ),
-
-        # Encrypted group chat — one document per group per day.
-        # encryption="group" means the server stores opaque ciphertext;
-        # clients use create_group_encryptor() to encrypt/decrypt.
+        # Shared-team — encrypted under a multi-recipient keyring.
         CollectionConfig(
-            name="chat",
-            storage_path="groups/{groupId}/chat/{day}",
-            read_roles=["group-member"],
-            write_roles=["group-member"],
-            encryption="group",
+            name="shared-team",
+            storage_path="shared-team/{docId}",
+            read_roles=["cap:read:shared-team"],
+            write_roles=["cap:write:shared-team"],
+            encryption="delegated",
             max_body_bytes=524_288,
             listable=True,
         ),
-
-        # Group membership roster — read/written by group admins.
-        # The role_enricher below reads this to grant "group-member".
         CollectionConfig(
-            name="group-members",
-            storage_path="groups/{groupId}/members",
-            read_roles=["group-admin"],
-            write_roles=["group-admin"],
+            name="shared-team-keyring",
+            storage_path="shared-team/_keyring",
+            read_roles=["cap:read:shared-team"],
+            write_roles=["cap:write:shared-team"],
             encryption="none",
             max_body_bytes=65_536,
         ),
-
-        # Per-user entitlement document — admin writes, user reads their own.
-        # Contains feature slugs like ["premium-package-1", "paid-cloud-sync"].
-        # The entitlement_enricher below translates these into roles at request time.
+        # Per-user entitlement document.
         CollectionConfig(
             name="entitlements",
             storage_path="users/{identity}/entitlements",
-            read_roles=["self"],
-            write_roles=["admin"],
+            read_roles=["cap:read:entitlements"],
+            write_roles=["cap:write:entitlements"],
             encryption="none",
             max_body_bytes=4096,
         ),
-        # Premium-gated collection — only users with the "premium-package-1" entitlement
-        # can read this. Add to or remove from the user's entitlement document to grant/revoke.
+        # Plaintext, cap-only shared collection (no keyring). An alternative to
+        # the encrypted "shared-team" above for data that does NOT need E2E
+        # encryption: access is authorized purely by signed member caps + expiry
+        # (the same mechanism as devices). The owner mints member caps with
+        # `mint_member_cap` and either forwards them out-of-band or publishes
+        # them into the `_members` list below, from which members fetch their
+        # own with `fetch_my_member_cap`.
         CollectionConfig(
-            name="premium-content",
-            storage_path="premium/{contentId}",
-            read_roles=["entitlement:premium-package-1"],
-            write_roles=["admin"],
+            name="shared-board",
+            storage_path="shared-board/{docId}",
+            read_roles=["cap:read:shared-board"],
+            write_roles=["cap:write:shared-board"],
             encryption="none",
-            max_body_bytes=131_072,
+            max_body_bytes=524_288,
+            listable=True,
         ),
-
-        # Owner-managed whitelist — only the owner controls who can access the
-        # restricted collection below. "self" is auto-granted when {ownerId} in
-        # the storage_path matches the authenticated user's identity.
-        # No encryption: this is pure RBAC — group encryption is not required.
+        # Cap list: ALL members' full signed caps in one document. Read-open so a
+        # member fetches their own cap without it being forwarded; owner-only
+        # writes. `public` read is safe — a cap is usable only by the holder of
+        # its subject private key (the server verifies each request against
+        # `cert.sub`), so a readable roster never lets one member act as another.
+        # Member caps cannot WRITE here: their scope denies `<col>/_members`.
         CollectionConfig(
-            name="whitelist",
-            storage_path="owners/{ownerId}/whitelist",
-            read_roles=["self"],   # only the owner can read their own whitelist
-            write_roles=["self"],  # only the owner can update their own whitelist
+            name="shared-board-members",
+            storage_path="shared-board/_members",
+            read_roles=["public"],
+            write_roles=["cap:write:shared-board"],
             encryption="none",
-            max_body_bytes=65_536,
-        ),
-        # Restricted data — only users listed in the owner's whitelist can access.
-        # The whitelist_enricher below grants "whitelisted" based on that document.
-        CollectionConfig(
-            name="restricted",
-            storage_path="owners/{ownerId}/restricted",
-            read_roles=["whitelisted"],
-            write_roles=["whitelisted"],
-            encryption="none",
-            max_body_bytes=1_048_576,
+            max_body_bytes=262_144,
         ),
     ],
-    # Namespaced collections are accessible at /{tenant}/pull/… and /{tenant}/push/…
-    # Each tenant gets its own storagePath prefix → full storage isolation.
     namespaces={
         "acme": _make_tenant_namespace("acme"),
         "globex": _make_tenant_namespace("globex"),
@@ -170,71 +161,67 @@ config = SyncConfig(
 )
 
 
-async def role_resolver(request: Request) -> AuthResult:
-    token = request.headers.get("authorization", "")
-    # Replace with real auth logic (JWT, API key, etc.)
-    if token.startswith("Bearer "):
-        user_id = token.removeprefix("Bearer ")
-        return AuthResult(identity=user_id, roles=["user"])
-    return AuthResult(identity="anonymous", roles=["public"])
+# ── Cap-cert role resolver ──────────────────────────────────────────────────
+#
+# Replaces the v2 Bearer-token resolver. The resolver:
+#   1. parses `Authorization: Cap <base64>`
+#   2. verifies the cap-cert signature, nbf/exp, well-formedness
+#   3. verifies `X-Starfish-Sig` over the request body and URL
+#   4. consults the nonce cache (replay protection)
+#   5. consults the revocation store
+#   6. synthesizes roles like `cap:<op>:<collection>`
 
-
-# Grant "group-member" to users listed in groups/{groupId}/members
-group_enricher = create_group_role_enricher(
-    GroupRoleEnricherOptions(
-        store=store,
-        members_path="groups/{groupId}/members",
-        group_param="groupId",
-    )
+nonce_cache = create_in_memory_nonce_cache(
+    window_ms=5 * 60_000,  # ±5-minute replay window — matches protocol skew
+    max_entries=100_000,
 )
 
-# Grant "whitelisted" to users listed in owners/{ownerId}/whitelist
-whitelist_enricher = create_group_role_enricher(
-    GroupRoleEnricherOptions(
-        store=store,
-        members_path="owners/{ownerId}/whitelist",
-        group_param="ownerId",
-        role="whitelisted",
-    )
+revocation_store = create_in_memory_revocation_store()
+# In production, persist revocations: rebuild this store from your DB at
+# startup and call `revocation_store.revoke(iss, sub, nonce)` whenever an
+# admin revokes a device or member cap.
+
+role_resolver = create_cap_cert_role_resolver(
+    nonce_cache=nonce_cache,
+    revocation_store=revocation_store,
+    # When False, requests without `Authorization: Cap` are rejected with 401.
+    # Leave at True to allow public-read collections.
+    allow_anonymous=True,
+    # The resolver is secure-by-default: with no plugins it accepts only `device`
+    # caps. Wire `identities_server_plugin` (device) + `sharing_server_plugin`
+    # (member, enforces the member-cap shape barriers incl. the `_keyring` deny)
+    # for the kinds this deployment issues.
+    plugins=[identities_server_plugin, sharing_server_plugin],
 )
 
-# Translate per-user entitlement slugs → roles like "entitlement:premium-package-1"
-# Reads from users/{identity}/entitlements (default path)
-entitlement_enricher = create_entitlement_role_enricher(
-    EntitlementRoleEnricherOptions(store=store)
-)
 
-# Compose all enrichers: roles from all are merged into the effective set
-role_enricher = compose_enrichers(group_enricher, whitelist_enricher, entitlement_enricher)
+# ── Audit logger ────────────────────────────────────────────────────────────
 
 
 async def _audit_record(entry: AuditEntry) -> None:
-    """Log only failed requests; swap for a DB write in production."""
     if not entry.success:
         print(
             f"[AUDIT] {entry.action.upper()} {entry.collection} "
-            f"by {entry.identity or 'anonymous'} → {entry.status_code}"
+            f"by {entry.identity or 'anonymous'} -> {entry.status_code}"
         )
 
+
+# ── Router ──────────────────────────────────────────────────────────────────
 
 sync_router = create_sync_router(
     SyncRouterOptions(
         store=store,
         config=config,
         role_resolver=role_resolver,
-        encryption_secret=os.environ.get("ENCRYPTION_SECRET", "change-me"),
-        role_enricher=role_enricher,
-        # Audit every pull and push — replace CallbackAuditLogger with a DB writer in prod
-        audit=CallbackAuditLogger(_audit_record),
+        audit_logger=CallbackAuditLogger(_audit_record),
     )
 )
 
-shutdown = GracefulShutdown()  # handles SIGTERM / SIGINT; add replica_manager= or queue= if needed
+shutdown = GracefulShutdown()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Persist config to storage so it can be reloaded later
     await save_config(store, config)
     shutdown.register()
     yield

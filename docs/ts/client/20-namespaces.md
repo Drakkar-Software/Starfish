@@ -49,7 +49,7 @@ const config: SyncConfig = {
           storagePath: "tenantA/users/{identity}/notes",
           readRoles: ["self"],
           writeRoles: ["self"],
-          encryption: "identity",
+          encryption: "delegated",
           maxBodyBytes: 131_072,
           allowedMimeTypes: ["application/json"],
         },
@@ -93,18 +93,26 @@ POST /v1/tenantB/push/tenantB/users/:identity/settings
 The `StarfishClient` and `SyncManager` both use explicit paths. Include the namespace prefix in your paths:
 
 ```ts
-import { StarfishClient, SyncManager } from "@drakkar.software/starfish-client"
+import {
+  StarfishClient,
+  SyncManager,
+  bootstrapRootIdentity,
+} from "@drakkar.software/starfish-client"
+
+const creds = await bootstrapRootIdentity(passphrase)
 
 const client = new StarfishClient({
   baseUrl: "https://api.example.com/v1",
-  auth: async () => ({ Authorization: `Bearer ${token}` }),
+  capProvider: {
+    getCap: async () => ({ cap: creds.capCert, devEdPrivHex: creds.device.edPriv }),
+  },
 })
 
 // Include the namespace in the path
 const sync = new SyncManager({
   client,
-  pullPath: `/tenantA/pull/tenantA/users/${userId}/settings`,
-  pushPath: `/tenantA/push/tenantA/users/${userId}/settings`,
+  pullPath: `/tenantA/pull/tenantA/users/${creds.userId}/settings`,
+  pushPath: `/tenantA/push/tenantA/users/${creds.userId}/settings`,
 })
 
 await sync.pull()
@@ -160,14 +168,14 @@ namespaces: {
         name: "prefs",
         storagePath: "tenantA/users/{identity}/data",
         bundle: "userdata",
-        encryption: "identity",
+        encryption: "delegated",
         ...
       },
       {
         name: "profile",
         storagePath: "tenantA/users/{identity}/data",
         bundle: "userdata",
-        encryption: "identity",
+        encryption: "delegated",
         ...
       },
     ],

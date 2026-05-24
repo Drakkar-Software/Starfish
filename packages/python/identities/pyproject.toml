@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "starfish-identities"
+version = "3.0.0a2"
+description = "Starfish root + device identity extension (passphrase derivation, device cap-cert minting, pairing flows, device directory)"
+requires-python = ">=3.11"
+dependencies = [
+  "cryptography>=41.0",
+  "argon2-cffi>=25.1.0",
+  "starfish-protocol",
+  "starfish-sdk",
+  "starfish-keyring",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.0",
+  "pytest-asyncio>=0.21",
+  "respx>=0.23.1",
+  "starfish-server",
+]
+
+[tool.uv.sources]
+starfish-protocol = { path = "../protocol", editable = true }
+starfish-sdk = { path = "../client", editable = true }
+starfish-keyring = { path = "../keyring", editable = true }
+starfish-server = { path = "../server", editable = true }
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

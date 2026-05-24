@@ -4,10 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "starfish-protocol"
-version = "1.18.1"
+version = "3.0.0a2"
 description = "Shared protocol primitives for the Starfish sync protocol"
 requires-python = ">=3.11"
-dependencies = ["cryptography>=41.0"]
+dependencies = [
+    "argon2-cffi>=25.1.0",
+    "cryptography>=41.0",
+]
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0", "pytest-asyncio>=0.21"]

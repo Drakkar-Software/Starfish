@@ -1,5 +1,5 @@
-import type { SyncConfig, CollectionConfig, RemoteConfig, QueueConfig, CollectionRateLimitConfig, NamespaceConfig, FieldPermission } from "./schema.js"
-import { validateConfig } from "./validate.js"
+import type { SyncConfig, CollectionConfig, CollectionRateLimitConfig, NamespaceConfig, FieldPermission, AppendOnlyConfig } from "./schema.js"
+import { validateConfig, collectConfigWarnings } from "./validate.js"
 import { StartupError } from "../errors.js"
 import { DEFAULT_CONFIG_KEY, CONTENT_TYPE_JSON } from "../constants.js"
 import type { ObjectStore } from "../storage/base.js"
@@ -10,23 +10,13 @@ function coerceRateLimit(v: unknown): CollectionRateLimitConfig | null | undefin
   return v as CollectionRateLimitConfig | null | undefined
 }
 
-function coerceQueue(v: unknown): QueueConfig | undefined {
-  if (v === true) return { includeParams: false }
+function coerceAppendOnly(v: unknown): AppendOnlyConfig | undefined {
+  if (v === true) return { type: "by_timestamp" }
   if (v === false || v == null) return undefined
-  return v as QueueConfig
-}
-
-function parseRemote(raw: Record<string, unknown>): RemoteConfig {
-  return {
-    url: raw["url"] as string,
-    pullPath: raw["pullPath"] as string,
-    pushPath: (raw["pushPath"] as string) ?? undefined,
-    intervalMs: (raw["intervalMs"] as number) ?? 60_000,
-    headers: (raw["headers"] as Record<string, string>) ?? {},
-    writeMode: (raw["writeMode"] as RemoteConfig["writeMode"]) ?? "pull_only",
-    syncTriggers: (raw["syncTriggers"] as RemoteConfig["syncTriggers"]) ?? ["scheduled"],
-    onPullMinIntervalMs: (raw["onPullMinIntervalMs"] as number) ?? undefined,
-  }
+  const obj = v as Record<string, unknown>
+  // Default the discriminator so a `{ field: "events" }` shorthand still works;
+  // an explicit unknown `type` is preserved here and rejected by validateConfig.
+  return { ...obj, type: (obj["type"] as AppendOnlyConfig["type"]) ?? "by_timestamp" } as AppendOnlyConfig
 }
 
 function parseCollection(raw: Record<string, unknown>): CollectionConfig {
@@ -44,14 +34,11 @@ function parseCollection(raw: Record<string, unknown>): CollectionConfig {
     pullOnly: (raw["pullOnly"] as boolean) ?? undefined,
     pushOnly: (raw["pushOnly"] as boolean) ?? undefined,
     forceFullFetch: (raw["forceFullFetch"] as boolean) ?? undefined,
-    clientEncrypted: (raw["clientEncrypted"] as boolean) ?? undefined,
     bundle: (raw["bundle"] as string) ?? undefined,
-    remote: raw["remote"] ? parseRemote(raw["remote"] as Record<string, unknown>) : undefined,
-    queue: coerceQueue(raw["queue"]),
-    queueOnly: (raw["queueOnly"] as boolean) ?? undefined,
+    appendOnly: coerceAppendOnly(raw["appendOnly"]),
     ttlMs: (raw["ttlMs"] as number) ?? undefined,
     fieldPermissions: (raw["fieldPermissions"] as Record<string, FieldPermission>) ?? undefined,
-    publicKey: (raw["publicKey"] as string) ?? undefined,
+    keyringPath: (raw["keyringPath"] as string) ?? undefined,
   }
 }
 
@@ -109,6 +96,9 @@ export function parseConfigJson(raw: string): SyncConfig {
   const errors = validateConfig(config)
   if (errors.length > 0) {
     throw new StartupError(`Invalid sync config:\n${errors.join("\n")}`)
+  }
+  for (const w of collectConfigWarnings(config)) {
+    console.warn(`[Starfish] config warning: ${w}`)
   }
   return config
 }

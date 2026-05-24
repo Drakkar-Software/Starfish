@@ -5,24 +5,24 @@ import json
 import logging
 import time
 
-from starfish_server.storage.base import AbstractObjectStore
+from starfish_server.storage.base import AbstractObjectStore, StoreContext
 from starfish_server.protocol.types import StoredDocument, PullResult
-from starfish_server.protocol.timestamps import filter_by_checkpoint
 
 
 async def pull(
     store: AbstractObjectStore,
     document_key: str,
-    checkpoint: int = 0,
+    context: StoreContext | None = None,
 ) -> PullResult:
-    """Pull the current document, optionally filtered by checkpoint.
+    """Pull the current document.
 
-    - No checkpoint (or 0): returns full data
-    - With checkpoint: returns only paths updated after checkpoint
-    - hash is always the hash of the FULL document
+    Always returns the full stored document — ``?checkpoint=`` incremental
+    filtering was removed for regular collections and is now an appendOnly-only
+    concept (see :func:`handle_append_only_pull`). The returned ``timestamp`` is
+    the pull time, used by the client only as a high-water mark.
     """
     timestamp = time.time_ns() // 1_000_000
-    raw = await store.get_string(document_key)
+    raw = await store.get_string(document_key, context=context)
 
     if not raw:
         return PullResult(data={}, hash="", timestamp=timestamp)
@@ -34,29 +34,11 @@ async def pull(
             "Corrupt stored document at key %r: %s", document_key, exc
         )
         return PullResult(data={}, hash="", timestamp=timestamp)
-    doc = StoredDocument(
-        v=parsed["v"],
-        data=parsed["data"],
-        timestamps=parsed["timestamps"],
-        hash=parsed["hash"],
-        author_pubkey=parsed.get("authorPubkey"),
-        author_signature=parsed.get("authorSignature"),
-    )
-
-    if checkpoint and checkpoint > 0 and doc.timestamps:
-        filtered = filter_by_checkpoint(doc.data, doc.timestamps, checkpoint)
-        return PullResult(
-            data=filtered,
-            hash=doc.hash,
-            timestamp=timestamp,
-            author_pubkey=doc.author_pubkey,
-            author_signature=doc.author_signature,
-        )
 
     return PullResult(
-        data=doc.data,
-        hash=doc.hash,
+        data=parsed.get("data", {}),
+        hash=parsed.get("hash", ""),
         timestamp=timestamp,
-        author_pubkey=doc.author_pubkey,
-        author_signature=doc.author_signature,
+        author_pubkey=parsed.get("authorPubkey"),
+        author_signature=parsed.get("authorSignature"),
     )

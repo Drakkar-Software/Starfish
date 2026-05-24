@@ -1,117 +1,214 @@
 """
-Starfish Python client examples.
+Starfish v3.0 Python client examples.
+
+Demonstrates the v3 surface:
+    • passphrase → root identity (Ed25519 + X25519)
+    • signed cap-cert minted locally (server holds no keys)
+    • StarfishClient + cap-cert request signing
+    • SyncManager + delegated multi-recipient encryption via keyring
 
 Install:
     pip install starfish-sdk
+
+Run:
+    python examples/python/client.py
 """
 
 import asyncio
-from datetime import date
-from starfish_sdk import StarfishClient, SyncManager, ConflictError, pull_entitlements
-from starfish_sdk.group import (
-    GroupKeyring,
-    derive_group_key_pair,
-    create_group_keyring,
-    add_group_member,
-    rotate_group_key,
-    create_group_encryptor,
+from typing import Any
+
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+from starfish_sdk import (
+    StarfishClient,
+    SyncManager,
+    ConflictError,
 )
+from starfish_keyring import (
+    create_keyring,
+    create_keyring_encryptor,
+    add_collection_recipient,
+    list_recipients,
+)
+from starfish_identities import bootstrap_root_identity
+from starfish_sharing import mint_member_cap, scopes
+from starfish_entitlements import pull_entitlements
 
 
 BASE_URL = "https://api.example.com/v1"
-USER_ID = "user-abc"
-
-
-async def auth(*, method: str, path: str, body: str | None) -> dict[str, str]:
-    """Return auth headers for each request."""
-    return {"Authorization": f"Bearer my-token-{USER_ID}"}
 
 
 # ---------------------------------------------------------------------------
-# Low-level: pull / push directly
+# Cap-cert provider — adapts a DeviceCredentials into the CapProvider
+# protocol StarfishClient expects.
 # ---------------------------------------------------------------------------
 
-async def low_level_example():
-    async with StarfishClient(BASE_URL, auth=auth) as client:
-        # Pull current state
-        result = await client.pull(f"/pull/users/{USER_ID}/settings")
-        print("current data:", result.data)
-        print("hash:", result.hash)
 
-        # Push an update (base_hash must match current hash)
-        new_data = {**result.data, "theme": "dark"}
-        success = await client.push(
-            f"/push/users/{USER_ID}/settings",
-            new_data,
-            base_hash=result.hash,
-        )
-        print("pushed, new hash:", success.hash)
+class CapProviderFromCreds:
+    """Adapts a v3 DeviceCredentials into a StarfishClient cap-provider."""
+
+    def __init__(self, cap_cert: dict[str, Any], dev_ed_priv_hex: str) -> None:
+        self._cap_cert = cap_cert
+        self._dev_ed_priv_hex = dev_ed_priv_hex
+
+    async def get_cap(self) -> dict[str, Any]:
+        return {"cap": self._cap_cert, "dev_ed_priv_hex": self._dev_ed_priv_hex}
+
+
+class SignerFromKeys:
+    """Adapts a device Ed25519 keypair into a SyncSigner."""
+
+    def __init__(self, dev_ed_pub_hex: str, dev_ed_priv_hex: str) -> None:
+        self._dev_ed_pub_hex = dev_ed_pub_hex
+        self._priv = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(dev_ed_priv_hex))
+
+    async def get_signer(self) -> dict[str, Any]:
+        async def sign(payload: bytes) -> bytes:
+            return self._priv.sign(payload)
+
+        return {"dev_ed_pub_hex": self._dev_ed_pub_hex, "sign": sign}
 
 
 # ---------------------------------------------------------------------------
-# High-level: SyncManager with automatic conflict resolution
+# First user, first device: bootstrap a v3 root identity from a passphrase.
 # ---------------------------------------------------------------------------
 
-async def sync_manager_example():
-    async with StarfishClient(BASE_URL, auth=auth) as client:
+
+async def bootstrap_first_device() -> None:
+    creds = bootstrap_root_identity("correct-horse-battery-staple")
+    print("user_id:", creds.user_id)
+    print("root_ed_pub:", creds.root_ed_pub)
+
+    cap_provider = CapProviderFromCreds(creds.cap_cert, creds.device["edPriv"])
+    signer = SignerFromKeys(creds.device["edPub"], creds.device["edPriv"])
+
+    async with StarfishClient(BASE_URL, cap_provider=cap_provider) as client:
         sync = SyncManager(
             client,
-            pull_path=f"/pull/users/{USER_ID}/settings",
-            push_path=f"/push/users/{USER_ID}/settings",
+            pull_path=f"/pull/users/{creds.user_id}/settings",
+            push_path=f"/push/users/{creds.user_id}/settings",
+            signer=signer,
         )
 
         await sync.pull()
-        print("data after pull:", sync.data)
-
         await sync.push({"theme": "dark", "lang": "en"})
-        print("push done, hash:", sync.hash)
+        print("settings pushed, hash:", sync.hash)
 
 
 # ---------------------------------------------------------------------------
-# E2E encryption (client-side, server never sees plaintext)
+# Delegated multi-recipient encryption.
+#
+# v3 stores per-collection keyrings at <collection>/_keyring; each recipient
+# gets the CEK wrapped for their X25519 pubkey.
 # ---------------------------------------------------------------------------
 
-async def encrypted_example():
-    async with StarfishClient(BASE_URL, auth=auth) as client:
-        sync = SyncManager(
+
+async def delegated_encrypted_collection() -> None:
+    creds = bootstrap_root_identity("correct-horse-battery-staple")
+
+    # Build a brand-new keyring with epoch 1 wrapping a fresh random CEK
+    # for our own device.
+    keyring, _cek = create_keyring(
+        adder_ed_priv_hex=creds.device["edPriv"],
+        adder_ed_pub_hex=creds.device["edPub"],
+        recipients=[creds.device["kemPub"]],
+    )
+
+    cap_provider = CapProviderFromCreds(creds.cap_cert, creds.device["edPriv"])
+    signer = SignerFromKeys(creds.device["edPub"], creds.device["edPriv"])
+
+    async with StarfishClient(BASE_URL, cap_provider=cap_provider) as client:
+        # Push the keyring (plaintext document; wrapped CEKs inside are
+        # ciphertext).
+        keyring_sync = SyncManager(
             client,
-            pull_path=f"/pull/users/{USER_ID}/notes",
-            push_path=f"/push/users/{USER_ID}/notes",
-            encryption_secret="user-generated-secret",
-            encryption_salt=USER_ID,
+            pull_path="/pull/notes/_keyring",
+            push_path="/push/notes/_keyring",
+            signer=signer,
+        )
+        await keyring_sync.push(keyring.to_dict())
+
+        # Build an encryptor for our device and write an encrypted document.
+        encryptor = create_keyring_encryptor(
+            keyring,
+            creds.device["kemPub"],
+            creds.device["kemPriv"],
+            trusted_adders=[creds.device["edPub"]],
         )
 
-        await sync.pull()
-        # data is automatically decrypted after pull
-        print("decrypted data:", sync.data)
-
-        # data is automatically encrypted before push
-        await sync.push({"items": ["note 1", "note 2"]})
+        notes_sync = SyncManager(
+            client,
+            pull_path=f"/pull/users/{creds.user_id}/notes",
+            push_path=f"/push/users/{creds.user_id}/notes",
+            encryptor=encryptor,
+            signer=signer,
+        )
+        await notes_sync.push({"items": ["first encrypted note"]})
+        print("encrypted notes pushed; epoch:", keyring.current_epoch)
 
 
 # ---------------------------------------------------------------------------
-# Custom conflict resolver
+# Adding a teammate to a shared keyring.
+#
+# Alice mints a `member` cap-cert for Bob with writer scope on shared-team,
+# then adds Bob to the keyring so he can decrypt shared-team payloads.
 # ---------------------------------------------------------------------------
 
-async def conflict_example():
+
+async def share_with_teammate(bob_ed_pub_hex: str, bob_kem_pub_hex: str, bob_user_id_hex: str) -> None:
+    alice = bootstrap_root_identity("alice-passphrase")
+    alice_cap_provider = CapProviderFromCreds(alice.cap_cert, alice.device["edPriv"])
+
+    # 1. Mint a member cap-cert for Bob.
+    bob_member_cap = mint_member_cap(
+        alice.device["edPriv"],
+        alice.device["edPub"],
+        {"edPubHex": bob_ed_pub_hex, "kemPubHex": bob_kem_pub_hex, "userIdHex": bob_user_id_hex},
+        "shared-team",
+        scopes.writer("shared-team"),
+    )
+    print("minted member cap-cert for Bob:", bob_member_cap["nonce"])
+    # Bob installs this cap-cert into his device storage (out-of-band,
+    # e.g. QR or relay).
+
+    # 2. Add Bob to the keyring.
+    async with StarfishClient(BASE_URL, cap_provider=alice_cap_provider) as client:
+        await add_collection_recipient(
+            client,
+            "shared-team",
+            {"subKem": bob_kem_pub_hex, "userId": bob_user_id_hex, "label": "bob"},
+            {
+                "edPriv": alice.device["edPriv"],
+                "edPub": alice.device["edPub"],
+                "kemPriv": alice.device["kemPriv"],
+            },
+        )
+        listing = await list_recipients(client, "shared-team")
+        print(f"shared-team epoch {listing['epoch']}: {len(listing['recipients'])} recipient(s)")
+
+
+# ---------------------------------------------------------------------------
+# Conflict resolution + retries.
+# ---------------------------------------------------------------------------
+
+
+async def conflict_example(creds: Any) -> None:
     def merge_lists(local: dict, remote: dict) -> dict:
-        """Merge list fields; remote wins for scalars."""
         merged = {**remote}
         for key, local_val in local.items():
             if isinstance(local_val, list) and isinstance(remote.get(key), list):
-                # union of both lists
                 merged[key] = list({*local_val, *remote[key]})
         return merged
 
-    async with StarfishClient(BASE_URL, auth=auth) as client:
+    cap_provider = CapProviderFromCreds(creds.cap_cert, creds.device["edPriv"])
+    async with StarfishClient(BASE_URL, cap_provider=cap_provider) as client:
         sync = SyncManager(
             client,
-            pull_path=f"/pull/users/{USER_ID}/notes",
-            push_path=f"/push/users/{USER_ID}/notes",
+            pull_path=f"/pull/users/{creds.user_id}/notes",
+            push_path=f"/push/users/{creds.user_id}/notes",
             on_conflict=merge_lists,
             max_retries=5,
         )
-
         try:
             await sync.push({"items": ["new note"]})
         except ConflictError:
@@ -119,287 +216,65 @@ async def conflict_example():
 
 
 # ---------------------------------------------------------------------------
-# Group encryption — admin creates a group keyring
-#
-# Each member derives an X25519 key pair deterministically from their
-# passphrase. The admin wraps the Group Encryption Key (GEK) for each
-# member and pushes the keyring document to Starfish.
+# Binary blobs (avatars, attachments).
 # ---------------------------------------------------------------------------
 
-async def group_admin_setup() -> tuple[GroupKeyring, str]:
-    admin_kp = derive_group_key_pair("admin-passphrase", "admin")
-    alice_kp = derive_group_key_pair("alice-passphrase", "alice")
-    bob_kp   = derive_group_key_pair("bob-passphrase",   "bob")
 
-    keyring, gek = create_group_keyring(
-        admin_kp,
-        {"alice": alice_kp.public_key, "bob": bob_kp.public_key},
-    )
-
-    async def admin_auth(*, method: str, path: str, body: str | None) -> dict[str, str]:
-        return {"Authorization": "Bearer my-token-admin"}
-
-    # Push keyring in plaintext — the wrapped keys inside are ciphertext
-    async with StarfishClient(BASE_URL, auth=admin_auth) as client:
-        keyring_sync = SyncManager(
-            client,
-            pull_path="/pull/groups/g1/keyring",
-            push_path="/push/groups/g1/keyring",
-        )
-        await keyring_sync.push(keyring.to_dict())
-
-    # Keep `gek` in the admin's private vault — needed to add future members
-    print(f"group keyring created, epoch: {keyring.current_epoch}")
-    return keyring, gek
-
-
-# ---------------------------------------------------------------------------
-# Group encryption — member posts an encrypted message
-#
-# The member pulls the keyring, unwraps their GEK copy, and uses the
-# resulting Encryptor with SyncManager (replaces encryption_secret/salt).
-# ---------------------------------------------------------------------------
-
-async def group_member_post(user_id: str, passphrase: str, message: str) -> None:
-    my_kp = derive_group_key_pair(passphrase, user_id)
-
-    async def member_auth(*, method: str, path: str, body: str | None) -> dict[str, str]:
-        return {"Authorization": f"Bearer my-token-{user_id}"}
-
-    async with StarfishClient(BASE_URL, auth=member_auth) as client:
-        # Pull keyring
-        keyring_sync = SyncManager(
-            client,
-            pull_path="/pull/groups/g1/keyring",
-            push_path="/push/groups/g1/keyring",
-        )
-        await keyring_sync.pull()
-        keyring = GroupKeyring.from_dict(keyring_sync.data)
-        encryptor = create_group_encryptor(keyring, user_id, my_kp.private_key)
-
-        # Write to encrypted chat collection
-        today = date.today().isoformat()
-        chat_sync = SyncManager(
-            client,
-            pull_path=f"/pull/groups/g1/chat/{today}",
-            push_path=f"/push/groups/g1/chat/{today}",
-            encryptor=encryptor,  # replaces encryption_secret / encryption_salt
-        )
-
-        def append_message(current: dict) -> dict:
-            messages = list(current.get("messages", []))
-            messages.append({"author": user_id, "text": message})
-            return {**current, "messages": messages}
-
-        await chat_sync.update(append_message)
-
-    print(f"[{user_id}] posted: \"{message}\"")
-
-
-# ---------------------------------------------------------------------------
-# Group encryption — admin adds a new member (no key rotation)
-# ---------------------------------------------------------------------------
-
-async def group_add_member(current_gek: str, new_member_id: str, new_member_public_key: str) -> None:
-    admin_kp = derive_group_key_pair("admin-passphrase", "admin")
-
-    async def admin_auth(*, method: str, path: str, body: str | None) -> dict[str, str]:
-        return {"Authorization": "Bearer my-token-admin"}
-
-    async with StarfishClient(BASE_URL, auth=admin_auth) as client:
-        keyring_sync = SyncManager(
-            client,
-            pull_path="/pull/groups/g1/keyring",
-            push_path="/push/groups/g1/keyring",
-        )
-        await keyring_sync.pull()
-        keyring = GroupKeyring.from_dict(keyring_sync.data)
-        updated = add_group_member(keyring, admin_kp, current_gek, new_member_id, new_member_public_key)
-        await keyring_sync.push(updated.to_dict())
-
-    print(f"added {new_member_id} to epoch {updated.current_epoch}")
-
-
-# ---------------------------------------------------------------------------
-# Group encryption — admin removes a member via key rotation
-#
-# A new epoch is created with a new GEK. The removed member retains their
-# old-epoch key (can still read old documents) but has no key for new ones.
-# ---------------------------------------------------------------------------
-
-async def group_remove_member(remaining_members: dict[str, str]) -> str:
-    admin_kp = derive_group_key_pair("admin-passphrase", "admin")
-
-    async def admin_auth(*, method: str, path: str, body: str | None) -> dict[str, str]:
-        return {"Authorization": "Bearer my-token-admin"}
-
-    async with StarfishClient(BASE_URL, auth=admin_auth) as client:
-        keyring_sync = SyncManager(
-            client,
-            pull_path="/pull/groups/g1/keyring",
-            push_path="/push/groups/g1/keyring",
-        )
-        await keyring_sync.pull()
-        keyring = GroupKeyring.from_dict(keyring_sync.data)
-        rotated, new_gek = rotate_group_key(keyring, admin_kp, remaining_members)
-        await keyring_sync.push(rotated.to_dict())
-
-    print(f"rotated to epoch {rotated.current_epoch} — removed member loses access to new documents")
-    return new_gek  # store securely in admin's private vault
-
-
-# ---------------------------------------------------------------------------
-# Group encryption — single-collection (admin as member)
-#
-# Simpler variant: the keyring is built in memory and distributed
-# out-of-band (e.g. stored in each member's private vault). No separate
-# keyring collection in Starfish is needed. The admin includes themselves
-# in the members map so they can also encrypt/decrypt.
-# ---------------------------------------------------------------------------
-
-async def group_single_collection_setup() -> tuple[GroupKeyring, str]:
-    admin_kp = derive_group_key_pair("admin-passphrase", "admin")
-    alice_kp = derive_group_key_pair("alice-passphrase", "alice")
-    bob_kp   = derive_group_key_pair("bob-passphrase",   "bob")
-
-    # Admin includes themselves as a member so they can encrypt/decrypt too
-    keyring, gek = create_group_keyring(
-        admin_kp,
-        {
-            "admin": admin_kp.public_key,
-            "alice": alice_kp.public_key,
-            "bob":   bob_kp.public_key,
-        },
-    )
-
-    # Distribute `keyring` to all members (e.g. push to each member's private vault)
-    # Store `gek` in the admin's private vault — needed to add future members
-    print(f"single-collection keyring created, epoch: {keyring.current_epoch}")
-    return keyring, gek
-
-
-async def group_single_collection_push(
-    user_id: str,
-    passphrase: str,
-    keyring: GroupKeyring,
-    data: dict,
-) -> None:
-    my_kp = derive_group_key_pair(passphrase, user_id)
-    encryptor = create_group_encryptor(keyring, user_id, my_kp.private_key)
-
-    async def auth(*, method: str, path: str, body: str | None) -> dict[str, str]:
-        return {"Authorization": f"Bearer my-token-{user_id}"}
-
-    # One encrypted collection — encryptor replaces encryption_secret / encryption_salt
-    async with StarfishClient(BASE_URL, auth=auth) as client:
-        sync = SyncManager(
-            client,
-            pull_path="/pull/groups/g1/notes",
-            push_path="/push/groups/g1/notes",
-            encryptor=encryptor,
-        )
-        await sync.push(data)
-
-    print(f"[{user_id}] pushed encrypted data")
-
-
-async def group_single_collection_pull(
-    user_id: str,
-    passphrase: str,
-    keyring: GroupKeyring,
-) -> dict:
-    my_kp = derive_group_key_pair(passphrase, user_id)
-    encryptor = create_group_encryptor(keyring, user_id, my_kp.private_key)
-
-    async def auth(*, method: str, path: str, body: str | None) -> dict[str, str]:
-        return {"Authorization": f"Bearer my-token-{user_id}"}
-
-    async with StarfishClient(BASE_URL, auth=auth) as client:
-        sync = SyncManager(
-            client,
-            pull_path="/pull/groups/g1/notes",
-            push_path="/push/groups/g1/notes",
-            encryptor=encryptor,
-        )
-        result = await sync.pull()
-
-    print(f"[{user_id}] pulled and decrypted:", result.data)
-    return result.data
-
-
-# ---------------------------------------------------------------------------
-# Binary collections: push_blob / pull_blob
-# ---------------------------------------------------------------------------
-
-async def binary_example() -> None:
-    async def auth(*, method: str, path: str, body: str | None) -> dict[str, str]:
-        return {"Authorization": f"Bearer my-token-{USER_ID}"}
-
-    async with StarfishClient(BASE_URL, auth=auth) as client:
-        # Push raw PNG bytes
-        png_bytes = bytes([0x89, 0x50, 0x4e, 0x47])  # simplified PNG header
+async def binary_example(creds: Any) -> None:
+    cap_provider = CapProviderFromCreds(creds.cap_cert, creds.device["edPriv"])
+    async with StarfishClient(BASE_URL, cap_provider=cap_provider) as client:
+        png_bytes = bytes([0x89, 0x50, 0x4E, 0x47])
         push_result = await client.push_blob(
-            f"/push/users/{USER_ID}/avatar",
+            f"/push/users/{creds.user_id}/avatar",
             png_bytes,
             "image/png",
         )
         print("avatar hash:", push_result.hash)
 
-        # Pull it back
-        blob = await client.pull_blob(f"/pull/users/{USER_ID}/avatar")
-        print("content type:", blob.content_type)  # "image/png"
-        print("etag hash:", blob.hash)             # SHA-256 hex or None
+        blob = await client.pull_blob(f"/pull/users/{creds.user_id}/avatar")
+        print("content type:", blob.content_type)
+        print("etag hash:", blob.hash)
         print("size (bytes):", len(blob.data))
 
-        # Save to disk
-        # with open("downloaded.png", "wb") as f:
-        #     f.write(blob.data)
+
+# ---------------------------------------------------------------------------
+# Entitlements.
+# ---------------------------------------------------------------------------
 
 
-async def entitlements_example() -> None:
-    # ── Client: read your own entitlements ─────────────────────────────────────
-    async with StarfishClient(BASE_URL, auth=auth) as client:
-        # Returns the raw feature slug list. Returns [] if the document doesn't exist.
-        features = await pull_entitlements(client, USER_ID)
+async def entitlements_example(creds: Any) -> None:
+    cap_provider = CapProviderFromCreds(creds.cap_cert, creds.device["edPriv"])
+    async with StarfishClient(BASE_URL, cap_provider=cap_provider) as client:
+        features = await pull_entitlements(client, creds.user_id)
         print("my entitlements:", features)
-        # e.g. ["premium-package-1", "paid-cloud-sync"]
-
         if "premium-package-1" in features:
-            premium = await client.pull("/pull/premium/latest-report")
-            print("premium content:", premium.data)
+            r = await client.pull("/pull/premium/latest-report")
+            print("premium content:", r.data)
 
-    # ── Admin: grant entitlements to a user ────────────────────────────────────
-    async def admin_auth(*, method: str, path: str, body: str | None) -> dict[str, str]:
-        return {"Authorization": "Bearer admin-secret-token"}
 
-    async with StarfishClient(BASE_URL, auth=admin_auth) as admin:
-        target_user_id = USER_ID
+# ---------------------------------------------------------------------------
+# Public-read (no cap-cert needed).
+# ---------------------------------------------------------------------------
 
-        # Read current entitlements first (for conflict-safe push)
-        existing = await admin.pull(f"/pull/users/{target_user_id}/entitlements")
-        current_features: list[str] = (existing.data or {}).get("features", [])
 
-        # Grant new entitlements (deduplicated)
-        updated = list(set(current_features + ["premium-package-1", "paid-cloud-sync"]))
-        await admin.push(
-            f"/push/users/{target_user_id}/entitlements",
-            {"features": updated},
-            existing.hash,  # pass current hash to detect concurrent admin edits
-        )
-        print("entitlements updated for", target_user_id)
+async def public_read_example() -> None:
+    # Omit cap_provider for collections whose read_roles include "public".
+    async with StarfishClient(BASE_URL) as client:
+        r = await client.pull("/pull/posts/welcome")
+        print("public post:", r.data)
 
-        # Revoke a specific entitlement
-        fresh = await admin.pull(f"/pull/users/{target_user_id}/entitlements")
-        remaining = [f for f in (fresh.data or {}).get("features", []) if f != "paid-cloud-sync"]
-        await admin.push(
-            f"/push/users/{target_user_id}/entitlements",
-            {"features": remaining},
-            fresh.hash,
-        )
-        print("paid-cloud-sync revoked")
+
+# ---------------------------------------------------------------------------
+# Driver
+# ---------------------------------------------------------------------------
+
+
+async def main() -> None:
+    await bootstrap_first_device()
+    # await delegated_encrypted_collection()
+    # await share_with_teammate(...)
+    # ... etc.
 
 
 if __name__ == "__main__":
-    asyncio.run(sync_manager_example())
-    asyncio.run(binary_example())
-    asyncio.run(entitlements_example())
+    asyncio.run(main())

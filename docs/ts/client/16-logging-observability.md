@@ -96,7 +96,7 @@ import { StarfishClient } from "@drakkar.software/starfish-client"
 
 const client = new StarfishClient({
   baseUrl: "https://api.example.com/v1",
-  auth: async () => ({ Authorization: `Bearer ${token}` }),
+  capProvider: { getCap: async () => ({ cap, devEdPrivHex }) },
   // Logging wraps retry wraps native fetch
   fetch: createLoggingFetch(
     consoleSyncLogger,

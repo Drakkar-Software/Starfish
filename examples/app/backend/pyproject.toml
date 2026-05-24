@@ -1,0 +1,41 @@
+[project]
+name = "starfish-chat-demo-backend"
+version = "0.0.0"
+description = "Backend for the Starfish chat example app"
+requires-python = ">=3.11"
+dependencies = [
+    "starfish-server",
+    "starfish-audit",
+    "starfish-queuing",
+    "starfish-identities",
+    "starfish-sharing",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+]
+
+# Resolve the workspace packages from their local source instead of PyPI.
+[tool.uv.sources]
+starfish-protocol = { path = "../../../packages/python/protocol", editable = true }
+starfish-server = { path = "../../../packages/python/server", editable = true }
+starfish-sdk = { path = "../../../packages/python/client", editable = true }
+starfish-keyring = { path = "../../../packages/python/keyring", editable = true }
+starfish-audit = { path = "../../../packages/python/audit", editable = true }
+starfish-entitlements = { path = "../../../packages/python/entitlements", editable = true }
+starfish-queuing = { path = "../../../packages/python/queuing", editable = true }
+starfish-identities = { path = "../../../packages/python/identities", editable = true }
+starfish-sharing = { path = "../../../packages/python/sharing", editable = true }
+
+# Test-only: the suite drives the app in-process via the Python SDK + extensions.
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "httpx>=0.27",
+    "starfish-sdk",
+    "starfish-keyring",
+    "starfish-entitlements",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["."]

@@ -82,25 +82,6 @@ async def test_public_returns_all_collections():
 
 
 @pytest.mark.asyncio
-async def test_public_includes_public_key():
-    col = _make_col(publicKey="base64encodedkey==")
-    app = _build_app([col], config_endpoint=ConfigEndpointOptions(auth="public"))
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        resp = await client.get("/config")
-    body = resp.json()
-    assert body["collections"][0]["publicKey"] == "base64encodedkey=="
-
-
-@pytest.mark.asyncio
-async def test_public_omits_public_key_when_not_set():
-    app = _build_app([_make_col()], config_endpoint=ConfigEndpointOptions(auth="public"))
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        resp = await client.get("/config")
-    body = resp.json()
-    assert body["collections"][0].get("publicKey") is None
-
-
-@pytest.mark.asyncio
 async def test_public_capability_fields():
     col = _make_col(pullOnly=True, ttlMs=3_600_000)
     app = _build_app([col], config_endpoint=ConfigEndpointOptions(auth="public"))

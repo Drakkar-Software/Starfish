@@ -146,6 +146,38 @@ async def test_ttl_not_set_returns_data_normally():
     assert pull_resp.json()["data"] == {"x": 1}
 
 
+@pytest.mark.asyncio
+async def test_ttl_pull_zeros_hash_for_expired_document():
+    """An expired document must return hash='' alongside empty data.
+    Without the fix, hash retains the real stored hash — a client that pushes
+    back with that hash passes the baseHash check and overwrites the doc with
+    empty data, silently clobbering content."""
+    config = SyncConfig(
+        version=1,
+        collections=[
+            CollectionConfig(
+                name="settings",
+                storagePath="users/{identity}/settings",
+                readRoles=["self"],
+                writeRoles=["self"],
+                encryption="none",
+                maxBodyBytes=65536,
+                ttlMs=1,  # 1 ms TTL — expires immediately
+            ),
+        ],
+    )
+    app, _ = _make_app(config)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        await client.post(
+            "/push/users/user-1/settings",
+            json={"data": {"secret": "value"}, "baseHash": None},
+        )
+        time.sleep(0.01)
+        pull_resp = await client.get("/pull/users/user-1/settings")
+    assert pull_resp.status_code == 200
+    assert pull_resp.json()["hash"] == ""
+
+
 # ---------------------------------------------------------------------------
 # Field-level read permissions
 # ---------------------------------------------------------------------------
@@ -238,6 +270,38 @@ async def test_field_permissions_write_rejects_forbidden_field():
         resp = await client.post(
             "/push/users/user-1/settings",
             json={"data": {"adminFlag": True, "theme": "dark"}, "baseHash": None},
+        )
+    assert resp.status_code == 403
+    assert "adminFlag" in resp.json()["error"]
+
+
+@pytest.mark.asyncio
+async def test_field_permissions_write_treats_explicit_null_as_a_write():
+    """Setting a restricted field to ``null`` is still a write — presence, not truthiness.
+
+    The guard keys on ``field_name in data``, so a non-privileged user cannot blank out
+    (or no-op-touch) an admin-only field by sending ``null``; only OMITTING the key avoids
+    the check. Pins that ``null`` does not slip past field-level write permissions.
+    """
+    config = SyncConfig(
+        version=1,
+        collections=[
+            CollectionConfig(
+                name="settings",
+                storagePath="users/{identity}/settings",
+                readRoles=["self"],
+                writeRoles=["self"],
+                encryption="none",
+                maxBodyBytes=65536,
+                fieldPermissions={"adminFlag": FieldPermission(writeRoles=["admin"])},
+            ),
+        ],
+    )
+    app, _ = _make_app(config, identity="user-1", roles=[])
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post(
+            "/push/users/user-1/settings",
+            json={"data": {"adminFlag": None, "theme": "dark"}, "baseHash": None},
         )
     assert resp.status_code == 403
     assert "adminFlag" in resp.json()["error"]
@@ -368,3 +432,30 @@ async def test_role_enricher_exception_returns_500_not_crash():
     assert resp.status_code == 500
     body = resp.json()
     assert "error" in body
+
+
+@pytest.mark.asyncio
+async def test_field_write_public_role_allows_authenticated_user():
+    # A field whose writeRoles is ["public"] means "anyone may write it". An
+    # authenticated user (role "self", not the literal "public") should be allowed.
+    config = SyncConfig(
+        version=1,
+        collections=[
+            CollectionConfig(
+                name="settings",
+                storagePath="users/{identity}/settings",
+                readRoles=["self"],
+                writeRoles=["self"],
+                encryption="none",
+                maxBodyBytes=65536,
+                fieldPermissions={"openField": FieldPermission(writeRoles=["public"])},
+            ),
+        ],
+    )
+    app, _ = _make_app(config, identity="user-1", roles=["self"])
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post(
+            "/push/users/user-1/settings",
+            json={"data": {"openField": "anyone-can-write"}, "baseHash": None},
+        )
+    assert resp.status_code == 200

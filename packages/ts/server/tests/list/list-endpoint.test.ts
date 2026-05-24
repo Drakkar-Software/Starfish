@@ -299,19 +299,19 @@ describe("listable config validation", () => {
     expect(errors.some((e) => e.includes("last storagePath segment"))).toBe(true)
   })
 
-  it("listable with queueOnly is rejected", () => {
+  it("listable with appendOnly+persist=false is rejected", () => {
     const errors = validateConfig({
       version: 1,
-      collections: [makeCol({ queueOnly: true })],
+      collections: [makeCol({ appendOnly: { type: "by_timestamp", persist: false } })],
     })
-    expect(errors.some((e) => e.includes("listable cannot be used with queueOnly"))).toBe(true)
+    expect(errors.some((e) => e.includes("listable cannot be used with appendOnly+persist=false"))).toBe(true)
   })
 
   it("listable with bundle is rejected", () => {
     const errors = validateConfig({
       version: 1,
       collections: [
-        makeCol({ bundle: "my-bundle", encryption: "identity", storagePath: "data/{identity}/{day}" }),
+        makeCol({ bundle: "my-bundle", encryption: "none", storagePath: "data/{identity}/{day}" }),
       ],
     })
     expect(errors.some((e) => e.includes("listable cannot be used with bundle"))).toBe(true)

@@ -15,6 +15,7 @@ from starfish_server.router.route_builder import (
     SyncRouterOptions,
     AuthResult,
 )
+from starfish_server.router.middleware import RateLimiter
 from tests.helpers import MemoryObjectStore
 
 
@@ -388,3 +389,47 @@ async def test_rate_limit_and_cache_together():
         assert all(r.status_code == 200 for r in responses)
         resp = await _push(client, PUSH_PATH, {"v": 99}, responses[-1].json()["hash"])
         assert resp.status_code == 429
+
+
+# ── RateLimiter class unit tests (cross-language parity with middleware.test.ts) ──
+
+
+def test_rate_limiter_allows_up_to_limit_then_rejects():
+    rl = RateLimiter(window_ms=60_000, max_requests=3)
+    assert rl.check("u") is None
+    assert rl.check("u") is None
+    assert rl.check("u") is None
+    resp = rl.check("u")
+    assert resp is not None and resp.status_code == 429  # 4th over the limit of 3
+
+
+def test_rate_limiter_isolates_counters_per_key():
+    rl = RateLimiter(window_ms=60_000, max_requests=1)
+    assert rl.check("a") is None
+    assert rl.check("a") is not None  # over the limit
+    assert rl.check("b") is None  # a different key is unaffected
+
+
+def test_rate_limiter_bounds_bucket_count():
+    # A flood of distinct keys (e.g. spoofed X-Forwarded-For) must not grow memory
+    # without bound — the limiter caps at max_buckets and evicts the oldest. Mirrors
+    # the TS twin in middleware.test.ts.
+    rl = RateLimiter(window_ms=60_000, max_requests=100, max_buckets=8)
+    for i in range(200):
+        rl.check(f"k{i}")
+    assert len(rl._buckets) <= 8
+
+
+def test_rate_limiter_key_precedence_identity_xff_client_ip_anonymous():
+    # Identical precedence to the TS limiter; pins the convergence. (The runtimes differ
+    # only in which signals they can supply — the Python server passes the socket IP as
+    # client_ip, which Hono cannot.)
+    rl = RateLimiter(window_ms=60_000, max_requests=1)
+    assert rl.check("user-1", "1.2.3.4", "5.6.7.8") is None  # identity wins
+    assert rl.check("user-1", "9.9.9.9", "8.8.8.8") is not None  # same identity bucket
+    assert rl.check(None, "1.1.1.1, 2.2.2.2", None) is None  # first XFF hop
+    assert rl.check(None, "1.1.1.1", None) is not None  # same first-hop bucket
+    assert rl.check(None, None, "3.3.3.3") is None  # client IP when no identity/XFF
+    assert rl.check(None, None, "3.3.3.3") is not None
+    assert rl.check(None, None, None) is None  # shared anonymous fallback
+    assert rl.check(None, None, None) is not None

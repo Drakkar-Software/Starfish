@@ -1,0 +1,39 @@
+{
+  "name": "@drakkar.software/starfish-queuing",
+  "version": "3.0.0-alpha.2",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Drakkar-Software/starfish.git",
+    "directory": "packages/ts/queuing"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "description": "Starfish change-event queuing extension (post-push publish hook, MemoryQueue/CustomQueue backends, per-collection config)",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@drakkar.software/starfish-protocol": "workspace:*"
+  },
+  "scripts": {
+    "build": "node build.mjs && tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@drakkar.software/starfish-server": "workspace:*",
+    "esbuild": "^0.27.4",
+    "typescript": "^5.5.0",
+    "vitest": "^3.0.0"
+  },
+  "files": [
+    "dist"
+  ]
+}

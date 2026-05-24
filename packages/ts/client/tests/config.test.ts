@@ -16,7 +16,7 @@ const mockResponse: ConfigResponse = {
       maxBodyBytes: 16384,
       encryption: "none",
       allowedMimeTypes: ["application/json"],
-      queueOnly: true,
+      appendOnly: { type: "by_timestamp", persist: false },
     },
   ],
 }
@@ -38,7 +38,7 @@ describe("fetchServerConfig", () => {
     expect(result.collections).toHaveLength(2)
     expect(result.collections[0].name).toBe("posts")
     expect(result.collections[0].publicKey).toBe("base64key==")
-    expect(result.collections[1].queueOnly).toBe(true)
+    expect(result.collections[1].appendOnly).toEqual({ type: "by_timestamp", persist: false })
 
     vi.unstubAllGlobals()
   })

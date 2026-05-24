@@ -3,6 +3,8 @@
 
 from typing import Any
 
+UNSAFE_KEYS = frozenset({"__proto__", "constructor", "prototype", "__class__", "__dict__"})
+
 
 def deep_merge(local: dict[str, Any], remote: dict[str, Any]) -> dict[str, Any]:
     """Remote-wins deep merge.
@@ -10,11 +12,13 @@ def deep_merge(local: dict[str, Any], remote: dict[str, Any]) -> dict[str, Any]:
     Recursively merges *remote* into *local*: nested dicts present on both sides
     are merged recursively; for all other values the remote value wins.
 
-    This is the canonical conflict resolution strategy used across the Starfish
-    protocol — both the client SDK and the server-side replica manager rely on it.
+    Keys in UNSAFE_KEYS are dropped at every depth to prevent prototype/dunder
+    injection from untrusted remote payloads.
     """
-    merged = {**local}
+    merged = {k: v for k, v in local.items() if k not in UNSAFE_KEYS}
     for key, remote_val in remote.items():
+        if key in UNSAFE_KEYS:
+            continue
         local_val = merged.get(key)
         if isinstance(remote_val, dict) and isinstance(local_val, dict):
             merged[key] = deep_merge(local_val, remote_val)

@@ -22,9 +22,8 @@ const config: SyncConfig = {
       storagePath: "data/{identity}",
       readRoles: ["self"],
       writeRoles: ["self"],
-      encryption: "none",       // client handles encryption via SyncManager
-      clientEncrypted: true,    // signal to tooling that content is already encrypted
-      maxBodyBytes: 1_048_576,  // 1 MB
+      encryption: "delegated",   // multi-recipient keyring at data/{identity}/_keyring
+      maxBodyBytes: 1_048_576,   // 1 MB
       allowedMimeTypes: ["application/json"],
     },
   ],
@@ -32,30 +31,47 @@ const config: SyncConfig = {
 ```
 
 ```ts
-// client — derive credentials from a shared passphrase
-import { deriveCredentials } from "@drakkar.software/starfish-client/identity"
+// client — derive the root identity and self-signed device cap-cert,
+// then build the delegated encryptor from the collection keyring.
+import {
+  StarfishClient,
+  SyncManager,
+  bootstrapRootIdentity,
+  createKeyringEncryptor,
+  type Keyring,
+} from "@drakkar.software/starfish-client"
 
-const creds = await deriveCredentials(passphrase)
+const creds = await bootstrapRootIdentity(passphrase)
 
 const client = new StarfishClient({
   baseUrl: serverUrl,
-  auth: () => ({ Authorization: `Bearer ${creds.authToken}` }),
+  capProvider: {
+    getCap: async () => ({ cap: creds.capCert, devEdPrivHex: creds.device.edPriv }),
+  },
+})
+
+// Fetch the keyring document and build the encryptor. On a first-time
+// device that owns the collection, you'd create the keyring with
+// `createKeyring(...)` then push it to `data/${creds.userId}/_keyring`.
+const keyring = (await client.pull(`data/${creds.userId}/_keyring`)).data as Keyring
+const encryptor = await createKeyringEncryptor(keyring, {
+  kemPubHex: creds.device.kemPub,
+  kemPrivHex: creds.device.kemPriv,
 })
 
 const syncManager = new SyncManager({
   client,
   pullPath: `/pull/${creds.userId}/data`,
   pushPath: `/push/${creds.userId}/data`,
-  encryptionSecret: creds.encryptionSecret,
-  encryptionSalt: creds.encryptionSalt,
+  encryptor,
 })
 ```
 
 **Properties:**
-- Sharing the passphrase = granting full read/write access
-- The server stores only encrypted ciphertext — it cannot inspect content
-- Any number of devices can sync by deriving the same credentials from the same passphrase
-- See [Identity & Key Derivation](./identity) for passphrase generation and credential derivation
+- Devices share access by being recipients of the same collection keyring (one wrap entry per device public X25519 key); see [23. Multi-Recipient Delegated Encryption](23-multi-recipient-delegated.md).
+- The server stores only encrypted ciphertext — it cannot inspect content.
+- Pair a new device via QR or relay (see [24. Pairing](24-pairing.md)) to seed the device's keypair onto the collection keyring.
+- See [11. Identity & Key Derivation](./11-identity-key-derivation.md) for `bootstrapRootIdentity` details.
 
 ---
 
@@ -270,11 +286,11 @@ await claimsManager.update((current) => {
 
 ---
 
-## Pattern 6: Group Chat (member-list access, per-day partitioning)
+## Pattern 6: Group Chat (member caps, per-day partitioning)
 
 **Use case:** A group messaging channel where access is granted to a specific set of users (not public, not owner-only), messages are stored per day to keep document size bounded, and clients can discover which days have messages.
 
-**Access:** group-member read/write. Membership stored in a separate collection. No encryption (all members can read).
+**Access:** the room owner mints a `member` cap (`scopes.writer`) for each participant; the chat collection accepts the owner's `delegated:<owner>:chat` role. No encryption (all members can read).
 
 ```ts
 // server/config.ts
@@ -284,39 +300,38 @@ const config: SyncConfig = {
     {
       name: "chat",
       storagePath: "chats/{groupId}/{day}",
-      readRoles: ["group-member"],
-      writeRoles: ["group-member"],
+      readRoles: ["delegated:owner-userid:chat", "cap:read:chat"],
+      writeRoles: ["delegated:owner-userid:chat", "cap:write:chat"],
       encryption: "none",
       maxBodyBytes: 524_288,   // 512 KB per day
       allowedMimeTypes: ["application/json"],
       listable: true,           // enables GET /list/chats/:groupId
       queue: { topic: "chats.updated", includeParams: true }, // notify on push
     },
-    {
-      name: "group-members",
-      storagePath: "groups/{groupId}/members",
-      readRoles: ["group-admin"],
-      writeRoles: ["group-admin"],
-      encryption: "none",
-      maxBodyBytes: 65_536,
-      allowedMimeTypes: ["application/json"],
-    },
   ],
 }
 
-// Wire the group enricher: reads membership from the ObjectStore
-import { createGroupRoleEnricher } from "@drakkar.software/starfish-server"
+// Resolver dispatches member-cap validation to the sharing plugin.
+import { createCapCertRoleResolver } from "@drakkar.software/starfish-server"
+import { sharingServerPlugin } from "@drakkar.software/starfish-sharing"
 
 const router = createSyncRouter({
   store,
   config,
-  roleResolver: async (c) => ({ identity: await getUserId(c), roles: [] }),
-  roleEnricher: createGroupRoleEnricher({
-    store,
-    membersPath: "groups/{groupId}/members",
-    groupParam: "groupId",
-  }),
+  roleResolver: createCapCertRoleResolver({ nonceCache, revocationStore, plugins: [sharingServerPlugin] }),
 })
+```
+
+```ts
+// owner — mint a writer cap for each participant (deliver each cap out-of-band)
+import { mintMemberCap, scopes, addMemberEntry } from "@drakkar.software/starfish-sharing"
+
+const cap = await mintMemberCap(
+  owner.keys.edPriv, owner.keys.edPub,
+  { edPubHex: member.edPub, kemPubHex: member.kemPub, userIdHex: member.userId },
+  "chat", scopes.writer("chat"),
+)
+await addMemberEntry(client, "chat", cap, { label: member.label }) // owner-only audit roster
 ```
 
 ```ts
@@ -345,58 +360,40 @@ await daySync.update((current) => {
 **Properties:**
 - One document per group per day — bounded growth, easy archiving
 - `listable: true` lets clients discover which days have messages without guessing
-- Access controlled by a member list stored in `groups/{groupId}/members`; admins manage membership with ordinary pushes
+- Access controlled by per-recipient member caps; the owner-only `chats/{groupId}/_members` directory (`listMembers`) is an audit/UI index, never consulted for authorization
 - Queue events fire on every push — bridge these to WebSocket/SSE for near-real-time delivery
-- Membership changes propagate within the `roleEnricher` cache TTL (default 1 min)
+- **Adding a member is one cap mint** (linear in members) — there is no server-side roster that admits N users at once; revoke a member by revoking their cap nonce
 
 **Tip:** Under high concurrency (many users posting simultaneously), `update()` retries on 409 conflicts handle burst writes. For very active groups (hundreds of concurrent posters), consider a `queueOnly` intake collection + a backend message aggregator to eliminate contention.
 
-See [Group Access](../server/group-access.md) and [List Endpoint](../server/list-endpoint.md) for full API reference.
+See [Group & Shared-Collection Access](../server/group-access.md) and [List Endpoint](../server/list-endpoint.md) for full API reference.
 
 ---
 
-## Pattern 7: Encrypted Group Chat (E2E, per-member keys)
+## Pattern 7: Multi-Recipient Delegated Chat (E2E, per-member keys)
 
-**Use case:** Same as Pattern 6 but with end-to-end encryption. Each member holds their own credentials; non-members (including the server operator) cannot read messages. Members can be added/removed without sharing a master passphrase.
+**Use case:** Same as Pattern 6 but with end-to-end encryption. Each member holds their own root keypair; non-members (including the server operator) cannot read messages. Members can be added/removed without sharing a master passphrase.
 
-**Access:** group-member read/write. `encryption: "group"` — server stores opaque ciphertext.
+**Access:** the owner mints a `member` cap (`scopes.writer`) per participant; the chat collection accepts `delegated:<owner>:chat`. `encryption: "delegated"` — the keyring sibling document at `<collection>/_keyring` carries one wrap entry per member, and the server stores opaque ciphertext for every chat document.
 
 ```ts
 // server/config.ts
 const config: SyncConfig = {
   version: 1,
   collections: [
-    // Keyring — plaintext, admin-writable, member-readable
-    {
-      name: "keyring",
-      storagePath: "groups/{groupId}/keyring",
-      readRoles: ["group-member"],
-      writeRoles: ["group-admin"],
-      encryption: "none",
-      maxBodyBytes: 65_536,
-      allowedMimeTypes: ["application/json"],
-    },
-    // Encrypted chat messages — one document per day
+    // Encrypted chat messages — one document per day.
+    // The keyring sibling document lives at `chats/{groupId}/{day}/_keyring`
+    // (`keyringPath` defaults to `<storagePath>/_keyring`).
     {
       name: "chat",
       storagePath: "chats/{groupId}/{day}",
-      readRoles: ["group-member"],
-      writeRoles: ["group-member"],
-      encryption: "group",         // client handles E2E encryption
+      readRoles: ["delegated:owner-userid:chat", "cap:read:chat"],
+      writeRoles: ["delegated:owner-userid:chat", "cap:write:chat"],
+      encryption: "delegated",
       maxBodyBytes: 524_288,
       allowedMimeTypes: ["application/json"],
       listable: true,
       queue: { topic: "chats.updated", includeParams: true },
-    },
-    // Group membership
-    {
-      name: "group-members",
-      storagePath: "groups/{groupId}/members",
-      readRoles: ["group-admin"],
-      writeRoles: ["group-admin"],
-      encryption: "none",
-      maxBodyBytes: 65_536,
-      allowedMimeTypes: ["application/json"],
     },
   ],
 }
@@ -404,80 +401,84 @@ const config: SyncConfig = {
 
 ```ts
 // client — member reads and posts a message
+import { StarfishClient, SyncManager } from "@drakkar.software/starfish-client"
+import { bootstrapRootIdentity } from "@drakkar.software/starfish-identities"
 import {
-  deriveGroupKeyPair,
-  createGroupEncryptor,
-  type GroupKeyring,
-} from "@drakkar.software/starfish-client/group"
-import { SyncManager } from "@drakkar.software/starfish-client"
+  createKeyringEncryptor,
+  addRecipient,
+  removeRecipient,
+  type Keyring,
+} from "@drakkar.software/starfish-keyring"
 
-const myKp = await deriveGroupKeyPair(myPassphrase, myUserId)
+// Each member runs `bootstrapRootIdentity(theirOwnPassphrase)` once on first launch.
+const me = await bootstrapRootIdentity(myPassphrase)
 
-// Pull keyring (plaintext)
-const keyringSync = new SyncManager({ client, pullPath: `/pull/groups/${groupId}/keyring`, ... })
-await keyringSync.pull()
-const keyringData = keyringSync.getData() as unknown as GroupKeyring
-
-// Create encryptor from keyring
-const encryptor = await createGroupEncryptor(keyringData, myUserId, myKp.privateKey)
-
-// Use encryptor for the chat collection
-const today = new Date().toISOString().slice(0, 10)
-const daySync = new SyncManager({
-  client,
-  pullPath:  `/pull/chats/${groupId}/${today}`,
-  pushPath:  `/push/chats/${groupId}/${today}`,
-  encryptor,   // replaces encryptionSecret/encryptionSalt
+const client = new StarfishClient({
+  baseUrl,
+  capProvider: {
+    getCap: async () => ({ cap: me.capCert, devEdPrivHex: me.device.edPriv }),
+  },
 })
 
-// Post a message (append-only, with conflict retry)
+// Pull the day's keyring and build the encryptor.
+const today = new Date().toISOString().slice(0, 10)
+const path = `chats/${groupId}/${today}`
+const keyring = (await client.pull(`${path}/_keyring`)).data as Keyring
+const encryptor = await createKeyringEncryptor(keyring, {
+  kemPubHex: me.device.kemPub,
+  kemPrivHex: me.device.kemPriv,
+})
+
+const daySync = new SyncManager({
+  client,
+  pullPath: `/pull/${path}`,
+  pushPath: `/push/${path}`,
+  encryptor,
+})
+
+// Post a message (append-only, with conflict retry).
 await daySync.update((current) => {
   const messages = (current["messages"] as Message[] | undefined) ?? []
   return {
     ...current,
-    messages: [...messages, { id: crypto.randomUUID(), text, author: myUserId, ts: Date.now() }],
+    messages: [...messages, { id: crypto.randomUUID(), text, author: me.userId, ts: Date.now() }],
   }
 })
+
+// Admin operations on the keyring (owner also mints/revokes the member's cap):
+// - Add a new member: addRecipient(client, "chat", { subKem: newRecipientKemHex }, adderKeys)
+// - Remove a member: removeRecipient(client, "chat", adderKeys, victimKemHex)  // rotates the epoch
 ```
 
 **Properties vs Pattern 6:**
-- Server operator cannot read message content — only members with their private keys can decrypt
-- Each member uses their own credentials (own `userId`, own auth token)
-- Adding a member = admin wraps current GEK for new member's public key (no passphrase sharing)
-- Removing a member = admin rotates to a new GEK epoch; removed member retains old-epoch keys but cannot read new messages
-- `_epoch` field in each encrypted document allows decrypting documents from any epoch the member had access to
+- Server operator cannot read message content — only members with their X25519 private keys can decrypt.
+- Each member uses their own root identity (own `userId`, own cap-cert, own per-request signature).
+- Adding a member = `addRecipient` appends a wrap entry to the current epoch (the new member sees current-epoch documents only; rotate first if you want history isolation), paired with a `mintMemberCap` so the server admits them.
+- Removing a member = revoke their cap nonce, then `removeRecipient` rotates to a new epoch; removed member retains old-epoch keys but cannot read new documents.
+- `_epoch` field on each encrypted document selects which keyring epoch was used; the encryptor decrypts any epoch the member has a wrap entry for. See [23. Multi-Recipient Delegated Encryption](23-multi-recipient-delegated.md) for the wire format and threat model.
 
-See [Group Encryption](21-group-encryption.md) for the full API and key lifecycle.
+See [Multi-Recipient Delegated Encryption](23-multi-recipient-delegated.md) for the full API and key lifecycle.
 
 ---
 
-## Pattern 8: Owner-managed whitelist
+## Pattern 8: Owner-managed access (member caps, or a custom enricher for large lists)
 
-**Use case:** An owner maintains a list of identities who can read/write their collection. The owner alone controls who is on the list. No shared passphrase, no group encryption — this is pure access control.
+**Use case:** An owner controls who can read/write their collection. The owner alone decides who has access.
 
-**Access:** owner via `"self"` (whitelist), custom role `"whitelisted"` (protected data).
+**Access:** for a handful of recipients, mint a `member` cap each. For a large or rapidly-changing roster where you want the server itself to be the authority, write a small custom `RoleEnricher` that reads your own allow-list document — this is exactly what the removed built-in group enricher did, and is now an application concern.
+
+### Small roster — member caps
 
 ```ts
 // server/config.ts
 const config: SyncConfig = {
   version: 1,
   collections: [
-    // W — whitelist: only the owner (ownerId == identity) can read/write
-    {
-      name: "whitelist",
-      storagePath: "owners/{ownerId}/whitelist",   // {ownerId} triggers "self" role
-      readRoles: ["self"],
-      writeRoles: ["self"],
-      encryption: "none",
-      maxBodyBytes: 65_536,
-      allowedMimeTypes: ["application/json"],
-    },
-    // A — protected data: only users listed in the whitelist can access
     {
       name: "restricted",
       storagePath: "owners/{ownerId}/restricted",
-      readRoles: ["whitelisted"],
-      writeRoles: ["whitelisted"],
+      readRoles:  ["delegated:owner-userid:restricted", "cap:read:restricted"],
+      writeRoles: ["delegated:owner-userid:restricted"],
       encryption: "none",
       maxBodyBytes: 1_048_576,
       allowedMimeTypes: ["application/json"],
@@ -485,52 +486,44 @@ const config: SyncConfig = {
   ],
 }
 
-// Enrich with "whitelisted" role for users in the owner's whitelist
-const whitelistEnricher = createGroupRoleEnricher({
-  store,
-  membersPath: "owners/{ownerId}/whitelist",
-  groupParam: "ownerId",
-  role: "whitelisted",
-})
-
-createSyncRouter({ store, config, roleResolver, roleEnricher: whitelistEnricher })
+// owner mints one cap per allowed user (see Pattern 1), then delivers it out-of-band
+import { mintMemberCap, scopes } from "@drakkar.software/starfish-sharing"
+const cap = await mintMemberCap(
+  owner.keys.edPriv, owner.keys.edPub, recipient, "restricted", scopes.readOnly("restricted"),
+)
 ```
+
+### Large roster — your own enricher
+
+When per-user caps are too many to manage, keep an allow-list document and grant a role from a custom enricher (the server stays the membership authority — the trade-off the old group enricher made):
 
 ```ts
-// Owner updates the whitelist (client side)
-const whitelistSync = new SyncManager({
-  client,
-  pullPath:  `/pull/owners/${ownerId}/whitelist`,
-  pushPath:  `/push/owners/${ownerId}/whitelist`,
-})
-// Add a user
-await whitelistSync.update((current) => {
-  const existing = (current["members"] as string[] | undefined) ?? []
-  return { ...current, members: [...new Set([...existing, newUserId])] }
-})
-// Remove a user
-await whitelistSync.update((current) => {
-  const existing = (current["members"] as string[] | undefined) ?? []
-  return { ...current, members: existing.filter((id) => id !== removedUserId) }
-})
+import { composeEnrichers, type RoleEnricher } from "@drakkar.software/starfish-server"
 
-// Whitelisted user reads protected data
-const dataSync = new SyncManager({
-  client,
-  pullPath: `/pull/owners/${ownerId}/restricted`,
-  pushPath: `/push/owners/${ownerId}/restricted`,
+// owner-only allow-list doc at owners/{ownerId}/whitelist = { "members": ["alice", "bob"] }
+const whitelistEnricher: RoleEnricher = async (auth, params) => {
+  const ownerId = params.ownerId
+  if (!ownerId) return []
+  const raw = await store.getString(`owners/${ownerId}/whitelist`)
+  const members: string[] = raw ? (JSON.parse(raw).data?.members ?? []) : []
+  return members.includes(auth.identity) ? ["whitelisted"] : []
+}
+
+createSyncRouter({
+  store, config,
+  roleResolver: createCapCertRoleResolver({ nonceCache, revocationStore, plugins: [sharingServerPlugin] }),
+  roleEnricher: whitelistEnricher,
 })
-await dataSync.pull()
 ```
 
-**Properties:**
-- Owner has exclusive control over access (`writeRoles: ["self"]` on the whitelist)
-- Each member has their own identity — full per-user audit trail on the server
-- Revocation takes effect within the enricher cache TTL (default 60 s); set `cacheTtlMs: 0` for immediate effect
-- No encryption — the server can read the protected data; add `encryption: "delegated"` or `encryption: "group"` for E2E protection
-- The whitelist document format is the same as the group membership document: `{ "members": ["alice", "bob"] }`
+With the protected collection's `readRoles: ["whitelisted"]`, anyone the owner lists gains access — bulk membership in a single document. Add `encryption: "delegated"` for E2E, in which case the recipient also needs a keyring wrap to decrypt.
 
-See [Group Access](../server/group-access.md#owner-managed-whitelist) for the enricher config and caching trade-offs.
+**Properties:**
+- Member caps: signed, owner-authoritative, per-user; revoke by nonce.
+- Custom enricher: list-based, server-authoritative, bulk; effective immediately (or after your own cache TTL).
+- Either way each member keeps their own identity → full per-user audit trail on the server.
+
+See [Group & Shared-Collection Access](../server/group-access.md#layering-custom-application-roles) for the custom-enricher pattern and trade-offs.
 
 ---
 

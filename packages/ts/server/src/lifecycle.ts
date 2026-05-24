@@ -1,15 +1,13 @@
-import type { ReplicaManager } from "./replica/manager.js"
-import type { Queue } from "./queue/base.js"
+import type { ServerPlugin } from "@drakkar.software/starfish-protocol"
 
 export interface GracefulShutdownOptions {
   /** Called during shutdown to perform cleanup (e.g. close DB connections). */
   onShutdown?: () => Promise<void>
   /** Maximum time in ms to wait for cleanup before forcing exit. Default: 10000. */
   timeoutMs?: number
-  /** ReplicaManager to stop during shutdown. */
-  replicaManager?: ReplicaManager
-  /** Queue to close during shutdown. */
-  queue?: Queue
+  /** Server plugins. Each plugin's `shutdown` hook runs during shutdown (e.g.
+   *  `starfish-queuing` closes its queue, `starfish-replica` stops its timers). */
+  plugins?: ServerPlugin[]
   /** Signals to listen for. Default: ["SIGTERM", "SIGINT"]. */
   signals?: string[]
 }
@@ -36,11 +34,10 @@ export function createGracefulShutdown(opts: GracefulShutdownOptions = {}): Shut
     }, timeoutMs)
 
     try {
-      if (opts.replicaManager) {
-        await opts.replicaManager.stop()
-      }
-      if (opts.queue?.close) {
-        await opts.queue.close()
+      if (opts.plugins) {
+        for (const p of opts.plugins) {
+          if (p.shutdown) await p.shutdown()
+        }
       }
       if (opts.onShutdown) {
         await opts.onShutdown()

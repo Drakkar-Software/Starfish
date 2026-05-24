@@ -12,12 +12,26 @@ packages/
     protocol/            # @drakkar.software/starfish-protocol
     client/              # @drakkar.software/starfish-client
     server/              # @drakkar.software/starfish-server
+    keyring/             # @drakkar.software/starfish-keyring (extension)
+    identities/          # @drakkar.software/starfish-identities (extension)
+    sharing/             # @drakkar.software/starfish-sharing (extension)
+    entitlements/        # @drakkar.software/starfish-entitlements (extension)
+    queuing/             # @drakkar.software/starfish-queuing (extension)
+    audit/               # @drakkar.software/starfish-audit (extension)
+    replica/             # @drakkar.software/starfish-replica (extension)
   python/                # Python packages
     protocol/            # starfish-protocol
     client/              # starfish-sdk
     server/              # starfish-server
+    keyring/             # starfish-keyring (extension)
+    identities/          # starfish-identities (extension)
+    sharing/             # starfish-sharing (extension)
+    entitlements/        # starfish-entitlements (extension)
+    queuing/             # starfish-queuing (extension)
+    audit/               # starfish-audit (extension)
+    replica/             # starfish-replica (extension)
 docs/                    # Documentation (Markdown)
-  ts/client/             # Client guides (01-18)
+  ts/client/             # Client guides (01-25)
 examples/                # Usage examples (ts/ and python/)
 tests/
   test-vectors/          # Cross-language protocol conformance vectors (JSON)
@@ -47,7 +61,9 @@ uv run pytest -v         # Run tests
 
 - **TypeScript**: strict mode, ESNext target, bundler module resolution
 - **Python**: async/await, FastAPI, Pydantic v2, asyncio_mode = "auto" for tests
-- **Versioning**: semver, tag-triggered releases (v*). **All six packages use lockstep versioning** — every release bumps all packages to the same version number, even if a package has no changes. Packages: `packages/ts/protocol`, `packages/ts/server`, `packages/ts/client`, `packages/python/protocol`, `packages/python/server`, `packages/python/client`.
+- **Encryption modes**: `"none"` (plaintext) and `"delegated"` (client-side AES-256-GCM, N-recipient via per-collection keyring). Server holds no keys. Legacy `"identity"` / `"server"` / `"group"` modes were removed in v3.0.
+- **Identity**: Ed25519 (sign) + X25519 (KEM) keypairs. Root identity is derived from a passphrase via Argon2id → HKDF-SHA256; per-device keypairs are generated locally and never leave the device. Authorization is carried by signed capability certificates (cap-certs) issued by the root identity. Cap-certs have a `kind`: `"device"` (proxy for issuer) or `"member"` (subject keeps own identity, scoped grant).
+- **Versioning**: semver, tag-triggered releases (v*). **All twenty packages use lockstep versioning** — every release bumps all packages to the same version number, even if a package has no changes. Packages: `packages/ts/protocol`, `packages/ts/server`, `packages/ts/client`, `packages/ts/keyring`, `packages/ts/identities`, `packages/ts/sharing`, `packages/ts/entitlements`, `packages/ts/queuing`, `packages/ts/audit`, `packages/ts/replica`, `packages/python/protocol`, `packages/python/server`, `packages/python/client`, `packages/python/keyring`, `packages/python/identities`, `packages/python/sharing`, `packages/python/entitlements`, `packages/python/queuing`, `packages/python/audit`, `packages/python/replica`.
 - **CHANGELOG**: `## X.Y.Z` headers with `### Added`, `### Changed`, `### Fixed` sections
 
 ## Mandatory Post-Change Checklist

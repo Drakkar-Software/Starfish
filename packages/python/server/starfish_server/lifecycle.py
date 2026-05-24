@@ -1,16 +1,15 @@
 """Graceful shutdown utilities for Starfish servers."""
 
-from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import signal
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Awaitable
 
 if TYPE_CHECKING:
-    from starfish_server.replica.manager import ReplicaManager
-    from starfish_server.queue.base import AbstractQueue
+    from starfish_protocol.plugins import ServerPlugin
 
 logger = logging.getLogger(__name__)
 
@@ -20,8 +19,9 @@ class GracefulShutdownOptions:
     """Configuration for graceful shutdown."""
     on_shutdown: Callable[[], Awaitable[None]] | None = None
     timeout_s: float = 10.0
-    replica_manager: "ReplicaManager | None" = None
-    queue: "AbstractQueue | None" = None
+    plugins: "list[ServerPlugin] | None" = None
+    """Server plugins. Each plugin's ``shutdown`` hook runs during shutdown
+    (e.g. ``starfish-queuing`` closes its queue, ``starfish-replica`` stops its timers)."""
     signals: list[signal.Signals] = field(
         default_factory=lambda: [signal.SIGTERM, signal.SIGINT],
     )
@@ -33,8 +33,7 @@ class GracefulShutdown:
     Usage::
 
         shutdown = GracefulShutdown(GracefulShutdownOptions(
-            replica_manager=replica_mgr,
-            queue=queue,
+            plugins=[replica_plugin, queuing_plugin],
         ))
         shutdown.register()
         # ... run server ...
@@ -55,10 +54,11 @@ class GracefulShutdown:
 
         try:
             async with asyncio.timeout(self._opts.timeout_s):
-                if self._opts.replica_manager:
-                    await self._opts.replica_manager.stop()
-                if self._opts.queue and hasattr(self._opts.queue, "close"):
-                    await self._opts.queue.close()
+                for plugin in self._opts.plugins or []:
+                    if plugin.shutdown is not None:
+                        result = plugin.shutdown()
+                        if inspect.isawaitable(result):
+                            await result
                 if self._opts.on_shutdown:
                     await self._opts.on_shutdown()
         except asyncio.TimeoutError:

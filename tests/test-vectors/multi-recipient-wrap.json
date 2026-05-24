@@ -1,0 +1,104 @@
+{
+  "description": "Cross-language vector for v3.0 multi-recipient key wrapping (replaces group-crypto.json). Each wrappedKeys entry uses per-entry ephemeral ECDH (HPKE-DHKEM-style); recipients identified by exact `subKem` match; each entry signed by the adder for audit. Three recipients: two devices of Alice plus Bob as a member of the shared collection.",
+  "constants": {
+    "wrapSaltUtf8": "starfish-wrap",
+    "wrapInfoUtf8": "starfish-wrap",
+    "ivBytes": 12,
+    "addedSigCanonicalKeys": [
+      "addedAt",
+      "addedBy",
+      "ct",
+      "ephKem",
+      "epoch",
+      "subKem"
+    ]
+  },
+  "fixtures": {
+    "alice_root": {
+      "label": "alice-root",
+      "passphrase": "alice-root-passphrase",
+      "edPriv": "ad5a91be445615ad20823ff607df3d69f9fabc7a2f3f6cfce79dd6b8827e1a89",
+      "edPub": "4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6",
+      "kemPriv": "e8f54597299933dd7562c453c267562fa099e5a54c0cf4181be7e0b7dc1fef1d",
+      "kemPub": "ba71821ba2a7bd08f32dcb5aee609a84e12b5a5f19bb35f60392b64674dfd500",
+      "userId": "98341e0ad3e56672018cd761b99a2906"
+    },
+    "alice_dev_1": {
+      "label": "alice-laptop",
+      "passphrase": "alice-root-passphrase",
+      "edPriv": "f265551f55f7fce8977bec75f3d457c12bf14c7d612422a964204a59f5e4742a",
+      "edPub": "5333460b6cdb1dd4adc074c70ac38823c09153d430202406599f0b929a55f8ca",
+      "kemPriv": "231ef32fe594d4bb0629f5d5eeff029e7802069fff596606d2a47558113465fd",
+      "kemPub": "3eff30609e9818588e2c2923ee5b532efe18af1f192c6443148c8b55bba75c1c",
+      "userId": "425513701bfce44949aa10f8f3a0f9e6"
+    },
+    "alice_dev_2": {
+      "label": "alice-phone",
+      "passphrase": "alice-root-passphrase",
+      "edPriv": "c1e5919ccaace9404fd150e25a567f52d04ff4575c777ae6eda78c3224d5c30a",
+      "edPub": "190f69aaf6aa0b4ee884e1fcb7cc8d5b087dbd5e17ccbe0424a426e2e0620d6f",
+      "kemPriv": "71bf6a31c755646b1221e96374983d76fc821428a9597f3c00590ac54e224b42",
+      "kemPub": "8993cf98a82e9029730b928dc686c8951fc4cf21880051bea0ca378b72091770",
+      "userId": "583200fa4436a9cdf621868cd54fb465"
+    },
+    "bob_root": {
+      "label": "bob-root",
+      "passphrase": "bob-root-passphrase",
+      "edPriv": "c485c611fb1b2eca17e8696bcfacee8f9542e1c58127a8e9f0a8c0b051b9aea7",
+      "edPub": "4ab28c2400e6f24c7fdde3132045dc2058d3c2be159500995ec6c9c6012bd12b",
+      "kemPriv": "9d92361dae433c86a653a45a24c9b3b2b4c4ae56e87cd9e46a68f5e50d588b8a",
+      "kemPub": "1a52d1496448f8956c12157a6263a7fa62ec4700c11b4ed141ad2f1fd79c4651",
+      "userId": "d949a496d17da76cff668aff82837928"
+    }
+  },
+  "cek": "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899",
+  "keyring": {
+    "v": 1,
+    "currentEpoch": 1,
+    "epochs": {
+      "1": {
+        "wrappedKeys": [
+          {
+            "subKem": "3eff30609e9818588e2c2923ee5b532efe18af1f192c6443148c8b55bba75c1c",
+            "ephKem": "0cef717f1a7b0524a2da1a84c4a9f996aba9831fe95664c2d369958b6bf18a7d",
+            "ct": "P6ReytyxM5pzqUow+uhVKcBA93Ynvx9e1KFEoAqwttPvblPPYBnEYjf33tj2fURr2u5NzU6ktx3+ucUH",
+            "addedBy": "4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6",
+            "addedSig": "eWyg1dEQ6O9509S4RCcZqYynMVogyfMDSU0mkHB8NXNuwbDiiRF9ki2X25iaom0qtFRsyBGiBbWZg5X5T6ZQCQ==",
+            "addedAt": 1747000000
+          },
+          {
+            "subKem": "8993cf98a82e9029730b928dc686c8951fc4cf21880051bea0ca378b72091770",
+            "ephKem": "a04c8d3235cf6a16d8d8345baf8049c4869fdfbffca74c0643857db451e32924",
+            "ct": "+KtRTRBtE+AKUSuLofpTW7juvGmH16Ny4940MtJgRnzb2BBldZ7JctGSGFsynTNqyHh3Ye4c8qe1LY68",
+            "addedBy": "4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6",
+            "addedSig": "jvlqGhO8QSOf204y894cEzuKd+J98g7M4z8fJoMYVj8Ac4WFVC5Iamiv9hWIA6ORO82oOCbVsYw+WHNKx92zAw==",
+            "addedAt": 1747000000
+          },
+          {
+            "subKem": "1a52d1496448f8956c12157a6263a7fa62ec4700c11b4ed141ad2f1fd79c4651",
+            "ephKem": "a8174e13baca820c481d7f3fbd2b0c42d014e1361a271a0f94b1f53b62be3164",
+            "ct": "6u0BcmWnDkLXHfhCIH4GruTSn6eRt+Ik7i0Ey2jaegFhpir01RCv6Mb0dabih2ORpIsYlGDRgrZzSTIO",
+            "addedBy": "4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6",
+            "addedSig": "XN218eaIw323LXIvH+C88ys4iBQS5K2uOPi6vZlqlzikg/30Y7kaGwGT904/JfEF7i3VgMZVgBW6CNV4uUfsDw==",
+            "addedAt": 1747000000
+          }
+        ],
+        "createdAt": 1747000000
+      }
+    }
+  },
+  "unwrapChecks": [
+    {
+      "recipient": "alice_dev_1",
+      "expectedCek": "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
+    },
+    {
+      "recipient": "alice_dev_2",
+      "expectedCek": "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
+    },
+    {
+      "recipient": "bob_root",
+      "expectedCek": "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
+    }
+  ]
+}
