@@ -1,0 +1,131 @@
+{
+  "description": "Cross-language vector for the secp256k1 KEM keyring wrap. Each case drives the real suite-aware wrap_for_recipient with a fixed ephemeral key + IV; @noble (TS) and coincurve (Python) must produce a byte-identical WrappedKeyEntry, whose addedSig verifies and whose CEK unwraps. Case 1 carries both kemAlg + addedByAlg; case 2 (ed25519 adder) carries kemAlg only (addedByAlg absent, tolerant reader). negativeCases tamper with case 1's signed entry (strip/swap the kemAlg/addedByAlg tags); both languages MUST reject each one (expectVerify=false), proving the downgrade guard cross-language.",
+  "constants": {
+    "wrapSaltUtf8": "starfish-wrap",
+    "secp256k1WrapInfoUtf8": "starfish-wrap:secp256k1-schnorr",
+    "ivBytes": 12
+  },
+  "cek": "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899",
+  "cases": [
+    {
+      "label": "secp256k1 adder + secp256k1 recipient",
+      "adderPrivHex": "0000000000000000000000000000000000000000000000000000000000000009",
+      "adderPubHex": "acd484e2f0c7f65309ad178a9f559abde09796974c57e714c35f110dfc27ccbe",
+      "addedByAlg": "secp256k1-schnorr",
+      "recipientKemPrivHex": "0000000000000000000000000000000000000000000000000000000000000005",
+      "recipientKemPubHex": "2f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4",
+      "kemAlg": "secp256k1-schnorr",
+      "ephPrivHex": "0000000000000000000000000000000000000000000000000000000000000007",
+      "ivHex": "0102030405060708090a0b0c",
+      "epoch": 1,
+      "addedAt": 1747000000,
+      "entry": {
+        "subKem": "2f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4",
+        "ephKem": "5cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bc",
+        "ct": "AQIDBAUGBwgJCgsMFbAHVKMQux5bim60dnNZTePjK3It+uolrUafiO0KpfkfrAM8b4jKA1K/arcC0hYZ",
+        "addedBy": "acd484e2f0c7f65309ad178a9f559abde09796974c57e714c35f110dfc27ccbe",
+        "addedSig": "BEfOyqtV4yOBq/fCHjxnMcyj6cAy8DTZm3fmp8G/BSJ4eG1ELn4uZFygOf0kRfcr4GZWiDwdRrTI1Wg+oVWygA==",
+        "addedAt": 1747000000,
+        "kemAlg": "secp256k1-schnorr",
+        "addedByAlg": "secp256k1-schnorr"
+      }
+    },
+    {
+      "label": "ed25519 adder + secp256k1 recipient (mixed)",
+      "adderPrivHex": "4242424242424242424242424242424242424242424242424242424242424242",
+      "adderPubHex": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12",
+      "addedByAlg": "ed25519",
+      "recipientKemPrivHex": "0000000000000000000000000000000000000000000000000000000000000005",
+      "recipientKemPubHex": "2f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4",
+      "kemAlg": "secp256k1-schnorr",
+      "ephPrivHex": "0000000000000000000000000000000000000000000000000000000000000007",
+      "ivHex": "0102030405060708090a0b0c",
+      "epoch": 1,
+      "addedAt": 1747000000,
+      "entry": {
+        "subKem": "2f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4",
+        "ephKem": "5cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bc",
+        "ct": "AQIDBAUGBwgJCgsMFbAHVKMQux5bim60dnNZTePjK3It+uolrUafiO0KpfkfrAM8b4jKA1K/arcC0hYZ",
+        "addedBy": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12",
+        "addedSig": "lu7xD91XCqNBUpjwRgMrDglIFoY2stSaHcyZC6NOsE/1KPpGpI+hDeJ9oOWGrOoL5TBY4hecisvJx8iL+dw4Bw==",
+        "addedAt": 1747000000,
+        "kemAlg": "secp256k1-schnorr"
+      }
+    }
+  ],
+  "negativeCases": [
+    {
+      "label": "strip kemAlg (downgrade) → fails verify",
+      "epoch": 1,
+      "expectVerify": false,
+      "entry": {
+        "subKem": "2f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4",
+        "ephKem": "5cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bc",
+        "ct": "AQIDBAUGBwgJCgsMFbAHVKMQux5bim60dnNZTePjK3It+uolrUafiO0KpfkfrAM8b4jKA1K/arcC0hYZ",
+        "addedBy": "acd484e2f0c7f65309ad178a9f559abde09796974c57e714c35f110dfc27ccbe",
+        "addedSig": "BEfOyqtV4yOBq/fCHjxnMcyj6cAy8DTZm3fmp8G/BSJ4eG1ELn4uZFygOf0kRfcr4GZWiDwdRrTI1Wg+oVWygA==",
+        "addedAt": 1747000000,
+        "addedByAlg": "secp256k1-schnorr"
+      }
+    },
+    {
+      "label": "strip addedByAlg (downgrade) → fails verify",
+      "epoch": 1,
+      "expectVerify": false,
+      "entry": {
+        "subKem": "2f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4",
+        "ephKem": "5cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bc",
+        "ct": "AQIDBAUGBwgJCgsMFbAHVKMQux5bim60dnNZTePjK3It+uolrUafiO0KpfkfrAM8b4jKA1K/arcC0hYZ",
+        "addedBy": "acd484e2f0c7f65309ad178a9f559abde09796974c57e714c35f110dfc27ccbe",
+        "addedSig": "BEfOyqtV4yOBq/fCHjxnMcyj6cAy8DTZm3fmp8G/BSJ4eG1ELn4uZFygOf0kRfcr4GZWiDwdRrTI1Wg+oVWygA==",
+        "addedAt": 1747000000,
+        "kemAlg": "secp256k1-schnorr"
+      }
+    },
+    {
+      "label": "swap addedByAlg to ed25519 → fails verify",
+      "epoch": 1,
+      "expectVerify": false,
+      "entry": {
+        "subKem": "2f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4",
+        "ephKem": "5cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bc",
+        "ct": "AQIDBAUGBwgJCgsMFbAHVKMQux5bim60dnNZTePjK3It+uolrUafiO0KpfkfrAM8b4jKA1K/arcC0hYZ",
+        "addedBy": "acd484e2f0c7f65309ad178a9f559abde09796974c57e714c35f110dfc27ccbe",
+        "addedSig": "BEfOyqtV4yOBq/fCHjxnMcyj6cAy8DTZm3fmp8G/BSJ4eG1ELn4uZFygOf0kRfcr4GZWiDwdRrTI1Wg+oVWygA==",
+        "addedAt": 1747000000,
+        "kemAlg": "secp256k1-schnorr",
+        "addedByAlg": "ed25519"
+      }
+    },
+    {
+      "label": "swap kemAlg to ed25519 → fails verify",
+      "epoch": 1,
+      "expectVerify": false,
+      "entry": {
+        "subKem": "2f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4",
+        "ephKem": "5cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bc",
+        "ct": "AQIDBAUGBwgJCgsMFbAHVKMQux5bim60dnNZTePjK3It+uolrUafiO0KpfkfrAM8b4jKA1K/arcC0hYZ",
+        "addedBy": "acd484e2f0c7f65309ad178a9f559abde09796974c57e714c35f110dfc27ccbe",
+        "addedSig": "BEfOyqtV4yOBq/fCHjxnMcyj6cAy8DTZm3fmp8G/BSJ4eG1ELn4uZFygOf0kRfcr4GZWiDwdRrTI1Wg+oVWygA==",
+        "addedAt": 1747000000,
+        "kemAlg": "ed25519",
+        "addedByAlg": "secp256k1-schnorr"
+      }
+    },
+    {
+      "label": "empty-string addedByAlg (\"\" must NOT default to ed25519) → fails verify",
+      "epoch": 1,
+      "expectVerify": false,
+      "entry": {
+        "subKem": "2f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4",
+        "ephKem": "5cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bc",
+        "ct": "AQIDBAUGBwgJCgsMFbAHVKMQux5bim60dnNZTePjK3It+uolrUafiO0KpfkfrAM8b4jKA1K/arcC0hYZ",
+        "addedBy": "acd484e2f0c7f65309ad178a9f559abde09796974c57e714c35f110dfc27ccbe",
+        "addedSig": "BEfOyqtV4yOBq/fCHjxnMcyj6cAy8DTZm3fmp8G/BSJ4eG1ELn4uZFygOf0kRfcr4GZWiDwdRrTI1Wg+oVWygA==",
+        "addedAt": 1747000000,
+        "kemAlg": "secp256k1-schnorr",
+        "addedByAlg": ""
+      }
+    }
+  ]
+}

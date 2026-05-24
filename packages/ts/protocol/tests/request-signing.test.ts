@@ -10,6 +10,7 @@ import {
   type SignableMethod,
   type SignableRequest,
 } from "../src/request-signing.js"
+import type { Alg } from "../src/suites/types.js"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const vectorPath = resolve(
@@ -19,6 +20,7 @@ const vectorPath = resolve(
 
 interface VectorCase {
   label: string
+  alg: Alg
   method: SignableMethod
   pathAndQuery: string
   bodyUtf8: string
@@ -85,7 +87,7 @@ describe("requestSigningCanonicalInput", () => {
         body: c.bodyUtf8,
         host: c.host,
       }
-      const canon = requestSigningCanonicalInput(req, c.tsMs, c.nonceBase64)
+      const canon = requestSigningCanonicalInput(req, c.tsMs, c.nonceBase64, c.alg)
       expect(canon).toBe(c.canonicalSigningInput)
     })
   }
@@ -95,7 +97,7 @@ describe("requestSigningCanonicalInput", () => {
       method: "GET",
       pathAndQuery: "/x",
     }
-    const canon = requestSigningCanonicalInput(req, 0, "AA==")
+    const canon = requestSigningCanonicalInput(req, 0, "AA==", "ed25519")
     expect(canon).toContain(
       '"b":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"',
     )
@@ -106,7 +108,7 @@ describe("requestSigningCanonicalInput", () => {
       method: "GET",
       pathAndQuery: "/x",
     }
-    const canon = requestSigningCanonicalInput(req, 0, "AA==")
+    const canon = requestSigningCanonicalInput(req, 0, "AA==", "ed25519")
     expect(canon).toContain('"h":""')
   })
 
@@ -116,7 +118,7 @@ describe("requestSigningCanonicalInput", () => {
       pathAndQuery: "/x",
       host: "api.example.com",
     }
-    const canon = requestSigningCanonicalInput(req, 0, "AA==")
+    const canon = requestSigningCanonicalInput(req, 0, "AA==", "ed25519")
     expect(canon).toContain('"h":"api.example.com"')
   })
 })
@@ -132,7 +134,7 @@ describe("verifyRequestSignature", () => {
     }
     const ok = await verifyRequestSignature(
       req,
-      { sig: c.signatureBase64, ts: c.tsMs, nonce: c.nonceBase64 },
+      { alg: c.alg, sig: c.signatureBase64, ts: c.tsMs, nonce: c.nonceBase64 },
       vectors.signer.edPub,
     )
     expect(ok).toBe(true)
@@ -148,7 +150,7 @@ describe("verifyRequestSignature", () => {
     }
     const ok = await verifyRequestSignature(
       req,
-      { sig: c.signatureBase64, ts: c.tsMs, nonce: c.nonceBase64 },
+      { alg: c.alg, sig: c.signatureBase64, ts: c.tsMs, nonce: c.nonceBase64 },
       vectors.signer.edPub,
     )
     expect(ok).toBe(true)
@@ -164,7 +166,7 @@ describe("verifyRequestSignature", () => {
     }
     const ok = await verifyRequestSignature(
       req,
-      { sig: c.signatureBase64, ts: c.tsMs, nonce: c.nonceBase64 },
+      { alg: c.alg, sig: c.signatureBase64, ts: c.tsMs, nonce: c.nonceBase64 },
       vectors.signer.edPub,
     )
     expect(ok).toBe(false)
@@ -180,7 +182,7 @@ describe("verifyRequestSignature", () => {
     }
     const ok = await verifyRequestSignature(
       req,
-      { sig: c.signatureBase64, ts: c.tsMs, nonce: c.nonceBase64 },
+      { alg: c.alg, sig: c.signatureBase64, ts: c.tsMs, nonce: c.nonceBase64 },
       vectors.signer.edPub,
     )
     expect(ok).toBe(false)
@@ -196,7 +198,7 @@ describe("verifyRequestSignature", () => {
     }
     const ok = await verifyRequestSignature(
       req,
-      { sig: c.signatureBase64, ts: c.tsMs, nonce: c.nonceBase64 },
+      { alg: c.alg, sig: c.signatureBase64, ts: c.tsMs, nonce: c.nonceBase64 },
       vectors.signer.edPub,
     )
     expect(ok).toBe(true)

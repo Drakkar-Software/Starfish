@@ -10,9 +10,12 @@
 
 import {
   assertCapCertWellFormed,
+  DEFAULT_ALG,
   getBase64,
   getCrypto,
   signCapCert,
+  suiteHasSeparateKem,
+  type Alg,
   type CapCert,
   type UnsignedCapCert,
 } from "@drakkar.software/starfish-protocol"
@@ -46,6 +49,12 @@ export interface MintOpts {
   nbf?: number
   /** Random nonce bytes (16 recommended). Defaults to fresh randomness. */
   nonce?: Uint8Array
+  /** Issuer's crypto suite (governs the cap signature). Defaults to the system default. */
+  alg?: Alg
+  /** Subject's signing suite (governs `sub` + per-request sigs). Defaults to `alg`. */
+  subAlg?: Alg
+  /** Subject's KEM suite (governs `subKem`). Defaults to `subAlg`. */
+  subKemAlg?: Alg
 }
 
 export const DEFAULT_TTL_SEC = 30 * 24 * 3600
@@ -96,13 +105,24 @@ export async function mintDeviceCap(
   const exp = nbf + (opts.ttlSec ?? DEFAULT_TTL_SEC)
   const nonceBytes = opts.nonce ?? defaultNonce()
   const nonce = getBase64().encode(nonceBytes)
+  const issAlg = opts.alg ?? DEFAULT_ALG
+  const subAlg = opts.subAlg ?? issAlg
+  const subKemAlg = opts.subKemAlg ?? subAlg
+  // subKem is omitted only when the KEM key IS the signing key (same suite +
+  // single-key suite); otherwise it carries a distinct KEM pubkey of suite
+  // `subKemAlg`. The keyring now wraps under any registered suite's ECDH (see
+  // `recipientKem`), so every `subKemAlg` is mintable.
+  const kemKeyIsSignKey = subKemAlg === subAlg && !suiteHasSeparateKem(subKemAlg)
   const unsigned: UnsignedCapCert = {
     v: 1,
     kind: "device",
+    issAlg,
+    subAlg,
+    ...(opts.subKemAlg !== undefined && opts.subKemAlg !== subAlg ? { subKemAlg } : {}),
     iss: issEdPubHex,
     issUserId: await userIdFromPubHex(issEdPubHex),
     sub: sub.edPubHex,
-    subKem: sub.kemPubHex,
+    ...(kemKeyIsSignKey ? {} : { subKem: sub.kemPubHex }),
     scope: { ...scope },
     nbf,
     exp,

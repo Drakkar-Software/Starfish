@@ -334,20 +334,6 @@ conflict-retry loop (the server treats any non-matching `baseHash` as a 409, not
 The client-sync behaviours were verified **identical** in TS and Python (`sync.test.ts` /
 `test_sync.py`) — no concurrency or self-heal divergence.
 
-**Incremental-sync core (per-field LWW + checkpoint filter).** Probed
-`compute_timestamps` / `filter_by_checkpoint` / `max_leaf_timestamp` (previously only
-vector-tested). **0 reachable gaps.** Robust, now pinned (TS↔Python): an unchanged leaf
-keeps its old timestamp, a changed leaf gets `now`, a new key gets `now` while a removed key
-is omitted, leaf↔object transitions stamp `now`, and an identical list keeps its ts but a
-reorder counts as a change; `filter_by_checkpoint` is strict at the boundary (`ts ==
-checkpoint` excluded), drops a field with no timestamp, and prunes an empty nested subtree
-while keeping changed sub-fields. Cleared (not a gap): a `number[]` (per-item append-only)
-timestamp is handled differently by the two generic filters (TS drops the field, Python
-passes it through), but the path is **unreachable** — `compute_timestamps` never emits a
-`number[]`, and real append-only docs route to `handle_append_only_pull` (custom per-item
-filtering); pinned as a tripwire in both languages so the divergence is flagged if the
-routing ever changes. Pinned by `test_timestamps.py` / `timestamps.test.ts`.
-
 **Extension plugins: queuing, audit, entitlements, merge, sharing-directory
 churn. Two cross-language divergences surfaced, both now fixed:** (1) **queuing topic** —
 an empty-string `topic` was kept verbatim by TS (`cfg.topic ?? collection` → published to

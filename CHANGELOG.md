@@ -1,5 +1,84 @@
 # Changelog
 
+## 3.0.0-alpha.4 — secp256k1 KEM (Nostr identities as encrypted-collection recipients)
+
+Fifth alpha of 3.0.0. Completes the encryption half of the pluggable-suite work: the per-collection **keyring is now suite-aware**, so a `secp256k1-schnorr` ("Nostr") identity can be a first-class recipient of a `delegated`-encrypted collection — collection keys seal to its secp256k1 key, and a secp256k1 owner can grant/manage access. Additive over alpha.3: the `ed25519`/X25519 wire format is unchanged (existing keyring vectors verify byte-for-byte), and the new `WrappedKeyEntry` tags are optional (tolerant reader).
+
+### Added
+
+- **secp256k1 KEM (ECDH).** The `secp256k1-schnorr` suite now implements the KEM half: `deriveSharedSecret` / `generateKemKeypair` / `kemPublic` on `CryptoSuite`. ECDH is the **x-coordinate** of `priv·lift_even(peerXOnly)` — parity-free (so x-only BIP-340 keys work without parity bookkeeping) and ECDH-symmetric, byte-identical across `@noble/curves` (TS) and `coincurve` (Python). Locked by `tests/test-vectors/suite-secp256k1-ecdh.json` (includes an odd-y peer) and `keyring-wrap-secp256k1.json`. `ed25519` keeps X25519, moved behind the suite byte-for-byte.
+- **Suite-aware keyring.** `WrappedKeyEntry` gains optional `kemAlg` (recipient KEM suite) and `addedByAlg` (adder signing suite); both default to `ed25519` (absent on the wire) and are folded into the `addedSig` canonical input **only when present**, so an `ed25519` entry is byte-identical to alpha.3 and a stripped/swapped tag fails verification (downgrade caught). Wrap/unwrap dispatch on `kemAlg`; `addedSig` dispatches on `addedByAlg`. HKDF `info` is domain-separated per KEM suite (`starfish-wrap` for ed25519 — frozen by the vector; `starfish-wrap:<alg>` otherwise).
+- **`recipientKem(cert)`** (protocol) — single source of truth for the keyring recipient identity: `kemAlg = subKemAlg ?? subAlg ?? issAlg`, `kemPubHex = subKem ?? sub` (the signing key doubles as the KEM key for same-suite secp256k1). Both `_devices`/`_members` directories now record secp256k1 recipients and carry `subKemAlg`.
+
+### Changed
+
+- **Mint gate relaxed.** `mintDeviceCap` / `mintMemberCap` (both languages) no longer reject a non-`ed25519` `subKemAlg` — every registered suite's KEM is now wrappable. A same-suite `secp256k1-schnorr` subject still emits no `subKem` (its `sub` is the KEM key); a mixed sign/KEM pair emits a distinct `subKem`.
+
+### Fixed
+
+- **Cross-language suite-tag defaulting parity.** Every suite-tag default in the Python implementation now uses `is None` (mirroring TypeScript `??`), never `or`/truthiness. A server-controlled empty-string tag (`""`) no longer coerces to `ed25519` on Python while TypeScript fails closed — both now treat `""` identically (rejected via `get_suite("")`), closing a class of cross-language fork on hostile/malformed input. Sites: keyring `remove_recipient` retained-recipient `kemAlg`, request-signing `presenter_alg`/`subAlg`, revocation `alg`. An explicit `subUserId: null` on a subject cap is now rejected as `malformed-shape` in both languages (presence test, matching TS `!== undefined`).
+- **Hardening coverage.** Added direct tests for the degenerate-shared-secret guard (`assertUsableSharedSecret` / `assert_usable_shared_secret`) and a cryptographic revocation canary — a `rotateEpoch`-dropped `secp256k1-schnorr` member can no longer recover the new epoch's CEK (proven via failed encryptor construction, not just structural absence).
+- **Cross-suite cap-cert canonical-byte vectors.** Added `crossSuiteMemberCap` (ed25519 issuer → `secp256k1-schnorr` subject, no `subKem`) and `mixedKemMemberCap` (`secp256k1-schnorr` signing + decoupled `ed25519` `subKemAlg` + X25519 `subKem`) to `tests/test-vectors/cap-cert.json`, asserted in both languages (canonical input + signature + well-formedness). Previously every `canonicalSigningInput` vector was `ed25519`-only, so a TS↔Python canonicalization divergence on the `subAlg`/`subKemAlg` fields would not have been caught by a shared byte lock.
+- **Revocation-list `verify` fail-closed parity.** `_verify_list_signature` (Python server) now catches `Exception` (was `(ValueError, KeyError, TypeError)`), matching the TS bare-catch — a future suite that violates the no-raise `verify` contract is rejected rather than surfacing a 500 + traceback.
+- **`secp256k1-schnorr` interop wording.** Suite comments (TS + Python) and `docs/ts/client/26-identity-models.md` no longer imply Nostr/NIP-44 *wire* compatibility. The suite shares Nostr's secp256k1 key type and the ECDH primitive only: signatures are over `sha256(canonical Starfish bytes)` (not NIP-01 event ids) and the keyring wrap uses Starfish's own HKDF (`salt="starfish-wrap"`, suite-tagged info), not NIP-44's `conversation_key` — so a stock Nostr client can neither verify these signatures nor unwrap these keys.
+- **Doc/comment drift.** The keyring modules (`keyring.ts` / `keyring.py`) no longer describe themselves as "side-by-side with the v2 group-crypto" module (removed in 3.0); `examples/app/TESTING.md` drops a stale paragraph describing the `compute_timestamps`/`filter_by_checkpoint` machinery removed in alpha.2.
+
+### Security hardening (review-driven)
+
+Hardening from a security review of this milestone. All changes are within the unreleased alpha.4 — no released artifact is affected — but they regenerate the cap-cert / request-signature / revocation-list / pairing-bundle test vectors.
+
+- **Signature domain separation (by construction).** The cap-cert, per-request, and revocation-list signing inputs now each prepend a distinct domain tag (`starfish-capcert-v1\n` / `starfish-req-v1\n` / `starfish-revlist-v1\n`) to their canonical bytes. A signature minted for one message type can no longer verify as another even if a future field change made two stable-stringified bodies overlap — previously the separation was *emergent* from disjoint field sets. The server revocation-store and the vector generators route through the protocol canonical functions (single source of truth), closing a latent drift where a reimplemented canonical could diverge silently. Locked by `domain-separation.test.ts` / `test_domain_separation.py`. The keyring `addedSig` is out of scope (different signer role + field shape, no overlap with the identity-sig family).
+- **Audience allow-list pinned to `ed25519`.** When an `audience` cap carries an `aud` allow-list, the server now rejects (401) a presenter declaring any non-`ed25519` suite. `aud` entries are bare 32-byte hex with no suite tag, so admitting another suite by raw-hex match was alg-blind type confusion (a secp256k1 x-only key whose bytes equal a listed Ed25519 pubkey). Open audiences (no `aud`) still accept any registered suite — only allow-listing is pinned.
+- **secp256k1 root pairing explicitly gated.** `assemblePairingBundle` / `installPairingBundle` (both languages) now reject a non-`ed25519` pairing device or bundle cap-cert with a clear "secp256k1 root pairing not yet supported" error, instead of silently feeding a secp256k1 x-only key into the X25519 CEK wrap (which surfaced as an opaque GCM-tag failure at unwrap). `PairingQrPayload` gains an optional `alg` (absent ⇒ `ed25519`); the deferred-feature boundary is now enforced, not just documented.
+- **Cross-language downgrade negative vectors.** `keyring-wrap-secp256k1.json` gains `negativeCases` (stripped/swapped `kemAlg`/`addedByAlg`, empty-string tag) and `cap-cert.json` gains `strippedSubAlgMemberCap` / `swappedSubAlgMemberCap` — all `expectVerify:false` and run in both languages — so the alg-downgrade guard is proven cross-language, not just by in-language tests.
+- **Comment/doc accuracy.** Cap-cert `sig` comments (TS + Python) now read "signature under `issAlg`" rather than "Ed25519 signature" (the issuer suite governs it); `docs/ts/client/26-identity-models.md` no longer implies a future post-quantum KEM is a drop-in on the current seam (it would require splitting a separate `KemAlg` enum — see the KEM-phase forward-contract).
+
+### KEM-phase contracts — now honored
+
+The forward contracts recorded in alpha.3's Deferred section are satisfied: (1) `WrappedKeyEntry.kemAlg`/`addedByAlg` are folded into the signed `addedSig` (no algorithm confusion); (2) the wrapper treats `cert.subKemAlg` as the authoritative recipient KEM via `recipientKem`, never inferring from key bytes; (3) `Alg` remains the KEM tag (no separate `KemAlg` enum — a 1:1 sign↔KEM mapping still holds; a pure-KEM/PQ suite would revisit this); (4) `DirectoryEntry` carries `subKemAlg`.
+
+### Deferred
+
+- **Pairing is still X25519-only.** `pairing.ts` / `pairing.py` (QR + relay multi-device) wrap CEKs to a new device under X25519. A secp256k1 root cannot pair its own devices yet — this has a hard prerequisite that is **not** built: secp256k1 *root creation* (passphrase derivation is `ed25519`-only today). It lands with the npub/nsec bring-your-own-nsec / NIP-06 phase, which adds secp256k1 root identities. The boundary is now **enforced**: `assemblePairingBundle` / `installPairingBundle` reject a non-`ed25519` device/cap with an explicit error (see Security hardening above), so the gap fails loudly rather than producing a garbage X25519 secret.
+- npub/nsec bech32 encoding, NIP-06 mnemonic derivation, NIP-07/46 external signers — unchanged from alpha.3.
+
+### Migration
+
+- **No on-disk break for `ed25519`.** alpha.3 keyrings, cap-certs, and request signatures verify unchanged under alpha.4 (the `ed25519`/X25519 paths are byte-identical; the new entry tags are additive and absent on existing data). A `secp256k1-schnorr` recipient is a new capability, not a migration.
+
+## 3.0.0-alpha.3 — Pluggable identity suites (Ed25519 + Nostr/secp256k1)
+
+Fourth alpha of 3.0.0. Introduces a **per-user crypto-suite abstraction** so one deployment can carry multiple identity models side by side: the original `ed25519` (Ed25519 signing + X25519 KEM) and a new `secp256k1-schnorr` ("Nostr") suite (BIP-340 Schnorr signing over secp256k1). Selection is per identity, carried by `alg` tags on cap-certs / request signatures / revocation lists. **Breaking** relative to alpha.2 — the cap-cert schema changed; pre-alpha.3 caps and signatures do not verify. The alpha.2 schema (single implicit curve) was a transient point; do not pin to it.
+
+### Added
+
+- **Crypto-suite registry** (`@drakkar.software/starfish-protocol` / `starfish-protocol`). `suites/` module exposing `getSuite(alg)`, `isAlg`, `suiteHasSeparateKem`, `DEFAULT_ALG`. Each suite lives in its own file (`ed25519`, `secp256k1`). `getSuite` is fail-closed: an unknown/unimplemented `alg` throws rather than silently falling back to a different curve.
+- **`secp256k1-schnorr` suite.** BIP-340 Schnorr sign/verify, byte-identical across TypeScript (`@noble/curves`) and Python (`coincurve>=19.0`) via hash-then-sign `sha256(message)` + deterministic `aux_rand = 0`. The X25519/secp256k1-ECDH KEM half, npub/nsec encoding, and key derivation are **not** in this release (sign/verify only). Locked by `tests/test-vectors/suite-secp256k1.json`.
+- **Cross-suite delegation.** An `ed25519` issuer can mint a `member` cap for a `secp256k1-schnorr` subject: the cap signature verifies under `issAlg`, the subject's per-request signature under `subAlg`.
+- **`X-Starfish-Alg` request header** (TS + Python client/server). Conveys the request signature's suite. For device/member caps the server uses the authoritative `cert.subAlg`; for audience (public-link) caps it reads the header (validated, fail-closed).
+- **`presenterAlg` on `capProvider.getCap()`** (TS) / `presenter_alg` on `get_cap()` (Python) — optional, defaults `ed25519`. The suite of the key that *signs* the request. It matters only for `audience` caps, where the redeemer signs with their own key (unrelated to the cap's `issAlg`); the client emits it as `X-Starfish-Alg`. For device/member caps the subject's suite is taken from the verified cert, so it is ignored.
+
+### Changed (BREAKING)
+
+- **Cap-cert carries `issAlg` + optional `subAlg` + optional `subKemAlg`** (was a single implicit Ed25519 curve). `issAlg` governs the issuer key + `sig`; `subAlg` governs the subject signing key + the subject's per-request signature (absent ⇒ same as `issAlg`); `subKemAlg` governs the subject's KEM (encryption) key, **decoupled** from the signing suite so a subject can sign with one curve and be encrypted to under another (absent ⇒ same as `subAlg`; reserved for the KEM phase, omitted today). All are folded into the canonical signing input, so a suite cannot be stripped or downgraded without invalidating the signature.
+- **`subKem` is now suite-determined.** Present unless the KEM key *is* the signing key — i.e. omitted only when `subKemAlg == subAlg` and that suite reuses one key (`secp256k1-schnorr`). `ed25519` subjects carry a distinct X25519 `subKem`; any mixed sign/KEM pair carries a distinct `subKem` of suite `subKemAlg`. Audience caps still carry no subject keys.
+- **Request signatures and revocation lists carry `alg`** (folded into their signed canonical inputs). Verification dispatches on it.
+- **SDK `capProvider.getCap()`** caps now include `subAlg`; the client signs device/member requests with the cap's `subAlg` (falling back to `issAlg`), and audience requests with the presenter's own `presenterAlg`.
+
+### Security
+
+- **Downgrade guard.** `alg`/`issAlg`/`subAlg` are part of the signed bytes and validated in well-formedness *before* signature verification, so an attacker cannot strip or swap the suite to a weaker scheme.
+- **`verify` is fail-closed in both languages.** The Python suite `verify` catches every exception (including a missing optional `coincurve` C extension), so a `secp256k1-schnorr` signature on an ed25519-only deployment fails closed to `False` instead of raising — closing an unauthenticated log-amplification path.
+- **TS/Python parity.** The Python cap-resolver now resolves the request-signature suite the same way as TS (`cert.subAlg` for device/member, `X-Starfish-Alg` for audience), removing a cross-language verification split.
+
+### Notes
+
+- **Deferred to a later release:** the keyring/pairing KEM is still X25519-only (the `WrappedKeyEntry` wire format is unchanged and carries no suite tag); npub/nsec encoding and NIP-06 derivation are not implemented; the `SyncSigner` author-signature extension API is still Ed25519-shaped. These are tracked for the secp256k1 KEM phase. The cap-cert `subKemAlg` field is in place now so that decoupled signing/KEM suites (e.g. Nostr-sign + X25519-KEM, or a post-quantum KEM) land as an additive change rather than another breaking cap-cert revision. Because the keyring wraps via X25519 only today, the **mint helpers reject a `subKemAlg` that would require a non-X25519 recipient key** (a present `subKem` must be X25519); the one usable decoupled combo today is `secp256k1-schnorr` signing + `ed25519`/X25519 KEM. **KEM-phase contracts** (must hold when the KEM ships): (1) a future per-entry `WrappedKeyEntry.kemAlg` MUST be folded into the keyring's `addedSig` canonical input to avoid algorithm confusion; (2) the wrapper MUST treat `cert.subKemAlg` as the authoritative recipient KEM suite, not infer it from `subKem` bytes; (3) `Alg` is a *signing*-suite tag (every suite has sign/verify) — a pure-KEM or hybrid-PQ KEM will require splitting a `KemAlg` enum or making suite lookup role-aware; (4) the `_devices` `DirectoryEntry` records extracted fields (`sub`/`subKem`/…), not the full cert, so a recipient's KEM suite is not reconstructible from the directory today — the KEM phase must add `subKemAlg` to `DirectoryEntry` (or store the cert, as the `_members` directory already does) to keep recipient-suite resolution additive. The `_devices`/`_members` directory helpers reject a same-suite `secp256k1-schnorr` subject (which carries no separate `subKem`) with an explicit "KEM not yet implemented" error, since such a subject cannot be an encrypted-collection recipient until the KEM ships.
+
+### Migration
+
+- **No on-disk back-compat.** Cap-certs, request signatures, and revocation lists from alpha.2 do not verify under alpha.3 (the `alg`/`issAlg` fields changed the signed bytes). Re-mint caps, re-sign any persisted revocation lists, and re-pair devices. Existing `ed25519` identities remain valid as keys — only the cert/signature envelopes changed.
+
 ## 3.0.0-alpha.2 — Append-only logs, by-timestamp
 
 Third alpha of 3.0.0. Reworks append-only collections into typed, timestamp-indexed event logs that work under both encryption modes, and makes `?checkpoint=` incremental sync an append-only-only feature. **Breaking** relative to alpha.1 — see Migration.

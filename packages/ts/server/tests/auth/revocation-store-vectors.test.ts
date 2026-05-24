@@ -19,7 +19,7 @@ import { fileURLToPath } from "node:url"
 import { webcrypto } from "node:crypto"
 import {
   configurePlatform,
-  stableStringify,
+  revocationListCanonicalSigningInput,
 } from "@drakkar.software/starfish-protocol"
 import {
   createInMemoryRevocationStore,
@@ -66,9 +66,9 @@ interface RevocationVectors {
 const vectors = JSON.parse(readFileSync(vectorPath, "utf-8")) as RevocationVectors
 
 function canonicalSigningInput(list: RevocationList): string {
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const { sig, ...unsigned } = list
-  return stableStringify(unsigned as unknown as Record<string, unknown>)
+  // Use the protocol's canonical function (which prepends the revocation-list
+  // domain tag) so the reconstruction stays in lockstep with the signer.
+  return revocationListCanonicalSigningInput(list)
 }
 
 describe("revocation-list vectors — canonical signing input", () => {

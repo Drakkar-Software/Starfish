@@ -4,12 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "starfish-protocol"
-version = "3.0.0a2"
+version = "3.0.0a4"
 description = "Shared protocol primitives for the Starfish sync protocol"
 requires-python = ">=3.11"
 dependencies = [
     "argon2-cffi>=25.1.0",
     "cryptography>=41.0",
+    # BIP-340 Schnorr + secp256k1 ECDH for the "secp256k1-schnorr" suite.
+    # `cryptography` has no BIP-340; coincurve wraps libsecp256k1 (C ext).
+    "coincurve>=19.0",
 ]
 
 [project.optional-dependencies]

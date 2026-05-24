@@ -13,7 +13,7 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING, Any, Optional, TypedDict
 
-from starfish_protocol.cap import CapCert
+from starfish_protocol.cap import CapCert, recipient_kem
 from starfish_sdk.types import ConflictError, StarfishHttpError
 
 if TYPE_CHECKING:
@@ -36,6 +36,7 @@ class DirectoryEntry(TypedDict, total=False):
     nonce: str
     sub: str
     subKem: str
+    subKemAlg: str
     subUserId: str
     scope: dict[str, Any]
     nbf: int
@@ -80,16 +81,27 @@ def _entry_from_cert(
     added_by: Optional[str] = None,
 ) -> DirectoryEntry:
     cert_d: dict[str, Any] = dict(cert)  # type: ignore[arg-type]
+    # The ``_members`` directory records single-subject grants. ``recipient_kem``
+    # resolves the recipient's KEM pubkey + suite (the dedicated ``subKem`` for
+    # ed25519/mixed pairs, or the signing ``sub`` for same-suite secp256k1); it
+    # raises for an audience cap, distributed as a public link, not a roster entry.
+    if cert_d.get("sub") is None:
+        raise ValueError(
+            "cannot publish a subject-less cap (e.g. audience) to the member directory"
+        )
+    kem_pub_hex, kem_alg = recipient_kem(cert_d)
     entry: DirectoryEntry = {
         "nonce": cert_d["nonce"],
         "sub": cert_d["sub"],
-        "subKem": cert_d["subKem"],
+        "subKem": kem_pub_hex,
         "scope": cert_d["scope"],
         "nbf": cert_d["nbf"],
         "exp": cert_d["exp"],
         "addedAt": int(time.time()),
         "cert": cert_d,
     }
+    if kem_alg != "ed25519":
+        entry["subKemAlg"] = kem_alg
     if "subUserId" in cert_d:
         entry["subUserId"] = cert_d["subUserId"]
     if label is not None:

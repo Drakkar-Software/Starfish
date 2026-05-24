@@ -19,7 +19,10 @@ import {
   getBase64,
   pathGlobMatch,
   isRootDeviceCap,
+  isAlg,
   userIdFromPubHex,
+  DEFAULT_ALG,
+  type Alg,
   type CapCert,
   type SignableRequest,
 } from "@drakkar.software/starfish-protocol"
@@ -117,8 +120,15 @@ const HEADER_NONCE = "X-Starfish-Nonce"
  * for device/member caps, whose verifying key is `cert.sub`.
  */
 const HEADER_PUB = "X-Starfish-Pub"
+/**
+ * Conveys the crypto suite of an `audience` presenter's request signature.
+ * For device/member caps the signing suite is authoritative from the verified
+ * `cert.subAlg` (falling back to `cert.issAlg`), so this header is read only
+ * for audience caps (defaulting to `ed25519` when absent).
+ */
+const HEADER_ALG = "X-Starfish-Alg"
 
-/** A presenter pubkey: 64-char lowercase hex Ed25519 key. */
+/** A presenter pubkey: 64-char lowercase hex (32-byte Ed25519 or secp256k1 x-only). */
 const PUB_HEX_RE = /^[0-9a-f]{64}$/
 
 const WRITE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"])
@@ -542,7 +552,25 @@ export function createCapCertRoleResolver(opts: CapResolverOptions): RoleResolve
     // presenter pubkey from `X-Starfish-Pub` (mandatory + validated there).
     const verifyingPubHex = resolveVerifyingPubHex(cert, c.req.header(HEADER_PUB))
 
-    // Verify the per-request Ed25519 signature, bound to host.
+    // Resolve the signing suite. For device/member the key is `cert.sub`, whose
+    // suite is the verified `cert.subAlg` — authoritative, never client-
+    // controlled. An audience presenter signs with their own key, so their
+    // suite arrives in `X-Starfish-Alg` (defaulting to ed25519); a bad value
+    // fails closed.
+    let reqAlg: Alg
+    if (cert.kind === "audience") {
+      const hdr = c.req.header(HEADER_ALG)
+      if (hdr !== undefined && !isAlg(hdr)) {
+        throw new CapAuthError(401, "invalid X-Starfish-Alg")
+      }
+      reqAlg = (hdr as Alg | undefined) ?? DEFAULT_ALG
+      // device/member: the subject's suite is `subAlg`, defaulting to the
+      // issuer's suite when absent (well-formedness validated it if present).
+    } else {
+      reqAlg = cert.subAlg ?? cert.issAlg
+    }
+
+    // Verify the per-request signature under `reqAlg`, bound to host.
     const req: SignableRequest = {
       method: methodUpper,
       pathAndQuery: pathAndQueryFromUrl(c.req.url),
@@ -551,10 +579,22 @@ export function createCapCertRoleResolver(opts: CapResolverOptions): RoleResolve
     }
     const sigOk = await verifyRequestSignature(
       req,
-      { sig: sigB64, ts, nonce: nonceB64 },
+      { alg: reqAlg, sig: sigB64, ts, nonce: nonceB64 },
       verifyingPubHex,
     )
     if (!sigOk) throw new CapAuthError(401, "bad request signature")
+
+    // Audience allow-list is ed25519-only. `aud` entries are bare 32-byte hex
+    // with no suite tag, so admitting a presenter of another suite by raw-hex
+    // match would be alg-blind type confusion (a secp256k1 x-only key whose
+    // bytes equal a listed Ed25519 pubkey). An OPEN audience (no `aud`) still
+    // accepts any registered suite — only allow-listing is pinned to ed25519.
+    if (cert.kind === "audience" && cert.aud !== undefined && reqAlg !== "ed25519") {
+      throw new CapAuthError(
+        401,
+        "audience allow-list is ed25519-only; presenter declared a non-ed25519 suite",
+      )
+    }
 
     // Audience allow-list membership. Runs AFTER the signature proves the
     // presenter holds `verifyingPubHex`'s private key, and BEFORE the

@@ -68,6 +68,8 @@ def main() -> None:
     cert_body = {
         "v": 1,
         "kind": "device",
+        "issAlg": "ed25519",
+        "subAlg": "ed25519",
         "iss": alice.ed_pub.hex(),
         "issUserId": alice.user_id,
         "sub": new_device.ed_pub.hex(),
@@ -77,7 +79,9 @@ def main() -> None:
         "exp": exp,
         "nonce": cert_nonce,
     }
-    cert_canonical = stable_stringify(cert_body)
+    # Cap-cert domain tag — must equal the protocol's CAP_CERT_DOMAIN (cap.ts /
+    # cap.py). The install-side vector test (verify_cap_cert) fails if it drifts.
+    cert_canonical = "starfish-capcert-v1\n" + stable_stringify(cert_body)
     cert_sig = ed_sign(alice.ed_priv, cert_canonical.encode("utf-8"))
     assert ed_verify(alice.ed_pub, cert_sig, cert_canonical.encode("utf-8"))
     cap_cert = {**cert_body, "sig": base64.b64encode(cert_sig).decode("ascii")}

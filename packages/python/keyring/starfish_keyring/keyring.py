@@ -1,18 +1,22 @@
 """v3.0 multi-recipient keyring with delegated encryption.
 
-Each ``WrappedKeyEntry`` uses per-entry ephemeral ECDH (HPKE-DHKEM-style)::
+Each ``WrappedKeyEntry`` uses per-entry ephemeral ECDH (HPKE-DHKEM-style),
+dispatched by the recipient's KEM suite (``kemAlg``)::
 
-    shared  = ECDH(eph_priv, recipient.kem_pub)
-    wrap_key = HKDF-SHA256(shared, salt="starfish-wrap", info="starfish-wrap")
+    shared   = suite(kemAlg).derive_shared_secret(eph_priv, recipient.kem_pub)
+    wrap_key = HKDF-SHA256(shared, salt="starfish-wrap", info=wrap_info(kemAlg))
     ct       = base64( iv || AES-256-GCM(wrap_key, iv, cek) )
-    added_sig = base64( Ed25519(adder.ed_priv, stable_stringify(
-                  {addedAt, addedBy, ct, ephKem, epoch, subKem})) )
+    added_sig = base64( suite(addedByAlg).sign(adder.priv, stable_stringify(canonical)) )
 
-Recipients are identified by exact ``subKem`` match (no userId mapping). Each
-entry is signed by the *adder* for audit.
+``kemAlg`` / ``addedByAlg`` are optional and default to ``ed25519`` (tolerant
+reader); both are folded into the ``added_sig`` canonical input ONLY when present
+so an ``ed25519`` entry is byte-identical to the pre-suite format (the existing
+cross-language wrap vector is the no-drift proof). Recipients are identified by
+exact ``subKem`` match (for a same-suite secp256k1 recipient, ``subKem`` is their
+one secp256k1 key — see ``recipient_kem`` in the protocol package).
 
-This module is intentionally side-by-side with the v2 ``starfish_sdk.group``
-module. It does not replace any existing public surface.
+This module replaces the removed v2 ``starfish_sdk.group`` module (deleted in
+3.0): the per-collection delegated keyring is the only encryption surface.
 """
 
 from __future__ import annotations
@@ -21,21 +25,13 @@ import base64
 import json
 import secrets
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Optional
 
 from cryptography.exceptions import InvalidTag
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric.ed25519 import (
-    Ed25519PrivateKey,
-    Ed25519PublicKey,
-)
-from cryptography.hazmat.primitives.asymmetric.x25519 import (
-    X25519PrivateKey,
-    X25519PublicKey,
-)
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from starfish_protocol.hash import stable_stringify
+from starfish_protocol.suites import DEFAULT_ALG, get_suite
 
 from ._crypto_helpers import hkdf_bytes
 
@@ -73,25 +69,31 @@ class WrappedKeyEntry:
     """A single recipient's wrapped CEK, with audit signature from the adder."""
 
     sub_kem: str
-    """Recipient X25519 pubkey (hex). Identifies the recipient by exact match."""
+    """Recipient KEM pubkey (hex) of suite ``kem_alg`` (X25519 for ed25519)."""
 
     eph_kem: str
-    """Ephemeral X25519 pubkey for this entry (hex)."""
+    """Ephemeral KEM pubkey for this entry (hex), of suite ``kem_alg``."""
 
     ct: str
     """``base64(iv || AES-GCM(wrap_key, iv, cek))``."""
 
     added_by: str
-    """Adder's Ed25519 pubkey (hex)."""
+    """Adder's signing pubkey (hex), of suite ``added_by_alg``."""
 
     added_sig: str
-    """Ed25519 signature over the canonical signing input, base64."""
+    """Signature over the canonical signing input under ``added_by_alg``, base64."""
 
     added_at: int
     """Unix seconds when the entry was added."""
 
+    kem_alg: Optional[str] = None
+    """Recipient KEM suite. Absent ⇒ ``ed25519`` (X25519). Folded into ``added_sig`` when present."""
+
+    added_by_alg: Optional[str] = None
+    """Adder's signing suite. Absent ⇒ ``ed25519``. Folded into ``added_sig`` when present."""
+
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "subKem": self.sub_kem,
             "ephKem": self.eph_kem,
             "ct": self.ct,
@@ -99,6 +101,11 @@ class WrappedKeyEntry:
             "addedSig": self.added_sig,
             "addedAt": self.added_at,
         }
+        if self.kem_alg is not None:
+            out["kemAlg"] = self.kem_alg
+        if self.added_by_alg is not None:
+            out["addedByAlg"] = self.added_by_alg
+        return out
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "WrappedKeyEntry":
@@ -109,6 +116,8 @@ class WrappedKeyEntry:
             added_by=data["addedBy"],
             added_sig=data["addedSig"],
             added_at=int(data["addedAt"]),
+            kem_alg=data.get("kemAlg"),
+            added_by_alg=data.get("addedByAlg"),
         )
 
 
@@ -160,29 +169,17 @@ class Keyring:
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
 
-def _x25519_public_bytes(priv_bytes: bytes) -> bytes:
-    priv = X25519PrivateKey.from_private_bytes(priv_bytes)
-    return priv.public_key().public_bytes(
-        encoding=serialization.Encoding.Raw,
-        format=serialization.PublicFormat.Raw,
-    )
+def _wrap_info(kem_alg: str) -> bytes:
+    """HKDF ``info`` for the wrap key, domain-separated per KEM suite. The
+    ``ed25519``/X25519 value (``b"starfish-wrap"``) is **frozen by the existing
+    cross-language vector and must not change**; other suites get a distinct
+    info so a shared secret from one curve can never derive the same wrap key."""
+    return KEYRING_WRAP_INFO if kem_alg == "ed25519" else f"starfish-wrap:{kem_alg}".encode("utf-8")
 
 
-def _x25519_shared(priv_bytes: bytes, pub_bytes: bytes) -> bytes:
-    priv = X25519PrivateKey.from_private_bytes(priv_bytes)
-    pub = X25519PublicKey.from_public_bytes(pub_bytes)
-    shared = priv.exchange(pub)
-    _assert_non_zero_shared_secret(shared)
-    return shared
-
-
-def _assert_non_zero_shared_secret(secret: bytes) -> None:
-    """Reject the all-zero X25519 shared secret from low-order points
-    (RFC 7748 §6.1)."""
-    if not any(secret):
-        raise ValueError(
-            "Rejected zero X25519 shared secret (small-subgroup attack)"
-        )
+def _tag_if_present(alg: str) -> Optional[str]:
+    """A present alg tag, or ``None`` when it is the ``ed25519`` default (omitted on the wire)."""
+    return None if alg == DEFAULT_ALG else alg
 
 
 def _wipe(buf: bytearray) -> None:
@@ -205,18 +202,28 @@ def _canonical_added_sig_input(
     eph_kem: str,
     epoch: int,
     sub_kem: str,
+    kem_alg: Optional[str] = None,
+    added_by_alg: Optional[str] = None,
 ) -> str:
-    """Canonical signing input. Stable-stringify with exactly six keys."""
-    return stable_stringify(
-        {
-            "addedAt": added_at,
-            "addedBy": added_by,
-            "ct": ct,
-            "ephKem": eph_kem,
-            "epoch": epoch,
-            "subKem": sub_kem,
-        }
-    )
+    """Canonical signing input. Stable-stringify of the six base keys, plus
+    ``kemAlg`` / ``addedByAlg`` **only when present**. The tolerant-reader rule:
+    an ``ed25519``/X25519 entry omits both, so its canonical input is
+    byte-identical to the pre-suite format (the existing cross-language wrap
+    vector is the regression proof). Stripping a present tag changes these bytes
+    ⇒ ``added_sig`` fails ⇒ fail closed (downgrade caught)."""
+    obj: dict[str, Any] = {
+        "addedAt": added_at,
+        "addedBy": added_by,
+        "ct": ct,
+        "ephKem": eph_kem,
+        "epoch": epoch,
+        "subKem": sub_kem,
+    }
+    if kem_alg is not None:
+        obj["kemAlg"] = kem_alg
+    if added_by_alg is not None:
+        obj["addedByAlg"] = added_by_alg
+    return stable_stringify(obj)
 
 
 # ── Core wrap / unwrap ────────────────────────────────────────────────────────
@@ -230,33 +237,35 @@ def wrap_for_recipient(
     adder_ed_pub_hex: str,
     added_at: int,
     epoch: int,
+    kem_alg: str = DEFAULT_ALG,
+    added_by_alg: str = DEFAULT_ALG,
     eph_priv: bytes | None = None,
     iv: bytes | None = None,
 ) -> WrappedKeyEntry:
-    """Wrap a CEK for a single recipient using ephemeral ECDH.
+    """Wrap a CEK for a single recipient using ephemeral ECDH under the
+    recipient's KEM suite (``kem_alg``, default ``ed25519``/X25519).
 
-    Generates a fresh ephemeral X25519 key pair (or uses ``eph_priv`` if
-    provided, useful for tests / reproducible vectors), performs ECDH with the
-    recipient's KEM pubkey, derives the wrap key via HKDF-SHA256, and encrypts
-    the CEK with AES-256-GCM. The adder signs the entry for audit.
+    Generates a fresh ephemeral keypair of that suite (or uses ``eph_priv`` if
+    provided, useful for reproducible vectors), runs the suite ECDH with the
+    recipient's KEM pubkey, derives the wrap key via HKDF-SHA256 (info
+    domain-separated per suite), and encrypts the CEK with AES-256-GCM. The adder
+    signs the entry under ``added_by_alg`` (default ``ed25519``) for audit.
     """
-    recipient_kem_pub = bytes.fromhex(recipient_kem_pub_hex)
-    # Hold the controllable secrets in bytearrays so they can be scrubbed below.
-    # A caller-supplied ``eph_priv`` is copied (and left untouched) — only a
-    # locally generated key is wiped, matching the TS wrap.
-    generated_eph = eph_priv is None
-    eph_priv_bytes = bytearray(eph_priv) if eph_priv is not None else bytearray(secrets.token_bytes(32))
-    shared = bytearray(_x25519_shared(bytes(eph_priv_bytes), recipient_kem_pub))
-    wrap_key = bytearray(hkdf_bytes(bytes(shared), KEYRING_WRAP_SALT, KEYRING_WRAP_INFO, 32))
-    try:
-        eph_pub_bytes = _x25519_public_bytes(bytes(eph_priv_bytes))
+    kem_suite = get_suite(kem_alg)
+    sign_suite = get_suite(added_by_alg)
 
+    eph_priv_hex = eph_priv.hex() if eph_priv is not None else kem_suite.generate_kem_keypair()[0]
+    eph_kem_hex = kem_suite.kem_public(eph_priv_hex)
+
+    # derive_shared_secret asserts a usable (non-degenerate) secret, fail closed.
+    shared = bytearray(kem_suite.derive_shared_secret(eph_priv_hex, recipient_kem_pub_hex))
+    wrap_key = bytearray(hkdf_bytes(bytes(shared), KEYRING_WRAP_SALT, _wrap_info(kem_alg), 32))
+    try:
         iv_bytes = iv if iv is not None else secrets.token_bytes(KEYRING_IV_BYTES)
         aead = AESGCM(bytes(wrap_key))
         ct_bytes = aead.encrypt(iv_bytes, cek, None)
         ct_b64 = base64.b64encode(iv_bytes + ct_bytes).decode("ascii")
 
-        eph_kem_hex = eph_pub_bytes.hex()
         canonical = _canonical_added_sig_input(
             added_at=added_at,
             added_by=adder_ed_pub_hex,
@@ -264,11 +273,12 @@ def wrap_for_recipient(
             eph_kem=eph_kem_hex,
             epoch=epoch,
             sub_kem=recipient_kem_pub_hex,
+            kem_alg=_tag_if_present(kem_alg),
+            added_by_alg=_tag_if_present(added_by_alg),
         )
-        sig = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(adder_ed_priv_hex)).sign(
-            canonical.encode("utf-8")
-        )
-        added_sig = base64.b64encode(sig).decode("ascii")
+        added_sig = base64.b64encode(
+            sign_suite.sign(canonical.encode("utf-8"), adder_ed_priv_hex)
+        ).decode("ascii")
 
         return WrappedKeyEntry(
             sub_kem=recipient_kem_pub_hex,
@@ -277,13 +287,15 @@ def wrap_for_recipient(
             added_by=adder_ed_pub_hex,
             added_sig=added_sig,
             added_at=added_at,
+            kem_alg=_tag_if_present(kem_alg),
+            added_by_alg=_tag_if_present(added_by_alg),
         )
     finally:
-        # Best-effort wipe of secret intermediates before returning.
+        # Best-effort wipe of secret intermediates before returning. The eph
+        # private is a hex string from the suite (immutable), so — like the TS
+        # wrap — only the shared secret and wrap key are scrubbed.
         _wipe(shared)
         _wipe(wrap_key)
-        if generated_eph:
-            _wipe(eph_priv_bytes)
 
 
 def unwrap_from_entry(entry: WrappedKeyEntry, recipient_kem_priv_hex: str) -> bytes:
@@ -291,10 +303,12 @@ def unwrap_from_entry(entry: WrappedKeyEntry, recipient_kem_priv_hex: str) -> by
 
     Raises ``ValueError`` if AES-GCM authentication fails.
     """
-    recipient_priv = bytes.fromhex(recipient_kem_priv_hex)
-    eph_pub = bytes.fromhex(entry.eph_kem)
-    shared = _x25519_shared(recipient_priv, eph_pub)
-    wrap_key = hkdf_bytes(shared, KEYRING_WRAP_SALT, KEYRING_WRAP_INFO, 32)
+    # Only None defaults (mirror TS `?? DEFAULT_ALG`); a tampered "" tag flows to
+    # get_suite("") and fails closed identically to TS, not silently to ed25519.
+    kem_alg = DEFAULT_ALG if entry.kem_alg is None else entry.kem_alg
+    # derive_shared_secret asserts a usable secret + validates the peer point, fail closed.
+    shared = get_suite(kem_alg).derive_shared_secret(recipient_kem_priv_hex, entry.eph_kem)
+    wrap_key = hkdf_bytes(shared, KEYRING_WRAP_SALT, _wrap_info(kem_alg), 32)
 
     blob = base64.b64decode(entry.ct)
     if len(blob) < KEYRING_IV_BYTES:
@@ -309,7 +323,10 @@ def unwrap_from_entry(entry: WrappedKeyEntry, recipient_kem_priv_hex: str) -> by
 
 
 def verify_entry_signature(entry: WrappedKeyEntry, epoch: int) -> bool:
-    """Verify the audit signature on a wrapped key entry."""
+    """Verify the audit signature on a wrapped key entry, dispatched on the
+    entry's ``added_by_alg``. Re-derives the canonical input from the entry's own
+    (possibly absent) tags: a stripped/swapped kemAlg or addedByAlg changes those
+    bytes and fails here."""
     canonical = _canonical_added_sig_input(
         added_at=entry.added_at,
         added_by=entry.added_by,
@@ -317,13 +334,21 @@ def verify_entry_signature(entry: WrappedKeyEntry, epoch: int) -> bool:
         eph_kem=entry.eph_kem,
         epoch=epoch,
         sub_kem=entry.sub_kem,
+        kem_alg=entry.kem_alg,
+        added_by_alg=entry.added_by_alg,
     )
+    # get_suite() is INSIDE the try: an unknown/unimplemented addedByAlg on a
+    # (server-supplied) entry must fail closed to False, not raise — otherwise a
+    # tampered entry could DoS recoverCurrentCek/listRecipients. Mirrors TS.
     try:
         sig = base64.b64decode(entry.added_sig)
-        Ed25519PublicKey.from_public_bytes(bytes.fromhex(entry.added_by)).verify(
-            sig, canonical.encode("utf-8")
+        # Only None defaults (mirror TS `?? DEFAULT_ALG`): a tampered "" addedByAlg
+        # makes get_suite("") raise → caught → False, matching TS (not coerced to
+        # ed25519, which would fork verification across languages).
+        added_by_alg = DEFAULT_ALG if entry.added_by_alg is None else entry.added_by_alg
+        return get_suite(added_by_alg).verify(
+            sig, canonical.encode("utf-8"), entry.added_by
         )
-        return True
     except Exception:
         return False
 
@@ -331,21 +356,34 @@ def verify_entry_signature(entry: WrappedKeyEntry, epoch: int) -> bool:
 # ── Keyring lifecycle ─────────────────────────────────────────────────────────
 
 
+# A recipient is either a bare KEM pubkey hex (ed25519/X25519) or a
+# ``(kem_pub_hex, kem_alg)`` pair for another suite (e.g. secp256k1-schnorr).
+RecipientSpec = "str | tuple[str, str]"
+
+
+def _normalize_recipient(r: "str | tuple[str, str]") -> tuple[str, str]:
+    return (r, DEFAULT_ALG) if isinstance(r, str) else (r[0], r[1])
+
+
 def create_keyring(
     adder_ed_priv_hex: str,
     adder_ed_pub_hex: str,
-    recipients: list[str],
+    recipients: "list[str | tuple[str, str]]",
     cek: bytes | None = None,
     added_at: int | None = None,
+    *,
+    added_by_alg: str = DEFAULT_ALG,
 ) -> tuple[Keyring, bytes]:
     """Create a brand-new keyring at epoch 1 wrapping a CEK for every recipient.
 
     Args:
-        adder_ed_priv_hex: Adder's Ed25519 private key (hex).
-        adder_ed_pub_hex: Adder's Ed25519 public key (hex).
-        recipients: List of recipient X25519 pubkeys (hex).
+        adder_ed_priv_hex: Adder's signing private key (hex), suite ``added_by_alg``.
+        adder_ed_pub_hex: Adder's signing public key (hex).
+        recipients: Each entry is a KEM pubkey hex (ed25519/X25519) or a
+            ``(kem_pub_hex, kem_alg)`` pair for another suite.
         cek: Optional 32-byte CEK; generated randomly if omitted.
         added_at: Optional unix-seconds timestamp; defaults to now.
+        added_by_alg: Adder's signing suite (governs each entry's ``addedSig``).
 
     Returns:
         ``(keyring, cek)`` — admin keeps the raw CEK to add future members.
@@ -356,7 +394,8 @@ def create_keyring(
     timestamp = added_at if added_at is not None else int(time.time())
 
     wrapped: list[WrappedKeyEntry] = []
-    for sub_kem_hex in recipients:
+    for r in recipients:
+        sub_kem_hex, kem_alg = _normalize_recipient(r)
         wrapped.append(
             wrap_for_recipient(
                 resolved_cek,
@@ -365,6 +404,8 @@ def create_keyring(
                 adder_ed_pub_hex=adder_ed_pub_hex,
                 added_at=timestamp,
                 epoch=1,
+                kem_alg=kem_alg,
+                added_by_alg=added_by_alg,
             )
         )
     keyring = Keyring(
@@ -382,6 +423,9 @@ def add_recipient(
     current_cek: bytes,
     recipient_kem_hex: str,
     added_at: int | None = None,
+    *,
+    kem_alg: str = DEFAULT_ALG,
+    added_by_alg: str = DEFAULT_ALG,
 ) -> Keyring:
     """Append a new recipient to the current epoch.
 
@@ -413,6 +457,8 @@ def add_recipient(
         adder_ed_pub_hex=adder_ed_pub_hex,
         added_at=timestamp,
         epoch=keyring.current_epoch,
+        kem_alg=kem_alg,
+        added_by_alg=added_by_alg,
     )
     new_epoch = KeyringEpoch(
         wrapped_keys=[*epoch.wrapped_keys, entry],
@@ -429,12 +475,15 @@ def rotate_epoch(
     keyring: Keyring,
     adder_ed_priv_hex: str,
     adder_ed_pub_hex: str,
-    retained_recipients: list[str],
+    retained_recipients: "list[str | tuple[str, str]]",
     added_at: int | None = None,
+    *,
+    added_by_alg: str = DEFAULT_ALG,
 ) -> tuple[Keyring, bytes]:
     """Mint a new CEK and append a new epoch wrapping for retained recipients.
 
-    Old epochs are preserved unchanged.
+    Each retained recipient is a KEM pubkey hex (ed25519/X25519) or a
+    ``(kem_pub_hex, kem_alg)`` pair. Old epochs are preserved unchanged.
     """
     import time
 
@@ -443,7 +492,8 @@ def rotate_epoch(
     new_cek = secrets.token_bytes(32)
 
     wrapped: list[WrappedKeyEntry] = []
-    for sub_kem_hex in retained_recipients:
+    for r in retained_recipients:
+        sub_kem_hex, kem_alg = _normalize_recipient(r)
         wrapped.append(
             wrap_for_recipient(
                 new_cek,
@@ -452,6 +502,8 @@ def rotate_epoch(
                 adder_ed_pub_hex=adder_ed_pub_hex,
                 added_at=timestamp,
                 epoch=new_epoch_num,
+                kem_alg=kem_alg,
+                added_by_alg=added_by_alg,
             )
         )
     new_epoch = KeyringEpoch(wrapped_keys=wrapped, created_at=timestamp)

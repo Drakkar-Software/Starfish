@@ -1,5 +1,5 @@
 {
-  "description": "Cross-language vector for v3.0 capability certificates. Locks the canonical signing input (stable_stringify of the cert minus `sig`) and the Ed25519 signature. Verifies `device` (proxy), `member` (scoped grant), and `audience` (public-link, no single subject — open and allow-list-restricted) kinds, plus a forged variant that must fail signature verification. The audience caps carry no `sub`/`subKem`/`subUserId`; their absence is part of the locked canonical input.",
+  "description": "Cross-language vector for v3.0 capability certificates. Locks the canonical signing input (stable_stringify of the cert minus `sig`) and the Ed25519 signature. Verifies `device` (proxy), `member` (scoped grant), and `audience` (public-link, no single subject — open and allow-list-restricted) kinds, plus a forged variant that must fail signature verification. The audience caps carry no `sub`/`subKem`/`subUserId`; their absence is part of the locked canonical input. Two cross-suite member caps (ed25519 issuer, `secp256k1-schnorr` subject) lock the canonical byte placement of a non-default `subAlg` and a decoupled `subKemAlg` across languages. Two downgrade canaries (strippedSubAlgMemberCap / swappedSubAlgMemberCap) keep the cross-suite cert's signature but strip/swap the signed `subAlg` tag; both MUST fail signature verification (expectVerify=false) in both languages.",
   "issuer": {
     "label": "alice_root",
     "edPub": "4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6",
@@ -14,12 +14,19 @@
       "edPub": "4ab28c2400e6f24c7fdde3132045dc2058d3c2be159500995ec6c9c6012bd12b",
       "kemPub": "1a52d1496448f8956c12157a6263a7fa62ec4700c11b4ed141ad2f1fd79c4651",
       "userId": "d949a496d17da76cff668aff82837928"
+    },
+    "secp256k1_sub": {
+      "subAlg": "secp256k1-schnorr",
+      "pub": "3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1",
+      "userId": "f37eb8e8856a9ce2e0a09f663fc391af"
     }
   },
   "deviceCap": {
     "cert": {
       "v": 1,
       "kind": "device",
+      "issAlg": "ed25519",
+      "subAlg": "ed25519",
       "iss": "4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6",
       "issUserId": "98341e0ad3e56672018cd761b99a2906",
       "sub": "5333460b6cdb1dd4adc074c70ac38823c09153d430202406599f0b929a55f8ca",
@@ -40,16 +47,18 @@
       "nbf": 1747000000,
       "exp": 1749592000,
       "nonce": "ABEiM0RVZneImaq7zN3u/w==",
-      "sig": "pCJ8hElfkn3Zpa4qjNsIugTAmut7d9KouPb3IZnzaReqLiMoAGSYtcEtHfN6/qTd7uXxN+V0VY2rNTbcGh4EDQ=="
+      "sig": "dGcq3LnZEhSeP6VqnJaPtS5A1Ex8UdvMlUReco0NxUuE+3iMG1hjiSNJcc/s0ZREFaKiqo0RCQo4NBgWchoLAA=="
     },
-    "canonicalSigningInput": "{\"exp\":1749592000,\"iss\":\"4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6\",\"issUserId\":\"98341e0ad3e56672018cd761b99a2906\",\"kind\":\"device\",\"nbf\":1747000000,\"nonce\":\"ABEiM0RVZneImaq7zN3u/w==\",\"scope\":{\"collections\":[\"*\"],\"ops\":[\"read\",\"write\",\"list\"],\"paths\":[\"*\"]},\"sub\":\"5333460b6cdb1dd4adc074c70ac38823c09153d430202406599f0b929a55f8ca\",\"subKem\":\"3eff30609e9818588e2c2923ee5b532efe18af1f192c6443148c8b55bba75c1c\",\"v\":1}",
-    "signatureBase64": "pCJ8hElfkn3Zpa4qjNsIugTAmut7d9KouPb3IZnzaReqLiMoAGSYtcEtHfN6/qTd7uXxN+V0VY2rNTbcGh4EDQ==",
+    "canonicalSigningInput": "starfish-capcert-v1\n{\"exp\":1749592000,\"iss\":\"4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6\",\"issAlg\":\"ed25519\",\"issUserId\":\"98341e0ad3e56672018cd761b99a2906\",\"kind\":\"device\",\"nbf\":1747000000,\"nonce\":\"ABEiM0RVZneImaq7zN3u/w==\",\"scope\":{\"collections\":[\"*\"],\"ops\":[\"read\",\"write\",\"list\"],\"paths\":[\"*\"]},\"sub\":\"5333460b6cdb1dd4adc074c70ac38823c09153d430202406599f0b929a55f8ca\",\"subAlg\":\"ed25519\",\"subKem\":\"3eff30609e9818588e2c2923ee5b532efe18af1f192c6443148c8b55bba75c1c\",\"v\":1}",
+    "signatureBase64": "dGcq3LnZEhSeP6VqnJaPtS5A1Ex8UdvMlUReco0NxUuE+3iMG1hjiSNJcc/s0ZREFaKiqo0RCQo4NBgWchoLAA==",
     "expectVerify": true
   },
   "memberCap": {
     "cert": {
       "v": 1,
       "kind": "member",
+      "issAlg": "ed25519",
+      "subAlg": "ed25519",
       "iss": "4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6",
       "issUserId": "98341e0ad3e56672018cd761b99a2906",
       "sub": "4ab28c2400e6f24c7fdde3132045dc2058d3c2be159500995ec6c9c6012bd12b",
@@ -70,16 +79,17 @@
       "exp": 1749592000,
       "nonce": "/+7dzLuqmYh3ZlVEMyIRAA==",
       "subUserId": "d949a496d17da76cff668aff82837928",
-      "sig": "6hoqEpuXk/Or/Jwje4vEw6QbdYtkAy69lw6qWm5DSfEvos26zX0mAw5OU1Xb1aNlt/nMgCxN9Dsgbvb/PZu/BA=="
+      "sig": "qpp3juZePDkMeoZRtXnNqugjQS7TLMKPANRXR1LyPCHzmhGgx3r4XZC+/Ze/HRWN/D1eCFqXgHxORV25ZX46CQ=="
     },
-    "canonicalSigningInput": "{\"exp\":1749592000,\"iss\":\"4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6\",\"issUserId\":\"98341e0ad3e56672018cd761b99a2906\",\"kind\":\"member\",\"nbf\":1747000000,\"nonce\":\"/+7dzLuqmYh3ZlVEMyIRAA==\",\"scope\":{\"collections\":[\"shared-notes\"],\"ops\":[\"read\",\"write\"],\"paths\":[\"shared-notes/*\"]},\"sub\":\"4ab28c2400e6f24c7fdde3132045dc2058d3c2be159500995ec6c9c6012bd12b\",\"subKem\":\"1a52d1496448f8956c12157a6263a7fa62ec4700c11b4ed141ad2f1fd79c4651\",\"subUserId\":\"d949a496d17da76cff668aff82837928\",\"v\":1}",
-    "signatureBase64": "6hoqEpuXk/Or/Jwje4vEw6QbdYtkAy69lw6qWm5DSfEvos26zX0mAw5OU1Xb1aNlt/nMgCxN9Dsgbvb/PZu/BA==",
+    "canonicalSigningInput": "starfish-capcert-v1\n{\"exp\":1749592000,\"iss\":\"4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6\",\"issAlg\":\"ed25519\",\"issUserId\":\"98341e0ad3e56672018cd761b99a2906\",\"kind\":\"member\",\"nbf\":1747000000,\"nonce\":\"/+7dzLuqmYh3ZlVEMyIRAA==\",\"scope\":{\"collections\":[\"shared-notes\"],\"ops\":[\"read\",\"write\"],\"paths\":[\"shared-notes/*\"]},\"sub\":\"4ab28c2400e6f24c7fdde3132045dc2058d3c2be159500995ec6c9c6012bd12b\",\"subAlg\":\"ed25519\",\"subKem\":\"1a52d1496448f8956c12157a6263a7fa62ec4700c11b4ed141ad2f1fd79c4651\",\"subUserId\":\"d949a496d17da76cff668aff82837928\",\"v\":1}",
+    "signatureBase64": "qpp3juZePDkMeoZRtXnNqugjQS7TLMKPANRXR1LyPCHzmhGgx3r4XZC+/Ze/HRWN/D1eCFqXgHxORV25ZX46CQ==",
     "expectVerify": true
   },
   "audienceCapOpen": {
     "cert": {
       "v": 1,
       "kind": "audience",
+      "issAlg": "ed25519",
       "iss": "4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6",
       "issUserId": "98341e0ad3e56672018cd761b99a2906",
       "scope": {
@@ -98,16 +108,17 @@
       "nbf": 1747000000,
       "exp": 1749592000,
       "nonce": "CgsMDQ4PABEiM0RVZneImQ==",
-      "sig": "zPO3GIVir+C8CmKgp4QWDpaVt92H4rguaNksBr4WpiF6n1H/WiepcBiHfyw+y1zOqrRKKHCR5cu/LcPxb+/9Aw=="
+      "sig": "xAMaoDtUqvFO2mAJ/IXCgZ0JSfsKVSaZDctMhR66KLXjCA9z23SRvcbqNkcnVjH8qxbTTd2F6OsKJdvuhe9sCA=="
     },
-    "canonicalSigningInput": "{\"exp\":1749592000,\"iss\":\"4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6\",\"issUserId\":\"98341e0ad3e56672018cd761b99a2906\",\"kind\":\"audience\",\"nbf\":1747000000,\"nonce\":\"CgsMDQ4PABEiM0RVZneImQ==\",\"scope\":{\"collections\":[\"broadcast\"],\"ops\":[\"read\",\"list\"],\"paths\":[\"broadcast/**\",\"!broadcast/_members\"]},\"v\":1}",
-    "signatureBase64": "zPO3GIVir+C8CmKgp4QWDpaVt92H4rguaNksBr4WpiF6n1H/WiepcBiHfyw+y1zOqrRKKHCR5cu/LcPxb+/9Aw==",
+    "canonicalSigningInput": "starfish-capcert-v1\n{\"exp\":1749592000,\"iss\":\"4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6\",\"issAlg\":\"ed25519\",\"issUserId\":\"98341e0ad3e56672018cd761b99a2906\",\"kind\":\"audience\",\"nbf\":1747000000,\"nonce\":\"CgsMDQ4PABEiM0RVZneImQ==\",\"scope\":{\"collections\":[\"broadcast\"],\"ops\":[\"read\",\"list\"],\"paths\":[\"broadcast/**\",\"!broadcast/_members\"]},\"v\":1}",
+    "signatureBase64": "xAMaoDtUqvFO2mAJ/IXCgZ0JSfsKVSaZDctMhR66KLXjCA9z23SRvcbqNkcnVjH8qxbTTd2F6OsKJdvuhe9sCA==",
     "expectVerify": true
   },
   "audienceCapRestricted": {
     "cert": {
       "v": 1,
       "kind": "audience",
+      "issAlg": "ed25519",
       "iss": "4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6",
       "issUserId": "98341e0ad3e56672018cd761b99a2906",
       "scope": {
@@ -130,20 +141,86 @@
         "4ab28c2400e6f24c7fdde3132045dc2058d3c2be159500995ec6c9c6012bd12b",
         "5333460b6cdb1dd4adc074c70ac38823c09153d430202406599f0b929a55f8ca"
       ],
-      "sig": "tGs6Ao/rnNItGHlrdb8wz46Vtm2vGNcU4Jb/dPJzrQc4cxiCm4QVfP88uMlHsXg2XbjDRlTT57ag1rsAdSH6Cg=="
+      "sig": "77dsjs1267Y26hZOwL0VI9lhzWo/cRzHg9LkRKnvTE1WxCq4TpBCK9OXULsubD+S0Je4xp7IvqYpWc5D/TL5CQ=="
     },
-    "canonicalSigningInput": "{\"aud\":[\"4ab28c2400e6f24c7fdde3132045dc2058d3c2be159500995ec6c9c6012bd12b\",\"5333460b6cdb1dd4adc074c70ac38823c09153d430202406599f0b929a55f8ca\"],\"exp\":1749592000,\"iss\":\"4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6\",\"issUserId\":\"98341e0ad3e56672018cd761b99a2906\",\"kind\":\"audience\",\"nbf\":1747000000,\"nonce\":\"mYh3ZlVEMyIRAP/u3cy7qg==\",\"scope\":{\"collections\":[\"broadcast\"],\"ops\":[\"read\",\"list\"],\"paths\":[\"broadcast/**\",\"!broadcast/_members\"]},\"v\":1}",
-    "signatureBase64": "tGs6Ao/rnNItGHlrdb8wz46Vtm2vGNcU4Jb/dPJzrQc4cxiCm4QVfP88uMlHsXg2XbjDRlTT57ag1rsAdSH6Cg==",
+    "canonicalSigningInput": "starfish-capcert-v1\n{\"aud\":[\"4ab28c2400e6f24c7fdde3132045dc2058d3c2be159500995ec6c9c6012bd12b\",\"5333460b6cdb1dd4adc074c70ac38823c09153d430202406599f0b929a55f8ca\"],\"exp\":1749592000,\"iss\":\"4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6\",\"issAlg\":\"ed25519\",\"issUserId\":\"98341e0ad3e56672018cd761b99a2906\",\"kind\":\"audience\",\"nbf\":1747000000,\"nonce\":\"mYh3ZlVEMyIRAP/u3cy7qg==\",\"scope\":{\"collections\":[\"broadcast\"],\"ops\":[\"read\",\"list\"],\"paths\":[\"broadcast/**\",\"!broadcast/_members\"]},\"v\":1}",
+    "signatureBase64": "77dsjs1267Y26hZOwL0VI9lhzWo/cRzHg9LkRKnvTE1WxCq4TpBCK9OXULsubD+S0Je4xp7IvqYpWc5D/TL5CQ==",
     "audience": [
       "4ab28c2400e6f24c7fdde3132045dc2058d3c2be159500995ec6c9c6012bd12b",
       "5333460b6cdb1dd4adc074c70ac38823c09153d430202406599f0b929a55f8ca"
     ],
     "expectVerify": true
   },
+  "crossSuiteMemberCap": {
+    "cert": {
+      "v": 1,
+      "kind": "member",
+      "issAlg": "ed25519",
+      "subAlg": "secp256k1-schnorr",
+      "iss": "4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6",
+      "issUserId": "98341e0ad3e56672018cd761b99a2906",
+      "sub": "3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1",
+      "scope": {
+        "ops": [
+          "read",
+          "write"
+        ],
+        "collections": [
+          "shared-notes"
+        ],
+        "paths": [
+          "shared-notes/*"
+        ]
+      },
+      "nbf": 1747000000,
+      "exp": 1749592000,
+      "nonce": "oKGio6SlpqeoqaqrrK2urw==",
+      "subUserId": "f37eb8e8856a9ce2e0a09f663fc391af",
+      "sig": "mO3qAnLFDe7G5i02BtcyUn7U1GQUTzIeAUIdn7LncvvpE2w/LCSHTw3LWRcV2DTKRaBu7yP/0htXTwj+LAbjAA=="
+    },
+    "canonicalSigningInput": "starfish-capcert-v1\n{\"exp\":1749592000,\"iss\":\"4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6\",\"issAlg\":\"ed25519\",\"issUserId\":\"98341e0ad3e56672018cd761b99a2906\",\"kind\":\"member\",\"nbf\":1747000000,\"nonce\":\"oKGio6SlpqeoqaqrrK2urw==\",\"scope\":{\"collections\":[\"shared-notes\"],\"ops\":[\"read\",\"write\"],\"paths\":[\"shared-notes/*\"]},\"sub\":\"3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1\",\"subAlg\":\"secp256k1-schnorr\",\"subUserId\":\"f37eb8e8856a9ce2e0a09f663fc391af\",\"v\":1}",
+    "signatureBase64": "mO3qAnLFDe7G5i02BtcyUn7U1GQUTzIeAUIdn7LncvvpE2w/LCSHTw3LWRcV2DTKRaBu7yP/0htXTwj+LAbjAA==",
+    "expectVerify": true
+  },
+  "mixedKemMemberCap": {
+    "cert": {
+      "v": 1,
+      "kind": "member",
+      "issAlg": "ed25519",
+      "subAlg": "secp256k1-schnorr",
+      "iss": "4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6",
+      "issUserId": "98341e0ad3e56672018cd761b99a2906",
+      "sub": "3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1",
+      "subKemAlg": "ed25519",
+      "subKem": "1a52d1496448f8956c12157a6263a7fa62ec4700c11b4ed141ad2f1fd79c4651",
+      "scope": {
+        "ops": [
+          "read",
+          "write"
+        ],
+        "collections": [
+          "shared-notes"
+        ],
+        "paths": [
+          "shared-notes/*"
+        ]
+      },
+      "nbf": 1747000000,
+      "exp": 1749592000,
+      "nonce": "sLGys7S1tre4ubq7vL2+vw==",
+      "subUserId": "f37eb8e8856a9ce2e0a09f663fc391af",
+      "sig": "7tmFRMDXATvFglNHj6MgWS6TY8YVUUWmMAYQywoJgY/xWrwVMhlomWVev+putk7YtkFb0ejOtaZHoTBoDcBvCw=="
+    },
+    "canonicalSigningInput": "starfish-capcert-v1\n{\"exp\":1749592000,\"iss\":\"4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6\",\"issAlg\":\"ed25519\",\"issUserId\":\"98341e0ad3e56672018cd761b99a2906\",\"kind\":\"member\",\"nbf\":1747000000,\"nonce\":\"sLGys7S1tre4ubq7vL2+vw==\",\"scope\":{\"collections\":[\"shared-notes\"],\"ops\":[\"read\",\"write\"],\"paths\":[\"shared-notes/*\"]},\"sub\":\"3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1\",\"subAlg\":\"secp256k1-schnorr\",\"subKem\":\"1a52d1496448f8956c12157a6263a7fa62ec4700c11b4ed141ad2f1fd79c4651\",\"subKemAlg\":\"ed25519\",\"subUserId\":\"f37eb8e8856a9ce2e0a09f663fc391af\",\"v\":1}",
+    "signatureBase64": "7tmFRMDXATvFglNHj6MgWS6TY8YVUUWmMAYQywoJgY/xWrwVMhlomWVev+putk7YtkFb0ejOtaZHoTBoDcBvCw==",
+    "expectVerify": true
+  },
   "forgedDeviceCap": {
     "cert": {
       "v": 1,
       "kind": "device",
+      "issAlg": "ed25519",
+      "subAlg": "ed25519",
       "iss": "4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6",
       "issUserId": "98341e0ad3e56672018cd761b99a2906",
       "sub": "5333460b6cdb1dd4adc074c70ac38823c09153d430202406599f0b929a55f8ca",
@@ -166,7 +243,64 @@
       "nonce": "ABEiM0RVZneImaq7zN3u/w==",
       "sig": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
     },
-    "canonicalSigningInput": "{\"exp\":1749592000,\"iss\":\"4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6\",\"issUserId\":\"98341e0ad3e56672018cd761b99a2906\",\"kind\":\"device\",\"nbf\":1747000000,\"nonce\":\"ABEiM0RVZneImaq7zN3u/w==\",\"scope\":{\"collections\":[\"*\"],\"ops\":[\"read\",\"write\",\"list\"],\"paths\":[\"*\"]},\"sub\":\"5333460b6cdb1dd4adc074c70ac38823c09153d430202406599f0b929a55f8ca\",\"subKem\":\"3eff30609e9818588e2c2923ee5b532efe18af1f192c6443148c8b55bba75c1c\",\"v\":1}",
+    "canonicalSigningInput": "starfish-capcert-v1\n{\"exp\":1749592000,\"iss\":\"4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6\",\"issAlg\":\"ed25519\",\"issUserId\":\"98341e0ad3e56672018cd761b99a2906\",\"kind\":\"device\",\"nbf\":1747000000,\"nonce\":\"ABEiM0RVZneImaq7zN3u/w==\",\"scope\":{\"collections\":[\"*\"],\"ops\":[\"read\",\"write\",\"list\"],\"paths\":[\"*\"]},\"sub\":\"5333460b6cdb1dd4adc074c70ac38823c09153d430202406599f0b929a55f8ca\",\"subAlg\":\"ed25519\",\"subKem\":\"3eff30609e9818588e2c2923ee5b532efe18af1f192c6443148c8b55bba75c1c\",\"v\":1}",
+    "expectVerify": false
+  },
+  "strippedSubAlgMemberCap": {
+    "cert": {
+      "v": 1,
+      "kind": "member",
+      "issAlg": "ed25519",
+      "iss": "4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6",
+      "issUserId": "98341e0ad3e56672018cd761b99a2906",
+      "sub": "3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1",
+      "scope": {
+        "ops": [
+          "read",
+          "write"
+        ],
+        "collections": [
+          "shared-notes"
+        ],
+        "paths": [
+          "shared-notes/*"
+        ]
+      },
+      "nbf": 1747000000,
+      "exp": 1749592000,
+      "nonce": "oKGio6SlpqeoqaqrrK2urw==",
+      "subUserId": "f37eb8e8856a9ce2e0a09f663fc391af",
+      "sig": "mO3qAnLFDe7G5i02BtcyUn7U1GQUTzIeAUIdn7LncvvpE2w/LCSHTw3LWRcV2DTKRaBu7yP/0htXTwj+LAbjAA=="
+    },
+    "expectVerify": false
+  },
+  "swappedSubAlgMemberCap": {
+    "cert": {
+      "v": 1,
+      "kind": "member",
+      "issAlg": "ed25519",
+      "subAlg": "ed25519",
+      "iss": "4f0c3a27d9828d012d01670133a05401bb93b2e47a369c2b43e6598ff5b1e7f6",
+      "issUserId": "98341e0ad3e56672018cd761b99a2906",
+      "sub": "3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1",
+      "scope": {
+        "ops": [
+          "read",
+          "write"
+        ],
+        "collections": [
+          "shared-notes"
+        ],
+        "paths": [
+          "shared-notes/*"
+        ]
+      },
+      "nbf": 1747000000,
+      "exp": 1749592000,
+      "nonce": "oKGio6SlpqeoqaqrrK2urw==",
+      "subUserId": "f37eb8e8856a9ce2e0a09f663fc391af",
+      "sig": "mO3qAnLFDe7G5i02BtcyUn7U1GQUTzIeAUIdn7LncvvpE2w/LCSHTw3LWRcV2DTKRaBu7yP/0htXTwj+LAbjAA=="
+    },
     "expectVerify": false
   }
 }

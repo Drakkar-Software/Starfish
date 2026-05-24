@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import pathlib
 
-from starfish_protocol.hash import stable_stringify
+from starfish_protocol.revocation import revocation_list_canonical_signing_input
 from starfish_server.auth.revocation_store import (
     RevocationList,
     create_in_memory_revocation_store,
@@ -33,8 +33,9 @@ VECTORS = json.loads(VECTORS_PATH.read_text())
 
 
 def _canonical_signing_input(list_signed: RevocationList) -> str:
-    unsigned = {k: v for k, v in list_signed.items() if k != "sig"}
-    return stable_stringify(unsigned)
+    # Use the protocol's canonical function (which prepends the revocation-list
+    # domain tag) so the reconstruction stays in lockstep with the signer.
+    return revocation_list_canonical_signing_input(dict(list_signed))
 
 
 def test_gen1_canonical_signing_input_matches_vector() -> None:

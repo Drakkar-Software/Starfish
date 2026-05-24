@@ -56,11 +56,19 @@ class CapProvider(Protocol):
     ``dev_ed_priv_hex``. The client then sends it as ``X-Starfish-Pub`` so the
     server can verify the request signature against it and check the cap's
     ``aud`` allow-list. Omit ``pub_hex`` for device/member caps.
+
+    ``presenter_alg`` is the crypto suite of ``dev_ed_priv_hex`` (the key that
+    signs the request). It matters only for ``audience`` caps, where the
+    presenter is an arbitrary redeemer whose suite is unrelated to the cap's
+    ``issAlg``; the client sends it as ``X-Starfish-Alg``. For device/member
+    caps the subject's suite is taken from the verified cert, so it is ignored.
+    Defaults to ``"ed25519"`` when omitted.
     """
 
     async def get_cap(self) -> dict[str, Any]:
         """Return ``{"cap": <CapCert dict>, "dev_ed_priv_hex": <str>}`` and,
-        for audience caps, an optional ``"pub_hex": <str>``."""
+        for audience caps, optional ``"pub_hex": <str>`` and
+        ``"presenter_alg": <str>``."""
         ...
 
 

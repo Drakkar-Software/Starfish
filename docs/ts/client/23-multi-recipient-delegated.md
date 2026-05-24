@@ -4,6 +4,8 @@ Starfish 3.0 collapses the v2 `"group"` mode into a single `"delegated"` mode th
 
 This module replaces the v2 "Group Encryption" doc, which was deleted in 3.0.
 
+> **Crypto suite:** the keyring KEM is **suite-aware** (since 3.0.0-alpha.4). A recipient may be an `ed25519` (X25519 KEM) **or** a `secp256k1-schnorr` ("Nostr") identity — collection keys seal to whichever KEM suite the recipient's cap names (resolved via `recipientKem(cert)`), and a `secp256k1-schnorr` owner can grant access. The `ed25519`/X25519 wire format is unchanged. See [Identity Models](26-identity-models.md).
+
 ## Mental model
 
 A collection with `encryption: "delegated"` has two kinds of documents on the server:

@@ -72,6 +72,7 @@ def _build_signed_device_cap(iss: _Root, sub: _Root) -> dict:
     unsigned = {
         "v": 1,
         "kind": "device",
+        "issAlg": "ed25519",
         "iss": iss.ed_pub_hex,
         "issUserId": iss.user_id,
         "sub": sub.ed_pub_hex,
@@ -89,6 +90,7 @@ def _build_signed_member_cap(iss: _Root, sub: _Root) -> dict:
     unsigned = {
         "v": 1,
         "kind": "member",
+        "issAlg": "ed25519",
         "iss": iss.ed_pub_hex,
         "issUserId": iss.user_id,
         "sub": sub.ed_pub_hex,

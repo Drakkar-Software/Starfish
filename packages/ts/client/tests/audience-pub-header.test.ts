@@ -22,9 +22,13 @@ function jsonResponse(body: unknown): Response {
 
 // The client only base64-encodes the cap for the header; it does not verify it,
 // so a minimal stand-in suffices here.
+// issAlg is deliberately secp256k1-schnorr: an audience cap's presenter signs
+// with *their own* key (here ed25519), so the emitted X-Starfish-Alg must track
+// the presenter's suite, never the issuer's issAlg.
 const fakeCap = {
   v: 1,
   kind: "audience",
+  issAlg: "secp256k1-schnorr",
   iss: "aa".repeat(32),
   issUserId: "x",
   scope: { ops: ["read"], collections: ["c"] },
@@ -60,5 +64,43 @@ describe("StarfishClient X-Starfish-Pub emission", () => {
     const init = fetchMock.mock.calls[0]![1] as { headers: Record<string, string> }
     expect("X-Starfish-Pub" in init.headers).toBe(false)
     expect(typeof init.headers["X-Starfish-Sig"]).toBe("string")
+  })
+})
+
+describe("StarfishClient X-Starfish-Alg for audience caps", () => {
+  it("emits the presenter's suite, not the issuer's issAlg, defaulting to ed25519", async () => {
+    // fakeCap.issAlg is secp256k1-schnorr; the presenter omits presenterAlg, so
+    // the redeemer signs with ed25519 and the header MUST be ed25519. The pre-fix
+    // code emitted cap.issAlg (secp256k1-schnorr) — a wrong-suite mismatch.
+    const fetchMock = vi.fn(async () => jsonResponse({ data: {}, hash: "", timestamp: 0 }))
+    const client = new StarfishClient({
+      baseUrl: "http://t",
+      fetch: fetchMock as never,
+      capProvider: {
+        getCap: async () => ({ cap: fakeCap, devEdPrivHex: "11".repeat(32), pubHex: "bb".repeat(32) }),
+      },
+    })
+    await client.pull("/pull/c/x")
+    const init = fetchMock.mock.calls[0]![1] as { headers: Record<string, string> }
+    expect(init.headers["X-Starfish-Alg"]).toBe("ed25519")
+  })
+
+  it("emits presenterAlg verbatim when the provider supplies it", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ data: {}, hash: "", timestamp: 0 }))
+    const client = new StarfishClient({
+      baseUrl: "http://t",
+      fetch: fetchMock as never,
+      capProvider: {
+        getCap: async () => ({
+          cap: fakeCap,
+          devEdPrivHex: "11".repeat(32),
+          pubHex: "bb".repeat(32),
+          presenterAlg: "secp256k1-schnorr",
+        }),
+      },
+    })
+    await client.pull("/pull/c/x")
+    const init = fetchMock.mock.calls[0]![1] as { headers: Record<string, string> }
+    expect(init.headers["X-Starfish-Alg"]).toBe("secp256k1-schnorr")
   })
 })

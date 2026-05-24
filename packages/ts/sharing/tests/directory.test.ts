@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, vi } from "vitest"
 import { webcrypto } from "node:crypto"
-import { configurePlatform } from "@drakkar.software/starfish-protocol"
+import { configurePlatform, getSuite, userIdFromPubHex } from "@drakkar.software/starfish-protocol"
 import { deriveRootIdentity, mintDeviceCap, scopes as identityScopes } from "@drakkar.software/starfish-identities"
 import { mintMemberCap, scopes } from "../src/cap-mint.js"
 import {
@@ -108,6 +108,28 @@ describe("addMemberEntry + listMembers", () => {
     const listed = await listMembers(client, "shared-notes")
     expect(listed).toHaveLength(1)
     expect(listed[0]!.subUserId).toBe(bob.userId)
+  })
+
+  it("records a same-suite secp256k1 member: subKem = sub, subKemAlg present", async () => {
+    // KEM phase: a Nostr member (no separate subKem — its sub IS the KEM key) is
+    // now recordable, and the directory entry resolves the KEM key via recipientKem.
+    const alice = await deriveRootIdentity("alice-secp-pass")
+    const secp = getSuite("secp256k1-schnorr").generateKemKeypair()
+    const cert = await mintMemberCap(
+      alice.keys.edPriv,
+      alice.keys.edPub,
+      { edPubHex: secp.pubHex, kemPubHex: secp.pubHex, userIdHex: userIdFromPubHex(secp.pubHex) },
+      "shared-notes",
+      scopes.writer("shared-notes"),
+      { subAlg: "secp256k1-schnorr" },
+    )
+    expect(cert.subKem).toBeUndefined() // same-suite secp256k1: sub doubles as KEM key
+    const { client, store } = makeMockClient()
+    await addMemberEntry(client, "shared-notes", cert, { label: "Nostr Bob" })
+    const entry = store.get(membersPathFor("shared-notes"))!.data.entries[0]!
+    expect(entry.subKem).toBe(secp.pubHex) // recipientKem resolved sub as the KEM key
+    expect(entry.subKemAlg).toBe("secp256k1-schnorr")
+    expect(entry.sub).toBe(secp.pubHex)
   })
 
   it("supports nested per-owner collection paths", async () => {

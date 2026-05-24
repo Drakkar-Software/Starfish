@@ -22,6 +22,7 @@ from starfish_protocol.cap import (
     path_glob_match,
     sign_cap_cert,
 )
+from starfish_protocol.suites import Alg, DEFAULT_ALG, suite_has_separate_kem
 
 
 class ScopePreset(TypedDict, total=False):
@@ -44,6 +45,12 @@ class MintOpts:
     expires_at: Optional[int] = None
     nbf: Optional[int] = None
     nonce: Optional[bytes] = None
+    # Issuer's crypto suite (governs the cap signature). Defaults to system default.
+    alg: Alg = DEFAULT_ALG
+    # Subject's signing suite (governs sub + per-request sigs). Defaults to ``alg``.
+    sub_alg: Optional[Alg] = None
+    # Subject's KEM suite (governs subKem). Defaults to ``sub_alg``.
+    sub_kem_alg: Optional[Alg] = None
 
 
 @dataclass
@@ -154,19 +161,34 @@ def mint_member_cap(
     nbf, exp, nonce_bytes = _resolve_nbf_exp(opts)
     scope_dict: dict[str, Any] = dict(scope)
     scope_dict["collections"] = [collection]
+    iss_alg: Alg = opts.alg if opts is not None else DEFAULT_ALG
+    sub_alg: Alg = (opts.sub_alg if opts is not None and opts.sub_alg is not None else iss_alg)
+    sub_kem_alg: Alg = (
+        opts.sub_kem_alg if opts is not None and opts.sub_kem_alg is not None else sub_alg
+    )
+    # subKem is omitted only when the KEM key IS the signing key (same-suite
+    # single-key suite); otherwise it carries a distinct KEM pubkey of suite
+    # `sub_kem_alg`. The keyring now wraps under any suite's ECDH
+    # (``recipient_kem``), so every ``sub_kem_alg`` is mintable.
+    kem_key_is_sign_key = sub_kem_alg == sub_alg and not suite_has_separate_kem(sub_kem_alg)
     unsigned: dict[str, Any] = {
         "v": 1,
         "kind": "member",
+        "issAlg": iss_alg,
+        "subAlg": sub_alg,
         "iss": iss_ed_pub_hex,
         "issUserId": _user_id_from_pub_hex(iss_ed_pub_hex),
         "sub": sub["edPubHex"],
-        "subKem": sub["kemPubHex"],
         "subUserId": sub["userIdHex"],
         "scope": scope_dict,
         "nbf": nbf,
         "exp": exp,
         "nonce": base64.b64encode(nonce_bytes).decode("ascii"),
     }
+    if sub_kem_alg != sub_alg:
+        unsigned["subKemAlg"] = sub_kem_alg
+    if not kem_key_is_sign_key:
+        unsigned["subKem"] = sub["kemPubHex"]
     assert_member_cap_shape(unsigned)
     return sign_cap_cert(unsigned, iss_ed_priv_hex)  # type: ignore[return-value]
 
@@ -293,6 +315,7 @@ def mint_audience_cap(
     unsigned: dict[str, Any] = {
         "v": 1,
         "kind": "audience",
+        "issAlg": opts.alg if opts is not None else DEFAULT_ALG,
         "iss": iss_ed_pub_hex,
         "issUserId": _user_id_from_pub_hex(iss_ed_pub_hex),
         "scope": scope_dict,

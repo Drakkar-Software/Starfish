@@ -13,12 +13,6 @@ import math
 import re
 from typing import Any, Literal, TypedDict
 
-from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives.asymmetric.ed25519 import (
-    Ed25519PrivateKey,
-    Ed25519PublicKey,
-)
-
 try:
     # NotRequired lives in typing on 3.11+, but be defensive.
     from typing import NotRequired
@@ -26,6 +20,7 @@ except ImportError:  # pragma: no cover - safety net for older runtimes
     from typing_extensions import NotRequired  # type: ignore[assignment]
 
 from starfish_protocol.hash import stable_stringify
+from starfish_protocol.suites import Alg, get_suite, is_alg, suite_has_separate_kem
 
 
 CapKind = Literal["device", "member", "audience"]
@@ -57,13 +52,29 @@ class CapCert(TypedDict):
 
     v: Literal[1]
     kind: CapKind
-    # Issuer Ed25519 pubkey, hex (32 B).
+    # Issuer's crypto suite — governs how ``sig`` is verified against ``iss``.
+    # Part of the canonical signing input (downgrade guard).
+    issAlg: Alg
+    # Subject's signing suite — governs ``sub`` key type + the subject's
+    # per-request signature scheme. Present for device/member, absent for
+    # audience. May differ from ``issAlg`` (cross-suite delegation). Absent ⇒
+    # same as ``issAlg``.
+    subAlg: NotRequired[Alg]
+    # Subject's KEM (encryption) suite, decoupled from the signing suite so a
+    # subject can sign with one curve and receive encrypted keys under another
+    # (e.g. secp256k1 signing + X25519 KEM, or a future PQ KEM). Absent ⇒ same as
+    # ``subAlg``. Governs ``subKem``'s key type. Reserved for the keyring KEM
+    # phase; omitted today (KEM == signing suite).
+    subKemAlg: NotRequired[Alg]
+    # Issuer pubkey, hex (32 B) — Ed25519 or secp256k1 x-only per ``issAlg``.
     iss: str
     # sha256(iss)[0:32].
     issUserId: str
-    # Subject Ed25519 pubkey, hex (32 B). Absent for audience caps.
+    # Subject signing pubkey, hex (32 B) — type per ``subAlg``. Absent for audience.
     sub: NotRequired[str]
-    # Subject X25519 pubkey, hex (32 B). Absent for audience caps.
+    # Subject KEM pubkey, hex (32 B). Present only when ``subAlg`` uses a
+    # separate KEM key (ed25519 -> X25519); absent when it derives from ``sub``
+    # (secp256k1) and for audience caps.
     subKem: NotRequired[str]
     # sha256(sub)[0:32]; required for member caps, optional for device caps,
     # absent for audience caps.
@@ -72,6 +83,11 @@ class CapCert(TypedDict):
     # Allow-list of subject Ed25519 pubkeys (64-char lowercase hex) for audience
     # caps. When present it MUST be non-empty; absent ⇒ any identity may redeem.
     # Forbidden on device/member caps.
+    #
+    # Allow-listed audiences are ed25519-only (enforced): entries are bare
+    # 32-byte hex with no suite tag, so the server pins the presenter suite to
+    # ed25519 whenever ``aud`` is present — a presenter declaring any other suite
+    # is rejected 401. An OPEN audience (no ``aud``) accepts any registered suite.
     aud: NotRequired[list[str]]
     # Not-before, unix seconds.
     nbf: int
@@ -79,19 +95,28 @@ class CapCert(TypedDict):
     exp: int
     # Random nonce, base64-encoded (16 B).
     nonce: str
-    # Ed25519 signature over the canonical signing input, base64-encoded.
+    # Signature over the canonical signing input under issAlg, base64-encoded.
     sig: str
 
 
-def cap_cert_canonical_signing_input(cert: dict[str, Any]) -> str:
-    """Return the canonical UTF-8 string used as the Ed25519 signing input.
+# Domain-separation tag prepended to a cap-cert signing input. Binds the
+# signature to the "cap-cert" message type by construction, so a signature minted
+# over another object type (a request signature, a revocation list) can never be
+# reinterpreted as a cap-cert even if a future field change made their bodies
+# overlap. Must stay byte-identical across TS, Python, and the vector generators.
+_CAP_CERT_DOMAIN = "starfish-capcert-v1\n"
 
-    The function accepts the cert dict with or without ``sig``; any
+
+def cap_cert_canonical_signing_input(cert: dict[str, Any]) -> str:
+    """Return the canonical UTF-8 string used as the issAlg signing input.
+
+    The domain tag ``_CAP_CERT_DOMAIN`` followed by the cert with ``sig``
+    stripped. The function accepts the cert dict with or without ``sig``; any
     ``sig`` key is stripped before serializing. The result is identical
     byte-for-byte to the TypeScript ``capCertCanonicalSigningInput``.
     """
     unsigned = {k: v for k, v in cert.items() if k != "sig"}
-    return stable_stringify(unsigned)
+    return _CAP_CERT_DOMAIN + stable_stringify(unsigned)
 
 
 # ── Signing & verification ────────────────────────────────────────────────────
@@ -110,6 +135,36 @@ def user_id_from_pub_hex(pub_hex: str) -> str:
     identity (``auth.identity = user_id_from_pub_hex(presenter_pub_hex)``).
     """
     return _user_id_from_pub_hex(pub_hex)
+
+
+def recipient_kem(cert: dict[str, Any]) -> tuple[str, str]:
+    """Resolve a subject cap-cert's KEM recipient identity — the pubkey + suite
+    the keyring seals collection keys to. Returns ``(kem_pub_hex, kem_alg)``.
+
+    - ``kem_alg`` = the first of ``subKemAlg``, ``subAlg``, ``issAlg`` that is
+      not ``None`` (KEM suite, defaulting through the signing suite to the
+      issuer suite). Resolved with ``is None`` checks, NOT ``or`` — an empty
+      string is a present (if invalid) tag and must not fall through.
+    - ``kem_pub_hex`` = ``subKem`` if not ``None`` else ``sub`` — the dedicated KEM key when present
+      (separate X25519 for ``ed25519``, or a mixed-pair KEM key), else the
+      signing key itself (same-suite ``secp256k1-schnorr``, where ``sub`` doubles
+      as the KEM key).
+
+    Raises ``ValueError`` for a subject-less (``audience``) cap.
+    """
+    # Mirror TS `??` (only None falls through, not an empty string) so a present
+    # subKem/subAlg is never silently replaced by sub/issAlg.
+    kem_alg = cert.get("subKemAlg")
+    if kem_alg is None:
+        kem_alg = cert.get("subAlg")
+    if kem_alg is None:
+        kem_alg = cert["issAlg"]
+    kem_pub_hex = cert.get("subKem")
+    if kem_pub_hex is None:
+        kem_pub_hex = cert.get("sub")
+    if kem_pub_hex is None:
+        raise ValueError("recipient_kem: cap binds no subject KEM key (audience cap?)")
+    return (kem_pub_hex, kem_alg)
 
 
 _GLOB_REGEX_SPECIALS = re.compile(r"[.+?^${}()|\[\]\\]")
@@ -231,14 +286,17 @@ class CapCertVerifyResult(TypedDict, total=False):
 
 class UnsignedCapCert(TypedDict):
     """Cap-cert without its signature — the value whose canonical
-    stable-stringification is the Ed25519 signing input."""
+    stable-stringification is the issAlg signing input."""
 
     v: Literal[1]
     kind: CapKind
+    issAlg: Alg
+    subAlg: NotRequired[Alg]
+    subKemAlg: NotRequired[Alg]
     iss: str
     issUserId: str
     sub: str
-    subKem: str
+    subKem: NotRequired[str]
     subUserId: NotRequired[str]
     scope: CapScope
     nbf: int
@@ -271,25 +329,58 @@ def assert_cap_cert_well_formed(cert: dict[str, Any]) -> None:
     # roles instead of failing closed. Validate the structure first.
     if cert.get("kind") not in ("device", "member", "audience"):
         raise ValueError("malformed-shape")
+    if not is_alg(cert.get("issAlg")):
+        raise ValueError("malformed-shape")
     is_audience = cert.get("kind") == "audience"
     for key in ("iss", "issUserId", "nonce"):
         if not isinstance(cert.get(key), str):
             raise ValueError("malformed-shape")
-    # Subject binding is kind-specific: device/member carry a single subject
-    # (``sub``/``subKem`` required); an audience cap binds none, so those keys
-    # MUST be absent — present is rejected to keep the canonical signing input
-    # deterministic and to stop cross-kind field bleed.
+    # Subject binding is kind-specific. An audience cap binds no subject, so
+    # ``subAlg``/``sub``/``subKem``/``subUserId`` MUST all be absent (PRESENCE
+    # test, not ``is not None`` — an explicit JSON ``null`` is *present* and must
+    # be rejected to match the TS ``!== undefined`` checks, else a cross-language
+    # split). Device/member carry a subject: ``subAlg`` (a known suite) + ``sub``
+    # are required, and ``subKem``'s presence is *suite-determined* — required
+    # for a separate-KEM suite (ed25519 -> X25519), forbidden otherwise.
     if is_audience:
-        # Test key PRESENCE, not ``is not None`` — an explicit JSON ``null`` is
-        # *present* and must be rejected, matching the TS ``c.sub !== undefined``
-        # check exactly. (``cert.get("sub") is not None`` would treat ``sub:
-        # null`` as absent, accepting a cap TS rejects — a cross-language split.)
-        if "sub" in cert or "subKem" in cert or "subUserId" in cert:
+        if (
+            "subAlg" in cert
+            or "subKemAlg" in cert
+            or "sub" in cert
+            or "subKem" in cert
+            or "subUserId" in cert
+        ):
             raise ValueError("audience-has-sub")
     else:
-        for key in ("sub", "subKem"):
-            if not isinstance(cert.get(key), str):
+        # ``subAlg`` (signing) and ``subKemAlg`` (KEM) are optional on the wire
+        # (tolerant reader): absent ⇒ ``subAlg`` falls back to ``issAlg`` and
+        # ``subKemAlg`` to ``subAlg``. Mint helpers emit ``subAlg`` (strict
+        # writer); both are part of the signed bytes, so neither can be forged.
+        if "subAlg" in cert and not is_alg(cert.get("subAlg")):
+            raise ValueError("malformed-shape")
+        if "subKemAlg" in cert and not is_alg(cert.get("subKemAlg")):
+            raise ValueError("malformed-shape")
+        sub_alg = cert.get("subAlg", cert["issAlg"])
+        kem_alg = cert.get("subKemAlg", sub_alg)
+        if not isinstance(cert.get("sub"), str):
+            raise ValueError("malformed-shape")
+        # ``subKem`` is absent ONLY when the KEM key *is* the signing key — KEM
+        # suite == signing suite AND that suite reuses one key (secp256k1). Any
+        # other combination carries a distinct KEM pubkey of suite ``kem_alg``.
+        kem_key_is_sign_key = kem_alg == sub_alg and not suite_has_separate_kem(kem_alg)
+        if kem_key_is_sign_key:
+            if "subKem" in cert:
                 raise ValueError("malformed-shape")
+        elif not isinstance(cert.get("subKem"), str):
+            raise ValueError("malformed-shape")
+        # A self-signed device cap (iss == sub) must use one suite for both.
+        if (
+            cert.get("kind") == "device"
+            and cert.get("iss") == cert.get("sub")
+            and "subAlg" in cert
+            and cert.get("issAlg") != cert.get("subAlg")
+        ):
+            raise ValueError("malformed-shape")
     if not _is_js_integer(cert.get("nbf")) or not _is_js_integer(cert.get("exp")):
         raise ValueError("malformed-shape")
     # Nonce must be standard base64 of exactly 16 bytes (the minted length).
@@ -302,9 +393,13 @@ def assert_cap_cert_well_formed(cert: dict[str, Any]) -> None:
         raise ValueError("malformed-shape")
     if len(nonce_bytes) != _NONCE_LEN_BYTES:
         raise ValueError("malformed-shape")
-    sub_user_id = cert.get("subUserId")
-    if sub_user_id is not None and not isinstance(sub_user_id, str):
+    # PRESENCE test (not ``is not None``): an explicit ``subUserId: null`` is
+    # *present* and must be rejected as malformed to match TS ``c.subUserId
+    # !== undefined`` (else a cross-language split — Python would treat null as
+    # "no binding" and skip the hash check below, while TS rejects the cert).
+    if "subUserId" in cert and not isinstance(cert["subUserId"], str):
         raise ValueError("malformed-shape")
+    sub_user_id = cert.get("subUserId")
     scope = cert.get("scope")
     if not isinstance(scope, dict):
         raise ValueError("malformed-shape")
@@ -366,28 +461,28 @@ def _assert_aud_list(aud: Any) -> None:
         raise ValueError("audience-aud-dup")
 
 
-def sign_cap_cert(cert: dict[str, Any], iss_ed_priv_hex: str) -> dict[str, Any]:
-    """Sign an unsigned cap-cert with the issuer's Ed25519 private key.
+def sign_cap_cert(cert: dict[str, Any], iss_priv_hex: str) -> dict[str, Any]:
+    """Sign an unsigned cap-cert with the issuer's private key, using the suite
+    named by ``cert["issAlg"]``.
 
     Returns a new dict identical to ``cert`` with a base64-encoded
     (standard, padded) ``sig`` field added.
     """
     unsigned = {k: v for k, v in cert.items() if k != "sig"}
     message = cap_cert_canonical_signing_input(unsigned).encode("utf-8")
-    priv = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(iss_ed_priv_hex))
-    sig_bytes = priv.sign(message)
+    sig_bytes = get_suite(unsigned.get("issAlg")).sign(message, iss_priv_hex)
     return {**unsigned, "sig": base64.b64encode(sig_bytes).decode("ascii")}
 
 
 def verify_cap_cert_signature(cert: dict[str, Any]) -> bool:
-    """Return ``True`` iff ``cert["sig"]`` verifies against ``cert["iss"]``."""
+    """Return ``True`` iff ``cert["sig"]`` verifies against ``cert["iss"]``
+    under the cert's declared ``alg``."""
     try:
         message = cap_cert_canonical_signing_input(cert).encode("utf-8")
-        pub = Ed25519PublicKey.from_public_bytes(bytes.fromhex(cert["iss"]))
         sig_bytes = base64.b64decode(cert["sig"])
-        pub.verify(sig_bytes, message)
-        return True
-    except (InvalidSignature, ValueError, KeyError, TypeError):
+        return get_suite(cert.get("issAlg")).verify(sig_bytes, message, cert["iss"])
+    except Exception:
+        # Never raise — fail closed to False on any decode/suite error.
         return False
 
 

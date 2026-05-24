@@ -17,7 +17,8 @@
  * `@drakkar.software/starfish-sharing`.
  */
 
-import type { CapCert } from "@drakkar.software/starfish-protocol"
+import type { Alg, CapCert } from "@drakkar.software/starfish-protocol"
+import { recipientKem } from "@drakkar.software/starfish-protocol"
 import type { StarfishClient } from "@drakkar.software/starfish-client"
 import { ConflictError, StarfishHttpError } from "@drakkar.software/starfish-client"
 
@@ -27,10 +28,12 @@ import { ConflictError, StarfishHttpError } from "@drakkar.software/starfish-cli
 export interface DirectoryEntry {
   /** Base64 cap nonce — identifies the cert. */
   nonce: string
-  /** Subject Ed25519 pubkey, hex (32 B). */
+  /** Subject signing pubkey, hex (32 B), of suite `subAlg`. */
   sub: string
-  /** Subject X25519 pubkey, hex (32 B). */
+  /** Subject KEM pubkey, hex (32 B), of suite `subKemAlg` — the keyring recipient key. */
   subKem: string
+  /** Subject KEM suite. Absent ⇒ `ed25519` (X25519). */
+  subKemAlg?: Alg
   /** `sha256(sub)[0:32]`. Required for member caps; undefined for device caps. */
   subUserId?: string
   /** Cap's `scope` block, mirrored verbatim. */
@@ -86,19 +89,23 @@ function entryFromCert(
   label?: string,
   addedBy?: string,
 ): DirectoryEntry {
-  // This directory records single-subject device caps; a subject-less cap
-  // (e.g. an audience cap) has no place here.
-  if (cert.sub === undefined || cert.subKem === undefined) {
+  // This directory records single-subject device caps. `recipientKem` resolves
+  // the recipient's KEM pubkey + suite (the dedicated `subKem` for ed25519/mixed
+  // pairs, or the signing `sub` itself for same-suite secp256k1); it throws for
+  // a subject-less (audience) cap, which has no place here.
+  if (cert.sub === undefined) {
     throw new Error("cannot record a subject-less cap (e.g. audience) in the device directory")
   }
+  const { kemPubHex, kemAlg } = recipientKem(cert)
   const entry: DirectoryEntry = {
     nonce: cert.nonce,
     sub: cert.sub,
-    subKem: cert.subKem,
+    subKem: kemPubHex,
     scope: cert.scope,
     nbf: cert.nbf,
     exp: cert.exp,
     addedAt: Math.floor(Date.now() / 1000),
+    ...(kemAlg !== "ed25519" ? { subKemAlg: kemAlg } : {}),
   }
   if (cert.subUserId !== undefined) entry.subUserId = cert.subUserId
   if (label !== undefined) entry.label = label

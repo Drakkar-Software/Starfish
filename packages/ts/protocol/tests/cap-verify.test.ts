@@ -21,6 +21,10 @@ const vectors = JSON.parse(readFileSync(vectorPath, "utf-8")) as {
   deviceCap: { cert: CapCert; canonicalSigningInput: string; signatureBase64: string }
   memberCap: { cert: CapCert; canonicalSigningInput: string; signatureBase64: string }
   forgedDeviceCap: { cert: CapCert; canonicalSigningInput: string }
+  crossSuiteMemberCap: { cert: CapCert; canonicalSigningInput: string; signatureBase64: string }
+  mixedKemMemberCap: { cert: CapCert; canonicalSigningInput: string; signatureBase64: string }
+  strippedSubAlgMemberCap: { cert: CapCert; expectVerify: false }
+  swappedSubAlgMemberCap: { cert: CapCert; expectVerify: false }
 }
 
 // Alice's root edPriv — deriveRootIdentity("alice-root-passphrase").keys.edPriv.
@@ -46,6 +50,32 @@ describe("verifyCapCertSignature", () => {
     const ok = await verifyCapCertSignature(vectors.forgedDeviceCap.cert)
     expect(ok).toBe(false)
   })
+
+  it("verifies the crossSuiteMemberCap vector (ed25519 sig over a secp256k1-subject cap)", async () => {
+    // The cap `sig` is Ed25519 (issAlg) even though the subject suite is
+    // secp256k1 — the non-default subAlg is folded into the signed bytes.
+    const ok = await verifyCapCertSignature(vectors.crossSuiteMemberCap.cert)
+    expect(ok).toBe(true)
+  })
+
+  it("verifies the mixedKemMemberCap vector (decoupled subKemAlg in the signed bytes)", async () => {
+    const ok = await verifyCapCertSignature(vectors.mixedKemMemberCap.cert)
+    expect(ok).toBe(true)
+  })
+
+  it("rejects strippedSubAlgMemberCap (subAlg downgrade caught cross-language)", async () => {
+    // Cross-suite cert's ed25519 signature, but the signed `subAlg` tag was
+    // stripped → canonical input differs → verification fails.
+    expect(vectors.strippedSubAlgMemberCap.expectVerify).toBe(false)
+    const ok = await verifyCapCertSignature(vectors.strippedSubAlgMemberCap.cert)
+    expect(ok).toBe(false)
+  })
+
+  it("rejects swappedSubAlgMemberCap (subAlg swapped to ed25519 caught)", async () => {
+    expect(vectors.swappedSubAlgMemberCap.expectVerify).toBe(false)
+    const ok = await verifyCapCertSignature(vectors.swappedSubAlgMemberCap.cert)
+    expect(ok).toBe(false)
+  })
 })
 
 describe("verifyCapCert", () => {
@@ -63,6 +93,7 @@ describe("verifyCapCert", () => {
     const unsigned: UnsignedCapCert = {
       v: base.v,
       kind: base.kind,
+      issAlg: base.issAlg,
       iss: base.iss,
       issUserId: base.issUserId,
       sub: base.sub,
@@ -174,6 +205,7 @@ describe("verifyCapCert", () => {
     const malformed = {
       v: base.v,
       kind: base.kind,
+      issAlg: base.issAlg,
       iss: base.iss,
       issUserId: base.issUserId,
       sub: base.sub,
@@ -202,6 +234,8 @@ describe("signCapCert", () => {
     const unsigned: UnsignedCapCert = {
       v: cert.v,
       kind: cert.kind,
+      issAlg: cert.issAlg,
+      subAlg: cert.subAlg,
       iss: cert.iss,
       issUserId: cert.issUserId,
       sub: cert.sub,
@@ -220,6 +254,8 @@ describe("signCapCert", () => {
     const unsigned: UnsignedCapCert = {
       v: cert.v,
       kind: cert.kind,
+      issAlg: cert.issAlg,
+      subAlg: cert.subAlg,
       iss: cert.iss,
       issUserId: cert.issUserId,
       sub: cert.sub,
@@ -242,6 +278,18 @@ describe("assertCapCertWellFormed", () => {
 
   it("accepts the deviceCap vector", () => {
     expect(() => assertCapCertWellFormed(vectors.deviceCap.cert)).not.toThrow()
+  })
+
+  it("accepts the crossSuiteMemberCap vector (secp256k1 subject omits subKem)", () => {
+    // secp256k1 reuses its sign key for the KEM, so well-formedness requires
+    // subKem to be ABSENT — this vector pins that the predicate accepts it.
+    expect(() => assertCapCertWellFormed(vectors.crossSuiteMemberCap.cert)).not.toThrow()
+  })
+
+  it("accepts the mixedKemMemberCap vector (subKemAlg decoupled from subAlg)", () => {
+    // subAlg=secp256k1 but subKemAlg=ed25519 → a distinct X25519 subKem is
+    // required; pins that the predicate accepts the decoupled-KEM shape.
+    expect(() => assertCapCertWellFormed(vectors.mixedKemMemberCap.cert)).not.toThrow()
   })
 
   it("accepts the memberCap vector with keyring + members denies added", () => {

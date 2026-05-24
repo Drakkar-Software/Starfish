@@ -5,7 +5,9 @@ Mirror of TS ``tests/router/audience-cap.test.ts``.
 
 import base64
 import hashlib
+import importlib.util
 import json
+import pathlib
 import time
 from dataclasses import dataclass
 from urllib.parse import urlsplit
@@ -13,6 +15,8 @@ from urllib.parse import urlsplit
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+_COINCURVE = importlib.util.find_spec("coincurve") is not None
 
 from starfish_protocol.cap import user_id_from_pub_hex
 from starfish_protocol.request_signing import sign_request
@@ -76,6 +80,21 @@ def _cap_header(cert: dict) -> str:
     return "Cap " + base64.b64encode(json.dumps(cert).encode("utf-8")).decode("ascii")
 
 
+def _secp_presenter() -> _Key:
+    """A secp256k1-schnorr presenter, taken from the shared cross-language
+    vector so its priv→pub mapping matches what the suite verifies against."""
+    vec = json.loads(
+        (pathlib.Path(__file__).parents[5] / "tests" / "test-vectors" / "suite-secp256k1.json").read_text()
+    )
+    case = vec["cases"][0]
+    pub_bytes = bytes.fromhex(case["pubHex"])
+    return _Key(
+        ed_priv_hex=case["privHex"],
+        ed_pub_hex=case["pubHex"],
+        user_id=hashlib.sha256(pub_bytes).hexdigest()[:32],
+    )
+
+
 def _redeem_headers(
     cert: dict,
     presenter: _Key,
@@ -83,6 +102,8 @@ def _redeem_headers(
     include_pub: bool = True,
     nonce: bytes | None = None,
     ts: int | None = None,
+    sign_alg: str = "ed25519",
+    alg_header: str | None = None,
 ) -> dict[str, str]:
     parts = urlsplit(_URL)
     sig = sign_request(
@@ -93,6 +114,7 @@ def _redeem_headers(
         host=parts.netloc,
         nonce=nonce,
         ts=ts,
+        alg=sign_alg,
     )
     headers = {
         "Authorization": _cap_header(cert),
@@ -102,6 +124,8 @@ def _redeem_headers(
     }
     if include_pub:
         headers["X-Starfish-Pub"] = presenter.ed_pub_hex
+    if alg_header is not None:
+        headers["X-Starfish-Alg"] = alg_header
     return headers
 
 
@@ -190,6 +214,87 @@ async def test_malformed_pub_header_rejected_401() -> None:
     anyone = _make_key(0x71)
     headers = _redeem_headers(cert, anyone)
     headers["X-Starfish-Pub"] = "NOT-HEX"
+    with pytest.raises(CapAuthError) as exc:
+        await _resolver()(_FakeRequest("GET", _URL, headers))
+    assert exc.value.status == 401
+
+
+@pytest.mark.asyncio
+async def test_malformed_alg_header_rejected_401() -> None:
+    # Signs ed25519 but declares an unknown suite — the resolver must reject the
+    # header before dispatching to any suite, not fall back silently.
+    cert = _open_cap()
+    anyone = _make_key(0x71)
+    headers = _redeem_headers(cert, anyone, alg_header="rsa")
+    with pytest.raises(CapAuthError) as exc:
+        await _resolver()(_FakeRequest("GET", _URL, headers))
+    assert exc.value.status == 401
+
+
+@pytest.mark.asyncio
+async def test_explicit_ed25519_alg_header_accepted() -> None:
+    cert = _open_cap()
+    anyone = _make_key(0x71)
+    headers = _redeem_headers(cert, anyone, alg_header="ed25519")
+    auth = await _resolver()(_FakeRequest("GET", _URL, headers))
+    assert auth.identity == user_id_from_pub_hex(anyone.ed_pub_hex)
+
+
+@pytest.mark.skipif(
+    not _COINCURVE, reason="secp256k1-schnorr signing requires the coincurve C extension"
+)
+@pytest.mark.asyncio
+async def test_secp256k1_presenter_redeems_audience_cap() -> None:
+    # The presenter's suite is unrelated to the cap's issAlg; it arrives only in
+    # X-Starfish-Alg and the resolver must verify the request signature under it.
+    cert = _open_cap()
+    presenter = _secp_presenter()
+    headers = _redeem_headers(
+        cert, presenter, sign_alg="secp256k1-schnorr", alg_header="secp256k1-schnorr"
+    )
+    auth = await _resolver()(_FakeRequest("GET", _URL, headers))
+    assert auth.identity == user_id_from_pub_hex(presenter.ed_pub_hex)
+
+
+@pytest.mark.skipif(
+    not _COINCURVE, reason="secp256k1-schnorr signing requires the coincurve C extension"
+)
+@pytest.mark.asyncio
+async def test_secp256k1_presenter_lying_alg_header_fails_401() -> None:
+    # Signature bytes are secp256k1 but the header claims ed25519 → verify under
+    # the wrong suite must fail closed, never authorize.
+    cert = _open_cap()
+    presenter = _secp_presenter()
+    headers = _redeem_headers(
+        cert, presenter, sign_alg="secp256k1-schnorr", alg_header="ed25519"
+    )
+    with pytest.raises(CapAuthError) as exc:
+        await _resolver()(_FakeRequest("GET", _URL, headers))
+    assert exc.value.status == 401
+
+
+@pytest.mark.skipif(
+    not _COINCURVE, reason="secp256k1-schnorr signing requires the coincurve C extension"
+)
+@pytest.mark.asyncio
+async def test_restricted_cap_secp256k1_presenter_rejected_401() -> None:
+    # The allow-list stores bare 32-byte hex with no suite tag. A secp256k1
+    # x-only presenter must NOT be admitted by a raw-hex match against an
+    # Ed25519 allow-list — allow-listed audiences are pinned to ed25519.
+    from starfish_sharing import AudienceMintOpts
+
+    presenter = _secp_presenter()
+    cert = mint_audience_cap(
+        ISSUER.ed_priv_hex,
+        ISSUER.ed_pub_hex,
+        "broadcast",
+        scopes.read_only("broadcast"),
+        # Even with the presenter's own hex listed, the suite mismatch is rejected.
+        AudienceMintOpts(audience=[presenter.ed_pub_hex], nbf=_now() - 10, ttl_sec=3600),
+    )
+    headers = _redeem_headers(
+        cert, presenter, sign_alg="secp256k1-schnorr", alg_header="secp256k1-schnorr"
+    )
     with pytest.raises(CapAuthError) as exc:
         await _resolver()(_FakeRequest("GET", _URL, headers))
     assert exc.value.status == 401

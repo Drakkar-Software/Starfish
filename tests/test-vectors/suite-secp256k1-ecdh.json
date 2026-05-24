@@ -1,0 +1,33 @@
+{
+  "description": "Cross-language conformance for the secp256k1-schnorr KEM (ECDH). The shared secret is the x-coordinate of priv·lift_even(peerXOnly); it is parity-free and symmetric, so derive(aPriv, bPub) == derive(bPriv, aPub). @noble (TS) and coincurve (Python) must agree byte-for-byte. At least one case uses an odd-y peer to lock the even-y lift.",
+  "alg": "secp256k1-schnorr",
+  "cases": [
+    {
+      "aPrivHex": "0000000000000000000000000000000000000000000000000000000000000002",
+      "aPubHex": "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5",
+      "aParity": "even",
+      "bPrivHex": "0000000000000000000000000000000000000000000000000000000000000003",
+      "bPubHex": "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+      "bParity": "even",
+      "sharedHex": "fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057a1460297556"
+    },
+    {
+      "aPrivHex": "1111111111111111111111111111111111111111111111111111111111111111",
+      "aPubHex": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+      "aParity": "odd",
+      "bPrivHex": "2222222222222222222222222222222222222222222222222222222222222222",
+      "bPubHex": "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
+      "bParity": "even",
+      "sharedHex": "77e0510d5042e2f5e9e59c977b81eeed590cf7d20c1c51da451a8eaa9fdc45ff"
+    },
+    {
+      "aPrivHex": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+      "aPubHex": "c6b754b20826eb925e052ee2c25285b162b51fdca732bcf67e39d647fb6830ae",
+      "aParity": "even",
+      "bPrivHex": "0000000000000000000000000000000000000000000000000000000000000007",
+      "bPubHex": "5cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bc",
+      "bParity": "even",
+      "sharedHex": "544d29e6ec7b215231622a111794ba240979fb25a332a160373f2e3a102a40b9"
+    }
+  ]
+}

@@ -74,6 +74,7 @@ async function mintMemberCert(
   const unsigned: UnsignedCapCert = {
     v: 1,
     kind: "member",
+    issAlg: "ed25519",
     iss: iss.edPubHex,
     issUserId: iss.userId,
     sub: sub.edPubHex,

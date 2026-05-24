@@ -12,10 +12,11 @@
  * `build_revocation_list` byte-for-byte — guarded by the shared
  * `tests/test-vectors/revocation-list.json` conformance vector.
  */
-import { ed25519 } from "@noble/curves/ed25519.js"
 import { sha256 } from "@noble/hashes/sha2.js"
 import { getBase64 } from "./platform.js"
 import { stableStringify } from "./hash.js"
+import { getSuite, DEFAULT_ALG } from "./suites/index.js"
+import type { Alg } from "./suites/types.js"
 
 /** A single revoked cap-cert, identified by its subject + nonce, with the cap's expiry. */
 export interface RevocationEntry {
@@ -33,16 +34,20 @@ export interface RevokedSubject {
 /** A signed, generation-counted revocation list issued by a root identity. */
 export interface RevocationList {
   v: 1
+  /** Crypto suite of the issuer key and `sig`. Part of the signed input. */
+  alg: Alg
   iss: string
   issUserId: string
   generation: number
   revoked: RevocationEntry[]
   revokedSubjects?: RevokedSubject[]
-  /** Ed25519 signature over the canonical signing input, base64-encoded. */
+  /** Signature over the canonical signing input under `alg`, base64-encoded. */
   sig: string
 }
 
 export interface BuildRevocationListOpts {
+  /** Issuer crypto suite; defaults to the system default when omitted. */
+  alg?: Alg
   issEdPubHex: string
   issEdPrivHex: string
   generation: number
@@ -74,12 +79,20 @@ function userIdFromPubHex(pubHex: string): string {
  * with `sig` stripped. Byte-for-byte identical to the Python
  * `revocation_list_canonical_signing_input`.
  */
+/**
+ * Domain-separation tag prepended to a revocation-list signing input. Binds the
+ * signature to the "revocation-list" message type by construction so it can
+ * never be reinterpreted as a cap-cert or request signature. Must stay
+ * byte-identical across TS, Python, and the test-vector generators.
+ */
+const REVOCATION_DOMAIN = "starfish-revlist-v1\n"
+
 export function revocationListCanonicalSigningInput(
   list: Omit<RevocationList, "sig"> | RevocationList,
 ): string {
   const unsigned: Record<string, unknown> = { ...(list as Record<string, unknown>) }
   delete unsigned.sig
-  return stableStringify(unsigned)
+  return REVOCATION_DOMAIN + stableStringify(unsigned)
 }
 
 /**
@@ -88,8 +101,10 @@ export function revocationListCanonicalSigningInput(
  * supplied.
  */
 export function buildRevocationList(opts: BuildRevocationListOpts): RevocationList {
+  const alg = opts.alg ?? DEFAULT_ALG
   const unsigned: Omit<RevocationList, "sig"> = {
     v: 1,
+    alg,
     iss: opts.issEdPubHex,
     issUserId: userIdFromPubHex(opts.issEdPubHex),
     generation: opts.generation,
@@ -97,6 +112,6 @@ export function buildRevocationList(opts: BuildRevocationListOpts): RevocationLi
     ...(opts.revokedSubjects !== undefined ? { revokedSubjects: opts.revokedSubjects } : {}),
   }
   const message = new TextEncoder().encode(revocationListCanonicalSigningInput(unsigned))
-  const sigBytes = ed25519.sign(message, hexToBytes(opts.issEdPrivHex))
+  const sigBytes = getSuite(alg).sign(message, opts.issEdPrivHex)
   return { ...unsigned, sig: getBase64().encode(sigBytes) }
 }

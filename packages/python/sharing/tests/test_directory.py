@@ -9,8 +9,10 @@ import pytest
 
 from starfish_identities.cap_mint import mint_device_cap, scopes as identity_scopes
 from starfish_identities.identity import derive_root_identity
+from starfish_protocol.cap import user_id_from_pub_hex
+from starfish_protocol.suites import get_suite
 from starfish_sdk.types import ConflictError, StarfishHttpError
-from starfish_sharing.cap_mint import mint_member_cap, scopes
+from starfish_sharing.cap_mint import MintOpts, mint_member_cap, scopes
 from starfish_sharing.directory import (
     add_member_entry,
     fetch_member_caps,
@@ -121,6 +123,31 @@ async def test_add_member_entry_writes_to_col_members() -> None:
     listed = await list_members(cast(Any, client), "shared-notes")
     assert len(listed) == 1
     assert listed[0]["subUserId"] == bob.user_id
+
+
+@pytest.mark.asyncio
+async def test_add_member_entry_records_secp256k1_member() -> None:
+    # KEM phase: a same-suite secp256k1 member (no separate subKem — its sub IS
+    # the KEM key) is recordable; the directory resolves the KEM key via
+    # recipient_kem and stores subKemAlg.
+    alice = derive_root_identity("alice-secp-pass")
+    secp = get_suite("secp256k1-schnorr")
+    m_priv, m_pub = secp.generate_kem_keypair()
+    cert = mint_member_cap(
+        alice.keys.ed_priv,
+        alice.keys.ed_pub,
+        {"edPubHex": m_pub, "kemPubHex": m_pub, "userIdHex": user_id_from_pub_hex(m_pub)},
+        "shared-notes",
+        scopes.writer("shared-notes"),
+        MintOpts(sub_alg="secp256k1-schnorr"),
+    )
+    assert "subKem" not in cert  # same-suite secp256k1: sub doubles as KEM key
+    client = _client()
+    await add_member_entry(cast(Any, client), "shared-notes", cert, label="Nostr Bob")
+    entry = client.store[members_path_for("shared-notes")].data["entries"][0]
+    assert entry["subKem"] == m_pub  # recipient_kem resolved sub as the KEM key
+    assert entry["subKemAlg"] == "secp256k1-schnorr"
+    assert entry["sub"] == m_pub
 
 
 @pytest.mark.asyncio

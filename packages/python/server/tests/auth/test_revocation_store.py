@@ -6,7 +6,7 @@ import hashlib
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from starfish_protocol.hash import stable_stringify
+from starfish_protocol.revocation import revocation_list_canonical_signing_input
 from starfish_server.auth.revocation_store import (
     REVOCATION_RETAIN_SKEW_SEC,
     RevocationEntry,
@@ -32,7 +32,7 @@ def _keypair(seed_byte: int) -> tuple[Ed25519PrivateKey, str, str]:
 
 
 def _sign_list(unsigned: dict, priv: Ed25519PrivateKey) -> RevocationList:
-    canonical = stable_stringify(unsigned).encode("utf-8")
+    canonical = revocation_list_canonical_signing_input(unsigned).encode("utf-8")
     sig = priv.sign(canonical)
     return {**unsigned, "sig": base64.b64encode(sig).decode("ascii")}  # type: ignore[return-value]
 

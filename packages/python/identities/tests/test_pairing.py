@@ -119,6 +119,45 @@ def test_install_pairing_bundle_rejects_tampered_signature() -> None:
         install_pairing_bundle(bundle, device, now=bundle.cap_cert["nbf"] + 5)
 
 
+# ── secp256k1 root pairing is DEFERRED — gate must fail clear (mirrors TS) ─────
+# The pairing CEK wrap is X25519-only; a secp256k1 identity flowing into it would
+# feed a secp256k1 x-only key into X25519 ECDH and surface as a confusing GCM-tag
+# failure. Both sides reject it loudly until bring-your-own-nsec ships.
+
+
+def test_assemble_pairing_bundle_rejects_secp256k1_device() -> None:
+    root = derive_root_identity("alice-root-passphrase")
+    parsed = PairingQrPayload(
+        v=1,
+        dev_ed_pub=V["newDevice"]["edPub"],
+        dev_kem_pub=V["newDevice"]["kemPub"],
+        requested_scope=V["qrPayload"]["object"]["requestedScope"],
+        qr_nonce=V["qrPayload"]["object"]["qrNonce"],
+        alg="secp256k1-schnorr",
+    )
+    with pytest.raises(ValueError, match="secp256k1 root pairing not yet supported"):
+        assemble_pairing_bundle(
+            {"edPriv": root.keys.ed_priv, "edPub": root.keys.ed_pub},
+            parsed,
+            {"notes": {"epoch": 1, "cek": b"\x11" * 32}},
+            AssemblePairingBundleOpts(granted_scope=parsed.requested_scope),
+        )
+
+
+def test_install_pairing_bundle_rejects_secp256k1_cap() -> None:
+    bundle_dict = json.loads(json.dumps(V["bundle"]))
+    bundle_dict["capCert"]["subAlg"] = "secp256k1-schnorr"
+    bundle = PairingBundle.from_dict(bundle_dict)
+    device = {
+        "edPriv": V["newDevice"]["edPriv"],
+        "edPub": V["newDevice"]["edPub"],
+        "kemPriv": V["newDevice"]["kemPriv"],
+        "kemPub": V["newDevice"]["kemPub"],
+    }
+    with pytest.raises(ValueError, match="secp256k1 root pairing not yet supported"):
+        install_pairing_bundle(bundle, device, now=bundle.cap_cert["nbf"] + 5)
+
+
 # ── bootstrap_root_identity ───────────────────────────────────────────────────
 
 
@@ -267,6 +306,7 @@ def test_install_rejects_member_cap() -> None:
         {
             "v": 1,
             "kind": "member",
+            "issAlg": "ed25519",
             "iss": root.keys.ed_pub,
             "issUserId": root.user_id,
             "sub": member.keys.ed_pub,
