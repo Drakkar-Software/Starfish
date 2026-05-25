@@ -119,6 +119,33 @@ await sync.pull()
 await sync.push({ theme: "dark" })
 ```
 
+### The `namespace` client option
+
+Instead of hand-prefixing every path, pass `namespace` to `StarfishClient`. The client then
+rewrites each request path to `/v1/{namespace}/…` for **both** the URL it hits and the canonical
+path it signs — including the paths that namespace-unaware SDK helpers (keyring, blob uploads)
+build internally, so you don't wrap or sub-class the client to reach a namespaced deployment.
+With `namespace` set, `baseUrl` carries only the origin (and any reverse-proxy mount the proxy
+strips), **not** the `/v1` segment.
+
+```ts
+const client = new StarfishClient({
+  baseUrl: "https://api.example.com", // origin only — no /v1 here
+  namespace: "tenantA",
+  capProvider: {
+    getCap: async () => ({ cap: creds.capCert, devEdPrivHex: creds.device.edPriv }),
+  },
+})
+
+// Pass plain action paths; the client inserts /v1/tenantA for you:
+await client.pull(`/pull/tenantA/users/${creds.userId}/settings`)
+// → GET https://api.example.com/v1/tenantA/pull/tenantA/users/:identity/settings
+//   signed canonical: /v1/tenantA/pull/tenantA/users/:identity/settings
+```
+
+This mirrors the Python client's `namespace` parameter. Leave `namespace` unset (the default)
+for a root-mounted server — paths pass through unchanged.
+
 ## Namespace-scoped batch pull
 
 Each namespace has its own `/{namespace}/batch/pull` endpoint that only searches within that namespace. The root `/batch/pull` only searches root collections.

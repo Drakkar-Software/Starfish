@@ -1,7 +1,8 @@
 """Tests for StarfishClient HTTP layer."""
 
 
-from unittest.mock import AsyncMock, MagicMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -285,60 +286,38 @@ async def test_namespace_push_blob_url_inserts_namespace_after_v1():
 
 
 @pytest.mark.asyncio
-async def test_namespace_pull_url_and_sign_path_match():
-    signed_paths: list[str] = []
+async def test_namespace_signs_the_namespaced_path():
+    """The SIGNED canonical path — not merely the URL — carries the namespace, so a
+    captured request verifies against a namespace-mounted server. A client that
+    namespaced only the URL would fail auth. Mirrors the TS namespace test."""
+    cap = {"kind": "device", "iss": "aa" * 32, "issAlg": "ed25519", "subAlg": "ed25519"}
 
-    async def capture_auth(method: str, path: str, body: str | None) -> dict[str, str]:
-        signed_paths.append(path)
-        return {}
-
-    mock_http = AsyncMock()
-    mock_http.get.return_value = make_response(200, {"data": {}, "hash": "h", "timestamp": 0})
-    client = StarfishClient("http://sync.example.com", auth=capture_auth, namespace="octobot", client=mock_http)
-
-    await client.pull("/v1/pull/users/abc/settings")
-
-    url = mock_http.get.call_args.args[0]
-    assert url == "http://sync.example.com/v1/octobot/pull/users/abc/settings"
-    assert signed_paths == ["/v1/octobot/pull/users/abc/settings"]
-
-
-@pytest.mark.asyncio
-async def test_namespace_pull_blob_url_and_sign_path_match():
-    signed_paths: list[str] = []
-
-    async def capture_auth(method: str, path: str, body: str | None) -> dict[str, str]:
-        signed_paths.append(path)
-        return {}
+    class _Provider:
+        async def get_cap(self) -> dict:
+            return {"cap": cap, "dev_ed_priv_hex": "11" * 32}
 
     mock_http = AsyncMock()
-    mock_http.get.return_value = make_binary_response(200, content=b"\x89PNG", content_type="image/png", etag="abc")
-    client = StarfishClient("http://sync.example.com", auth=capture_auth, namespace="octobot", client=mock_http)
+    mock_http.post.return_value = make_response(200, {"hash": "h", "timestamp": 1})
+    client = StarfishClient(
+        "http://sync.example.com", namespace="octobot", client=mock_http, cap_provider=_Provider()
+    )
 
-    await client.pull_blob("/v1/pull/users/abc/avatar")
+    # Stub the signer so we can read the canonical path it was handed (no real crypto).
+    with patch(
+        "starfish_sdk.client.sign_request",
+        return_value=SimpleNamespace(sig="s", ts=1, nonce="n", alg="ed25519"),
+    ) as mock_sign:
+        await client.push("/v1/push/users/abc/settings", {"x": 1}, None)
 
-    url = mock_http.get.call_args.args[0]
-    assert url == "http://sync.example.com/v1/octobot/pull/users/abc/avatar"
-    assert signed_paths == ["/v1/octobot/pull/users/abc/avatar"]
-
-
-@pytest.mark.asyncio
-async def test_namespace_push_blob_url_and_sign_path_match():
-    signed_paths: list[str] = []
-
-    async def capture_auth(method: str, path: str, body: str | None) -> dict[str, str]:
-        signed_paths.append(path)
-        return {}
-
-    mock_http = AsyncMock()
-    mock_http.post.return_value = MagicMock(status_code=200, json=MagicMock(return_value={"hash": "xyz"}))
-    client = StarfishClient("http://sync.example.com", auth=capture_auth, namespace="octobot", client=mock_http)
-
-    await client.push_blob("/v1/push/users/abc/avatar", b"\x89PNG", "image/png")
-
-    url = mock_http.post.call_args.args[0]
-    assert url == "http://sync.example.com/v1/octobot/push/users/abc/avatar"
-    assert signed_paths == ["/v1/octobot/push/users/abc/avatar"]
+    # URL is namespaced …
+    assert (
+        mock_http.post.call_args.args[0]
+        == "http://sync.example.com/v1/octobot/push/users/abc/settings"
+    )
+    # … and so is the path handed to the signer (positional arg 1) — not the bare path.
+    signed_path = mock_sign.call_args.args[1]
+    assert signed_path == "/v1/octobot/push/users/abc/settings"
+    assert signed_path != "/v1/push/users/abc/settings"
 
 
 @pytest.mark.asyncio
