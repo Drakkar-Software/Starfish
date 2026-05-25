@@ -1,7 +1,8 @@
 """Tests for StarfishClient HTTP layer."""
 
 
-from unittest.mock import AsyncMock, MagicMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -282,6 +283,41 @@ async def test_namespace_push_blob_url_inserts_namespace_after_v1():
 
     url = mock_http.post.call_args.args[0]
     assert url == "http://sync.example.com/v1/octobot/push/users/abc/avatar"
+
+
+@pytest.mark.asyncio
+async def test_namespace_signs_the_namespaced_path():
+    """The SIGNED canonical path — not merely the URL — carries the namespace, so a
+    captured request verifies against a namespace-mounted server. A client that
+    namespaced only the URL would fail auth. Mirrors the TS namespace test."""
+    cap = {"kind": "device", "iss": "aa" * 32, "issAlg": "ed25519", "subAlg": "ed25519"}
+
+    class _Provider:
+        async def get_cap(self) -> dict:
+            return {"cap": cap, "dev_ed_priv_hex": "11" * 32}
+
+    mock_http = AsyncMock()
+    mock_http.post.return_value = make_response(200, {"hash": "h", "timestamp": 1})
+    client = StarfishClient(
+        "http://sync.example.com", namespace="octobot", client=mock_http, cap_provider=_Provider()
+    )
+
+    # Stub the signer so we can read the canonical path it was handed (no real crypto).
+    with patch(
+        "starfish_sdk.client.sign_request",
+        return_value=SimpleNamespace(sig="s", ts=1, nonce="n", alg="ed25519"),
+    ) as mock_sign:
+        await client.push("/v1/push/users/abc/settings", {"x": 1}, None)
+
+    # URL is namespaced …
+    assert (
+        mock_http.post.call_args.args[0]
+        == "http://sync.example.com/v1/octobot/push/users/abc/settings"
+    )
+    # … and so is the path handed to the signer (positional arg 1) — not the bare path.
+    signed_path = mock_sign.call_args.args[1]
+    assert signed_path == "/v1/octobot/push/users/abc/settings"
+    assert signed_path != "/v1/push/users/abc/settings"
 
 
 @pytest.mark.asyncio

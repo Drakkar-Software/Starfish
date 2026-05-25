@@ -77,6 +77,7 @@ function encodeCapAuth(cap: unknown): string {
  */
 export class StarfishClient {
   private readonly baseUrl: string
+  private readonly namespace?: string
   private readonly capProvider?: StarfishCapProvider
   private readonly fetch: typeof globalThis.fetch
   /**
@@ -87,6 +88,9 @@ export class StarfishClient {
 
   constructor(options: StarfishClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/$/, "")
+    // Empty string ⇒ no namespace (treat like unset), so a falsy env value
+    // doesn't produce a malformed `/v1//…` path.
+    this.namespace = options.namespace || undefined
     this.capProvider = options.capProvider
     this.fetch = options.fetch ?? globalThis.fetch.bind(globalThis)
     this.plugins = options.plugins ? [...options.plugins] : []
@@ -110,6 +114,21 @@ export class StarfishClient {
     } catch {
       return ""
     }
+  }
+
+  /**
+   * Rewrite a request path for the configured namespace. A no-op when no
+   * namespace is set; otherwise `/{action}/…` becomes `/v1/{namespace}/{action}/…`
+   * (the `/v1` protocol-version segment is part of the namespaced route, matching
+   * the Python client and the server's namespace mount).
+   *
+   * Applied to the path used for BOTH the signature and the URL so the canonical
+   * path the client signs equals the path the server reconstructs from the URL.
+   * Covers SDK-helper-built paths too — that's the point: a namespace-unaware
+   * helper passing `/push/spaces/x/_keyring` reaches `/v1/{ns}/push/spaces/x/_keyring`.
+   */
+  private applyNamespace(path: string): string {
+    return this.namespace ? `/v1/${this.namespace}${path}` : path
   }
 
   /**
@@ -174,7 +193,7 @@ export class StarfishClient {
     path: string,
     checkpointOrOptions?: number | AppendPullOptions | PullOptions,
   ): Promise<PullResult | T[]> {
-    let pathAndQuery = path
+    let pathAndQuery = this.applyNamespace(path)
     let appendField: string | undefined
 
     if (typeof checkpointOrOptions === "number") {
@@ -252,9 +271,10 @@ export class StarfishClient {
       baseHash,
     })
 
-    const authHeaders = await this.buildAuthHeaders("POST", path, body)
+    const sendPath = this.applyNamespace(path)
+    const authHeaders = await this.buildAuthHeaders("POST", sendPath, body)
 
-    const res = await this.fetch(`${this.baseUrl}${path}`, {
+    const res = await this.fetch(`${this.baseUrl}${sendPath}`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -299,9 +319,10 @@ export class StarfishClient {
     if (opts.ts !== undefined) bodyObj["ts"] = opts.ts
     const body = JSON.stringify(bodyObj)
 
-    const authHeaders = await this.buildAuthHeaders("POST", path, body)
+    const sendPath = this.applyNamespace(path)
+    const authHeaders = await this.buildAuthHeaders("POST", sendPath, body)
 
-    const res = await this.fetch(`${this.baseUrl}${path}`, {
+    const res = await this.fetch(`${this.baseUrl}${sendPath}`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -322,9 +343,10 @@ export class StarfishClient {
    * Returns raw bytes with the content hash from the ETag header.
    */
   async pullBlob(path: string): Promise<BlobPullResult> {
-    const authHeaders = await this.buildAuthHeaders("GET", path, undefined)
+    const sendPath = this.applyNamespace(path)
+    const authHeaders = await this.buildAuthHeaders("GET", sendPath, undefined)
 
-    const res = await this.fetch(`${this.baseUrl}${path}`, {
+    const res = await this.fetch(`${this.baseUrl}${sendPath}`, {
       method: "GET",
       headers: { Accept: "*/*", ...authHeaders },
     })
@@ -350,9 +372,10 @@ export class StarfishClient {
   ): Promise<BlobPushResult> {
     // Blobs are not JSON; we leave body undefined when signing — server-side
     // verification is expected to use a separate path for blob uploads.
-    const authHeaders = await this.buildAuthHeaders("POST", path, undefined)
+    const sendPath = this.applyNamespace(path)
+    const authHeaders = await this.buildAuthHeaders("POST", sendPath, undefined)
 
-    const res = await this.fetch(`${this.baseUrl}${path}`, {
+    const res = await this.fetch(`${this.baseUrl}${sendPath}`, {
       method: "POST",
       headers: {
         "Content-Type": contentType,

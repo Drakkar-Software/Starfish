@@ -60,6 +60,25 @@ export interface StarfishClientOptions {
   /** Base URL of the Starfish server (e.g. "https://api.example.com/v1"). */
   baseUrl: string
   /**
+   * Optional namespace for a namespace-mounted server. When set, every request
+   * path `/{action}/…` is rewritten to `/v1/{namespace}/{action}/…` for BOTH the
+   * URL the client hits AND the canonical path it signs, so the signature the
+   * server reconstructs from the namespaced URL verifies (no rewrite layer
+   * needed). Mirrors the Python client's `namespace` parameter.
+   *
+   * Crucially this also rewrites the paths that namespace-unaware SDK helpers
+   * build internally (e.g. `starfish-keyring`'s `addCollectionRecipient`, blob
+   * uploads), so consumers no longer hand-prefix paths or wrap the client to
+   * reach a namespaced deployment. Leave unset (default) for a root-mounted
+   * server — paths pass through unchanged, byte-identical to before.
+   *
+   * Pass the bare namespace name (e.g. `"octochat"`); `baseUrl` then carries only
+   * the origin (and any reverse-proxy mount the proxy strips), not the `/v1`
+   * version segment. Must match `[A-Za-z0-9_-]+` and not be a reserved route name
+   * (`pull`, `push`, `health`, `batch`).
+   */
+  namespace?: string
+  /**
    * Cap-cert provider. When set, requests are signed with Ed25519 and carry
    * `Authorization: Cap <…>`. Omit for unauthenticated public-read collections.
    */

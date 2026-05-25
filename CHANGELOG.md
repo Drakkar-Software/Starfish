@@ -1,5 +1,33 @@
 # Changelog
 
+## 3.0.0-alpha.5 — TypeScript client `namespace` parity
+
+Sixth alpha of 3.0.0. Brings the client-side **`namespace` option to the TypeScript
+`StarfishClient`**, which the Python client (`StarfishClient(namespace=…)`) already had.
+Purely additive: with no `namespace` set the TS client is byte-for-byte unchanged.
+
+### Added
+
+- **`namespace` on the TS `StarfishClient`** (`StarfishClientOptions.namespace`). When set,
+  every request path `/{action}/…` is rewritten to `/v1/{namespace}/{action}/…` for **both**
+  the URL the client hits **and** the canonical path it signs — so the signature the server
+  reconstructs from the namespaced URL verifies with no reverse-proxy rewrite layer. Crucially
+  it also rewrites the paths that namespace-unaware SDK helpers build internally (e.g.
+  `starfish-keyring`'s `addCollectionRecipient`, blob uploads), so a consumer targeting a
+  namespaced deployment no longer hand-prefixes paths or wraps the client. This mirrors the
+  Python client's existing `namespace` parameter (identical `/v1/{ns}/…` wire output, adapted
+  to TS's path convention where `/v1` lives in the path rather than `baseUrl`). Default unset =
+  root-mounted server, paths pass through unchanged. See `docs/ts/client/20-namespaces.md`.
+
+### Tests
+
+- Precise client coverage in both languages asserts the namespace lands on **both** the URL
+  **and** the signed canonical path — a URL-only rewrite would silently fail auth against a
+  namespace-mounted server. New `packages/ts/client/tests/namespace.test.ts` (covers
+  pull/push/append/pull-blob/push-blob, query strings, and the unset/empty backward-compatible
+  cases); a signed-path assertion added to `packages/python/client/tests/test_client.py`
+  alongside the existing URL-level namespace tests.
+
 ## 3.0.0-alpha.4 — secp256k1 KEM (Nostr identities as encrypted-collection recipients)
 
 Fifth alpha of 3.0.0. Completes the encryption half of the pluggable-suite work: the per-collection **keyring is now suite-aware**, so a `secp256k1-schnorr` ("Nostr") identity can be a first-class recipient of a `delegated`-encrypted collection — collection keys seal to its secp256k1 key, and a secp256k1 owner can grant/manage access. Additive over alpha.3: the `ed25519`/X25519 wire format is unchanged (existing keyring vectors verify byte-for-byte), and the new `WrappedKeyEntry` tags are optional (tolerant reader).
