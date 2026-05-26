@@ -1,5 +1,57 @@
 # Changelog
 
+## 3.0.0-alpha.6 — `namespace` reaches the store bindings
+
+Seventh alpha of 3.0.0. Completes the alpha.5 `namespace` work: the option now flows through the
+React **store bindings**, not just a directly-constructed `StarfishClient`. Purely additive — with
+no `namespace` set, behavior is byte-for-byte unchanged.
+
+### Fixed
+
+- **`useSyncInit` (zustand binding) ignored `namespace`.** alpha.5 added `namespace` to
+  `StarfishClient`, but `useSyncInit` builds its *own* internal client from the config and never
+  forwarded it — so an app syncing through the store binding (the common path: live document
+  pull/push) always hit the un-namespaced `/{action}/…`, even while direct `client.pull/push`
+  calls were correctly namespaced. On a namespace-mounted deployment that surfaced as document/room
+  syncs 404-ing at the proxy while standalone client calls worked. (The `legend`/`suspense`
+  bindings operate on an already-built store and were unaffected.)
+- **Append-only checkpoint pull no longer makes an extra O(n) pass in the Python server.**
+  `handle_append_only_pull` previously built a full per-element `ts` list before `bisect`; it now
+  uses `bisect_right(…, key=…)` directly (parity with the TS binary search). Also de-flaked
+  `test_checkpoint_after_second_push_returns_only_third`, which captured a wall-clock checkpoint
+  between auto-`ts` appends (a real timing race); it now uses explicit timestamps, mirroring the TS
+  router test.
+
+### Added
+
+- **`namespace` on `SyncInitConfig`** (`useSyncInit({ namespace })`), forwarded into the binding's
+  internal `StarfishClient` so its `pullPath`/`pushPath` are rewritten to `/v1/{namespace}/…`
+  (signed AND sent), exactly like a directly-constructed client. Pass the bare name; the `/v1/` is
+  added by the client. Default unset = paths pass through unchanged.
+- **Opt-in append-only scaling knobs** (`appendOnly.maxItems`, `appendOnly.chunkSize`). `maxItems`
+  rejects an append once the stored element count reaches the cap with `409 { error:
+  "append_limit_exceeded", limit }` (nothing written). `chunkSize` switches the collection to
+  **segmented storage** — the log is kept as fixed-size sealed chunks plus a small head document, so
+  an append touches only the head and the open tail chunk (O(chunkSize), not O(n) → no O(n²) build)
+  and a `?checkpoint=`/`?last=` pull reads only the chunks it needs (each chunk key encodes its first
+  element's `ts`, so the sorted key list — one `listKeys`, no chunk reads — tells the server which
+  chunks a checkpoint can skip). Both knobs are additive and preserve the wire contract (identical
+  pull response and `hash({ n, last })`); a single-document log lazily migrates to chunks on its next
+  append and stays segmented thereafter. Server, TS + Python. See
+  `docs/ts/server/append-only-collections.md` §Bounding & scaling.
+
+### Tests
+
+- `packages/ts/client/tests/react.test.ts`: `useSyncInit` with `namespace` set drives the store's
+  mount pull to `/v1/<ns>/pull/…`; with it unset the path stays bare (no `/v1/`).
+- Append-only scaling coverage: `packages/ts/server/tests/router/append-only.chunked.test.ts` and
+  `packages/python/server/tests/protocol/test_append_chunked.py` assert byte-identical pull responses
+  and `hash` between the chunked and single-document layouts across checkpoint/last edge cases, plus
+  chunk rollover, lazy migration (including an exact `chunkSize` multiple), config-drift stickiness,
+  the filesystem backend, the `maxItems` cap (protocol + router 409), and the combined knobs. The
+  opt-in stress suites gain a chunked sequential-build variant showing flat per-item append time
+  versus the single-document O(n²).
+
 ## 3.0.0-alpha.5 — TypeScript client `namespace` parity
 
 Sixth alpha of 3.0.0. Brings the client-side **`namespace` option to the TypeScript
@@ -27,6 +79,15 @@ Purely additive: with no `namespace` set the TS client is byte-for-byte unchange
   pull/push/append/pull-blob/push-blob, query strings, and the unset/empty backward-compatible
   cases); a signed-path assertion added to `packages/python/client/tests/test_client.py`
   alongside the existing URL-level namespace tests.
+- **Append-only scaling stress tests** (opt-in) characterizing parse/serialize cost as a log
+  grows: `packages/ts/server/tests/router/append-only.stress.test.ts` and
+  `packages/python/server/tests/protocol/test_append_stress.py`. Run directly against an
+  in-memory store at 1k–100k elements, they confirm append is O(N) per call (so building a log
+  is O(N²)) and that a `?checkpoint=` pull still parses the whole document O(N) — the checkpoint
+  bounds the *response*, not the server-side *parse* (the Python handler does an extra O(N)
+  `ts`-list pass before `bisect`, so it never goes sub-linear). Gated behind `STARFISH_STRESS=1`
+  (vitest `describe.skipIf`) and a `stress` pytest marker excluded by default via `addopts`, so
+  the default suites stay fast. See `docs/ts/server/append-only-collections.md` §Size considerations.
 
 ## 3.0.0-alpha.4 — secp256k1 KEM (Nostr identities as encrypted-collection recipients)
 

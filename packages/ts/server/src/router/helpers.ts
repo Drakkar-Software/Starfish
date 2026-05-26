@@ -1,7 +1,7 @@
 import { UNSAFE_KEYS } from "@drakkar.software/starfish-protocol"
 import type { ObjectStore, StoreContext } from "../storage/base.js"
 import { pull } from "../protocol/pull.js"
-import { push, type Author } from "../protocol/push.js"
+import { push, appendSegPrefix, appendChunkKey, type Author } from "../protocol/push.js"
 import type { PushSuccess, StoredDocument, AppendElement } from "../protocol/types.js"
 import { ERROR_HASH_MISMATCH } from "../constants.js"
 
@@ -216,6 +216,64 @@ export async function handleSyncPull(
 }
 
 /**
+ * Read only the chunks a segmented (`chunkSize`) append-only pull needs.
+ *
+ * Each chunk key encodes its first element's `ts`, so the lexicographically sorted
+ * key list (one `listKeys` call — no chunk contents) tells us every chunk's ts range:
+ *  - `?checkpoint=` → skip every chunk whose whole range is at/below the checkpoint;
+ *    only the boundary chunk (the last whose firstTs ≤ checkpoint) and the chunks
+ *    after it are read.
+ *  - `?last=K` → read only the final ⌈K/chunkSize⌉+1 chunks.
+ * Returns the gathered `{ts,data}` envelopes in order; the caller's checkpoint/last
+ * filtering then trims precisely (e.g. the ≤checkpoint head of the boundary chunk).
+ */
+async function readAppendChunks(
+  store: ObjectStore,
+  documentKey: string,
+  checkpoint: number,
+  last: number | null,
+  chunkSize: number,
+  context?: StoreContext,
+): Promise<AppendElement[]> {
+  if (last === 0) return []
+  const chunkKeys = await store.listKeys(appendSegPrefix(documentKey), undefined, context)
+  if (chunkKeys.length === 0) return []
+
+  let startIdx = 0
+  if (checkpoint > 0) {
+    // Boundary = last chunk key ≤ the (same-width) key for the checkpoint ts.
+    const cpKey = appendChunkKey(documentKey, checkpoint)
+    let lo = 0,
+      hi = chunkKeys.length
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1
+      if (chunkKeys[mid]! <= cpKey) lo = mid + 1
+      else hi = mid
+    }
+    startIdx = Math.max(0, lo - 1) // include the boundary chunk (may hold both ≤ and > checkpoint)
+  }
+
+  let neededKeys = chunkKeys.slice(startIdx)
+  if (last != null && last > 0 && chunkSize > 0) {
+    const maxChunks = Math.ceil(last / chunkSize) + 1
+    if (neededKeys.length > maxChunks) neededKeys = neededKeys.slice(-maxChunks)
+  }
+
+  const raws = await Promise.all(neededKeys.map((k) => store.getString(k, context)))
+  const items: AppendElement[] = []
+  for (const raw of raws) {
+    if (!raw) continue
+    try {
+      const arr = JSON.parse(raw) as AppendElement[]
+      if (Array.isArray(arr)) for (const el of arr) items.push(el)
+    } catch (e) {
+      console.error(`[Starfish] Corrupt append-only chunk under "${documentKey}":`, e)
+    }
+  }
+  return items
+}
+
+/**
  * Pull handler for appendOnly persist=true collections.
  *
  * Each stored element is a `{ts, data}` envelope. When a checkpoint is requested,
@@ -273,7 +331,13 @@ export async function handleAppendOnlyPull(
 
   const storedData = (stored.data as Record<string, unknown>) ?? {}
   const storedHash = stored.hash ?? ""
-  const allItems = Array.isArray(storedData[appendField]) ? (storedData[appendField] as AppendElement[]) : []
+  // Segmented (`seg`) docs keep the array in sibling chunk objects; read only the
+  // chunks the checkpoint/last needs. Legacy single-docs keep the array inline.
+  const allItems: AppendElement[] = (stored as { seg?: unknown }).seg === true
+    ? await readAppendChunks(store, documentKey, checkpoint, last, (stored as { chunkSize?: number }).chunkSize ?? 0, context)
+    : Array.isArray(storedData[appendField])
+      ? (storedData[appendField] as AppendElement[])
+      : []
 
   let filteredItems: AppendElement[]
   if (checkpoint > 0) {

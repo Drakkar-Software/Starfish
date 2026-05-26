@@ -316,6 +316,13 @@ export function useLastSynced(store: StoreApi<StarfishStore>): string {
 
 export interface SyncInitConfig {
   serverUrl: string
+  /**
+   * Optional server namespace, forwarded to the underlying {@link StarfishClient}
+   * so `pullPath`/`pushPath` are rewritten to `/v1/<namespace>/…` (signed AND sent).
+   * Leave unset for a root-mounted server. Pass the bare name (e.g. `"octochat"`),
+   * not `/v1/octochat` — the `/v1/` is added by the client.
+   */
+  namespace?: string
   capProvider?: StarfishCapProvider
   pullPath: string
   pushPath: string
@@ -353,6 +360,7 @@ export function useSyncInit(config: SyncInitConfig | null): StoreApi<StarfishSto
 
     const client = new StarfishClient({
       baseUrl: config.serverUrl,
+      namespace: config.namespace,
       capProvider: config.capProvider,
       fetch: config.fetch,
     })

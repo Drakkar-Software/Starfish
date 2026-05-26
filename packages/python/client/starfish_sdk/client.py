@@ -335,8 +335,11 @@ class StarfishClient:
                 server assign one.
 
         Raises:
-            StarfishHttpError: on a non-2xx response (e.g. 409 for a
-                non-monotonic timestamp).
+            StarfishHttpError: on a non-2xx response — e.g. 409
+                ``{"error": "non_monotonic_timestamp"}`` for a non-monotonic timestamp,
+                or ``{"error": "append_limit_exceeded", "limit": ...}`` if the
+                collection's ``maxItems`` cap is reached (partition by a path
+                parameter for higher volume).
         """
         payload: dict[str, Any] = {"data": data}
         if ts is not None:

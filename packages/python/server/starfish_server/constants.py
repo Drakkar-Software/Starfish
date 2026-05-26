@@ -38,6 +38,21 @@ APPEND_DEFAULT_FIELD = "items"
 # clock. Bounds the monotonic counter so a writer can't poison the log's
 # timestamp space (and detach it from wall-clock) with a far-future `ts`.
 APPEND_MAX_FUTURE_TS_SKEW_MS = 300_000
+# Append rejected because the collection's ``maxItems`` cap is reached.
+ERROR_APPEND_LIMIT_EXCEEDED = "append_limit_exceeded"
+# Suffix appended to a document key to namespace its segmented-storage chunks,
+# e.g. head ``events/X`` -> chunks under ``events/X__seg/``. A sibling prefix (not
+# a child of the head key) so the head can stay a single file even on the
+# filesystem backend (no file-vs-directory clash).
+APPEND_SEG_SUFFIX = "__seg/"
+# Zero-pad width for the ``firstTs`` encoded in a chunk key. The chunk's first
+# element ``ts`` is the key, so the lexicographically sorted key list (one
+# ``list_keys`` call, no chunk reads) tells the server each chunk's ts range and
+# which chunks a ``?checkpoint=`` can skip. 16 digits covers ts well past the
+# future-skew bound for centuries.
+APPEND_SEG_TS_WIDTH = 16
+# Recommended default elements-per-chunk for segmented append-only storage.
+APPEND_DEFAULT_CHUNK_SIZE = 10_000
 
 # Protocol
 ERROR_HASH_MISMATCH = "hash_mismatch"

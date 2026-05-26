@@ -47,6 +47,21 @@ function validateCollections(collections: CollectionConfig[], scopeLabel: string
           errors.push(`${scopeLabel}Collection "${col.name}": appendOnly with persist=true cannot be used with bundle`)
         }
       }
+      const isPosInt = (n: number | undefined): boolean => n == null || (Number.isInteger(n) && n > 0)
+      if (!isPosInt(col.appendOnly.maxItems)) {
+        errors.push(`${scopeLabel}Collection "${col.name}": appendOnly.maxItems must be a positive integer`)
+      }
+      if (!isPosInt(col.appendOnly.chunkSize)) {
+        errors.push(`${scopeLabel}Collection "${col.name}": appendOnly.chunkSize must be a positive integer`)
+      }
+      if (persist === false) {
+        if (col.appendOnly.maxItems != null) {
+          errors.push(`${scopeLabel}Collection "${col.name}": appendOnly.maxItems requires persist=true (nothing is stored when persist=false)`)
+        }
+        if (col.appendOnly.chunkSize != null) {
+          errors.push(`${scopeLabel}Collection "${col.name}": appendOnly.chunkSize requires persist=true (nothing is stored when persist=false)`)
+        }
+      }
     }
 
     if (col.listable) {

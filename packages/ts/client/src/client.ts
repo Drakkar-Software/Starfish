@@ -307,8 +307,10 @@ export class StarfishClient {
    * @param opts.ts - optional client-supplied element timestamp (ms). Must be a
    *   non-negative integer strictly greater than the latest stored element's ts
    *   (else the server responds 409). Omit to let the server assign one.
-   * @throws {StarfishHttpError} on a non-2xx response (e.g. 409 for a
-   *   non-monotonic timestamp).
+   * @throws {StarfishHttpError} on a non-2xx response — e.g. 409
+   *   `{ error: "non_monotonic_timestamp" }` for a non-monotonic timestamp, or
+   *   `{ error: "append_limit_exceeded", limit }` if the collection's `maxItems`
+   *   cap is reached (partition by a path parameter for higher volume).
    */
   async append(
     path: string,

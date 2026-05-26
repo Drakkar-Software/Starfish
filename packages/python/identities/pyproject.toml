@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "starfish-identities"
-version = "3.0.0a5"
+version = "3.0.0a6"
 description = "Starfish root + device identity extension (passphrase derivation, device cap-cert minting, pairing flows, device directory)"
 requires-python = ">=3.11"
 dependencies = [

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "starfish-server"
-version = "3.0.0a5"
+version = "3.0.0a6"
 description = "Python server for the Starfish sync protocol"
 requires-python = ">=3.11"
 dependencies = [
@@ -40,3 +40,5 @@ starfish-sharing = { path = "../sharing", editable = true }
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = ["stress: slow append-only size/scaling stress tests (opt-in)"]
+addopts = "-m 'not stress'"
