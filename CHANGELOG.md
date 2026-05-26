@@ -1,5 +1,60 @@
 # Changelog
 
+## 3.0.0-alpha.8 — author proof (append elements + merge documents)
+
+Stored writes now carry a cryptographic **author proof** — bound to both the payload and the
+document path — so a reader can verify *who* wrote each element/document instead of trusting a
+self-declared id. Covers BOTH append-only elements and merge documents, in **both** TypeScript and
+Python, with cross-language regression tests and a new conformance vector; full TS + Python suites
+pass. Lockstep bump of all twenty packages to 3.0.0-alpha.8 / 3.0.0a8.
+
+### Added
+
+- **Author-proof primitives** in `starfish-protocol`: `signAppendAuthor` / `verifyAppendAuthor` (and
+  `signDocAuthor` / `verifyDocAuthor`); Python `sign_append_author` / `verify_append_author` (and
+  `sign_doc_author` / `verify_doc_author`). The signature is Ed25519 over
+  `<domain> + stableStringify({ k: documentKey, d: data })`, producing `{ authorPubkey,
+  authorSignature }`. Binding `documentKey` (the storage path) stops an authorized writer from
+  replaying another author's signed write under a different key. Two distinct domain tags
+  (`starfish-append-author-v1\n`, `starfish-doc-author-v1\n`) keep element and document signatures
+  from ever cross-verifying. The canonical input is byte-identical across TS and Python — locked by
+  `tests/test-vectors/append-author.json`. The client's `append()` and `SyncManager` push now sign
+  with the same key that signs the request, so the proof rides along automatically.
+- **`requireAuthorSignature` append-only collection option (DEFAULT: on).** When enforced, the server
+  rejects an append that lacks an author proof (`400`), whose signature does not verify (`403`), or
+  whose `authorPubkey` is not the authenticated request presenter (`403`) — binding the stored author
+  to the cap-cert / audience key that authenticated the write. The proof is stored on the element so
+  any reader re-verifies it. Set `requireAuthorSignature: false` only for an unauthenticated /
+  public-write log where author identity is meaningless.
+- **Wire-field-name constants** (`AUTHOR_PUBKEY_FIELD`, `AUTHOR_SIGNATURE_FIELD`, `DATA_FIELD`,
+  `TS_FIELD`, `BASE_HASH_FIELD`, `PUSH_PATH_PREFIX`) defined once in `starfish-protocol`
+  (`constants.ts` / `constants.py`) and used at every untyped body/document access in both languages,
+  so the two implementations cannot drift on the wire contract.
+
+### Changed
+
+- **BREAKING: append-only writes require an author signature by default.** Every append-only
+  collection now enforces `requireAuthorSignature` unless explicitly set to `false`. A client on
+  3.0.0-alpha.7 (whose `append()` does not sign) is rejected by a 3.0.0-alpha.8 server — bump client
+  and server in lockstep, or set `requireAuthorSignature: false` on collections that must keep
+  accepting unsigned appends. The stored append *element* gains optional `authorPubkey` /
+  `authorSignature` fields (additive; pulls of pre-existing elements are unaffected).
+- **BREAKING: merge-document author proof now works and is verified.** Previously the author fields a
+  signing client attached rode *inside* `data` while the server read them from the top-level body —
+  so they were never verified and the server stored the caller's *userId hash* in `authorPubkey`
+  (effectively a no-op). The author proof now travels as **top-level body siblings of `data`**; the
+  server verifies it (`verifyDocAuthor`, bound to `documentKey`), requires `authorPubkey` to be the
+  request presenter, and stores the **raw** author pubkey. Verification is **opt-in by presence** — an
+  unsigned merge-doc push (no `SyncManager` signer) is accepted unchanged — but a *signed* push from
+  an old client (author fields inside `data`) is no longer recognized. Pulls now return the author
+  proof at the top level of the document.
+
+### Notes
+
+- **Path binding is data + documentKey, not the full request.** The signature binds the author to the
+  payload and the storage `documentKey`; it does not separately bind query parameters or the
+  namespace (which the per-request signature already covers).
+
 ## 3.0.0-alpha.7 — security & correctness fixes (auth review round)
 
 Fixes from a security/coding/testing/encryption review of the capability-auth branch. All land in

@@ -6,10 +6,16 @@ export const DOCUMENT_VERSION = 1
 
 /** One element of an appendOnly (`by_timestamp`) collection's stored array.
  *  `ts` (the server-visible plaintext timestamp) drives `?checkpoint=` filtering;
- *  `data` is opaque — plaintext under `"none"`, an encryptor wrapper under `"delegated"`. */
+ *  `data` is opaque — plaintext under `"none"`, an encryptor wrapper under `"delegated"`.
+ *  `authorPubkey`/`authorSignature` are the stored append-author proof over `data`
+ *  (see `@drakkar.software/starfish-protocol` `verifyAppendAuthor`): present when the
+ *  writer signed the append (always, for a `requireAuthorSignature` collection), so a
+ *  reader can verify who wrote the element rather than trust a self-declared id. */
 export interface AppendElement {
   ts: number
   data: unknown
+  authorPubkey?: string
+  authorSignature?: string
 }
 
 export interface StoredDocument {

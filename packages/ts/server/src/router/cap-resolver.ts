@@ -22,6 +22,12 @@ import {
   isAlg,
   userIdFromPubHex,
   DEFAULT_ALG,
+  HEADER_AUTHORIZATION as HEADER_AUTH,
+  HEADER_SIG,
+  HEADER_TS,
+  HEADER_NONCE,
+  HEADER_PUB,
+  HEADER_ALG,
   type Alg,
   type CapCert,
   type SignableRequest,
@@ -109,24 +115,15 @@ export class CapAuthError extends Error {
   }
 }
 
-const HEADER_AUTH = "Authorization"
-const HEADER_SIG = "X-Starfish-Sig"
-const HEADER_TS = "X-Starfish-Ts"
-const HEADER_NONCE = "X-Starfish-Nonce"
-/**
- * Conveys the presenter's Ed25519 pubkey for an `audience` cap (which binds no
- * single subject). The resolver verifies the per-request signature against this
- * key and, when the cap carries an `aud` allow-list, checks membership. Ignored
- * for device/member caps, whose verifying key is `cert.sub`.
- */
-const HEADER_PUB = "X-Starfish-Pub"
-/**
- * Conveys the crypto suite of an `audience` presenter's request signature.
- * For device/member caps the signing suite is authoritative from the verified
- * `cert.subAlg` (falling back to `cert.issAlg`), so this header is read only
- * for audience caps (defaulting to `ed25519` when absent).
- */
-const HEADER_ALG = "X-Starfish-Alg"
+// Request-auth header names are defined once in `starfish-protocol` (imported
+// above) so the client and this resolver cannot drift:
+//   HEADER_PUB  — the presenter's Ed25519 pubkey for an `audience` cap (which
+//     binds no single subject); the per-request signature is verified against it
+//     and, when the cap carries an `aud` allow-list, membership is checked.
+//     Ignored for device/member caps, whose verifying key is `cert.sub`.
+//   HEADER_ALG  — the crypto suite of an `audience` presenter's request
+//     signature (defaulting to `ed25519`); for device/member caps the suite is
+//     authoritative from the verified `cert.subAlg` (falling back to `cert.issAlg`).
 
 /** A presenter pubkey: 64-char lowercase hex (32-byte Ed25519 or secp256k1 x-only). */
 const PUB_HEX_RE = /^[0-9a-f]{64}$/
@@ -679,7 +676,14 @@ export function createCapCertRoleResolver(opts: CapResolverOptions): RoleResolve
     const roles = synthesizeRoles(cert)
     // Carry the expanded scope so the route layer can authorize sibling reads
     // (e.g. the ?withKeyring=1 `<key>/_keyring` shortcut) against the same
-    // paths the data request was checked against.
-    return { identity, roles, scopePaths: expandedPaths }
+    // paths the data request was checked against. `presenter` carries the key
+    // that signed THIS request (already verified above) so the append handler
+    // can bind a signed element's author to its authenticated writer.
+    return {
+      identity,
+      roles,
+      scopePaths: expandedPaths,
+      presenter: { pubHex: verifyingPubHex, alg: reqAlg },
+    }
   }
 }

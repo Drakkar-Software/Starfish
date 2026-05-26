@@ -4,6 +4,11 @@
 from dataclasses import dataclass, field
 from typing import Any, TypedDict
 
+try:
+    from typing import NotRequired
+except ImportError:  # pragma: no cover - safety net for older runtimes
+    from typing_extensions import NotRequired  # type: ignore[assignment]
+
 from starfish_protocol.types import PullResult, PushSuccess
 
 DOCUMENT_VERSION = 1
@@ -14,11 +19,17 @@ class AppendElement(TypedDict):
 
     ``ts`` (the server-visible plaintext timestamp) drives ``?checkpoint=``
     filtering; ``data`` is opaque — plaintext under ``"none"``, an encryptor
-    wrapper under ``"delegated"``.
+    wrapper under ``"delegated"``. ``authorPubkey``/``authorSignature`` are the
+    stored append-author proof over ``data`` (see
+    ``starfish_protocol.verify_append_author``): present when the writer signed
+    the append (always, for a ``requireAuthorSignature`` collection), so a reader
+    can verify who wrote the element rather than trust a self-declared id.
     """
 
     ts: int
     data: Any
+    authorPubkey: NotRequired[str]
+    authorSignature: NotRequired[str]
 
 
 @dataclass

@@ -186,3 +186,60 @@ async def test_pull_returns_ts_data_envelopes_for_append_only():
         async with StarfishClient(BASE) as client:
             result = await client.pull("/pull/events", append_field="items")
     assert result == envelopes
+
+
+# A real Ed25519 keypair so the emitted signature actually verifies; the cap is a
+# minimal stand-in (the client only base64-encodes it for the header).
+_KP_PRIV = "1133557799bbddff1133557799bbddff1133557799bbddff1133557799bbddff"
+_KP_PUB = "062f2ba3c6a5590364b0864d539af151907d09ea0b741b0811e0d761a059bda4"
+_FAKE_CAP = {
+    "v": 1,
+    "kind": "audience",
+    "issAlg": "ed25519",
+    "iss": "aa" * 32,
+    "issUserId": "x",
+    "scope": {"ops": ["write"], "collections": ["c"]},
+    "nbf": 0,
+    "exp": 0,
+    "nonce": "AAAAAAAAAAAAAAAAAAAAAA==",
+}
+
+
+class _AudienceCapProvider:
+    async def get_cap(self) -> dict:
+        return {"cap": _FAKE_CAP, "dev_ed_priv_hex": _KP_PRIV, "pub_hex": _KP_PUB}
+
+
+@pytest.mark.asyncio
+async def test_append_signs_element_for_server_verification():
+    import json
+    from starfish_protocol.append_author import verify_append_author
+
+    data = {"msg": "hi"}
+    with respx.mock(base_url="https://api.example.com") as mock:
+        route = mock.post("/v1/push/events").mock(
+            return_value=httpx.Response(200, json={"hash": "h", "timestamp": 1})
+        )
+        async with StarfishClient(BASE, cap_provider=_AudienceCapProvider()) as client:
+            await client.append("/push/events", data)
+
+    body = json.loads(route.calls[0].request.content)
+    assert body["authorPubkey"] == _KP_PUB
+    # The client derives document_key="events" from the push path "/push/events".
+    assert verify_append_author("events", data, body["authorPubkey"], body["authorSignature"]) is True
+
+
+@pytest.mark.asyncio
+async def test_append_sends_no_author_fields_without_cap_provider():
+    import json
+
+    with respx.mock(base_url="https://api.example.com") as mock:
+        route = mock.post("/v1/push/events").mock(
+            return_value=httpx.Response(200, json={"hash": "h", "timestamp": 1})
+        )
+        async with StarfishClient(BASE) as client:
+            await client.append("/push/events", {"msg": "hi"})
+
+    body = json.loads(route.calls[0].request.content)
+    assert "authorPubkey" not in body
+    assert "authorSignature" not in body

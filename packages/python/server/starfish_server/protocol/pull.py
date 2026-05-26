@@ -5,6 +5,7 @@ import json
 import logging
 import time
 
+from starfish_protocol.constants import AUTHOR_PUBKEY_FIELD, AUTHOR_SIGNATURE_FIELD
 from starfish_server.storage.base import AbstractObjectStore, StoreContext
 from starfish_server.protocol.types import StoredDocument, PullResult
 
@@ -39,6 +40,6 @@ async def pull(
         data=parsed.get("data", {}),
         hash=parsed.get("hash", ""),
         timestamp=timestamp,
-        author_pubkey=parsed.get("authorPubkey"),
-        author_signature=parsed.get("authorSignature"),
+        author_pubkey=parsed.get(AUTHOR_PUBKEY_FIELD),
+        author_signature=parsed.get(AUTHOR_SIGNATURE_FIELD),
     )

@@ -6,9 +6,26 @@ from typing import Any
 
 import httpx
 
+from starfish_protocol.append_author import sign_append_author
+from starfish_protocol.constants import (
+    AUTHOR_PUBKEY_FIELD,
+    AUTHOR_SIGNATURE_FIELD,
+    DATA_FIELD,
+    TS_FIELD,
+    BASE_HASH_FIELD,
+    PUSH_PATH_PREFIX,
+    HEADER_AUTHORIZATION,
+    HEADER_SIG,
+    HEADER_TS,
+    HEADER_NONCE,
+    HEADER_ALG,
+    HEADER_PUB,
+    HEADER_CONTENT_TYPE,
+    HEADER_ACCEPT,
+)
 from starfish_protocol.hash import stable_stringify
 from starfish_protocol.request_signing import sign_request
-from starfish_protocol.suites import DEFAULT_ALG
+from starfish_protocol.suites import Alg, DEFAULT_ALG
 from starfish_protocol.types import PullKeyringProjection, PullResult, PushSuccess
 from starfish_sdk.types import (
     BlobPullResult,
@@ -106,6 +123,19 @@ class StarfishClient:
         if self._cap_provider is None:
             return {}
         ctx = await self._cap_provider.get_cap()
+        return self._cap_request_headers(ctx, method, path_and_query, body)
+
+    def _cap_request_headers(
+        self, ctx: dict[str, Any], method: str, path_and_query: str, body: str | None
+    ) -> dict[str, str]:
+        """Build the request-signing headers from an ALREADY-fetched cap context.
+
+        Split out of :meth:`_auth_headers` so :meth:`append` can fetch the cap
+        once and reuse it for BOTH the author signature (over the element data)
+        and the request signature (over the body), without redeeming the cap
+        twice — a second ``get_cap()`` could rotate keys and break the
+        ``authorPubkey == presenter`` bind the server checks.
+        """
         cap = ctx["cap"]
         dev_ed_priv_hex = ctx["dev_ed_priv_hex"]
         body_bytes = body.encode("utf-8") if isinstance(body, str) else b""
@@ -139,18 +169,40 @@ class StarfishClient:
             stable_stringify(cap).encode("utf-8")
         ).decode("ascii")
         headers = {
-            "Authorization": f"Cap {cap_b64}",
-            "X-Starfish-Sig": sig.sig,
-            "X-Starfish-Ts": str(sig.ts),
-            "X-Starfish-Nonce": sig.nonce,
-            "X-Starfish-Alg": sig.alg,
+            HEADER_AUTHORIZATION: f"Cap {cap_b64}",
+            HEADER_SIG: sig.sig,
+            HEADER_TS: str(sig.ts),
+            HEADER_NONCE: sig.nonce,
+            HEADER_ALG: sig.alg,
         }
         # Audience (public-link) caps bind no single subject, so the server needs
         # the presenter's pubkey to verify the signature and check the allow-list.
         pub_hex = ctx.get("pub_hex")
         if pub_hex is not None:
-            headers["X-Starfish-Pub"] = pub_hex
+            headers[HEADER_PUB] = pub_hex
         return headers
+
+    def _append_author_key(self, ctx: dict[str, Any]) -> tuple[str, Alg] | None:
+        """Resolve the author public key + suite to sign an append with: the
+        redeemer's ``pub_hex`` for an audience cap, else the cert subject
+        ``cap["sub"]`` for a device/member cap. This is the SAME key that signs
+        the request, so a server enforcing author proof binds the stored element
+        to its writer. Returns ``None`` only for a (malformed) cap with neither —
+        the append then goes unsigned and a server requiring signatures rejects it.
+        """
+        cap = ctx["cap"]
+        author_pub_hex = ctx.get("pub_hex")
+        if author_pub_hex is None:
+            author_pub_hex = cap.get("sub")
+        if author_pub_hex is None:
+            return None
+        if cap.get("kind") == "audience":
+            presenter_alg = ctx.get("presenter_alg")
+            sign_alg = presenter_alg if presenter_alg is not None else DEFAULT_ALG
+        else:
+            sub_alg = cap.get("subAlg")
+            sign_alg = sub_alg if sub_alg is not None else cap.get("issAlg", DEFAULT_ALG)
+        return (author_pub_hex, sign_alg)
 
     async def pull(
         self,
@@ -227,13 +279,13 @@ class StarfishClient:
             )
             resp = await self._client.get(
                 url,
-                headers={"Accept": "application/json", **auth_headers},
+                headers={HEADER_ACCEPT: "application/json", **auth_headers},
             )
         else:
             resp = await self._client.get(
                 f"{self._base_url}{self._send_path(path)}",
                 params=params,
-                headers={"Accept": "application/json", **auth_headers},
+                headers={HEADER_ACCEPT: "application/json", **auth_headers},
             )
         if resp.status_code != 200:
             raise StarfishHttpError(resp.status_code, resp.text)
@@ -243,8 +295,8 @@ class StarfishClient:
             data=body["data"],
             hash=body["hash"],
             timestamp=body["timestamp"],
-            author_pubkey=body.get("authorPubkey"),
-            author_signature=body.get("authorSignature"),
+            author_pubkey=body.get(AUTHOR_PUBKEY_FIELD),
+            author_signature=body.get(AUTHOR_SIGNATURE_FIELD),
         )
 
         # ``keyring`` is present on the response only when the request set
@@ -280,6 +332,7 @@ class StarfishClient:
         path: str,
         data: dict[str, Any],
         base_hash: str | None,
+        author: "dict[str, str] | None" = None,
     ) -> PushSuccess:
         """Push synced data to the server.
 
@@ -287,15 +340,17 @@ class StarfishClient:
             path: The push endpoint path
             data: The full document data to push
             base_hash: Hash of the document this push is based on (None for first push)
-
-        v3 author fields (``authorPubkey`` + ``authorSignature``) live inside
-        ``data`` and are produced by :class:`SyncManager` when a ``signer``
-        is configured.
+            author: optional v3 author proof (``{"authorPubkey", "authorSignature"}``)
+                produced by :class:`SyncManager` when a ``signer`` is configured;
+                sent as top-level body siblings of ``data`` where the server verifies it.
 
         Raises:
             ConflictError: if the server detects a hash mismatch (409)
         """
-        payload: dict[str, Any] = {"data": data, "baseHash": base_hash}
+        payload: dict[str, Any] = {DATA_FIELD: data, BASE_HASH_FIELD: base_hash}
+        if author is not None:
+            payload[AUTHOR_PUBKEY_FIELD] = author[AUTHOR_PUBKEY_FIELD]
+            payload[AUTHOR_SIGNATURE_FIELD] = author[AUTHOR_SIGNATURE_FIELD]
         body = json.dumps(payload)
 
         auth_headers = await self._auth_headers("POST", self._sign_path(path), body)
@@ -304,8 +359,8 @@ class StarfishClient:
             f"{self._base_url}{self._send_path(path)}",
             content=body,
             headers={
-                "Content-Type": "application/json",
-                "Accept": "application/json",
+                HEADER_CONTENT_TYPE: "application/json",
+                HEADER_ACCEPT: "application/json",
                 **auth_headers,
             },
         )
@@ -346,19 +401,48 @@ class StarfishClient:
                 collection's ``maxItems`` cap is reached (partition by a path
                 parameter for higher volume).
         """
-        payload: dict[str, Any] = {"data": data}
+        payload: dict[str, Any] = {DATA_FIELD: data}
         if ts is not None:
-            payload["ts"] = ts
-        body = json.dumps(payload)
+            payload[TS_FIELD] = ts
 
-        auth_headers = await self._auth_headers("POST", self._sign_path(path), body)
+        # Author proof. Fetch the cap ONCE and reuse it for both the author
+        # signature (over the element ``data``) and the request signature (over
+        # the final body). The author fields are signed with the same key that
+        # authenticates the request, so a collection with ``requireAuthorSignature``
+        # (the default) binds the stored element to its writer. Without a cap
+        # provider the append is sent unsigned and such a collection rejects it.
+        ctx = (
+            await self._cap_provider.get_cap()
+            if self._cap_provider is not None
+            else None
+        )
+        if ctx is not None:
+            author = self._append_author_key(ctx)
+            if author is not None:
+                author_pub_hex, sign_alg = author
+                # The signature binds the author to BOTH the element data AND the
+                # document it is written to (the storage path = ``path`` minus the
+                # ``/push/`` action prefix; the namespace lives only in the URL).
+                document_key = path.removeprefix(PUSH_PATH_PREFIX)
+                signed = sign_append_author(
+                    document_key, data, author_pub_hex, ctx["dev_ed_priv_hex"], sign_alg
+                )
+                payload[AUTHOR_PUBKEY_FIELD] = signed[AUTHOR_PUBKEY_FIELD]
+                payload[AUTHOR_SIGNATURE_FIELD] = signed[AUTHOR_SIGNATURE_FIELD]
+
+        body = json.dumps(payload)
+        auth_headers = (
+            self._cap_request_headers(ctx, "POST", self._sign_path(path), body)
+            if ctx is not None
+            else {}
+        )
 
         resp = await self._client.post(
             f"{self._base_url}{self._send_path(path)}",
             content=body,
             headers={
-                "Content-Type": "application/json",
-                "Accept": "application/json",
+                HEADER_CONTENT_TYPE: "application/json",
+                HEADER_ACCEPT: "application/json",
                 **auth_headers,
             },
         )
@@ -379,7 +463,7 @@ class StarfishClient:
 
         resp = await self._client.get(
             f"{self._base_url}{self._send_path(path)}",
-            headers={"Accept": "*/*", **auth_headers},
+            headers={HEADER_ACCEPT: "*/*", **auth_headers},
         )
         if resp.status_code != 200:
             raise StarfishHttpError(resp.status_code, resp.text)
@@ -404,8 +488,8 @@ class StarfishClient:
             f"{self._base_url}{self._send_path(path)}",
             content=data,
             headers={
-                "Content-Type": content_type,
-                "Accept": "application/json",
+                HEADER_CONTENT_TYPE: content_type,
+                HEADER_ACCEPT: "application/json",
                 **auth_headers,
             },
         )
@@ -420,7 +504,7 @@ class StarfishClient:
         config_path = "/sync/config" if self._namespace is not None else "/config"
         resp = await self._client.get(
             f"{self._base_url}{config_path}",
-            headers={"Accept": "application/json"},
+            headers={HEADER_ACCEPT: "application/json"},
         )
         if resp.status_code != 200:
             raise StarfishHttpError(resp.status_code, resp.text)

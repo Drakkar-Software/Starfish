@@ -49,6 +49,7 @@ Shorthand: `appendOnly: true` (JSON / YAML) maps to `{ "type": "by_timestamp" }`
 | `persist` | `boolean` | `true` | `false` = skip storage, publish queue only (replaces `queueOnly`) |
 | `maxItems` | `number` | unset (unlimited) | Reject an append once the stored element count reaches this many — see [Bounding & scaling](#bounding--scaling-maxitems--chunksize). Requires `persist`. |
 | `chunkSize` | `number` | unset (single document) | Store the log as fixed-size sealed chunks instead of one growing blob, bounding append cost — see [Bounding & scaling](#bounding--scaling-maxitems--chunksize). Requires `persist`. |
+| `requireAuthorSignature` | `boolean` | `true` | Require a cryptographic [author proof](#author-proof-requireauthorsignature) on every append. Set `false` only for an unauthenticated/public-write log where author identity is meaningless. |
 
 > The old `checkLastItem` option was **removed**. Appends are now always accepted content-wise (see below); there is no `baseHash` conflict check on an append.
 
@@ -57,9 +58,10 @@ Shorthand: `appendOnly: true` (JSON / YAML) maps to `{ "type": "by_timestamp" }`
 On every push (after the normal authorization checks — caps, roles, expiry, rate/size limits):
 
 1. The element payload (`body.data`) is read and sanitized.
-2. The server resolves the element timestamp `ts` (see **Timestamps** below).
-3. `{ ts, data }` is appended as the last element of `data[field]`.
-4. The document is written; the queue event is published (if a queue is configured).
+2. The [author proof](#author-proof-requireauthorsignature) is verified (unless `requireAuthorSignature: false`).
+3. The server resolves the element timestamp `ts` (see **Timestamps** below).
+4. `{ ts, data, authorPubkey, authorSignature }` is appended as the last element of `data[field]`.
+5. The document is written; the queue event is published (if a queue is configured).
 
 There is **no hash / conflict check** — an authorized append always succeeds (content-wise). Any `baseHash` a client sends is ignored. Concurrent appends to the same document are serialized by a per-key write lock, so no element is ever lost; they land in arrival order.
 
@@ -81,6 +83,38 @@ hash({ n: items.length, last: lastItem })
 ```
 
 where `lastItem` is the element's **`data`** payload (not the `{ ts, data }` envelope). This is O(1) — independent of array size — and is used for ETag/304 short-circuiting. The `n` (length) component ensures two identical back-to-back pushes produce different hashes, preventing false 304 responses.
+
+### Author proof (`requireAuthorSignature`)
+
+An append-only log is often multi-writer (many members, or a public write link), so the **author** of
+each element must be verifiable — not a self-declared field a peer could spoof. By default
+(`requireAuthorSignature: true`) every append carries a cryptographic author proof:
+
+- **Client** — `client.append()` signs the element `data` with the same key that signs the HTTP
+  request (the cap subject, or the redeemer of an audience link) and attaches
+  `{ authorPubkey, authorSignature }` to the body. The signature is Ed25519 over
+  `"starfish-append-author-v1\n" + stableStringify({ k: documentKey, d: data })` (see
+  `signAppendAuthor` / `sign_append_author` in `starfish-protocol`). It is independent of
+  `ts`/`baseHash`, and bound to the `documentKey` (the storage path = the push path minus `/push/`).
+- **Server** — on each append it:
+  1. requires `authorPubkey` + `authorSignature` (else `400`);
+  2. requires `authorPubkey` to equal the **authenticated request presenter** — the cap-cert subject
+     or audience redeemer key — so a writer cannot claim someone else's identity (else `403`);
+  3. verifies the signature over the **sanitized** element (the exact bytes it stores) (else `403`).
+  The proof is then stored on the element, so any reader who pulls the log re-verifies it with
+  `verifyAppendAuthor` / `verify_append_author` — recompute the author's id from `authorPubkey`
+  (e.g. `userIdFromPubHex`) and trust *that*, never a self-declared id inside `data`.
+
+Because the author key is bound to the request presenter, the proof composes with the cap model: an
+audience write-link allow-listed to specific keys yields elements provably authored by those keys.
+
+Set `requireAuthorSignature: false` only for a log where author identity is meaningless (e.g. an open,
+unauthenticated ingest endpoint). When off, the server still **stores** any proof the client sent (so
+readers can opt into verifying) but does not require or check one.
+
+> **Path binding:** the signature binds the author to the element `data` AND the `documentKey`, so a
+> signed element cannot be replayed under a different document key (the signature no longer matches).
+> Merge documents carry the same proof under a distinct domain tag (`starfish-doc-author-v1`).
 
 ### Incremental pull (checkpoint)
 

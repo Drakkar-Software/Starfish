@@ -1,0 +1,66 @@
+{
+  "description": "Cross-language vector for v3.0 append-author Ed25519 signatures. Locks the canonical signing input (domain tag + stableStringify({k:documentKey,d:data})) and the deterministic Ed25519 signature for several (documentKey, element) pairs, plus a wrong-signer negative case. The documentKey binding prevents replaying a signed element under a different document key.",
+  "signer": {
+    "label": "alice_append",
+    "edPriv": "1133557799bbddff1133557799bbddff1133557799bbddff1133557799bbddff",
+    "edPub": "062f2ba3c6a5590364b0864d539af151907d09ea0b741b0811e0d761a059bda4"
+  },
+  "wrongSignerPub": {
+    "label": "mallory",
+    "edPub": "36c16ab2fd7e12c14e5a524bf7a63a02b16e292533c95e79b92ea4f87da3929d"
+  },
+  "domain": "starfish-append-author-v1\n",
+  "cases": [
+    {
+      "label": "simple-object",
+      "alg": "ed25519",
+      "documentKey": "events",
+      "data": {
+        "authorId": "abc",
+        "text": "hello",
+        "ts": 1747000000000
+      },
+      "canonicalSigningInput": "starfish-append-author-v1\n{\"d\":{\"authorId\":\"abc\",\"text\":\"hello\",\"ts\":1747000000000},\"k\":\"events\"}",
+      "authorSignature": "HFCaEK6Y/j9mZclRB2Ggn/nEWHTxmM35suN0v6uKXcgfMXDsKEeoMWf8ekNAcUHJ6r6x/dyDEr/QYY1wvfkNCQ==",
+      "expectVerify": true
+    },
+    {
+      "label": "nested-and-array",
+      "alg": "ed25519",
+      "documentKey": "spaces/abc/streams/xyz",
+      "data": {
+        "t": "msg",
+        "e": {
+          "id": "x1",
+          "reactions": [
+            1,
+            2,
+            3
+          ],
+          "meta": {
+            "b": 2,
+            "a": 1
+          }
+        }
+      },
+      "canonicalSigningInput": "starfish-append-author-v1\n{\"d\":{\"e\":{\"id\":\"x1\",\"meta\":{\"a\":1,\"b\":2},\"reactions\":[1,2,3]},\"t\":\"msg\"},\"k\":\"spaces/abc/streams/xyz\"}",
+      "authorSignature": "QuN2g67EgDJkRhMlnueE2k+zpjT8vAGgs2IaU4iaKgLOBApD1KIxfXJPlw/Cj/GT050wOCF3rgWiN/BA4rojBw==",
+      "expectVerify": true
+    },
+    {
+      "label": "encrypted-wrapper",
+      "alg": "ed25519",
+      "documentKey": "pubspaces/owner1/sp1/streams/r1",
+      "data": {
+        "iv": "AAEC",
+        "ct": "ZGVmZw",
+        "ek": {
+          "r1": "k1"
+        }
+      },
+      "canonicalSigningInput": "starfish-append-author-v1\n{\"d\":{\"ct\":\"ZGVmZw\",\"ek\":{\"r1\":\"k1\"},\"iv\":\"AAEC\"},\"k\":\"pubspaces/owner1/sp1/streams/r1\"}",
+      "authorSignature": "yNBT/qwo5ULKuAdFO5NmK4wywnzcFtTGM6q0sWVzUqHBvjTJk9yv7Up9Tc9l1zU8tyAMDQKm6JdtAt4VKRhTBA==",
+      "expectVerify": true
+    }
+  ]
+}

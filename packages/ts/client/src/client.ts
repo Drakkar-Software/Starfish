@@ -1,8 +1,24 @@
 import type { PullResult, PushSuccess } from "@drakkar.software/starfish-protocol"
 import {
+  AUTHOR_PUBKEY_FIELD,
+  AUTHOR_SIGNATURE_FIELD,
+  DATA_FIELD,
+  TS_FIELD,
+  BASE_HASH_FIELD,
+  PUSH_PATH_PREFIX,
+  HEADER_AUTHORIZATION,
+  HEADER_SIG,
+  HEADER_TS,
+  HEADER_NONCE,
+  HEADER_ALG,
+  HEADER_PUB,
+  HEADER_CONTENT_TYPE,
+  HEADER_ACCEPT,
   DEFAULT_ALG,
+  signAppendAuthor,
   signRequest,
   stableStringify,
+  type AppendAuthor,
   type SignableMethod,
   type SignableRequest,
 } from "@drakkar.software/starfish-protocol"
@@ -13,6 +29,13 @@ import type {
 import { ConflictError, StarfishHttpError } from "./types.js"
 
 const APPEND_DEFAULT_FIELD = "items"
+
+/** The storage `documentKey` for a push `path`: the path with the `/push/`
+ *  action prefix stripped (the namespace lives only in the URL). The author
+ *  signature binds to this key. */
+export function stripPushPrefix(path: string): string {
+  return path.startsWith(PUSH_PATH_PREFIX) ? path.slice(PUSH_PATH_PREFIX.length) : path
+}
 
 /** Result of pulling a binary blob from the server. */
 export interface BlobPullResult {
@@ -146,41 +169,76 @@ export class StarfishClient {
     pathAndQuery: string,
     body: string | undefined,
   ): Promise<Record<string, string>> {
-    if (this.capProvider) {
-      const { cap, devEdPrivHex, pubHex, presenterAlg } = await this.capProvider.getCap()
-      const req: SignableRequest = {
-        method,
-        pathAndQuery,
-        body,
-        host: this.signingHost(),
-      }
-      // The signing suite is the suite of whoever holds `devEdPrivHex`:
-      // - device/member: the subject signs, so use the cert's subject suite.
-      //   Tolerant-reader rule (matches the server resolver): an absent
-      //   `subAlg` means "same suite as the issuer", so fall back to
-      //   `cap.issAlg`, not the global default.
-      // - audience (public-link): the presenter is an arbitrary redeemer
-      //   signing with their own key, unrelated to the cert's suites, so use
-      //   `presenterAlg` (defaulting to ed25519). The server reads it back from
-      //   `X-Starfish-Alg` for audience caps.
-      const signAlg =
-        cap.kind === "audience" ? (presenterAlg ?? DEFAULT_ALG) : (cap.subAlg ?? cap.issAlg)
-      const { alg, sig, ts, nonce } = await signRequest(req, devEdPrivHex, {
-        alg: signAlg,
-      })
-      const headers: Record<string, string> = {
-        Authorization: `Cap ${encodeCapAuth(cap)}`,
-        "X-Starfish-Sig": sig,
-        "X-Starfish-Ts": String(ts),
-        "X-Starfish-Nonce": nonce,
-        "X-Starfish-Alg": alg,
-      }
-      // Audience (public-link) caps bind no single subject, so the server needs
-      // the presenter's pubkey to verify the signature and check the allow-list.
-      if (pubHex !== undefined) headers["X-Starfish-Pub"] = pubHex
-      return headers
+    if (!this.capProvider) return {}
+    const capCtx = await this.capProvider.getCap()
+    return this.capRequestHeaders(capCtx, method, pathAndQuery, body)
+  }
+
+  /**
+   * Build the request-signing headers from an ALREADY-fetched cap context. Split
+   * out of {@link buildAuthHeaders} so {@link append} can fetch the cap once and
+   * reuse it for BOTH the author signature (over the element data) and the
+   * request signature (over the body), without redeeming the cap twice — a
+   * second `getCap()` could rotate keys and break the `authorPubkey ===
+   * presenter` bind the server checks.
+   */
+  private async capRequestHeaders(
+    capCtx: Awaited<ReturnType<StarfishCapProvider["getCap"]>>,
+    method: SignableMethod,
+    pathAndQuery: string,
+    body: string | undefined,
+  ): Promise<Record<string, string>> {
+    const { cap, devEdPrivHex, pubHex, presenterAlg } = capCtx
+    const req: SignableRequest = {
+      method,
+      pathAndQuery,
+      body,
+      host: this.signingHost(),
     }
-    return {}
+    // The signing suite is the suite of whoever holds `devEdPrivHex`:
+    // - device/member: the subject signs, so use the cert's subject suite.
+    //   Tolerant-reader rule (matches the server resolver): an absent
+    //   `subAlg` means "same suite as the issuer", so fall back to
+    //   `cap.issAlg`, not the global default.
+    // - audience (public-link): the presenter is an arbitrary redeemer
+    //   signing with their own key, unrelated to the cert's suites, so use
+    //   `presenterAlg` (defaulting to ed25519). The server reads it back from
+    //   `X-Starfish-Alg` for audience caps.
+    const signAlg =
+      cap.kind === "audience" ? (presenterAlg ?? DEFAULT_ALG) : (cap.subAlg ?? cap.issAlg)
+    const { alg, sig, ts, nonce } = await signRequest(req, devEdPrivHex, {
+      alg: signAlg,
+    })
+    const headers: Record<string, string> = {
+      [HEADER_AUTHORIZATION]: `Cap ${encodeCapAuth(cap)}`,
+      [HEADER_SIG]: sig,
+      [HEADER_TS]: String(ts),
+      [HEADER_NONCE]: nonce,
+      [HEADER_ALG]: alg,
+    }
+    // Audience (public-link) caps bind no single subject, so the server needs
+    // the presenter's pubkey to verify the signature and check the allow-list.
+    if (pubHex !== undefined) headers[HEADER_PUB] = pubHex
+    return headers
+  }
+
+  /**
+   * Resolve the author public key to attach to a signed append: the redeemer's
+   * `pubHex` for an audience cap, else the cert subject `cap.sub` for a
+   * device/member cap. This is the SAME key that signs the request, so a server
+   * enforcing author proof can bind the stored element to its writer. Returns
+   * undefined only for a (malformed) cap with neither — the append then goes
+   * unsigned and a server requiring signatures rejects it.
+   */
+  private appendAuthorKey(
+    capCtx: Awaited<ReturnType<StarfishCapProvider["getCap"]>>,
+  ): { authorPubHex: string; signAlg: typeof DEFAULT_ALG } | null {
+    const { cap, pubHex, presenterAlg } = capCtx
+    const authorPubHex = pubHex ?? cap.sub
+    if (authorPubHex === undefined) return null
+    const signAlg =
+      cap.kind === "audience" ? (presenterAlg ?? DEFAULT_ALG) : (cap.subAlg ?? cap.issAlg)
+    return { authorPubHex, signAlg }
   }
 
   /** Pull synced data from the server. Returns the raw `PullResult`. */
@@ -237,7 +295,7 @@ export class StarfishClient {
 
     const res = await this.fetch(url, {
       method: "GET",
-      headers: { Accept: "application/json", ...authHeaders },
+      headers: { [HEADER_ACCEPT]: "application/json", ...authHeaders },
     })
     if (!res.ok) {
       throw new StarfishHttpError(res.status, await res.text())
@@ -257,18 +315,24 @@ export class StarfishClient {
    * @param data - The full document data to push
    * @param baseHash - Hash of the document this push is based on (null for first push)
    *
-   * v3 author fields (`authorPubkey` + `authorSignature`) live inside `data`
-   * and are produced by `SyncManager` when a `signer` is configured.
+   * v3 author proof (`authorPubkey` + `authorSignature`) is passed via `author`
+   * (produced by `SyncManager` when a `signer` is configured) and sent as
+   * top-level body siblings of `data`, where the server verifies it.
    * @throws {ConflictError} if the server detects a hash mismatch (409)
    */
   async push(
     path: string,
     data: Record<string, unknown>,
     baseHash: string | null,
+    author?: AppendAuthor,
   ): Promise<PushSuccess> {
     const body = JSON.stringify({
-      data,
-      baseHash,
+      [DATA_FIELD]: data,
+      [BASE_HASH_FIELD]: baseHash,
+      ...(author && {
+        [AUTHOR_PUBKEY_FIELD]: author.authorPubkey,
+        [AUTHOR_SIGNATURE_FIELD]: author.authorSignature,
+      }),
     })
 
     const sendPath = this.applyNamespace(path)
@@ -277,8 +341,8 @@ export class StarfishClient {
     const res = await this.fetch(`${this.baseUrl}${sendPath}`, {
       method: "POST",
       headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
+        [HEADER_CONTENT_TYPE]: "application/json",
+        [HEADER_ACCEPT]: "application/json",
         ...authHeaders,
       },
       body,
@@ -317,18 +381,47 @@ export class StarfishClient {
     data: Record<string, unknown>,
     opts: { ts?: number } = {},
   ): Promise<PushSuccess> {
-    const bodyObj: Record<string, unknown> = { data }
-    if (opts.ts !== undefined) bodyObj["ts"] = opts.ts
-    const body = JSON.stringify(bodyObj)
-
     const sendPath = this.applyNamespace(path)
-    const authHeaders = await this.buildAuthHeaders("POST", sendPath, body)
+    const bodyObj: Record<string, unknown> = { [DATA_FIELD]: data }
+    if (opts.ts !== undefined) bodyObj[TS_FIELD] = opts.ts
+
+    // Author proof. Fetch the cap ONCE and reuse it for both the author
+    // signature (over the element `data`) and the request signature (over the
+    // final body) — see {@link capRequestHeaders}. The author fields are signed
+    // with the same key that authenticates the request, so a collection with
+    // `requireAuthorSignature` (the default) binds the stored element to its
+    // writer. Without a cap provider the append is sent unsigned and such a
+    // collection rejects it.
+    const capCtx = this.capProvider ? await this.capProvider.getCap() : null
+    if (capCtx) {
+      const authorKey = this.appendAuthorKey(capCtx)
+      if (authorKey) {
+        // The signature binds the author to BOTH the element data AND the
+        // document it is written to (the storage path = `path` minus the
+        // `/push/` action prefix; the namespace lives only in the URL).
+        const documentKey = stripPushPrefix(path)
+        const { authorPubkey, authorSignature } = signAppendAuthor(
+          documentKey,
+          data,
+          authorKey.authorPubHex,
+          capCtx.devEdPrivHex,
+          authorKey.signAlg,
+        )
+        bodyObj[AUTHOR_PUBKEY_FIELD] = authorPubkey
+        bodyObj[AUTHOR_SIGNATURE_FIELD] = authorSignature
+      }
+    }
+
+    const body = JSON.stringify(bodyObj)
+    const authHeaders = capCtx
+      ? await this.capRequestHeaders(capCtx, "POST", sendPath, body)
+      : {}
 
     const res = await this.fetch(`${this.baseUrl}${sendPath}`, {
       method: "POST",
       headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
+        [HEADER_CONTENT_TYPE]: "application/json",
+        [HEADER_ACCEPT]: "application/json",
         ...authHeaders,
       },
       body,
@@ -350,14 +443,14 @@ export class StarfishClient {
 
     const res = await this.fetch(`${this.baseUrl}${sendPath}`, {
       method: "GET",
-      headers: { Accept: "*/*", ...authHeaders },
+      headers: { [HEADER_ACCEPT]: "*/*", ...authHeaders },
     })
     if (!res.ok) {
       throw new StarfishHttpError(res.status, await res.text())
     }
 
     const etag = res.headers.get("ETag")?.replace(/"/g, "") ?? null
-    const contentType = res.headers.get("Content-Type") ?? "application/octet-stream"
+    const contentType = res.headers.get(HEADER_CONTENT_TYPE) ?? "application/octet-stream"
     const data = await res.arrayBuffer()
 
     return { data, hash: etag, contentType }
@@ -380,8 +473,8 @@ export class StarfishClient {
     const res = await this.fetch(`${this.baseUrl}${sendPath}`, {
       method: "POST",
       headers: {
-        "Content-Type": contentType,
-        Accept: "application/json",
+        [HEADER_CONTENT_TYPE]: contentType,
+        [HEADER_ACCEPT]: "application/json",
         ...authHeaders,
       },
       body: data as BodyInit,

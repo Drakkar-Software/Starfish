@@ -14,11 +14,24 @@ import pytest
 from fastapi import FastAPI, Request
 from httpx import AsyncClient, ASGITransport
 
+from starfish_protocol.append_author import sign_append_author, verify_append_author
 from starfish_protocol.hash import compute_hash
 from starfish_server.config.schema import SyncConfig, CollectionConfig, AppendOnlyConfig
 from starfish_server.config.validate import validate_config
-from starfish_server.router.route_builder import create_sync_router, SyncRouterOptions, AuthResult
+from starfish_server.router.route_builder import (
+    create_sync_router,
+    SyncRouterOptions,
+    AuthResult,
+    Presenter,
+)
 from tests.helpers import MemoryObjectStore
+
+# Fixed Ed25519 keypair used by the mechanics tests: `_build_app` advertises its
+# pubkey as the request presenter and `_push` signs every element with it, so
+# author proof (enforced by default) is satisfied transparently. The negative /
+# enforcement cases live in their own section.
+_SIGNER_PRIV = "1133557799bbddff1133557799bbddff1133557799bbddff1133557799bbddff"
+_SIGNER_PUB = "062f2ba3c6a5590364b0864d539af151907d09ea0b741b0811e0d761a059bda4"
 
 
 def _append_only(**kwargs) -> AppendOnlyConfig:
@@ -45,7 +58,11 @@ def _build_app(col: CollectionConfig):
     config = SyncConfig(version=1, collections=[col])
 
     async def role_resolver(request: Request) -> AuthResult:
-        return AuthResult(identity="user-1", roles=["admin"])
+        return AuthResult(
+            identity="user-1",
+            roles=["admin"],
+            presenter=Presenter(pub_hex=_SIGNER_PUB, alg="ed25519"),
+        )
 
     router = create_sync_router(
         SyncRouterOptions(
@@ -66,6 +83,13 @@ async def _push(client: AsyncClient, item, *, base_hash=..., ts=None):
         body["baseHash"] = base_hash
     if ts is not None:
         body["ts"] = ts
+    # Sign the element so the default `requireAuthorSignature` is satisfied. The
+    # signature is over the element data only (independent of ts/baseHash). Skip
+    # for a non-dict item — the server rejects that at the data check before
+    # author verification, which is what those tests assert.
+    if isinstance(item, dict):
+        signed = sign_append_author("events", item, _SIGNER_PUB, _SIGNER_PRIV)
+        body.update(signed)
     return await client.post("/push/events", json=body)
 
 
@@ -445,3 +469,106 @@ def test_append_only_with_bundle_rejected():
     col = _make_col(bundle="myBundle", storagePath="events/{identity}", encryption="none")
     errors = validate_config(SyncConfig(version=1, collections=[col]))
     assert any("bundle" in e for e in errors)
+
+
+# ─── Author proof (requireAuthorSignature, default on) ──────────────────────────
+# An unrelated keypair for the impersonation case (valid signature, but by a key
+# that is NOT the request presenter).
+_OTHER_PRIV = "99887766554433221100ffeeddccbbaa99887766554433221100ffeeddccbbaa"
+_OTHER_PUB = "01e3bf84a66206793b37113dfa7c682573d748d93f7328d76375cde6f11a622f"
+
+
+def _build_author_app(presenter_pub: str | None = _SIGNER_PUB):
+    """An app whose resolver advertises ``presenter_pub`` as the verified request
+    presenter. Author proof is enforced by default (the col carries no opt-out)."""
+    store = MemoryObjectStore()
+    config = SyncConfig(version=1, collections=[_make_col()])
+
+    async def role_resolver(request: Request) -> AuthResult:
+        presenter = (
+            Presenter(pub_hex=presenter_pub, alg="ed25519") if presenter_pub else None
+        )
+        return AuthResult(identity="user-1", roles=["admin"], presenter=presenter)
+
+    router = create_sync_router(
+        SyncRouterOptions(store=store, config=config, role_resolver=role_resolver),
+    )
+    app = FastAPI()
+    app.include_router(router)
+    return app, store
+
+
+@pytest.fixture
+async def author_client():
+    app, store = _build_author_app()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        yield c, store
+
+
+async def test_accepts_signed_append_and_stores_author(author_client):
+    client, _ = author_client
+    item = {"msg": "signed hello"}
+    signed = sign_append_author("events", item, _SIGNER_PUB, _SIGNER_PRIV)
+    res = await client.post("/push/events", json={"data": item, **signed})
+    assert res.status_code == 200
+
+    pulled = (await client.get("/pull/events")).json()
+    el = pulled["data"]["items"][0]
+    assert el["authorPubkey"] == _SIGNER_PUB
+    # The stored proof re-verifies against the stored element data.
+    assert verify_append_author("events", el["data"], el["authorPubkey"], el["authorSignature"]) is True
+
+
+async def test_rejects_append_with_no_author_proof(author_client):
+    client, _ = author_client
+    res = await client.post("/push/events", json={"data": {"msg": "x"}})
+    assert res.status_code == 400
+
+
+async def test_rejects_author_not_request_presenter_impersonation():
+    # Validly signed by OTHER, but the presenter is SIGNER → impersonation attempt.
+    app, _ = _build_author_app(presenter_pub=_SIGNER_PUB)
+    item = {"msg": "i am the presenter, honest"}
+    signed = sign_append_author("events", item, _OTHER_PUB, _OTHER_PRIV)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+        res = await client.post("/push/events", json={"data": item, **signed})
+    assert res.status_code == 403
+
+
+async def test_rejects_tampered_signature(author_client):
+    client, _ = author_client
+    item = {"msg": "tamper me"}
+    signed = sign_append_author("events", item, _SIGNER_PUB, _SIGNER_PRIV)
+    sig = signed["authorSignature"]
+    bad = ("B" if sig[0] == "A" else "A") + sig[1:]
+    res = await client.post(
+        "/push/events",
+        json={"data": item, "authorPubkey": _SIGNER_PUB, "authorSignature": bad},
+    )
+    assert res.status_code == 403
+
+
+async def test_rejects_signature_over_different_data(author_client):
+    client, _ = author_client
+    # Sign one object, send another → the server verifies over the sent item.
+    signed = sign_append_author("events", {"msg": "original"}, _SIGNER_PUB, _SIGNER_PRIV)
+    res = await client.post("/push/events", json={"data": {"msg": "swapped"}, **signed})
+    assert res.status_code == 403
+
+
+async def test_opt_out_collection_accepts_unsigned_append():
+    store = MemoryObjectStore()
+    col = _make_col(appendOnly=_append_only(requireAuthorSignature=False))
+    config = SyncConfig(version=1, collections=[col])
+
+    async def role_resolver(request: Request) -> AuthResult:
+        return AuthResult(identity="user-1", roles=["admin"])
+
+    router = create_sync_router(
+        SyncRouterOptions(store=store, config=config, role_resolver=role_resolver),
+    )
+    app = FastAPI()
+    app.include_router(router)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+        res = await client.post("/push/events", json={"data": {"msg": "no sig needed"}})
+    assert res.status_code == 200

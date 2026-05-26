@@ -1,6 +1,15 @@
 import { Hono } from "hono"
 import type { Context } from "hono"
-import { getCrypto, computeHash } from "@drakkar.software/starfish-protocol"
+import {
+  getCrypto,
+  computeHash,
+  verifyAppendAuthor,
+  DEFAULT_ALG,
+  AUTHOR_PUBKEY_FIELD,
+  AUTHOR_SIGNATURE_FIELD,
+  DATA_FIELD,
+  TS_FIELD,
+} from "@drakkar.software/starfish-protocol"
 import type { ObjectStore, StoreContext } from "../storage/base.js"
 import type {
   SyncConfig,
@@ -50,7 +59,7 @@ import {
   APPEND_DEFAULT_FIELD,
   APPEND_MAX_FUTURE_TS_SKEW_MS,
 } from "../constants.js"
-import type { ServerPlugin, WriteEvent } from "@drakkar.software/starfish-protocol"
+import type { ServerPlugin, WriteEvent, Alg } from "@drakkar.software/starfish-protocol"
 import { dispatchAfterWrite, dispatchBeforePull, dispatchInterceptPush } from "../plugins.js"
 import type { ServerLogger } from "../logger.js"
 import type { AuditLogger, AuditEntry } from "@drakkar.software/starfish-protocol"
@@ -66,6 +75,15 @@ export interface AuthResult {
    * `?withKeyring=1` optimization.
    */
   scopePaths?: string[]
+  /**
+   * The verified request presenter — the public key that signed THIS request
+   * (the cap subject for a device/member cap, the redeemer for an audience cap)
+   * and its crypto suite. Set by the cap-cert resolver; `undefined` for a
+   * resolver that carries no per-request key (pure role-based auth). Used to
+   * bind a signed append's `authorPubkey` to its authenticated writer so the
+   * stored author cannot be forged.
+   */
+  presenter?: { pubHex: string; alg: Alg }
 }
 
 /**
@@ -233,7 +251,12 @@ async function resolveEffectiveRoles(
   params: Record<string, string>,
   opts: SyncRouterOptions,
   storagePath: string,
-): Promise<{ identity: string | null; roles: Set<string>; error: Response | null }> {
+): Promise<{
+  identity: string | null
+  roles: Set<string>
+  error: Response | null
+  presenter?: { pubHex: string; alg: Alg }
+}> {
   let auth: AuthResult
   try {
     const timeout = opts.roleResolverTimeout ?? 5000
@@ -280,10 +303,11 @@ async function resolveEffectiveRoles(
         identity: auth.identity,
         roles: effectiveRoles,
         error: c.json({ error: "Authorization error" }, 500),
+        presenter: auth.presenter,
       }
     }
   }
-  return { identity: auth.identity, roles: effectiveRoles, error: null }
+  return { identity: auth.identity, roles: effectiveRoles, error: null, presenter: auth.presenter }
 }
 
 /**
@@ -314,7 +338,12 @@ async function checkAuth(
   c: Context,
   params: Record<string, string>,
   opts: SyncRouterOptions,
-): Promise<{ identity: string | null; roles: string[]; error: Response | null }> {
+): Promise<{
+  identity: string | null
+  roles: string[]
+  error: Response | null
+  presenter?: { pubHex: string; alg: Alg }
+}> {
   const requiredRoles = operation === OP_READ ? col.readRoles : col.writeRoles
 
   // A rootOnly collection is never public (enforced at config load), so it must
@@ -340,20 +369,20 @@ async function checkAuth(
     })
   }
 
-  const { identity, roles, error } = await resolveEffectiveRoles(c, params, opts, col.storagePath)
+  const { identity, roles, error, presenter } = await resolveEffectiveRoles(c, params, opts, col.storagePath)
   if (error) {
     await auditDenial(identity, error)
-    return { identity, roles: [...roles], error }
+    return { identity, roles: [...roles], error, presenter }
   }
 
   const effectiveRolesArray = [...roles]
   if (!isAccessAllowed(col, operation, roles)) {
     const err = c.json({ error: "Forbidden" }, 403)
     await auditDenial(identity, err)
-    return { identity, roles: effectiveRolesArray, error: err }
+    return { identity, roles: effectiveRolesArray, error: err, presenter }
   }
 
-  return { identity, roles: effectiveRolesArray, error: null }
+  return { identity, roles: effectiveRolesArray, error: null, presenter }
 }
 
 function buildRateLimiter(
@@ -409,6 +438,7 @@ async function runPush(
   rateLimiter: RateLimiter | null,
   opts: SyncRouterOptions,
   context?: StoreContext,
+  presenter?: { pubHex: string; alg: Alg },
 ): Promise<Response> {
   const contentLength = c.req.header("content-length")
   const limitErr = checkBodyLimit(contentLength ?? null, col.maxBodyBytes)
@@ -448,7 +478,7 @@ async function runPush(
   // here (not in the route handler) so BOTH the standalone and bundle push
   // paths enforce it — the bundle path calls runPush directly.
   if (col.fieldPermissions && isJsonCollection(col.allowedMimeTypes)) {
-    const pushData = bodyObj["data"]
+    const pushData = bodyObj[DATA_FIELD]
     if (pushData != null && typeof pushData === "object" && !Array.isArray(pushData)) {
       const userRoles = new Set(context?.roles ?? [])
       for (const [field, perm] of Object.entries(col.fieldPermissions)) {
@@ -468,7 +498,7 @@ async function runPush(
 
   // JSON Schema validation
   if (col.objectSchema != null) {
-    const data = bodyObj["data"]
+    const data = bodyObj[DATA_FIELD]
     if (data != null && typeof data === "object" && !Array.isArray(data)) {
       const schemaErr = validateObjectSchema(data as Record<string, unknown>, col.objectSchema)
       if (schemaErr) return c.json(schemaErr.body, schemaErr.status as any)
@@ -484,17 +514,54 @@ async function runPush(
 
     // The element payload. Opaque to the server: plaintext under "none", an
     // encryptor wrapper under "delegated" (both are JSON objects).
-    const item = bodyObj["data"]
+    const item = bodyObj[DATA_FIELD]
     if (item == null || typeof item !== "object" || Array.isArray(item)) {
       return c.json({ error: "Missing or invalid data" }, 400)
     }
     const sanitizedItem = deepSanitize(item as Record<string, unknown>)
 
+    // Append author proof. The signature is over the SANITIZED item — the exact
+    // bytes stored — so a reader who pulls the element re-verifies the same data.
+    // When `requireAuthorSignature` is enforced (the default), a missing,
+    // invalid, or forged proof is rejected here; the fields are then stored on
+    // the element. An opt-out collection (`requireAuthorSignature: false`) skips
+    // the check but still stores any proof the client sent.
+    const authorPubkey =
+      typeof bodyObj[AUTHOR_PUBKEY_FIELD] === "string"
+        ? (bodyObj[AUTHOR_PUBKEY_FIELD] as string)
+        : undefined
+    const authorSignature =
+      typeof bodyObj[AUTHOR_SIGNATURE_FIELD] === "string"
+        ? (bodyObj[AUTHOR_SIGNATURE_FIELD] as string)
+        : undefined
+    if (appendCfg.requireAuthorSignature !== false) {
+      if (authorPubkey === undefined || authorSignature === undefined) {
+        return c.json({ error: "append requires authorPubkey and authorSignature" }, 400)
+      }
+      // Bind the author to the authenticated caller: the signing key MUST be the
+      // request presenter (cap subject / audience redeemer). A pure role resolver
+      // carries no presenter — the signature is still required and verified, but
+      // cannot be bound to a caller identity (see append-only-collections docs).
+      if (presenter && authorPubkey !== presenter.pubHex) {
+        return c.json({ error: "append author must be the request presenter" }, 403)
+      }
+      const verifyAlg = presenter?.alg ?? DEFAULT_ALG
+      // Bound to `documentKey` so a signed element cannot be replayed under a
+      // different document key (see appendAuthorCanonicalInput).
+      if (!verifyAppendAuthor(documentKey, sanitizedItem, authorPubkey, authorSignature, verifyAlg)) {
+        return c.json({ error: "invalid append author signature" }, 403)
+      }
+    }
+    const author =
+      authorPubkey !== undefined && authorSignature !== undefined
+        ? { authorPubkey, authorSignature }
+        : undefined
+
     // Optional client-supplied element timestamp (ms since epoch). When present
     // it must be a non-negative integer and strictly greater than the latest
     // stored element's ts (enforced in appendItem); otherwise the server assigns one.
     let providedTs: number | undefined
-    const rawTs = bodyObj["ts"]
+    const rawTs = bodyObj[TS_FIELD]
     if (rawTs !== undefined && rawTs !== null) {
       if (typeof rawTs !== "number" || !Number.isInteger(rawTs) || rawTs < 0) {
         return c.json({ error: "ts must be a non-negative integer" }, 400)
@@ -524,7 +591,7 @@ async function runPush(
       sanitizedItem,
       appendField,
       providedTs,
-      { maxItems: appendCfg.maxItems, chunkSize: appendCfg.chunkSize },
+      { maxItems: appendCfg.maxItems, chunkSize: appendCfg.chunkSize, author },
       context,
     )
     if ("error" in outcome) {
@@ -547,6 +614,7 @@ async function runPush(
     isClientEncrypted,
     false,
     context,
+    presenter,
   )
   return c.json(result.body, result.status as any)
 }
@@ -923,7 +991,7 @@ function addCollectionRoutes(
         return c.json({ error: "Invalid path parameter" }, 400)
       }
 
-      const { identity, roles, error } = await checkAuth(col, OP_WRITE, c, params, opts)
+      const { identity, roles, error, presenter } = await checkAuth(col, OP_WRITE, c, params, opts)
       if (error) return error
 
       // Push-intercepting plugins (e.g. starfish-replica): reject read-only
@@ -990,7 +1058,7 @@ function addCollectionRoutes(
       if (opts.plugins?.some((p) => p.afterWrite)) {
         try {
           const raw = (await c.req.json()) as Record<string, unknown>
-          const d = raw["data"]
+          const d = raw[DATA_FIELD]
           if (d !== null && typeof d === "object" && !Array.isArray(d)) {
             bodyData = d as Record<string, unknown>
           }
@@ -1002,7 +1070,7 @@ function addCollectionRoutes(
         }
       }
 
-      const response = await runPush(c, col, params, documentKey, identity, rateLimiter, opts, pushCtx)
+      const response = await runPush(c, col, params, documentKey, identity, rateLimiter, opts, pushCtx, presenter)
       await emitWriteEvent(opts, col, response, params, bodyData, namespaceName)
       if (opts.auditLogger) {
         await opts.auditLogger.record({ timestamp: Date.now(), action: "push", collection: col.name, identity, documentKey, success: response.status === 200, statusCode: response.status, params })
@@ -1106,7 +1174,7 @@ function addBundledRoutes(
         return c.json({ error: "Invalid path parameter" }, 400)
       }
 
-      const { identity, roles, error } = await checkAuth(col, OP_WRITE, c, params, opts)
+      const { identity, roles, error, presenter } = await checkAuth(col, OP_WRITE, c, params, opts)
       if (error) return error
 
       const documentKey = `${resolveDocumentKey(storagePath, params)}/${col.name}`
@@ -1125,7 +1193,7 @@ function addBundledRoutes(
       if (opts.plugins?.some((p) => p.afterWrite)) {
         try {
           const raw = (await c.req.json()) as Record<string, unknown>
-          const d = raw["data"]
+          const d = raw[DATA_FIELD]
           if (d !== null && typeof d === "object" && !Array.isArray(d)) {
             bundleBodyData = d as Record<string, unknown>
           }
@@ -1134,7 +1202,7 @@ function addBundledRoutes(
         }
       }
 
-      const response = await runPush(c, col, params, documentKey, identity, rateLimiter, opts, bundlePushCtx)
+      const response = await runPush(c, col, params, documentKey, identity, rateLimiter, opts, bundlePushCtx, presenter)
       await emitWriteEvent(opts, col, response, params, bundleBodyData, namespaceName)
       return response
     })

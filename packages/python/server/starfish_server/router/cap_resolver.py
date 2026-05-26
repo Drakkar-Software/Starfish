@@ -30,6 +30,14 @@ from starfish_protocol.request_signing import (
     verify_request_signature,
 )
 from starfish_protocol.suites import DEFAULT_ALG, is_alg
+from starfish_protocol.constants import (
+    HEADER_AUTHORIZATION,
+    HEADER_SIG,
+    HEADER_TS,
+    HEADER_NONCE,
+    HEADER_PUB,
+    HEADER_ALG,
+)
 from starfish_server.auth.nonce_cache import NonceCache
 from starfish_server.auth.revocation_store import RevocationStore
 from starfish_server.constants import IDENTITY_KEY, ROLE_PUBLIC, ROLE_ROOT_DEVICE
@@ -44,20 +52,22 @@ if TYPE_CHECKING:
     from starfish_server.router.route_builder import AuthResult, RoleResolver
 
 
-_HEADER_AUTH = "authorization"
-_HEADER_SIG = "x-starfish-sig"
-_HEADER_TS = "x-starfish-ts"
-_HEADER_NONCE = "x-starfish-nonce"
-# Conveys the presenter's Ed25519 pubkey for an ``audience`` cap (which binds no
-# single subject). The resolver verifies the per-request signature against this
-# key and, when the cap carries an ``aud`` allow-list, checks membership.
-# Ignored for device/member caps, whose verifying key is ``cert["sub"]``.
-_HEADER_PUB = "x-starfish-pub"
-# Conveys the crypto suite of an ``audience`` presenter's request signature. For
-# device/member caps the signing suite is authoritative from the verified
-# ``cert["subAlg"]``, so this header is read only for audience caps (defaulting
-# to ed25519 when absent). Mirrors the TS server's X-Starfish-Alg handling.
-_HEADER_ALG = "x-starfish-alg"
+# Header names sourced from the shared protocol constants (single source with the
+# client, which sends them) — ``_get_header`` matches case-insensitively, so the
+# canonical-case names resolve against Starlette's lowercased headers.
+#   HEADER_PUB conveys the presenter's Ed25519 pubkey for an ``audience`` cap
+#     (which binds no single subject); the per-request signature is verified
+#     against it and, when the cap carries an ``aud`` allow-list, membership is
+#     checked. Ignored for device/member caps, whose verifying key is ``cert["sub"]``.
+#   HEADER_ALG conveys the crypto suite of an ``audience`` presenter's request
+#     signature (defaulting to ed25519); for device/member caps the suite is
+#     authoritative from the verified ``cert["subAlg"]``.
+_HEADER_AUTH = HEADER_AUTHORIZATION
+_HEADER_SIG = HEADER_SIG
+_HEADER_TS = HEADER_TS
+_HEADER_NONCE = HEADER_NONCE
+_HEADER_PUB = HEADER_PUB
+_HEADER_ALG = HEADER_ALG
 _HEADER_CONTENT_LENGTH = "content-length"
 
 # A presenter pubkey: 64-char lowercase hex (32-byte Ed25519 or secp256k1
@@ -470,7 +480,7 @@ def create_cap_cert_role_resolver(
     """
     # Imported lazily to keep the route_builder module ↔ cap_resolver
     # dependency one-directional.
-    from starfish_server.router.route_builder import AuthResult
+    from starfish_server.router.route_builder import AuthResult, Presenter
 
     # Strict-kind dispatch is ALWAYS active (secure by default). With no
     # ``plugins``, fall back to the built-in device-only
@@ -655,11 +665,14 @@ def create_cap_cert_role_resolver(
 
         # Carry the expanded scope so the route layer can authorize sibling
         # reads (e.g. the ?withKeyring=1 ``<key>/_keyring`` shortcut) against
-        # the same paths the data request was checked against.
+        # the same paths the data request was checked against. ``presenter``
+        # carries the key that signed THIS request (already verified above) so
+        # the append handler can bind a signed element's author to its writer.
         return AuthResult(
             identity=identity,
             roles=_synthesize_roles(cert),
             scope_paths=expanded_paths,
+            presenter=Presenter(pub_hex=verifying_pub_hex, alg=req_alg),
         )
 
     return resolver  # type: ignore[return-value]

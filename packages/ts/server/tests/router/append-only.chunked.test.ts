@@ -211,7 +211,9 @@ describe("appendOnly maxItems cap — router 409", () => {
     encryption: "none",
     maxBodyBytes: 65536,
     allowedMimeTypes: ["application/json"],
-    appendOnly: { type: "by_timestamp", maxItems: 1 },
+    // This case asserts the maxItems 409 mechanic; opt out of author proof so the
+    // bare {data} push reaches the cap check (author proof is tested separately).
+    appendOnly: { type: "by_timestamp", maxItems: 1, requireAuthorSignature: false },
   }
   const push = (app: ReturnType<typeof createSyncRouter>, item: unknown) =>
     app.request("/push/events", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ data: item }) })

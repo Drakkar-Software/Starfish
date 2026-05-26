@@ -14,6 +14,14 @@ from urllib.parse import urlparse
 
 from fastapi.responses import JSONResponse
 
+from starfish_protocol.append_author import verify_doc_author
+from starfish_protocol.constants import (
+    AUTHOR_PUBKEY_FIELD,
+    AUTHOR_SIGNATURE_FIELD,
+    DATA_FIELD,
+    BASE_HASH_FIELD,
+)
+from starfish_protocol.suites import DEFAULT_ALG
 from starfish_server.storage.base import AbstractObjectStore, StoreContext
 from starfish_server.protocol.pull import pull
 from starfish_server.protocol.push import push, append_seg_prefix, append_chunk_key
@@ -161,9 +169,9 @@ async def handle_sync_pull(
         "timestamp": result.timestamp,
     }
     if result.author_pubkey:
-        body["authorPubkey"] = result.author_pubkey
+        body[AUTHOR_PUBKEY_FIELD] = result.author_pubkey
     if result.author_signature:
-        body["authorSignature"] = result.author_signature
+        body[AUTHOR_SIGNATURE_FIELD] = result.author_signature
 
     # ``?withKeyring=1`` optimization: piggyback the collection's sibling
     # keyring document at ``<document_key>/_keyring`` onto the pull response,
@@ -378,13 +386,15 @@ async def handle_sync_push(
     skip_timestamps: bool = False,
     skip_storage: bool = False,
     context: StoreContext | None = None,
+    presenter: Any = None,
 ) -> JSONResponse:
     if is_unsafe_document_key(document_key):
         return JSONResponse({"error": "Invalid path parameter"}, status_code=400)
 
-    data = body.get("data")
-    base_hash = body.get("baseHash")
-    author_signature = body.get("authorSignature")
+    data = body.get(DATA_FIELD)
+    base_hash = body.get(BASE_HASH_FIELD)
+    author_pubkey = body.get(AUTHOR_PUBKEY_FIELD)
+    author_signature = body.get(AUTHOR_SIGNATURE_FIELD)
 
     if not isinstance(data, dict):
         return JSONResponse({"error": "Missing or invalid data"}, status_code=400)
@@ -394,9 +404,30 @@ async def handle_sync_push(
 
     sanitized = deep_sanitize(data)
 
+    # Document author proof (verify-if-present). When a client signs the push (a
+    # ``SyncManager`` signer is configured), the proof rides as top-level body
+    # fields: verify it over the stored data (bound to document_key), require the
+    # author to be the authenticated request presenter, and store the RAW author
+    # pubkey. Absent proof is accepted (an unsigned merge-doc push is unchanged).
     author: Author | None = None
-    if isinstance(author_signature, str) and identity:
-        author = Author(pubkey=identity, signature=author_signature)
+    if author_pubkey is not None or author_signature is not None:
+        if not isinstance(author_pubkey, str) or not isinstance(author_signature, str):
+            return JSONResponse(
+                {"error": "author proof requires authorPubkey and authorSignature"},
+                status_code=400,
+            )
+        if presenter is not None and author_pubkey != presenter.pub_hex:
+            return JSONResponse(
+                {"error": "document author must be the request presenter"}, status_code=403
+            )
+        verify_alg = presenter.alg if presenter is not None else DEFAULT_ALG
+        if not verify_doc_author(
+            document_key, sanitized, author_pubkey, author_signature, verify_alg
+        ):
+            return JSONResponse(
+                {"error": "invalid document author signature"}, status_code=403
+            )
+        author = Author(pubkey=author_pubkey, signature=author_signature)
 
     result = await push(store, document_key, sanitized, base_hash, author, skip_timestamps, skip_storage, context=context)
 

@@ -3,7 +3,12 @@ import { webcrypto } from "node:crypto"
 import { readFileSync } from "node:fs"
 import { resolve, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
-import { configurePlatform, computeHash } from "@drakkar.software/starfish-protocol"
+import {
+  configurePlatform,
+  computeHash,
+  signAppendAuthor,
+  verifyAppendAuthor,
+} from "@drakkar.software/starfish-protocol"
 import { createKeyring, createKeyringEncryptor } from "@drakkar.software/starfish-keyring"
 import { createSyncRouter, type SyncRouterOptions, type AuthResult } from "../../src/router/route-builder.js"
 import { MemoryObjectStore } from "../../src/storage/memory.js"
@@ -40,13 +45,26 @@ function makeCol(overrides: Partial<CollectionConfig> = {}): CollectionConfig {
   }
 }
 
+// A fixed Ed25519 keypair used by the mechanics tests below: `makeRouter`
+// advertises its pubkey as the request presenter and the `push` helper signs
+// every element with it, so author proof (enforced by default) is satisfied
+// transparently. The negative/enforcement cases live in their own describe.
+const SIGNER = {
+  priv: "1133557799bbddff1133557799bbddff1133557799bbddff1133557799bbddff",
+  pub: "062f2ba3c6a5590364b0864d539af151907d09ea0b741b0811e0d761a059bda4",
+}
+
 function makeRouter(col: CollectionConfig) {
   const store = new MemoryObjectStore(new Map())
   const config: SyncConfig = { version: 1, collections: [col] }
   const opts: SyncRouterOptions = {
     store,
     config,
-    roleResolver: async (): Promise<AuthResult> => ({ identity: "user-1", roles: ["admin"] }),
+    roleResolver: async (): Promise<AuthResult> => ({
+      identity: "user-1",
+      roles: ["admin"],
+      presenter: { pubHex: SIGNER.pub, alg: "ed25519" },
+    }),
   }
   return { app: createSyncRouter(opts), store }
 }
@@ -60,6 +78,20 @@ async function push(
   const body: Record<string, unknown> = { data: item }
   if (opts.baseHash !== undefined) body["baseHash"] = opts.baseHash
   if (opts.ts !== undefined) body["ts"] = opts.ts
+  // Sign the element so the default `requireAuthorSignature` is satisfied. The
+  // signature is over the element data only (independent of `ts`/`baseHash`).
+  // Skip for a non-object item — the server rejects that at the data check
+  // before author verification, which is what those tests assert.
+  if (item != null && typeof item === "object" && !Array.isArray(item)) {
+    const { authorPubkey, authorSignature } = signAppendAuthor("events",
+      item as Record<string, unknown>,
+      SIGNER.pub,
+      SIGNER.priv,
+      "ed25519",
+    )
+    body["authorPubkey"] = authorPubkey
+    body["authorSignature"] = authorSignature
+  }
   return app.request("/push/events", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -376,5 +408,93 @@ describe("appendOnly config validation", () => {
       ],
     })
     expect(errors.some((e) => e.includes("bundle"))).toBe(true)
+  })
+})
+
+describe("appendOnly author proof (requireAuthorSignature, default on)", () => {
+  // `OTHER` is an unrelated keypair used for the impersonation case (a valid
+  // signature, but by a key that is NOT the request presenter).
+  const OTHER = {
+    priv: "99887766554433221100ffeeddccbbaa99887766554433221100ffeeddccbbaa",
+    pub: "01e3bf84a66206793b37113dfa7c682573d748d93f7328d76375cde6f11a622f",
+  }
+
+  // A router whose resolver advertises `presenterPub` as the verified request
+  // presenter (the cap-cert resolver does this in production). Author proof is
+  // enforced by default — the override carries no `requireAuthorSignature`.
+  function makeAuthorRouter(presenterPub: string | null = SIGNER.pub) {
+    const store = new MemoryObjectStore(new Map())
+    const config: SyncConfig = { version: 1, collections: [makeCol()] }
+    const opts: SyncRouterOptions = {
+      store,
+      config,
+      roleResolver: async (): Promise<AuthResult> => ({
+        identity: "user-1",
+        roles: ["admin"],
+        ...(presenterPub ? { presenter: { pubHex: presenterPub, alg: "ed25519" as const } } : {}),
+      }),
+    }
+    return { app: createSyncRouter(opts), store }
+  }
+
+  function postBody(app: ReturnType<typeof createSyncRouter>, body: Record<string, unknown>) {
+    return app.request("/push/events", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })
+  }
+
+  it("accepts a validly-signed append and stores the author proof on the element", async () => {
+    const { app } = makeAuthorRouter()
+    const item = { msg: "signed hello" }
+    const { authorPubkey, authorSignature } = signAppendAuthor("events",item, SIGNER.pub, SIGNER.priv, "ed25519")
+    expect((await postBody(app, { data: item, authorPubkey, authorSignature })).status).toBe(200)
+
+    const body = await (await pull(app)).json()
+    const el = body.data.items[0] as { data: Record<string, unknown>; authorPubkey: string; authorSignature: string }
+    expect(el.authorPubkey).toBe(SIGNER.pub)
+    // The stored proof re-verifies against the stored element data.
+    expect(verifyAppendAuthor("events", el.data, el.authorPubkey, el.authorSignature, "ed25519")).toBe(true)
+  })
+
+  it("rejects an append carrying no author proof (400)", async () => {
+    const { app } = makeAuthorRouter()
+    expect((await postBody(app, { data: { msg: "x" } })).status).toBe(400)
+  })
+
+  it("rejects an append whose author is not the request presenter — impersonation (403)", async () => {
+    // Validly signed by OTHER, but the presenter is SIGNER.
+    const item = { msg: "i am the presenter, honest" }
+    const { authorPubkey, authorSignature } = signAppendAuthor("events",item, OTHER.pub, OTHER.priv, "ed25519")
+    const { app } = makeAuthorRouter(SIGNER.pub)
+    expect((await postBody(app, { data: item, authorPubkey, authorSignature })).status).toBe(403)
+  })
+
+  it("rejects a tampered signature (403)", async () => {
+    const { app } = makeAuthorRouter()
+    const item = { msg: "tamper me" }
+    const { authorSignature } = signAppendAuthor("events",item, SIGNER.pub, SIGNER.priv, "ed25519")
+    const bad = (authorSignature[0] === "A" ? "B" : "A") + authorSignature.slice(1)
+    expect((await postBody(app, { data: item, authorPubkey: SIGNER.pub, authorSignature: bad })).status).toBe(403)
+  })
+
+  it("rejects a signature made over different data than the stored item (403)", async () => {
+    const { app } = makeAuthorRouter()
+    // Sign one object, send another → the server verifies over the sent item.
+    const { authorPubkey, authorSignature } = signAppendAuthor("events",{ msg: "original" }, SIGNER.pub, SIGNER.priv, "ed25519")
+    expect((await postBody(app, { data: { msg: "swapped" }, authorPubkey, authorSignature })).status).toBe(403)
+  })
+
+  it("requireAuthorSignature:false accepts an unsigned append (opt-out)", async () => {
+    const store = new MemoryObjectStore(new Map())
+    const col = makeCol({ appendOnly: { type: "by_timestamp", requireAuthorSignature: false } })
+    const opts: SyncRouterOptions = {
+      store,
+      config: { version: 1, collections: [col] },
+      roleResolver: async (): Promise<AuthResult> => ({ identity: "user-1", roles: ["admin"] }),
+    }
+    const app = createSyncRouter(opts)
+    expect((await postBody(app, { data: { msg: "no sig needed" } })).status).toBe(200)
   })
 })

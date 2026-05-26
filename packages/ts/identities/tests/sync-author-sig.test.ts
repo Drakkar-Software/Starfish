@@ -1,16 +1,18 @@
 /**
- * v3.0 author-signature plumbing — `SyncManager` with a `signer`.
+ * v3.0 document author-proof plumbing — `SyncManager` with a `signer`.
  *
- * When a `signer` is configured, push payloads must carry:
+ * When a `signer` is configured, the push carries the author proof as a 4th
+ * argument to `client.push` (top-level body siblings of `data`, NOT inside it):
  *   - `authorPubkey`: the dev Ed25519 pub (hex)
- *   - `authorSignature`: base64 Ed25519 over `stableStringify(payload-without-author-fields)`
+ *   - `authorSignature`: base64 Ed25519 over the doc-author canonical input —
+ *     `DOC_AUTHOR_DOMAIN + stableStringify({k: documentKey, d: sealed})`.
  *
- * The signature is over the canonical stringification of the entire encrypted
- * payload (e.g. `{_encrypted, _epoch}`), *not* the plaintext.
+ * The signature is over the canonical form of the encrypted payload (e.g.
+ * `{_encrypted, _epoch}`) bound to the documentKey, *not* the plaintext.
  */
 import { describe, it, expect, vi } from "vitest"
 import { ed25519 } from "@noble/curves/ed25519.js"
-import { stableStringify } from "@drakkar.software/starfish-protocol"
+import { verifyDocAuthor, type AppendAuthor } from "@drakkar.software/starfish-protocol"
 import { StarfishClient } from "@drakkar.software/starfish-client"
 import { SyncManager } from "@drakkar.software/starfish-client"
 import type { SyncSigner } from "@drakkar.software/starfish-client"
@@ -23,9 +25,6 @@ function hexToBytes(hex: string): Uint8Array {
   for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16)
   return out
 }
-function b64decode(s: string): Uint8Array {
-  return Uint8Array.from(atob(s), (c) => c.charCodeAt(0))
-}
 
 function mockClient(overrides: {
   pull?: (path: string, checkpoint?: number) => Promise<PullResult>
@@ -33,6 +32,7 @@ function mockClient(overrides: {
     path: string,
     data: Record<string, unknown>,
     baseHash: string | null,
+    author?: AppendAuthor,
   ) => Promise<PushSuccess>
 } = {}) {
   return {
@@ -55,8 +55,8 @@ async function makeSignerFor(devEdPrivHex: string, devEdPubHex: string): Promise
   }
 }
 
-describe("SyncManager author-signature with KeyringEncryptor + signer", () => {
-  it("push attaches authorPubkey + authorSignature to the encrypted payload", async () => {
+describe("SyncManager document author-proof with KeyringEncryptor + signer", () => {
+  it("push passes a verifiable author proof as the 4th arg (top-level, not in data)", async () => {
     const alice = await deriveRootIdentity("alice-root-passphrase")
     const laptop = await deriveRootIdentity("alice-laptop")
     const { keyring } = await createKeyring(
@@ -75,8 +75,8 @@ describe("SyncManager author-signature with KeyringEncryptor + signer", () => {
     const signer = await makeSignerFor(laptop.keys.edPriv, laptop.keys.edPub)
     const sync = new SyncManager({
       client,
-      pullPath: "/pull/test",
-      pushPath: "/push/test",
+      pullPath: "/pull/notes",
+      pushPath: "/push/notes",
       encryptor,
       signer,
     })
@@ -84,33 +84,33 @@ describe("SyncManager author-signature with KeyringEncryptor + signer", () => {
     await sync.push({ secret: "x" })
 
     expect(pushFn).toHaveBeenCalledTimes(1)
-    const [, payload] = pushFn.mock.calls[0] as [
+    const [, payload, , author] = pushFn.mock.calls[0] as [
       string,
       Record<string, unknown>,
       string | null,
+      AppendAuthor | undefined,
     ]
+    // The encrypted payload is sent as `data`, WITHOUT author fields (those are
+    // now the top-level 4th arg).
     expect(payload).toHaveProperty("_encrypted")
     expect(payload).toHaveProperty("_epoch")
-    expect(payload.authorPubkey).toBe(laptop.keys.edPub)
-    const authorSignature = payload.authorSignature as string
-    expect(typeof authorSignature).toBe("string")
-    expect(authorSignature.length).toBeGreaterThan(0)
+    expect(payload.authorPubkey).toBeUndefined()
+    expect(payload.authorSignature).toBeUndefined()
 
-    // Independently verify: the signed bytes are stableStringify(payload-without-author-fields).
-    // SyncManager signs before attaching author fields, so the canonical input is
-    // stableStringify of the sealed payload (e.g. {_encrypted, _epoch}).
-    const signedObj: Record<string, unknown> = {}
-    for (const [k, v] of Object.entries(payload)) {
-      if (k === "authorPubkey" || k === "authorSignature") continue
-      signedObj[k] = v
-    }
-    const message = new TextEncoder().encode(stableStringify(signedObj))
-    const sigBytes = b64decode(authorSignature)
-    const ok = ed25519.verify(sigBytes, message, hexToBytes(laptop.keys.edPub))
-    expect(ok).toBe(true)
+    expect(author).toBeDefined()
+    expect(author!.authorPubkey).toBe(laptop.keys.edPub)
+    // The proof verifies as a DOCUMENT author signature over the sealed payload,
+    // bound to the documentKey ("notes", derived from "/push/notes").
+    expect(
+      verifyDocAuthor("notes", payload, author!.authorPubkey, author!.authorSignature, "ed25519"),
+    ).toBe(true)
+    // …and NOT under a different documentKey (path binding).
+    expect(
+      verifyDocAuthor("other", payload, author!.authorPubkey, author!.authorSignature, "ed25519"),
+    ).toBe(false)
   })
 
-  it("does not attach author fields when signer is not configured", async () => {
+  it("passes no author proof when a signer is not configured", async () => {
     const pushFn = vi.fn(async () => ({ hash: "h", timestamp: 1 }))
     const client = mockClient({ push: pushFn as never })
     const sync = new SyncManager({
@@ -120,8 +120,9 @@ describe("SyncManager author-signature with KeyringEncryptor + signer", () => {
     })
     await sync.push({ a: 1 })
     expect(pushFn).toHaveBeenCalledTimes(1)
-    // Three positional args: (path, data, baseHash). No author-signature slot.
-    const call = pushFn.mock.calls[0] as unknown[]
-    expect(call.length).toBe(3)
+    const [, data, , author] = pushFn.mock.calls[0] as unknown[]
+    // The 4th positional arg (author proof) is undefined; `data` carries no author fields.
+    expect(author).toBeUndefined()
+    expect((data as Record<string, unknown>).authorPubkey).toBeUndefined()
   })
 })
