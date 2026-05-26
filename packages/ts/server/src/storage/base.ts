@@ -15,6 +15,14 @@ export interface ObjectStore {
     opts?: { contentType?: string; cacheControl?: string },
     context?: StoreContext,
   ): Promise<void>
+  /**
+   * Return EVERY key under `prefix`, in ascending lexicographic order, unless
+   * `opts.limit` caps the count. The segmented append-only log depends on both
+   * guarantees: it lists all of a document's chunk keys in one call (no
+   * `limit`) and binary-searches them by string compare, so a backend that
+   * truncates (e.g. an S3 page cap) or returns keys out of order would yield
+   * incomplete or misordered data. Custom backends must paginate fully and sort.
+   */
   listKeys(
     prefix: string,
     opts?: { startAfter?: string; limit?: number },

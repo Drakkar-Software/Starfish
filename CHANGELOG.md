@@ -1,5 +1,68 @@
 # Changelog
 
+## 3.0.0-alpha.7 — security & correctness fixes (auth review round)
+
+Fixes from a security/coding/testing/encryption review of the capability-auth branch. All land in
+**both** TypeScript and Python with cross-language regression tests; full TS + Python suites pass.
+Lockstep bump of all twenty packages to 3.0.0-alpha.7 / 3.0.0a7.
+
+### Security
+
+- **Keyring rotation no longer re-wraps the fresh CEK to an unverified retained entry.**
+  `removeRecipient` (TS `keyring/src/recipients.ts`, Python `keyring/.../recipients.py`) filtered the
+  entries it carried into the new epoch on `addedBy ∈ trustedAdders` only — it never verified each
+  entry's `addedSig`. Because `addedBy`/`subKem` are bound to each other *only* by that signature, a
+  hostile server could swap a retained entry's `subKem` to an attacker key (leaving `addedBy` a
+  trusted adder) and the rotation would mint a fresh CEK and wrap it for the attacker under a
+  genuine, owner-signed entry — laundering a forged recipient and surviving the very rotation meant
+  to evict them. Rotation now verifies `addedSig` (mirroring `recoverCurrentCek`) and drops tampered
+  entries with a logged warning.
+- **Percent-encoded request paths can no longer evade a cap-scope deny (TS server).**
+  `canonicalizeRequestPath` matched scope against the raw URL pathname (`new URL().pathname`, which
+  is *not* percent-decoded) while the storage key was built from Hono's *decoded* params — so a
+  `writer` cap denying `!col/_keyring` was bypassed by requesting `col/_%6beyring`, which still wrote
+  to `col/_keyring`. Scope matching now percent-decodes each segment so it equals the storage key.
+  (Python/Starlette was unaffected — ASGI delivers an already-decoded path — and is now documented to
+  stay that way; double-decoding there would re-open the gap.)
+- **Member/audience caps with no `scope.paths` are rejected.** A subject-scoped cap that carried no
+  path scope was path-*unrestricted* (`matchScopePath(_, undefined)` is true), clearing the gate for
+  the owner-only `<col>/_keyring` and `<col>/_members`. The mint/server-side shape barrier now treats
+  absent `paths` as an implicit allow-all (firing the existing `*-members-not-denied` /
+  `*-keyring-not-denied` rules), and the resolver rejects a non-device cap with no `scope.paths` as
+  defense-in-depth. TS + Python.
+
+### Fixed
+
+- **Segmented append-only pull no longer truncates at the storage list page size.** The S3 backend's
+  `listKeys` issued a single `ListObjectsV2` and ignored `IsTruncated`/`NextContinuationToken`, so a
+  log with >1000 chunks silently dropped every chunk past the first page (the checkpoint bisect then
+  read incomplete data). It now follows the continuation token (stopping early when a `limit` is
+  given). The `ObjectStore.listKeys` contract is documented to require all keys in lexicographic
+  order. TS + Python.
+- **`hexToBytes` rejects malformed hex instead of silently zeroing it.** The `parseInt`-based
+  decoders (six TS modules) turned a non-hex character into `0x00` via `NaN`, diverging from Python's
+  `bytes.fromhex` (which raises). They now validate the charset and throw, matching Python.
+- **TS and Python clients accept the same `namespace` input convention.** The Python client's
+  `_sign_path` required a `/v1/`-prefixed path under a namespace, while the TS client takes a bare
+  `/pull/…`; the Python client now accepts a bare path (and still tolerates a legacy `/v1/`-prefixed
+  one), so the two SDKs are drop-in compatible as the docs claim.
+- **`appendChunkKey` rejects a negative timestamp.** A negative `firstTs` (only reachable by
+  migrating an unsupported ts-less legacy element) would have produced different keys in JS
+  `padStart` vs Python `zfill` and broken chunk ordering; both now fail closed.
+- **Segmented append-only `head.n` no longer drifts after a crash.** The head's element count was
+  read back and incremented (`n + 1`); a crash between the chunk write and the head write left it one
+  behind, biasing the `maxItems` cap and the stored `hash({n,last})` (no data loss). The head now
+  persists `sealedN` (elements in sealed chunks) and the total is re-derived as `sealedN +
+  len(tail)`, so a non-roll append self-corrects the count on the next write. TS + Python. (The
+  `maxItems` cap still reads `head.n` directly, so it remains best-effort across such a crash — it
+  may admit one extra element in that window before self-correcting; bounded, never compounding.)
+
+### Documented
+
+- `unwrapFromEntry` / `unwrap_from_entry` now warn that they are low-level primitives that do **not**
+  verify `addedSig`/`addedBy` — callers must pin `trustedAdders` and verify provenance first (the
+  high-level helpers already do).
+
 ## 3.0.0-alpha.6 — `namespace` reaches the store bindings
 
 Seventh alpha of 3.0.0. Completes the alpha.5 `namespace` work: the option now flows through the

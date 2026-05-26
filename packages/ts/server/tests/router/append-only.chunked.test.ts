@@ -224,3 +224,44 @@ describe("appendOnly maxItems cap — router 409", () => {
     expect(await res.json()).toEqual({ error: "append_limit_exceeded", limit: 1 })
   })
 })
+
+describe("chunked append-only — head.n does not drift across a crash (sealedN self-heal)", () => {
+  it("recomputes the true count when the head was left one element behind", async () => {
+    const store = new MemoryObjectStore()
+    const key = "log"
+    const opts: AppendOptions = { chunkSize: 3 }
+
+    // Build: chunk1 = [10,20,30] (sealed), tail = [40]. → head.n=4, sealedN=3.
+    await runSeq(store, key, seqOf(4), opts)
+    let head = JSON.parse((await store.getString(key))!) as Record<string, unknown>
+    expect(head.n).toBe(4)
+    expect(head.sealedN).toBe(3)
+    const tailKey = head.tailKey as string
+
+    // Simulate a crash AFTER the chunk write but BEFORE the head write: the tail
+    // chunk gains a 5th element (ts 50) on disk, but the head still says n=4 /
+    // sealedN=3 (it was never updated). Old code read head.n and did n+1, so the
+    // count drifted permanently; the sealedN re-derivation must self-heal.
+    await store.put(
+      tailKey,
+      JSON.stringify([
+        { ts: 40, data: { n: 4 } },
+        { ts: 50, data: { n: 5 } },
+      ]),
+      { contentType: "application/json" },
+    )
+    // (head is still { n:4, sealedN:3, tailKey } — the stale post-crash state.)
+
+    // Next append (ts 60). Authoritative count = sealedN(3) + tail([40,50]=2) + 1 = 6.
+    const out = await appendItem(store, key, { n: 6 }, FIELD, 60, opts)
+    expect("hash" in out).toBe(true)
+
+    head = JSON.parse((await store.getString(key))!) as Record<string, unknown>
+    expect(head.n).toBe(6) // NOT 5 — the drift was corrected
+    expect(head.sealedN).toBe(3)
+
+    // And the data is intact: a full pull returns all 6 elements in order.
+    const all = await pull(store, key)
+    expect(all.map((e) => (e as { ts: number }).ts)).toEqual([10, 20, 30, 40, 50, 60])
+  })
+})

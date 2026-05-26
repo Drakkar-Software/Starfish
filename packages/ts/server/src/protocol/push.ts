@@ -152,6 +152,15 @@ export function appendSegPrefix(documentKey: string): string {
  *  reads the sorted keys once (no chunk contents) to learn every chunk's ts range
  *  and skip chunks a `?checkpoint=` cannot match. */
 export function appendChunkKey(documentKey: string, firstTs: number): string {
+  // A negative `firstTs` (only reachable by migrating an unsupported ts-less
+  // legacy element, where `elementTs` returns -1) must never form a key: JS
+  // `padStart` keeps the sign mid-string (`00000000000000-1`) while Python
+  // `zfill` puts it first (`-000000000000001`), so the two languages would
+  // diverge AND the sign would break the lexicographic ordering the bisect
+  // relies on. Fail closed so any reachable input is byte-identical cross-language.
+  if (!Number.isInteger(firstTs) || firstTs < 0) {
+    throw new Error(`appendChunkKey: firstTs must be a non-negative integer, got ${firstTs}`)
+  }
   return appendSegPrefix(documentKey) + String(firstTs).padStart(APPEND_SEG_TS_WIDTH, "0")
 }
 
@@ -295,14 +304,19 @@ async function _appendChunkedImpl(
   context: StoreContext | undefined,
 ): Promise<AppendOutcome> {
   let existingData: Record<string, unknown> = {}
-  let n = 0
+  // `sealedN` = number of elements in all SEALED chunks (everything except the
+  // open tail chunk). The total count is ALWAYS re-derived as
+  // `sealedN + tailArr.length`, never read back as a standalone `n` — so a head
+  // written one append behind (a crash between the chunk write and the head
+  // write) self-corrects on the next append for the common, non-roll case:
+  // `sealedN` is unchanged by a tail append, and `tailArr` is read authoritatively.
+  let sealedN = 0
   let tailKey: string | null = null
   let tailArr: unknown[] = []
   let latest = -1
 
   if (isSeg && head) {
     existingData = (head["data"] as Record<string, unknown> | undefined) ?? {}
-    n = (head["n"] as number | undefined) ?? 0
     tailKey = (head["tailKey"] as string | undefined) ?? null
     if (tailKey) {
       const tailRaw = await store.getString(tailKey, context)
@@ -314,6 +328,13 @@ async function _appendChunkedImpl(
         }
       }
     }
+    // Prefer the stored `sealedN`; fall back to `n - tailLen` for a pre-`sealedN`
+    // head (a segmented doc written before this field existed) so the count is
+    // preserved across the upgrade, then stays consistent from the next append on.
+    const storedSealedN = head["sealedN"] as number | undefined
+    sealedN =
+      storedSealedN ??
+      Math.max(0, ((head["n"] as number | undefined) ?? tailArr.length) - tailArr.length)
     // Authoritative `latest` from the tail's last element (robust to a stale head).
     latest = tailArr.length > 0 ? elementTs(tailArr[tailArr.length - 1]) : ((head["ts"] as number | undefined) ?? -1)
   } else if (head && Array.isArray((head["data"] as Record<string, unknown> | undefined)?.[appendField])) {
@@ -329,7 +350,7 @@ async function _appendChunkedImpl(
     }
     tailArr = legacyArr.slice(numFull * chunkSize) // remainder (< chunkSize); written below with the new element
     tailKey = tailArr.length > 0 ? appendChunkKey(documentKey, elementTs(tailArr[0])) : null
-    n = legacyArr.length
+    sealedN = numFull * chunkSize // the full chunks just written are sealed; the remainder is the open tail
     latest = legacyArr.length > 0 ? elementTs(legacyArr[legacyArr.length - 1]) : -1
   } else {
     // Fresh document (or a non-append doc at this key) — preserve any non-array data.
@@ -350,26 +371,35 @@ async function _appendChunkedImpl(
   const element: AppendElement = { ts, data: item }
   let writeKey: string
   let writeArr: unknown[]
+  let newSealedN: number
   if (!tailKey || tailArr.length >= chunkSize) {
-    // No open tail, or it is full → start a new chunk keyed by this element's ts.
+    // No open tail, or it is full → the current tail (if any) becomes sealed and
+    // a new chunk opens, keyed by this element's ts.
+    newSealedN = sealedN + tailArr.length
     writeKey = appendChunkKey(documentKey, ts)
     writeArr = [element]
   } else {
+    // Append to the open tail; the sealed count is unchanged.
+    newSealedN = sealedN
     writeKey = tailKey
     writeArr = [...tailArr, element]
   }
 
-  const newN = n + 1
+  // Count re-derived from authoritative state (sealed chunks + the tail being
+  // written), never `previousN + 1` — so it cannot drift across a crash.
+  const newN = newSealedN + writeArr.length
   const newHash = await computeHash({ n: newN, last: item })
 
-  // Write the chunk first, then the head: a crash in between leaves the head's
-  // n/hash at most one element behind — it never loses a written element.
+  // Write the chunk first, then the head: a crash in between leaves the head one
+  // element behind, but never loses a written element, and the persisted
+  // `sealedN` lets the next append recompute the true count (non-roll case).
   await store.put(writeKey, JSON.stringify(writeArr), { contentType: CONTENT_TYPE_JSON }, context)
   const headDoc: Record<string, unknown> = {
     v: DOCUMENT_VERSION,
     seg: true,
     data: existingData,
     n: newN,
+    sealedN: newSealedN,
     ts,
     hash: newHash,
     chunkSize,

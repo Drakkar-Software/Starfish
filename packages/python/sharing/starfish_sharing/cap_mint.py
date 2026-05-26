@@ -255,6 +255,14 @@ def _assert_scope_barriers(
     issuer_ns_exact = f"users/{iss_user_id}"
     issuer_ns_prefix = f"users/{iss_user_id}/"
     scope_paths: list[str] = list(cert["scope"].get("paths", []) or [])
+    # A cap with NO ``scope.paths`` (or an empty list) is path-UNRESTRICTED:
+    # ``match_scope_path(_, None)`` returns True at request time, so it
+    # effectively allows every path with no deny — including the owner-only
+    # ``_members``/``_keyring``. Model that as an implicit ``**`` allow so the
+    # barriers below fire (a subject-scoped member/audience cap must carry an
+    # explicit path scope that denies those paths; only a device/root cap, which
+    # does not go through these barriers, may be path-unrestricted).
+    path_unrestricted = len(scope_paths) == 0
     for path in scope_paths:
         resolved = path.replace("{identity}", iss_user_id)
         if resolved == issuer_ns_exact or resolved.startswith(issuer_ns_prefix):
@@ -268,24 +276,36 @@ def _assert_scope_barriers(
             resolved_allows.append((entry, entry.replace("{identity}", iss_user_id)))
     for col in cert["scope"]["collections"]:
         members_path = f"{col}/_members"
-        matching_allow = next(
-            (a for a in resolved_allows if path_glob_match(a[1], members_path)),
-            None,
+        matching_allow = (
+            ("**", "**")
+            if path_unrestricted
+            else next(
+                (a for a in resolved_allows if path_glob_match(a[1], members_path)),
+                None,
+            )
         )
         if matching_allow is None:
             continue
-        if not any(path_glob_match(d, members_path) for d in resolved_denies):
+        if path_unrestricted or not any(
+            path_glob_match(d, members_path) for d in resolved_denies
+        ):
             raise ValueError(members_not_denied)
     if "write" in cert["scope"]["ops"]:
         for col in cert["scope"]["collections"]:
             keyring_path = f"{col}/_keyring"
-            matching_allow = next(
-                (a for a in resolved_allows if path_glob_match(a[1], keyring_path)),
-                None,
+            matching_allow = (
+                ("**", "**")
+                if path_unrestricted
+                else next(
+                    (a for a in resolved_allows if path_glob_match(a[1], keyring_path)),
+                    None,
+                )
             )
             if matching_allow is None:
                 continue
-            if not any(path_glob_match(d, keyring_path) for d in resolved_denies):
+            if path_unrestricted or not any(
+                path_glob_match(d, keyring_path) for d in resolved_denies
+            ):
                 raise ValueError(keyring_not_denied)
 
 

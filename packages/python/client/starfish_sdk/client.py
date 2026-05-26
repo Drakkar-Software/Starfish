@@ -63,7 +63,12 @@ class StarfishClient:
     def _sign_path(self, path: str) -> str:
         if self._namespace is None:
             return path
-        return f"/v1/{self._namespace}/{path[4:]}"
+        # Mount a bare action path (e.g. "/pull/...") under the namespace,
+        # matching the TS client's `applyNamespace` (`/v1/{ns}{path}`), so the
+        # two SDKs accept the SAME input. A legacy "/v1/"-prefixed path is also
+        # accepted — the "/v1" is stripped first — so older callers keep working.
+        action_path = path[3:] if path.startswith("/v1/") else path
+        return f"/v1/{self._namespace}{action_path}"
 
     def _signing_host(self) -> str:
         """Return the host portion of ``base_url`` for the request-signing bind.

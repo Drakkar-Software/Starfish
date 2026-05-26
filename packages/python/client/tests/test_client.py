@@ -321,6 +321,45 @@ async def test_namespace_signs_the_namespaced_path():
 
 
 @pytest.mark.asyncio
+async def test_namespace_accepts_bare_action_path_like_ts_client():
+    """The Python client accepts a BARE action path (`/push/...`), matching the
+    TS client's `applyNamespace`, and mounts it under the namespace for BOTH the
+    URL and the signed canonical path. (A legacy `/v1/`-prefixed path is also
+    accepted — see test_namespace_signs_the_namespaced_path.)"""
+    cap = {"kind": "device", "iss": "aa" * 32, "issAlg": "ed25519", "subAlg": "ed25519"}
+
+    class _Provider:
+        async def get_cap(self) -> dict:
+            return {"cap": cap, "dev_ed_priv_hex": "11" * 32}
+
+    mock_http = AsyncMock()
+    mock_http.post.return_value = make_response(200, {"hash": "h", "timestamp": 1})
+    client = StarfishClient(
+        "http://sync.example.com", namespace="octobot", client=mock_http, cap_provider=_Provider()
+    )
+
+    with patch(
+        "starfish_sdk.client.sign_request",
+        return_value=SimpleNamespace(sig="s", ts=1, nonce="n", alg="ed25519"),
+    ) as mock_sign:
+        await client.push("/push/users/abc/settings", {"x": 1}, None)  # bare, TS-style
+
+    assert (
+        mock_http.post.call_args.args[0]
+        == "http://sync.example.com/v1/octobot/push/users/abc/settings"
+    )
+    assert mock_sign.call_args.args[1] == "/v1/octobot/push/users/abc/settings"
+
+
+@pytest.mark.asyncio
+async def test_namespace_sign_path_is_idempotent_for_bare_and_v1_prefixed():
+    """Both input conventions resolve to the same namespaced canonical path."""
+    client = StarfishClient("http://test", namespace="octobot")
+    assert client._sign_path("/push/users/x") == "/v1/octobot/push/users/x"
+    assert client._sign_path("/v1/push/users/x") == "/v1/octobot/push/users/x"
+
+
+@pytest.mark.asyncio
 async def test_get_config_without_namespace():
     mock_http = AsyncMock()
     mock_http.get.return_value = make_response(200, {"collections": [], "version": 1})

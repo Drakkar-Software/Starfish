@@ -15,6 +15,7 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 from starfish_sharing import sharing_server_plugin
 from starfish_protocol.cap import sign_cap_cert
 from starfish_protocol.hash import stable_stringify
+from starfish_protocol.plugins import ServerPlugin
 from starfish_protocol.request_signing import sign_request
 from starfish_protocol.revocation import revocation_list_canonical_signing_input
 from starfish_server.auth.nonce_cache import create_in_memory_nonce_cache
@@ -1066,3 +1067,53 @@ async def test_non_octet_binary_blob_signed_with_empty_body_is_accepted() -> Non
     auth = await resolver(req)
     assert auth.identity == alice.user_id
     assert "cap:write:notes" in auth.roles
+
+
+@pytest.mark.asyncio
+async def test_member_cap_with_no_scope_paths_rejected_at_resolver() -> None:
+    """Defense-in-depth: the resolver rejects a member cap with no scope.paths
+    even if a (permissive) plugin skips the mint/shape barrier. Wire a plugin
+    that registers `member` WITHOUT the barrier so the cap reaches the resolver
+    path gate. A device cap with no paths stays allowed. Mirrors the TS twin in
+    cap-resolver.test.ts."""
+    alice = _make_root(0x42)
+    bob = _make_root(0x11)
+    now_sec = int(time.time())
+    unsigned = {
+        "v": 1,
+        "kind": "member",
+        "issAlg": "ed25519",
+        "iss": alice.ed_pub_hex,
+        "issUserId": alice.user_id,
+        "sub": bob.ed_pub_hex,
+        "subKem": bob.kem_pub_hex,
+        "subUserId": bob.user_id,
+        "scope": {"ops": ["read", "write", "list"], "collections": ["notes"]},  # no paths
+        "nbf": now_sec - 10,
+        "exp": now_sec + 3600,
+        "nonce": base64.b64encode(bytes([9]) * 16).decode("ascii"),
+    }
+    cert = sign_cap_cert(unsigned, alice.ed_priv_hex)
+    sig = sign_request("GET", "/pull/notes/anything", b"", bob.ed_priv_hex, host="api")
+    req = _FakeRequest(
+        "GET",
+        "https://api/pull/notes/anything",
+        headers={
+            "Authorization": _cap_header(cert),
+            "X-Starfish-Sig": sig.sig,
+            "X-Starfish-Ts": str(sig.ts),
+            "X-Starfish-Nonce": sig.nonce,
+        },
+    )
+    permissive = ServerPlugin(
+        name="permissive-member", cap_validators={"member": lambda cert: None}
+    )
+    resolver = create_cap_cert_role_resolver(
+        nonce_cache=create_in_memory_nonce_cache(),
+        revocation_store=create_in_memory_revocation_store(),
+        plugins=[permissive],
+    )
+    with pytest.raises(CapAuthError) as exc:
+        await resolver(req)
+    assert exc.value.status == 403
+    assert "scope.paths" in str(exc.value)

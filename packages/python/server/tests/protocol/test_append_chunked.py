@@ -230,3 +230,39 @@ async def test_router_returns_409_past_cap():
         resp = await client.post("/push/events", json={"data": {"n": 2}})
     assert resp.status_code == 409
     assert resp.json() == {"error": "append_limit_exceeded", "limit": 1}
+
+
+@pytest.mark.asyncio
+async def test_head_n_does_not_drift_across_a_crash_sealed_n_self_heal():
+    """The head's `n` does not drift if a crash leaves it one element behind the
+    tail chunk. Mirrors the TS twin in append-only.chunked.test.ts."""
+    store = MemoryObjectStore()
+    key = "log"
+
+    # Build: chunk1 = [10,20,30] (sealed), tail = [40]. → head.n=4, sealedN=3.
+    await _run_seq(store, key, _seq(4), chunk_size=3)
+    head = json.loads(await store.get_string(key))
+    assert head["n"] == 4
+    assert head["sealedN"] == 3
+    tail_key = head["tailKey"]
+
+    # Simulate a crash AFTER the chunk write but BEFORE the head write: the tail
+    # chunk gains a 5th element (ts 50) on disk, but the head still says n=4 /
+    # sealedN=3. Old code read head.n and did n+1, so the count drifted; the
+    # sealed_n re-derivation must self-heal.
+    await store.put(
+        tail_key,
+        json.dumps([{"ts": 40, "data": {"n": 4}}, {"ts": 50, "data": {"n": 5}}]),
+        content_type="application/json",
+    )
+
+    # Next append (ts 60). Authoritative count = sealed_n(3) + tail([40,50]=2) + 1 = 6.
+    out = await append_item(store, key, {"n": 6}, FIELD, 60, chunk_size=3)
+    assert isinstance(out, PushSuccess)
+
+    head = json.loads(await store.get_string(key))
+    assert head["n"] == 6  # NOT 5 — the drift was corrected
+    assert head["sealedN"] == 3
+
+    all_items = await _pull(store, key)
+    assert [e["ts"] for e in all_items] == [10, 20, 30, 40, 50, 60]

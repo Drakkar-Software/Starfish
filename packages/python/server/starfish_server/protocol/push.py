@@ -164,7 +164,18 @@ def append_chunk_key(document_key: str, first_ts: int) -> str:
     """Key of the chunk whose first element has timestamp ``first_ts``. The ``first_ts``
     is zero-padded so the lexicographically sorted key list is chronological — a pull
     reads the sorted keys once (no chunk contents) to learn every chunk's ts range and
-    skip chunks a ``?checkpoint=`` cannot match."""
+    skip chunks a ``?checkpoint=`` cannot match.
+
+    A negative ``first_ts`` (only reachable by migrating an unsupported ts-less
+    legacy element, where ``element_ts`` returns -1) must never form a key: Python
+    ``zfill`` puts the sign first (``-000000000000001``) while JS ``padStart`` keeps
+    it mid-string (``00000000000000-1``), so the two languages would diverge AND the
+    sign would break the lexicographic ordering the bisect relies on. Fail closed so
+    any reachable input is byte-identical cross-language."""
+    if not isinstance(first_ts, int) or isinstance(first_ts, bool) or first_ts < 0:
+        raise ValueError(
+            f"append_chunk_key: first_ts must be a non-negative integer, got {first_ts}"
+        )
     return append_seg_prefix(document_key) + str(first_ts).zfill(APPEND_SEG_TS_WIDTH)
 
 
@@ -305,14 +316,20 @@ async def _append_chunked(
     single-doc (inline ``data[field]`` array, no ``seg``) is sliced into chunks on
     first append (one-time O(n)); thereafter appends are bounded."""
     existing_data: dict[str, Any] = {}
-    n = 0
+    # ``sealed_n`` = number of elements in all SEALED chunks (everything except
+    # the open tail chunk). The total count is ALWAYS re-derived as
+    # ``sealed_n + len(tail_arr)``, never read back as a standalone ``n`` — so a
+    # head written one append behind (a crash between the chunk write and the
+    # head write) self-corrects on the next append for the common, non-roll case:
+    # ``sealed_n`` is unchanged by a tail append, and ``tail_arr`` is read
+    # authoritatively.
+    sealed_n = 0
     tail_key: str | None = None
     tail_arr: list = []
     latest = -1
 
     if is_seg and head:
         existing_data = head.get("data") or {}
-        n = head.get("n", 0)
         tail_key = head.get("tailKey")
         if tail_key:
             tail_raw = await store.get_string(tail_key, context=context)
@@ -322,6 +339,15 @@ async def _append_chunked(
                     tail_arr = parsed if isinstance(parsed, list) else []
                 except (json.JSONDecodeError, ValueError):
                     tail_arr = []
+        # Prefer the stored ``sealedN``; fall back to ``n - tailLen`` for a
+        # pre-``sealedN`` head (a segmented doc written before this field
+        # existed) so the count is preserved across the upgrade.
+        stored_sealed_n = head.get("sealedN")
+        sealed_n = (
+            stored_sealed_n
+            if stored_sealed_n is not None
+            else max(0, head.get("n", len(tail_arr)) - len(tail_arr))
+        )
         # Authoritative ``latest`` from the tail's last element (robust to a stale head).
         latest = _element_ts(tail_arr[-1]) if tail_arr else head.get("ts", -1)
     elif head and isinstance((head.get("data") or {}).get(append_field), list):
@@ -338,7 +364,7 @@ async def _append_chunked(
             )
         tail_arr = legacy_arr[num_full * chunk_size:]  # remainder (< chunk_size); written below
         tail_key = append_chunk_key(document_key, _element_ts(tail_arr[0])) if tail_arr else None
-        n = len(legacy_arr)
+        sealed_n = num_full * chunk_size  # full chunks just written are sealed; remainder is the open tail
         latest = _element_ts(legacy_arr[-1]) if legacy_arr else -1
     else:
         # Fresh document (or a non-append doc at this key) — preserve any non-array data.
@@ -354,24 +380,32 @@ async def _append_chunked(
 
     element: AppendElement = {"ts": ts, "data": item}
     if not tail_key or len(tail_arr) >= chunk_size:
-        # No open tail, or it is full → start a new chunk keyed by this element's ts.
+        # No open tail, or it is full → the current tail (if any) becomes sealed
+        # and a new chunk opens, keyed by this element's ts.
+        new_sealed_n = sealed_n + len(tail_arr)
         write_key = append_chunk_key(document_key, ts)
         write_arr: list = [element]
     else:
+        # Append to the open tail; the sealed count is unchanged.
+        new_sealed_n = sealed_n
         write_key = tail_key
         write_arr = [*tail_arr, element]
 
-    new_n = n + 1
+    # Count re-derived from authoritative state (sealed chunks + the tail being
+    # written), never ``previous_n + 1`` — so it cannot drift across a crash.
+    new_n = new_sealed_n + len(write_arr)
     new_hash = compute_hash({"n": new_n, "last": item})
 
-    # Write the chunk first, then the head: a crash in between leaves the head's
-    # n/hash at most one element behind — it never loses a written element.
+    # Write the chunk first, then the head: a crash in between leaves the head one
+    # element behind, but never loses a written element, and the persisted
+    # ``sealedN`` lets the next append recompute the true count (non-roll case).
     await store.put(write_key, json.dumps(write_arr), content_type=CONTENT_TYPE_JSON, context=context)
     head_doc: dict[str, Any] = {
         "v": DOCUMENT_VERSION,
         "seg": True,
         "data": existing_data,
         "n": new_n,
+        "sealedN": new_sealed_n,
         "ts": ts,
         "hash": new_hash,
         "chunkSize": chunk_size,

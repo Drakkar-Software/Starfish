@@ -128,19 +128,38 @@ class S3ObjectStore(AbstractObjectStore):
         limit: int | None = None,
         context: StoreContext | None = None,  # noqa: ARG002
     ) -> list[str]:
+        # S3 returns at most 1000 keys per page. Follow the continuation token
+        # so the full key set is returned — the segmented append-only log keys
+        # ALL chunks of a single document via ``list_keys`` (no ``limit``), so a
+        # truncated first page would silently drop every chunk past the 1000th
+        # and the checkpoint bisect would read incomplete data. With a ``limit``
+        # we stop as soon as it is satisfied. (``StartAfter`` is honored only on
+        # the first request; the continuation token governs subsequent pages.)
         client = await self._get_client()
-        kwargs: dict[str, Any] = {
-            "Bucket": self._opts.bucket,
-            "Prefix": prefix,
-        }
-        if start_after:
-            kwargs["StartAfter"] = start_after
-        if limit:
-            kwargs["MaxKeys"] = limit
+        keys: list[str] = []
+        continuation_token: str | None = None
+        while True:
+            kwargs: dict[str, Any] = {
+                "Bucket": self._opts.bucket,
+                "Prefix": prefix,
+            }
+            if continuation_token is None and start_after:
+                kwargs["StartAfter"] = start_after
+            if limit:
+                kwargs["MaxKeys"] = limit
+            if continuation_token is not None:
+                kwargs["ContinuationToken"] = continuation_token
 
-        resp = await client.list_objects_v2(**kwargs)
-        contents = resp.get("Contents", [])
-        return [obj["Key"] for obj in contents]
+            resp = await client.list_objects_v2(**kwargs)
+            for obj in resp.get("Contents", []):
+                keys.append(obj["Key"])
+            if limit and len(keys) >= limit:
+                return keys[:limit]
+            if not resp.get("IsTruncated"):
+                return keys
+            continuation_token = resp.get("NextContinuationToken")
+            if continuation_token is None:
+                return keys
 
     async def delete(self, key: str, *, context: StoreContext | None = None) -> None:  # noqa: ARG002
         client = await self._get_client()

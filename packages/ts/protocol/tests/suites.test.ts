@@ -13,7 +13,7 @@ import {
   type UnsignedCapCert,
 } from "../src/cap.js"
 import { signRequest, verifyRequestSignature, type SignableRequest } from "../src/request-signing.js"
-import { assertUsableSharedSecret } from "../src/suites/_hex.js"
+import { assertUsableSharedSecret, hexToBytes as decodeHex } from "../src/suites/_hex.js"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -398,5 +398,26 @@ describe("subKemAlg — KEM suite decoupled from signing suite", () => {
     expect(code(() =>
       assertCapCertWellFormed(member({ subKemAlg: "rsa", subKem: "ee".repeat(32) }) as never),
     )).toBe("malformed-shape")
+  })
+})
+
+describe("hexToBytes input validation", () => {
+  it("decodes valid lowercase and uppercase hex", () => {
+    expect([...decodeHex("00ff")]).toEqual([0, 255])
+    expect([...decodeHex("DEadBE")]).toEqual([0xde, 0xad, 0xbe])
+    expect([...decodeHex("")]).toEqual([])
+  })
+
+  it("throws on non-hex characters instead of silently zeroing (fail-closed, matches Python)", () => {
+    // Before the fix `parseInt("zz",16)` → NaN → 0, so malformed hex became
+    // zero bytes silently (and diverged from Python's `bytes.fromhex`).
+    expect(() => decodeHex("zz")).toThrow(/invalid characters/)
+    expect(() => decodeHex("0g")).toThrow(/invalid characters/)
+    expect(() => decodeHex("0xff")).toThrow(/invalid characters/)
+    expect(() => decodeHex("12cz")).toThrow(/invalid characters/)
+  })
+
+  it("throws on an odd-length string", () => {
+    expect(() => decodeHex("abc")).toThrow(/odd length/)
   })
 })

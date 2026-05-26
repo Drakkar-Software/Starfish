@@ -255,17 +255,42 @@ async def remove_recipient(
     if epoch is None:
         raise ValueError(f"Epoch {keyring.current_epoch} not found in keyring")
 
+    import logging
+
+    _log = logging.getLogger(__name__)
     trusted = _require_trusted_adders(trusted_adders, "remove_recipient")
     remove_set = set(remove_sub_kems)
-    retained = [
+    # An entry is only carried into the new epoch if it (a) is not being
+    # removed, (b) was added by a trusted adder, AND (c) has a valid
+    # ``addedSig``. The signature check is essential: ``added_by`` and
+    # ``sub_kem`` are public fields bound to each other ONLY by ``addedSig``,
+    # so without verifying it a hostile server could swap a retained entry's
+    # ``sub_kem`` to an attacker key (leaving ``added_by`` a trusted adder) and
+    # the rotation would re-wrap the fresh CEK to the attacker — laundering a
+    # forged recipient into a legitimately signed post-rotation entry. Mirrors
+    # ``_recover_current_cek``.
+    retained: list[tuple[str, str]] = []
+    for e in epoch.wrapped_keys:
+        if e.sub_kem in remove_set:
+            continue
+        if e.added_by not in trusted:
+            _log.warning(
+                "dropping entry subKem=%s from rotation: addedBy %s is not a trusted adder",
+                e.sub_kem,
+                e.added_by,
+            )
+            continue
+        if not verify_entry_signature(e, keyring.current_epoch):
+            _log.warning(
+                "dropping entry subKem=%s from rotation: addedSig verification failed (possible tampering)",
+                e.sub_kem,
+            )
+            continue
         # `is not None`, not `or`: a server-supplied entry with an empty-string
         # `kemAlg` must stay `""` so the downstream wrap raises (matching TS,
         # where `getSuite("")` throws and aborts the rotation). `or DEFAULT_ALG`
         # would coerce `""` → ed25519 and silently re-wrap under X25519.
-        (e.sub_kem, e.kem_alg if e.kem_alg is not None else DEFAULT_ALG)
-        for e in epoch.wrapped_keys
-        if e.sub_kem not in remove_set and e.added_by in trusted
-    ]
+        retained.append((e.sub_kem, e.kem_alg if e.kem_alg is not None else DEFAULT_ALG))
 
     rotated, _new_cek = rotate_epoch(
         keyring,

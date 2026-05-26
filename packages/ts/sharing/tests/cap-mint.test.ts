@@ -233,6 +233,29 @@ describe("mintMemberCap", () => {
     expect((caught as Error & { code?: string }).code).toBe("member-members-not-denied")
   })
 
+  it("rejects a member cap with NO scope.paths (path-unrestricted reaches _members)", async () => {
+    // A cap with no `paths` is path-unrestricted: `matchScopePath(_, undefined)`
+    // is true, so it would clear the gate for `shared/_members` and
+    // `shared/_keyring`. The barrier must treat absent paths as an implicit
+    // allow-all and reject it.
+    const alice = await deriveRootIdentity("alice-root-passphrase")
+    const bob = await deriveRootIdentity("bob-root-passphrase")
+    let caught: unknown
+    try {
+      await mintMemberCap(
+        alice.keys.edPriv,
+        alice.keys.edPub,
+        { edPubHex: bob.keys.edPub, kemPubHex: bob.keys.kemPub, userIdHex: bob.userId },
+        "shared",
+        { ops: ["read", "list", "write"], collections: ["shared"] }, // no `paths`
+      )
+    } catch (e) {
+      caught = e
+    }
+    expect(caught).toBeInstanceOf(Error)
+    expect((caught as Error & { code?: string }).code).toBe("member-members-not-denied")
+  })
+
   it("accepts member writer scope with both _keyring and _members denies", async () => {
     const alice = await deriveRootIdentity("alice-root-passphrase")
     const bob = await deriveRootIdentity("bob-root-passphrase")

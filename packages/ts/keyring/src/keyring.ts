@@ -247,6 +247,14 @@ export async function wrapForRecipient(
  * Recovers the CEK from a `WrappedKeyEntry` using the recipient's KEM private key.
  *
  * Throws if AES-GCM authentication fails (wrong key, tampered ciphertext).
+ *
+ * SECURITY: this is a low-level primitive — it does NOT verify the entry's
+ * `addedSig` or check `addedBy` provenance. The `addedSig` is self-attesting, so
+ * a hostile server can hand you an entry that wraps an attacker-chosen CEK to
+ * your (public) KEM key and self-signs it. Before trusting an entry fetched from
+ * an untrusted server, call {@link verifyEntrySignature} and confirm `addedBy`
+ * is in your `trustedAdders` set (the high-level `recoverCurrentCek` /
+ * `createKeyringEncryptor` / `listRecipients` paths already do this).
  */
 export async function unwrapFromEntry(
   entry: WrappedKeyEntry,
