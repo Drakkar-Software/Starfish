@@ -146,6 +146,25 @@ await client.pull(`/pull/tenantA/users/${creds.userId}/settings`)
 This mirrors the Python client's `namespace` parameter. Leave `namespace` unset (the default)
 for a root-mounted server — paths pass through unchanged.
 
+### Namespace with the React store bindings
+
+The `useSyncInit` hook (zustand binding) builds its own `StarfishClient` from the config, so pass
+`namespace` there too — keep `pullPath`/`pushPath` as bare action paths and the binding's client
+prefixes them, exactly like a hand-built client:
+
+```ts
+const store = useSyncInit({
+  serverUrl: "https://api.example.com", // origin only — no /v1 here
+  namespace: "tenantA",
+  pullPath: `/pull/users/${userId}/settings`, // bare; becomes /v1/tenantA/pull/...
+  pushPath: `/push/users/${userId}/settings`,
+})
+```
+
+Without this the store's pulls/pushes hit the un-namespaced path even when your standalone
+`client.pull/push` calls are namespaced. The `legend`/`suspense` bindings act on an
+already-built store and need no namespace of their own.
+
 ## Namespace-scoped batch pull
 
 Each namespace has its own `/{namespace}/batch/pull` endpoint that only searches within that namespace. The root `/batch/pull` only searches root collections.

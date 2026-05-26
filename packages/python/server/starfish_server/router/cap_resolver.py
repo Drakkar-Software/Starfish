@@ -180,6 +180,16 @@ def _canonicalize_request_path(request_path: str) -> str:
     ``col/./_keyring`` all canonicalize to ``col/_keyring``. (``..`` is left
     intact — it is rejected upstream by ``is_unsafe_document_key`` — and would
     not help evade a deny here in any case.)
+
+    Unlike the TypeScript twin, this does NOT percent-decode the segments — and
+    must not. ASGI delivers ``scope["path"]`` already percent-decoded (per spec),
+    so ``request.url.path`` (the input here, via ``_path_and_query``) and
+    ``request.path_params`` (the storage key) are both decoded once and agree.
+    Decoding again here would double-decode (``%256b`` → ``%6b`` → ``k``) and
+    re-open the very evasion the TS ``canonicalizeRequestPath`` decode closes,
+    where ``new URL().pathname`` is NOT decoded. The two implementations diverge
+    at the function level but are equivalent end-to-end; do not "restore parity"
+    by adding a decode here.
     """
     return "/".join(seg for seg in request_path.split("/") if seg not in ("", "."))
 
@@ -621,6 +631,17 @@ def create_cap_cert_role_resolver(
             if scope_paths is not None
             else None
         )
+        # A member/audience cap is a SCOPED grant — it must carry an explicit
+        # path scope. Only a device/root cap (a proxy for the issuer's full
+        # authority) may be path-unrestricted. Without this, a member/audience
+        # cap minted with no ``scope.paths`` would clear the gate for every path
+        # (``match_scope_path(_, None)`` is True), reaching the owner-only
+        # ``_keyring``/``_members``. Defense-in-depth alongside the mint/
+        # server-side shape barrier (``_assert_scope_barriers``).
+        if cert["kind"] != "device" and not expanded_paths:
+            raise CapAuthError(
+                403, "member/audience cap must carry an explicit scope.paths"
+            )
         if not match_scope_path(storage_path, expanded_paths):
             raise CapAuthError(403, "request path is outside cap scope")
 

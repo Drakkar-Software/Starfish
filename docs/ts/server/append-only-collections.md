@@ -47,6 +47,8 @@ Shorthand: `appendOnly: true` (JSON / YAML) maps to `{ "type": "by_timestamp" }`
 | `type` | `"by_timestamp"` | — (required) | Append strategy. Only `"by_timestamp"` is supported today; the field is a discriminator so other strategies can be added later. |
 | `field` | `string` | `"items"` | Array field name in the stored document |
 | `persist` | `boolean` | `true` | `false` = skip storage, publish queue only (replaces `queueOnly`) |
+| `maxItems` | `number` | unset (unlimited) | Reject an append once the stored element count reaches this many — see [Bounding & scaling](#bounding--scaling-maxitems--chunksize). Requires `persist`. |
+| `chunkSize` | `number` | unset (single document) | Store the log as fixed-size sealed chunks instead of one growing blob, bounding append cost — see [Bounding & scaling](#bounding--scaling-maxitems--chunksize). Requires `persist`. |
 
 > The old `checkLastItem` option was **removed**. Appends are now always accepted content-wise (see below); there is no `baseHash` conflict check on an append.
 
@@ -88,7 +90,7 @@ Each element carries its own `ts`. When a client sends `?checkpoint=<ts>`:
 - Other top-level fields in the document are returned as-is.
 - A full pull (no checkpoint) returns the complete array.
 
-Because the array is strictly increasing in `ts`, the server locates the slice start with a binary search (O(log N)) rather than scanning.
+Because the array is strictly increasing in `ts`, the server locates the slice start with a binary search rather than scanning. This only trims what is **returned** — the whole document is still read and JSON-parsed first (O(N)). See [Size considerations](#size-considerations).
 
 ### Last-K pull
 
@@ -202,12 +204,62 @@ Author signature verification is **skipped** for append-only collections. Stored
 
 ## Size considerations
 
-There is no built-in cap on array length. Push and full pull are O(N) in storage I/O — the full document is read on every push and returned on a full pull. Use checkpoint pulls to keep payloads proportional to new elements rather than total history. For high-volume streams, partition by path parameter to keep individual documents small:
+By default the whole feature keeps **every element in a single document**. That has real cost as a log grows:
+
+- **Append is O(N) per call.** Each append reads the entire document, parses it, copies the array, re-serializes, and writes it back. The work is proportional to the current size, so **building a log of N elements one append at a time is O(N²)**.
+- **Pull parses the whole document, O(N) — even with `?checkpoint=`.** The checkpoint trims what is *returned*, not what is *read*: the server still reads and JSON-parses the entire blob before the binary search. A checkpoint pull keeps the **response** small but not the server-side **parse**.
+
+Three levers address this — combine as needed:
+
+- **`chunkSize` (segmented storage)** — the library-level fix: bounds append to O(chunkSize) and lets `?checkpoint=`/`?last=` read only the chunks they need. See [Bounding & scaling](#bounding--scaling-maxitems--chunksize) below.
+- **`maxItems` (cap)** — refuse to let a single document grow without bound; steers callers to partitioning.
+- **Partition by a path parameter** — bounds N per document regardless of layout:
+  ```ts
+  // Partition by day: events/2024-01-15
+  { storagePath: "events/{date}" }
+  ```
+
+These costs (and the `chunkSize` improvement) are characterized by opt-in stress suites (kept out of the default test run). Run them to see the timings on your hardware:
+
+```bash
+# TypeScript (from packages/ts/server)
+STARFISH_STRESS=1 pnpm exec vitest run tests/router/append-only.stress.test.ts --reporter=verbose
+
+# Python (from packages/python/server)
+uv run pytest -s -m stress tests/protocol/test_append_stress.py
+```
+
+## Bounding & scaling (`maxItems` / `chunkSize`)
+
+Two **opt-in** knobs address unbounded growth. Both are additive — a collection that sets neither keeps the single-document layout exactly — and both preserve the wire contract (pull response shape, `hash({ n, last })`, `?checkpoint=`/`?last=`), so clients and stored-vector conformance are unaffected. They are independent and may be combined.
+
+### `maxItems` — cap
 
 ```ts
-// Partition by day: events/2024-01-15
-{ storagePath: "events/{date}" }
+appendOnly: { type: "by_timestamp", maxItems: 50000 }
 ```
+
+`maxItems: N` stores up to **N** elements; the **(N+1)th** append is rejected with **`409 { error: "append_limit_exceeded", limit }`** and nothing is written. The cap is configuration (not data), so the limit is echoed. Use it as a guardrail that pushes callers toward partitioning a high-volume stream by a path parameter (e.g. `storagePath: "events/{date}"`). It *prevents* the pathological single huge log; it does not make one fast — for that, use `chunkSize`.
+
+### `chunkSize` — segmented storage
+
+```ts
+appendOnly: { type: "by_timestamp", chunkSize: 10000 }  // ~10000 recommended
+```
+
+Instead of one growing blob, the log is stored as fixed-size **sealed chunks** plus a small **head** document:
+
+- **Head** at the document key (`events/2024-01-15`) — `{ n, ts, hash, chunkSize, tailKey, … }`, still a single object, so existence/TTL reads are unchanged.
+- **Chunks** under a sibling prefix (`events/2024-01-15__seg/`), each holding up to `chunkSize` `{ts,data}` envelopes. **The chunk key is its first element's `ts`, zero-padded.** Because `ts` is strictly increasing, the lexicographically sorted key list (one `listKeys` call — *no chunk contents*) tells the server every chunk's time range.
+
+Result:
+
+- **Append is O(chunkSize)** — it touches only the head and the open tail chunk, so building a long log is no longer O(N²).
+- **`?checkpoint=` reads only the chunks it needs** — the server locates the one boundary chunk (the last whose first-ts ≤ checkpoint) by a key-string comparison and reads it plus the chunks after it; every earlier chunk is skipped *without being read*. `?last=K` reads only the final `⌈K/chunkSize⌉+1` chunks. A full pull still reads everything (it returns everything) — keep using `?checkpoint=`/`?last=` for incremental sync.
+
+**Lazy migration**: enabling `chunkSize` on a collection that already has a single-document log migrates it to chunks on the next append (a one-time O(N) append; bounded thereafter). **Stickiness**: once a document is segmented it stays segmented even if `chunkSize` is later removed from config — otherwise the next append would orphan the existing chunks.
+
+**Batch-pull caveat**: the `/batch/pull` endpoint is not append/checkpoint-aware. For a **chunked** append-only collection it returns only the head's non-array `data` (no elements). Use the normal `/pull/...` endpoint (with `?checkpoint=`/`?last=`) for append-only data.
 
 ## Migration
 

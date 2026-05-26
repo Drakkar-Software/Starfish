@@ -220,16 +220,38 @@ function synthesizeRoles(cert: CapCert): string[] {
 }
 
 /**
- * Collapse empty and `.` segments so a deny cannot be evaded with a superstring
- * path. `col/_keyring/`, `col//_keyring` and `col/./_keyring` all canonicalize
- * to `col/_keyring`. (`..` is left intact — it is rejected upstream by
- * `isUnsafeDocumentKey` — and would not help evade a deny here in any case.)
+ * Percent-decode each segment, then collapse empty and `.` segments, so the
+ * scope-match path is the SAME string the storage layer keys on.
+ *
+ * The router (Hono) percent-decodes path params before composing the document
+ * key, so scope matching must decode too. Otherwise an encoded character — e.g.
+ * `_%6beyring` (which decodes to `_keyring`) — slips past a deny like
+ * `!col/_keyring` while the write still lands on the decoded `col/_keyring`
+ * key: a scoped member could overwrite the owner-only keyring. Decoding can
+ * only make a deny fire on *more* paths (denies are written decoded), so it is
+ * safe directionally. Decoding is per-segment and mirrors `decodeURIComponent`;
+ * a malformed escape is left raw. (`..` / `//` / control chars in the resolved
+ * key are independently rejected by `isUnsafeDocumentKey` before the store is
+ * touched, so they cannot be smuggled in via an encoded form here either.)
+ *
+ * `col/_keyring/`, `col//_keyring`, `col/./_keyring` and `col/_%6beyring` all
+ * canonicalize to `col/_keyring`.
  */
 function canonicalizeRequestPath(requestPath: string): string {
   return requestPath
     .split("/")
+    .map(decodePathSegment)
     .filter((seg) => seg !== "" && seg !== ".")
     .join("/")
+}
+
+/** Percent-decode one path segment; leave it raw if the escape is malformed. */
+function decodePathSegment(seg: string): string {
+  try {
+    return decodeURIComponent(seg)
+  } catch {
+    return seg
+  }
 }
 
 /**
@@ -632,6 +654,16 @@ export function createCapCertRoleResolver(opts: CapResolverOptions): RoleResolve
     const expandedPaths = cert.scope.paths?.map((p) =>
       p.split("{identity}").join(identity),
     )
+    // A member/audience cap is a SCOPED grant — it must carry an explicit path
+    // scope. Only a device/root cap (a proxy for the issuer's full authority)
+    // may be path-unrestricted. Without this, a member/audience cap minted with
+    // no `scope.paths` would clear the gate for every path
+    // (`matchScopePath(_, undefined)` === true), reaching the owner-only
+    // `_keyring`/`_members`. Defense-in-depth alongside the mint/server-side
+    // shape barrier (`assertScopeBarriers`).
+    if (cert.kind !== "device" && (!expandedPaths || expandedPaths.length === 0)) {
+      throw new CapAuthError(403, "member/audience cap must carry an explicit scope.paths")
+    }
     if (!matchScopePath(storagePath, expandedPaths)) {
       throw new CapAuthError(403, "request path is outside cap scope")
     }

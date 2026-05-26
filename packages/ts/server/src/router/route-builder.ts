@@ -517,8 +517,21 @@ async function runPush(
 
     // persist=true (default): append the element under the per-key write lock.
     // No hash/conflict check — an authorized append is always accepted (content-wise).
-    const outcome = await appendItem(store, documentKey, sanitizedItem, appendField, providedTs, context)
+    // `maxItems`/`chunkSize` (opt-in) cap the log / select segmented storage.
+    const outcome = await appendItem(
+      store,
+      documentKey,
+      sanitizedItem,
+      appendField,
+      providedTs,
+      { maxItems: appendCfg.maxItems, chunkSize: appendCfg.chunkSize },
+      context,
+    )
     if ("error" in outcome) {
+      if ("limit" in outcome) {
+        // The cap is configuration, not data — safe to echo the limit.
+        return c.json({ error: outcome.error, limit: outcome.limit }, 409)
+      }
       // Don't echo `latest` — it would leak the most-recent element's timestamp
       // to a write-only credential that has no read access to the log.
       return c.json({ error: outcome.error }, 409)

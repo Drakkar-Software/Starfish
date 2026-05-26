@@ -100,15 +100,33 @@ export class S3ObjectStore implements ObjectStore {
     opts?: { startAfter?: string; limit?: number },
     _context?: StoreContext,
   ): Promise<string[]> {
-    const resp = await this._client.send(
-      new ListObjectsV2Command({
-        Bucket: this._bucket,
-        Prefix: prefix,
-        ...(opts?.startAfter != null && { StartAfter: opts.startAfter }),
-        ...(opts?.limit != null && { MaxKeys: opts.limit }),
-      }),
-    )
-    return (resp.Contents ?? []).map((obj) => obj.Key!)
+    // S3 returns at most 1000 keys per page. Follow the continuation token so
+    // the full key set is returned — the segmented append-only log keys ALL
+    // chunks of a single document via `listKeys` (no `limit`), so a truncated
+    // first page would silently drop every chunk past the 1000th and the
+    // checkpoint bisect would read incomplete data. With a `limit` we stop as
+    // soon as it is satisfied. (`StartAfter` is honored only on the first
+    // request; the continuation token governs subsequent pages.)
+    const keys: string[] = []
+    let continuationToken: string | undefined
+    do {
+      const resp = await this._client.send(
+        new ListObjectsV2Command({
+          Bucket: this._bucket,
+          Prefix: prefix,
+          ...(continuationToken == null &&
+            opts?.startAfter != null && { StartAfter: opts.startAfter }),
+          ...(opts?.limit != null && { MaxKeys: opts.limit }),
+          ...(continuationToken != null && { ContinuationToken: continuationToken }),
+        }),
+      )
+      for (const obj of resp.Contents ?? []) keys.push(obj.Key!)
+      if (opts?.limit != null && keys.length >= opts.limit) {
+        return keys.slice(0, opts.limit)
+      }
+      continuationToken = resp.IsTruncated ? resp.NextContinuationToken : undefined
+    } while (continuationToken != null)
+    return keys
   }
 
   async delete(key: string, _context?: StoreContext): Promise<void> {

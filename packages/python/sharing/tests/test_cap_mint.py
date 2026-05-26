@@ -144,6 +144,24 @@ def test_mint_member_cap_rejects_members_not_denied() -> None:
     assert exc.value.args[0] == "member-members-not-denied"
 
 
+def test_mint_member_cap_rejects_missing_scope_paths() -> None:
+    # A cap with no `paths` is path-unrestricted: `match_scope_path(_, None)` is
+    # True, so it would clear the gate for `shared/_members`/`shared/_keyring`.
+    # The barrier must treat absent paths as an implicit allow-all and reject it.
+    # Mirrors the TS twin in cap-mint.test.ts.
+    alice = derive_root_identity("alice-root-passphrase")
+    bob = derive_root_identity("bob-root-passphrase")
+    with pytest.raises(ValueError) as exc:
+        mint_member_cap(
+            alice.keys.ed_priv,
+            alice.keys.ed_pub,
+            {"edPubHex": bob.keys.ed_pub, "kemPubHex": bob.keys.kem_pub, "userIdHex": bob.user_id},
+            "shared",
+            {"ops": ["read", "list", "write"], "collections": ["shared"]},  # no `paths`
+        )
+    assert exc.value.args[0] == "member-members-not-denied"
+
+
 def test_mint_member_cap_rejects_writer_without_keyring_deny() -> None:
     alice = derive_root_identity("alice-root-passphrase")
     bob = derive_root_identity("bob-root-passphrase")

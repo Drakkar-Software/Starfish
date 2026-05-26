@@ -45,6 +45,13 @@ class AbstractObjectStore(ABC):
         limit: int | None = None,
         context: "StoreContext | None" = None,
     ) -> list[str]:
+        """Return EVERY key under ``prefix``, in ascending lexicographic order,
+        unless ``limit`` caps the count. The segmented append-only log depends on
+        both guarantees: it lists all of a document's chunk keys in one call (no
+        ``limit``) and binary-searches them by string compare, so a backend that
+        truncates (e.g. an S3 page cap) or returns keys out of order would yield
+        incomplete or misordered data. Custom backends must paginate fully and sort.
+        """
         raise NotImplementedError("list_keys must be implemented")
 
     async def get_bytes(self, key: str, *, context: "StoreContext | None" = None) -> tuple[bytes, str] | None:

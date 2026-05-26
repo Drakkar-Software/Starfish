@@ -302,6 +302,15 @@ def unwrap_from_entry(entry: WrappedKeyEntry, recipient_kem_priv_hex: str) -> by
     """Recover the CEK from a ``WrappedKeyEntry`` using the recipient's KEM key.
 
     Raises ``ValueError`` if AES-GCM authentication fails.
+
+    SECURITY: this is a low-level primitive — it does NOT verify the entry's
+    ``addedSig`` or check ``added_by`` provenance. The ``addedSig`` is
+    self-attesting, so a hostile server can hand you an entry that wraps an
+    attacker-chosen CEK to your (public) KEM key and self-signs it. Before
+    trusting an entry fetched from an untrusted server, call
+    ``verify_entry_signature`` and confirm ``added_by`` is in your
+    ``trusted_adders`` set (the high-level ``_recover_current_cek`` /
+    ``create_keyring_encryptor`` / ``list_recipients`` paths already do this).
     """
     # Only None defaults (mirror TS `?? DEFAULT_ALG`); a tampered "" tag flows to
     # get_suite("") and fails closed identically to TS, not silently to ed25519.
