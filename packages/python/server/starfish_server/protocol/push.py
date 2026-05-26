@@ -34,6 +34,7 @@ from starfish_server.protocol.types import (
     DOCUMENT_VERSION,
 )
 from starfish_protocol.hash import compute_hash
+from starfish_protocol.constants import AUTHOR_PUBKEY_FIELD, AUTHOR_SIGNATURE_FIELD
 
 
 @dataclass
@@ -120,8 +121,8 @@ async def _push_locked(
         "hash": new_hash,
     }
     if author:
-        doc["authorPubkey"] = author.pubkey
-        doc["authorSignature"] = author.signature
+        doc[AUTHOR_PUBKEY_FIELD] = author.pubkey
+        doc[AUTHOR_SIGNATURE_FIELD] = author.signature
 
     await store.put(document_key, json.dumps(doc), content_type=CONTENT_TYPE_JSON, context=context)
 
@@ -188,6 +189,7 @@ async def append_item(
     *,
     max_items: int | None = None,
     chunk_size: int | None = None,
+    author: "dict[str, str] | None" = None,
     context: StoreContext | None = None,
 ) -> AppendOutcome:
     """Append one element to an appendOnly (``by_timestamp``) collection.
@@ -219,8 +221,21 @@ async def append_item(
     async with _push_locks[document_key]:  # serialise concurrent appends per key
         return await _append_locked(
             store, document_key, item, append_field, provided_ts,
-            max_items, chunk_size, context,
+            max_items, chunk_size, author, context,
         )
+
+
+def _make_append_element(
+    ts: int, item: Any, author: "dict[str, str] | None"
+) -> AppendElement:
+    """Build an append element, attaching the stored author proof when present.
+    The proof is verified by the route layer before storage (signature over
+    ``item``, author == request presenter)."""
+    element: AppendElement = {"ts": ts, "data": item}
+    if author is not None:
+        element[AUTHOR_PUBKEY_FIELD] = author[AUTHOR_PUBKEY_FIELD]
+        element[AUTHOR_SIGNATURE_FIELD] = author[AUTHOR_SIGNATURE_FIELD]
+    return element
 
 
 async def _append_locked(
@@ -231,6 +246,7 @@ async def _append_locked(
     provided_ts: int | None,
     max_items: int | None,
     chunk_size: int | None,
+    author: "dict[str, str] | None" = None,
     context: "StoreContext | None" = None,
 ) -> AppendOutcome:
     raw = await store.get_string(document_key, context=context)
@@ -269,7 +285,7 @@ async def _append_locked(
 
     if effective_chunk_size is not None:
         return await _append_chunked(
-            store, document_key, item, append_field, provided_ts, effective_chunk_size, head, is_seg, context,
+            store, document_key, item, append_field, provided_ts, effective_chunk_size, head, is_seg, author, context,
         )
 
     # ---- single-document layout (legacy default; unchanged behaviour) ----
@@ -284,7 +300,7 @@ async def _append_locked(
     else:
         ts = max(now, latest + 1)
 
-    element: AppendElement = {"ts": ts, "data": item}
+    element: AppendElement = _make_append_element(ts, item, author)
     new_arr = [*arr, element]
     new_hash = compute_hash({"n": len(new_arr), "last": item})
 
@@ -309,6 +325,7 @@ async def _append_chunked(
     chunk_size: int,
     head: dict[str, Any] | None,
     is_seg: bool,
+    author: "dict[str, str] | None" = None,
     context: "StoreContext | None" = None,
 ) -> AppendOutcome:
     """Segmented append (selected by ``chunk_size``). Touches only the head and the
@@ -378,7 +395,7 @@ async def _append_chunked(
     else:
         ts = max(now, latest + 1)
 
-    element: AppendElement = {"ts": ts, "data": item}
+    element: AppendElement = _make_append_element(ts, item, author)
     if not tail_key or len(tail_arr) >= chunk_size:
         # No open tail, or it is full → the current tail (if any) becomes sealed
         # and a new chunk opens, keyed by this element's ts.

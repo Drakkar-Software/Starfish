@@ -60,7 +60,7 @@ async def test_encrypt_push_pull_round_trip():
 async def test_conflict_retry_resolves():
     call_count = 0
 
-    async def push_side_effect(path, data, base_hash):
+    async def push_side_effect(path, data, base_hash, author=None):
         nonlocal call_count
         call_count += 1
         if call_count == 1:
@@ -92,7 +92,7 @@ async def test_encrypted_conflict_retry_decrypts_remote():
 
     call_count = 0
 
-    async def push_side_effect(path, data, base_hash):
+    async def push_side_effect(path, data, base_hash, author=None):
         nonlocal call_count
         call_count += 1
         if call_count == 1:

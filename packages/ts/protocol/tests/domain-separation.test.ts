@@ -3,12 +3,13 @@ import { ed25519 } from "@noble/curves/ed25519.js"
 import { capCertCanonicalSigningInput } from "../src/cap.js"
 import { requestSigningCanonicalInput, type SignableRequest } from "../src/request-signing.js"
 import { revocationListCanonicalSigningInput } from "../src/revocation.js"
+import { appendAuthorCanonicalInput } from "../src/append-author.js"
 import { getSuite } from "../src/suites/index.js"
 
 // Cross-type signature domain separation (mirrors test_domain_separation.py).
 //
-// Each of the three identity-key signature types — cap-cert, per-request, and
-// revocation-list — prepends a distinct domain tag to its canonical signing
+// Each of the four signature types — cap-cert, per-request, revocation-list and
+// append-author — prepends a distinct domain tag to its canonical signing
 // input. This binds a signature to its message type BY CONSTRUCTION: even if a
 // future field change made two of the stable-stringified bodies byte-identical,
 // a signature minted for one type can never verify as another, because the
@@ -47,16 +48,20 @@ describe("signature domain separation across message types", () => {
     issUserId: "x",
     generation: 1,
   } as never)
+  const apdCanon = appendAuthorCanonicalInput("events", { msg: "hello" })
 
   it("each canonical input starts with its own distinct domain tag", () => {
     expect(capCanon.startsWith("starfish-capcert-v1\n")).toBe(true)
     expect(reqCanon.startsWith("starfish-req-v1\n")).toBe(true)
     expect(revCanon.startsWith("starfish-revlist-v1\n")).toBe(true)
+    expect(apdCanon.startsWith("starfish-append-author-v1\n")).toBe(true)
     // Distinct from one another.
-    expect(new Set([capCanon, reqCanon, revCanon].map((s) => s.split("\n")[0])).size).toBe(3)
+    expect(
+      new Set([capCanon, reqCanon, revCanon, apdCanon].map((s) => s.split("\n")[0])).size,
+    ).toBe(4)
   })
 
-  it("a cap-cert signature does not verify as a request or revocation signature", () => {
+  it("a cap-cert signature does not verify as request / revocation / append-author", () => {
     const suite = getSuite("ed25519")
     const { privHex, pubHex } = edKeypair()
     const sig = suite.sign(enc(capCanon), privHex)
@@ -66,5 +71,15 @@ describe("signature domain separation across message types", () => {
     // canonical inputs — the domain tag differs, so the signed bytes differ.
     expect(suite.verify(sig, enc(reqCanon), pubHex)).toBe(false)
     expect(suite.verify(sig, enc(revCanon), pubHex)).toBe(false)
+    expect(suite.verify(sig, enc(apdCanon), pubHex)).toBe(false)
+  })
+
+  it("an append-author signature does not verify as a cap-cert / request signature", () => {
+    const suite = getSuite("ed25519")
+    const { privHex, pubHex } = edKeypair()
+    const sig = suite.sign(enc(apdCanon), privHex)
+    expect(suite.verify(sig, enc(apdCanon), pubHex)).toBe(true)
+    expect(suite.verify(sig, enc(capCanon), pubHex)).toBe(false)
+    expect(suite.verify(sig, enc(reqCanon), pubHex)).toBe(false)
   })
 })

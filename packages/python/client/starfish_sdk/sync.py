@@ -5,7 +5,12 @@ import base64
 import random
 from typing import Any, Protocol
 
-from starfish_protocol.hash import stable_stringify
+from starfish_protocol.append_author import doc_author_canonical_input
+from starfish_protocol.constants import (
+    AUTHOR_PUBKEY_FIELD,
+    AUTHOR_SIGNATURE_FIELD,
+    PUSH_PATH_PREFIX,
+)
 from starfish_protocol.merge import deep_merge
 from starfish_protocol.types import PullResult
 from starfish_protocol.crypto import Encryptor
@@ -142,28 +147,29 @@ class SyncManager:
                 if self._aborted:
                     raise AbortError()
 
-                # v3 signer path: sign over stable_stringify(payload-without-author-fields)
-                # and attach authorPubkey + authorSignature INSIDE the sealed
-                # payload (data field).
-                payload: dict[str, Any] = sealed
+                # v3 signer path: sign the document author proof over the
+                # doc-author canonical input (domain-tagged, bound to documentKey)
+                # and pass it as top-level body siblings of ``data`` (NOT inside
+                # ``data``), where the server verifies it and stores the raw key.
+                author: dict[str, str] | None = None
                 if self._signer is not None:
                     ctx = await self._signer.get_signer()
                     if self._aborted:
                         raise AbortError()
                     dev_ed_pub_hex = ctx["dev_ed_pub_hex"]
                     sign_fn = ctx["sign"]
-                    canonical = stable_stringify(sealed).encode("utf-8")
+                    document_key = self._push_path.removeprefix(PUSH_PATH_PREFIX)
+                    canonical = doc_author_canonical_input(document_key, sealed).encode("utf-8")
                     sig_bytes = await sign_fn(canonical)
                     if self._aborted:
                         raise AbortError()
-                    payload = {
-                        **sealed,
-                        "authorPubkey": dev_ed_pub_hex,
-                        "authorSignature": base64.b64encode(sig_bytes).decode("ascii"),
+                    author = {
+                        AUTHOR_PUBKEY_FIELD: dev_ed_pub_hex,
+                        AUTHOR_SIGNATURE_FIELD: base64.b64encode(sig_bytes).decode("ascii"),
                     }
 
                 result = await self._client.push(
-                    self._push_path, payload, self._last_hash
+                    self._push_path, sealed, self._last_hash, author
                 )
                 if self._aborted:
                     raise AbortError()

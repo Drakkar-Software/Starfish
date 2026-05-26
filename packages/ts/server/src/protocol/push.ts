@@ -1,4 +1,9 @@
-import { computeHash } from "@drakkar.software/starfish-protocol"
+import {
+  computeHash,
+  AUTHOR_PUBKEY_FIELD,
+  AUTHOR_SIGNATURE_FIELD,
+  type AppendAuthor,
+} from "@drakkar.software/starfish-protocol"
 import type { ObjectStore, StoreContext } from "../storage/base.js"
 import type { PushResult, PushSuccess, PushConflict, StoredDocument, AppendElement } from "./types.js"
 import { DOCUMENT_VERSION } from "./types.js"
@@ -109,8 +114,8 @@ async function _pushImpl(
     hash: newHash,
   }
   if (author) {
-    doc["authorPubkey"] = author.pubkey
-    doc["authorSignature"] = author.signature
+    doc[AUTHOR_PUBKEY_FIELD] = author.pubkey
+    doc[AUTHOR_SIGNATURE_FIELD] = author.signature
   }
 
   await store.put(documentKey, JSON.stringify(doc), { contentType: CONTENT_TYPE_JSON }, context)
@@ -139,6 +144,27 @@ export interface AppendOptions {
   maxItems?: number
   /** Store the log as fixed-size sealed chunks of this many elements (segmented layout). */
   chunkSize?: number
+  /** Append-author proof to store ON the element. The route layer VERIFIES this
+   *  (signature over `item`, author === request presenter) BEFORE calling
+   *  `appendItem`; here it is stored verbatim so any reader can re-verify. */
+  author?: AppendAuthor
+}
+
+/** Build an append element, attaching the stored author proof when present. The
+ *  proof is verified by the route layer before storage — see {@link AppendOptions}. */
+function makeAppendElement(
+  ts: number,
+  item: unknown,
+  author?: AppendOptions["author"],
+): AppendElement {
+  return author
+    ? {
+        ts,
+        data: item,
+        [AUTHOR_PUBKEY_FIELD]: author.authorPubkey,
+        [AUTHOR_SIGNATURE_FIELD]: author.authorSignature,
+      }
+    : { ts, data: item }
 }
 
 /** Prefix under which a document's segmented-storage chunks live (a sibling of the
@@ -251,7 +277,7 @@ async function _appendImpl(
   }
 
   if (effectiveChunkSize != null) {
-    return _appendChunkedImpl(store, documentKey, item, appendField, providedTs, effectiveChunkSize, head, isSeg, context)
+    return _appendChunkedImpl(store, documentKey, item, appendField, providedTs, effectiveChunkSize, head, isSeg, context, opts.author)
   }
 
   // ---- single-document layout (legacy default; unchanged behaviour) ----
@@ -269,7 +295,7 @@ async function _appendImpl(
     ts = Math.max(now, latest + 1)
   }
 
-  const element: AppendElement = { ts, data: item }
+  const element: AppendElement = makeAppendElement(ts, item, opts.author)
   const newArr = [...arr, element]
   const newHash = await computeHash({ n: newArr.length, last: item })
 
@@ -302,6 +328,7 @@ async function _appendChunkedImpl(
   head: Record<string, unknown> | null,
   isSeg: boolean,
   context: StoreContext | undefined,
+  author?: AppendOptions["author"],
 ): Promise<AppendOutcome> {
   let existingData: Record<string, unknown> = {}
   // `sealedN` = number of elements in all SEALED chunks (everything except the
@@ -368,7 +395,7 @@ async function _appendChunkedImpl(
     ts = Math.max(now, latest + 1)
   }
 
-  const element: AppendElement = { ts, data: item }
+  const element: AppendElement = makeAppendElement(ts, item, author)
   let writeKey: string
   let writeArr: unknown[]
   let newSealedN: number

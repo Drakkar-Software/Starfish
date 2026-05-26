@@ -56,7 +56,7 @@ async function push(app: ReturnType<typeof createSyncRouter>, path = "/push/even
 
 describe("appendOnly+persist=false collection (replaces queueOnly)", () => {
   it("push returns hash and timestamp", async () => {
-    const { app } = makeRouter(makeCol({ appendOnly: { type: "by_timestamp", persist: false } }))
+    const { app } = makeRouter(makeCol({ appendOnly: { type: "by_timestamp", persist: false, requireAuthorSignature: false } }))
     const res = await push(app)
     expect(res.status).toBe(200)
     const body = await res.json()
@@ -66,14 +66,14 @@ describe("appendOnly+persist=false collection (replaces queueOnly)", () => {
   })
 
   it("does not write to storage", async () => {
-    const { app, store } = makeRouter(makeCol({ appendOnly: { type: "by_timestamp", persist: false } }))
+    const { app, store } = makeRouter(makeCol({ appendOnly: { type: "by_timestamp", persist: false, requireAuthorSignature: false } }))
     await push(app)
     const stored = await store.getString("events/evt-1")
     expect(stored).toBeNull()
   })
 
   it("pull returns empty data (nothing stored)", async () => {
-    const { app } = makeRouter(makeCol({ appendOnly: { type: "by_timestamp", persist: false }, readRoles: ["admin"] }))
+    const { app } = makeRouter(makeCol({ appendOnly: { type: "by_timestamp", persist: false, requireAuthorSignature: false }, readRoles: ["admin"] }))
     await push(app)
     const res = await app.request("/pull/events/evt-1")
     expect(res.status).toBe(200)
@@ -83,14 +83,14 @@ describe("appendOnly+persist=false collection (replaces queueOnly)", () => {
   })
 
   it("accepts any baseHash (no conflict detection)", async () => {
-    const { app } = makeRouter(makeCol({ appendOnly: { type: "by_timestamp", persist: false } }))
+    const { app } = makeRouter(makeCol({ appendOnly: { type: "by_timestamp", persist: false, requireAuthorSignature: false } }))
     await push(app)
     const res = await push(app, "/push/events/evt-1", "arbitrary-hash-that-does-not-match")
     expect(res.status).toBe(200)
   })
 
   it("returns consistent hash for same data", async () => {
-    const { app } = makeRouter(makeCol({ appendOnly: { type: "by_timestamp", persist: false } }))
+    const { app } = makeRouter(makeCol({ appendOnly: { type: "by_timestamp", persist: false, requireAuthorSignature: false } }))
     const res1 = await push(app, "/push/events/evt-1")
     const res2 = await push(app, "/push/events/evt-2")
     const body1 = await res1.json()
@@ -100,7 +100,7 @@ describe("appendOnly+persist=false collection (replaces queueOnly)", () => {
 
   it("publishes queue event when the queuing plugin is configured for the collection", async () => {
     const { app, queue } = makeRouter(
-      makeCol({ appendOnly: { type: "by_timestamp", persist: false } }),
+      makeCol({ appendOnly: { type: "by_timestamp", persist: false, requireAuthorSignature: false } }),
       { events: { topic: "events.created", includeParams: false } },
     )
     const res = await push(app)
@@ -116,14 +116,14 @@ describe("appendOnly+persist=false collection (replaces queueOnly)", () => {
   })
 
   it("accepts push even without the collection configured for queuing", async () => {
-    const { app, queue } = makeRouter(makeCol({ appendOnly: { type: "by_timestamp", persist: false } }))
+    const { app, queue } = makeRouter(makeCol({ appendOnly: { type: "by_timestamp", persist: false, requireAuthorSignature: false } }))
     const res = await push(app)
     expect(res.status).toBe(200)
     expect(queue.messages).toHaveLength(0)
   })
 
   it("still validates missing data field", async () => {
-    const { app } = makeRouter(makeCol({ appendOnly: { type: "by_timestamp", persist: false } }))
+    const { app } = makeRouter(makeCol({ appendOnly: { type: "by_timestamp", persist: false, requireAuthorSignature: false } }))
     const res = await app.request("/push/events/evt-1", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -135,14 +135,14 @@ describe("appendOnly+persist=false collection (replaces queueOnly)", () => {
 
 describe("appendOnly+persist=false config validation", () => {
   it("valid appendOnly+persist=false JSON collection passes", () => {
-    const errors = validateConfig({ version: 1, collections: [makeCol({ appendOnly: { type: "by_timestamp", persist: false } })] })
+    const errors = validateConfig({ version: 1, collections: [makeCol({ appendOnly: { type: "by_timestamp", persist: false, requireAuthorSignature: false } })] })
     expect(errors).toHaveLength(0)
   })
 
   it("appendOnly with binary collection is rejected", () => {
     const errors = validateConfig({
       version: 1,
-      collections: [makeCol({ appendOnly: { type: "by_timestamp", persist: false }, allowedMimeTypes: ["image/png"] })],
+      collections: [makeCol({ appendOnly: { type: "by_timestamp", persist: false, requireAuthorSignature: false }, allowedMimeTypes: ["image/png"] })],
     })
     expect(errors.some((e) => e.includes("appendOnly cannot be used with binary collections"))).toBe(true)
   })
@@ -150,7 +150,7 @@ describe("appendOnly+persist=false config validation", () => {
   it("appendOnly with pullOnly is rejected", () => {
     const errors = validateConfig({
       version: 1,
-      collections: [makeCol({ appendOnly: { type: "by_timestamp", persist: false }, pullOnly: true })],
+      collections: [makeCol({ appendOnly: { type: "by_timestamp", persist: false, requireAuthorSignature: false }, pullOnly: true })],
     })
     expect(errors.some((e) => e.includes("appendOnly cannot be used with pullOnly"))).toBe(true)
   })

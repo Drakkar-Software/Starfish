@@ -56,3 +56,30 @@ export type {
   SignableRequest,
   RequestSignature,
 } from "./request-signing.js"
+export {
+  APPEND_AUTHOR_DOMAIN,
+  DOC_AUTHOR_DOMAIN,
+  appendAuthorCanonicalInput,
+  signAppendAuthor,
+  verifyAppendAuthor,
+  docAuthorCanonicalInput,
+  signDocAuthor,
+  verifyDocAuthor,
+} from "./append-author.js"
+export type { AppendAuthor } from "./append-author.js"
+export {
+  AUTHOR_PUBKEY_FIELD,
+  AUTHOR_SIGNATURE_FIELD,
+  DATA_FIELD,
+  TS_FIELD,
+  BASE_HASH_FIELD,
+  PUSH_PATH_PREFIX,
+  HEADER_AUTHORIZATION,
+  HEADER_SIG,
+  HEADER_TS,
+  HEADER_NONCE,
+  HEADER_ALG,
+  HEADER_PUB,
+  HEADER_CONTENT_TYPE,
+  HEADER_ACCEPT,
+} from "./constants.js"

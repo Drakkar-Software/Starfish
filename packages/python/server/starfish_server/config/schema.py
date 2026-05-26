@@ -52,6 +52,18 @@ class AppendOnlyConfig(BaseModel):
     Recommended ~10000. Server-internal only — the wire format is unchanged. Requires
     ``persist`` (default)."""
 
+    require_author_signature: bool = Field(default=True, alias="requireAuthorSignature")
+    """Require a cryptographic author proof on every append (DEFAULT: ``True``).
+
+    When enforced, an append MUST carry ``authorPubkey`` + ``authorSignature`` (an
+    Ed25519 signature over the element ``data``, see
+    ``starfish_protocol.sign_append_author``); the server verifies the signature
+    and, when the auth layer identifies the caller (any cap-cert request), that
+    ``authorPubkey`` equals the request presenter — so the stored author cannot be
+    forged. The proof is stored on the element for readers to re-verify. Set
+    ``False`` ONLY for an unauthenticated/public-write log where author identity is
+    meaningless."""
+
 
 class AppendOnlyConfig(BaseModel):
     """Append-only collection configuration.

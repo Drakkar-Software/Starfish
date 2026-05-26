@@ -268,8 +268,11 @@ async def test_alice_round_trip() -> None:
         stored = json.loads(stored_json)
         assert isinstance(stored["data"]["_encrypted"], str)
         assert stored["data"]["_epoch"] == fetched_keyring.current_epoch
-        assert stored["data"]["authorPubkey"] == boot.device["edPub"]
-        assert isinstance(stored["data"]["authorSignature"], str)
+        # v3 author proof is stored at the TOP level of the document (raw author
+        # pubkey + signature), no longer inside `data`.
+        assert stored["authorPubkey"] == boot.device["edPub"]
+        assert isinstance(stored["authorSignature"], str)
+        assert "authorPubkey" not in stored["data"]
         # Plaintext title is not on the wire.
         assert "first note" not in stable_stringify(stored["data"])
 
@@ -403,7 +406,8 @@ async def test_bob_pairs_pushes_alice_pulls() -> None:
             assert stored_json is not None
             stored = json.loads(stored_json)
             assert isinstance(stored["data"]["_encrypted"], str)
-            assert stored["data"]["authorPubkey"] == bob_device["edPub"]
+            # v3 author proof at the top level (raw key), no longer inside `data`.
+            assert stored["authorPubkey"] == bob_device["edPub"]
         finally:
             await bob_httpx.aclose()
 

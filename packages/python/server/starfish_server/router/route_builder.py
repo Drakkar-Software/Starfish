@@ -31,6 +31,14 @@ from starfish_server.router.helpers import (
 from starfish_server.protocol.push import append_item, AppendConflict, AppendLimitExceeded
 from starfish_server.protocol.types import PushSuccess
 from starfish_protocol.hash import compute_hash
+from starfish_protocol.append_author import verify_append_author
+from starfish_protocol.constants import (
+    AUTHOR_PUBKEY_FIELD,
+    AUTHOR_SIGNATURE_FIELD,
+    DATA_FIELD,
+    TS_FIELD,
+)
+from starfish_protocol.suites import DEFAULT_ALG
 from starfish_server.router.middleware import check_body_limit, RateLimiter
 from starfish_server.router.mime import matches_allowed_mime, is_json_collection
 from starfish_server.router.cap_resolver import match_scope_path
@@ -64,6 +72,17 @@ from starfish_server.constants import (
     APPEND_MAX_FUTURE_TS_SKEW_MS,
 )
 
+@dataclass(frozen=True)
+class Presenter:
+    """The verified request presenter: the public key that signed THIS request
+    (the cap subject for a device/member cap, the redeemer for an audience cap)
+    and its crypto suite. Used to bind a signed append's ``authorPubkey`` to its
+    authenticated writer so the stored author cannot be forged."""
+
+    pub_hex: str
+    alg: str
+
+
 @dataclass
 class AuthResult:
     """Result of authenticating a request."""
@@ -74,6 +93,10 @@ class AuthResult:
     # resolvers that carry no path scope (e.g. pure role-based auth). Used to
     # authorize the sibling ``_keyring`` read of the ?withKeyring=1 optimization.
     scope_paths: list[str] | None = None
+    # The verified request presenter (set by the cap-cert resolver; None for a
+    # pure role-based resolver that carries no per-request key). Used to bind a
+    # signed append's author to its authenticated writer.
+    presenter: "Presenter | None" = None
 
 
 RoleResolver = Callable[[Request], Awaitable[AuthResult]]
@@ -252,6 +275,10 @@ async def _resolve_effective_roles(
     # (e.g. the ?withKeyring=1 keyring shortcut in the pull handler). None for
     # role-based resolvers that carry no path scope.
     request.state.cap_scope_paths = auth.scope_paths
+    # Stash the verified request presenter (the key that signed this request) so
+    # the append handler can bind a signed element's author to its writer. None
+    # for a pure role-based resolver that carries no per-request key.
+    request.state.presenter = auth.presenter
 
     effective_roles: set[str] = set(auth.roles)
     if IDENTITY_PARAM in storage_path:
@@ -408,7 +435,7 @@ async def _run_push(
         return JSONResponse({"error": "Body nesting too deep"}, status_code=400)
 
     # Field-level write permission check
-    if col.field_permissions and isinstance(body.get("data"), dict):
+    if col.field_permissions and isinstance(body.get(DATA_FIELD), dict):
         for field_name, fp in col.field_permissions.items():
             if fp.write_roles and field_name in body["data"]:
                 # `ROLE_PUBLIC` in a field's writeRoles means "unrestricted" — honor it
@@ -420,7 +447,7 @@ async def _run_push(
                     )
 
     if col.object_schema is not None:
-        data = body.get("data")
+        data = body.get(DATA_FIELD)
         if isinstance(data, dict):
             schema_error = _validate_object_schema(data, col.object_schema)
             if schema_error:
@@ -435,16 +462,59 @@ async def _run_push(
 
         # The element payload. Opaque to the server: plaintext under "none", an
         # encryptor wrapper under "delegated" (both are JSON objects).
-        item = body.get("data")
+        item = body.get(DATA_FIELD)
         if not isinstance(item, dict):
             return JSONResponse({"error": "Missing or invalid data"}, status_code=400)
         sanitized_item = deep_sanitize(item)
+
+        # Append author proof. The signature is over the SANITIZED item — the exact
+        # bytes stored — so a reader who pulls the element re-verifies the same data.
+        # When ``require_author_signature`` is enforced (the default), a missing,
+        # invalid, or forged proof is rejected here; the fields are then stored on
+        # the element. An opt-out collection (``requireAuthorSignature: false``)
+        # skips the check but still stores any proof the client sent.
+        raw_author_pubkey = body.get(AUTHOR_PUBKEY_FIELD)
+        raw_author_signature = body.get(AUTHOR_SIGNATURE_FIELD)
+        author_pubkey = raw_author_pubkey if isinstance(raw_author_pubkey, str) else None
+        author_signature = (
+            raw_author_signature if isinstance(raw_author_signature, str) else None
+        )
+        if append_cfg.require_author_signature:
+            if author_pubkey is None or author_signature is None:
+                return JSONResponse(
+                    {"error": "append requires authorPubkey and authorSignature"},
+                    status_code=400,
+                )
+            # Bind the author to the authenticated caller: the signing key MUST be
+            # the request presenter (cap subject / audience redeemer). A pure role
+            # resolver carries no presenter — the signature is still required and
+            # verified, but cannot be bound to a caller identity (see docs).
+            presenter = getattr(request.state, "presenter", None)
+            if presenter is not None and author_pubkey != presenter.pub_hex:
+                return JSONResponse(
+                    {"error": "append author must be the request presenter"},
+                    status_code=403,
+                )
+            verify_alg = presenter.alg if presenter is not None else DEFAULT_ALG
+            # Bound to ``document_key`` so a signed element cannot be replayed
+            # under a different document key (see append_author_canonical_input).
+            if not verify_append_author(
+                document_key, sanitized_item, author_pubkey, author_signature, verify_alg
+            ):
+                return JSONResponse(
+                    {"error": "invalid append author signature"}, status_code=403
+                )
+        author = (
+            {AUTHOR_PUBKEY_FIELD: author_pubkey, AUTHOR_SIGNATURE_FIELD: author_signature}
+            if author_pubkey is not None and author_signature is not None
+            else None
+        )
 
         # Optional client-supplied element timestamp (ms since epoch). When present
         # it must be a non-negative integer and strictly greater than the latest
         # stored element's ts (enforced in append_item); otherwise the server assigns one.
         provided_ts: int | None = None
-        raw_ts = body.get("ts")
+        raw_ts = body.get(TS_FIELD)
         if raw_ts is not None:
             # bool is a subclass of int — reject it explicitly.
             if not isinstance(raw_ts, int) or isinstance(raw_ts, bool) or raw_ts < 0:
@@ -467,7 +537,8 @@ async def _run_push(
         # ``max_items``/``chunk_size`` (opt-in) cap the log / select segmented storage.
         outcome = await append_item(
             store, document_key, sanitized_item, append_field, provided_ts,
-            max_items=append_cfg.max_items, chunk_size=append_cfg.chunk_size, context=context,
+            max_items=append_cfg.max_items, chunk_size=append_cfg.chunk_size,
+            author=author, context=context,
         )
         if isinstance(outcome, AppendLimitExceeded):
             # The cap is configuration, not data — safe to echo the limit.
@@ -481,6 +552,7 @@ async def _run_push(
     return await handle_sync_push(
         document_key, store, body, identity,
         is_client_encrypted, False, context,
+        getattr(request.state, "presenter", None),
     )
 
 
@@ -636,7 +708,7 @@ def _make_push_handler(
         if any(p.after_write is not None for p in (opts.plugins or [])):
             try:
                 raw = await request.json()  # Safe: Starlette.Request caches body in self._json after first read
-                if isinstance(raw, dict) and isinstance(raw.get("data"), dict):
+                if isinstance(raw, dict) and isinstance(raw.get(DATA_FIELD), dict):
                     body_data = raw["data"]
                 # Non-dict data → body_data stays None; a plugin that wanted the
                 # body warns on its side.
@@ -803,7 +875,7 @@ def _add_collection_routes(
             # Field-level read permission filtering
             if col.field_permissions and response.status_code == 200:
                 resp_body = json.loads(response.body)
-                if isinstance(resp_body.get("data"), dict):
+                if isinstance(resp_body.get(DATA_FIELD), dict):
                     data = dict(resp_body["data"])
                     for field_name, fp in col.field_permissions.items():
                         if fp.read_roles and field_name in data:
@@ -1021,7 +1093,7 @@ def _add_bundled_routes(
                 if any(p.after_write is not None for p in (opts.plugins or [])):
                     try:
                         raw = await request.json()  # Safe: Starlette.Request caches body in self._json after first read
-                        if isinstance(raw, dict) and isinstance(raw.get("data"), dict):
+                        if isinstance(raw, dict) and isinstance(raw.get(DATA_FIELD), dict):
                             bundle_body_data = raw["data"]
                     except Exception:
                         # Parse failure → bundle_body_data stays None; non-200 guard

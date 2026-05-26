@@ -297,12 +297,16 @@ describe("v3 full pipeline — alice round-trip", () => {
     expect(storedJson).not.toBeNull()
     const storedBlob = JSON.parse(storedJson!) as {
       data: Record<string, unknown>
+      authorPubkey?: string
+      authorSignature?: string
     }
     expect(storedBlob.data._encrypted).toEqual(expect.any(String))
     expect(storedBlob.data._epoch).toBe(fetchedKeyring.currentEpoch)
-    // Signer plumbing was exercised: authorPubkey + authorSignature attached.
-    expect(storedBlob.data.authorPubkey).toBe(alice.device.edPub)
-    expect(typeof storedBlob.data.authorSignature).toBe("string")
+    // Signer plumbing was exercised: the v3 author proof is verified and stored
+    // at the TOP level of the document (raw author pubkey), no longer inside `data`.
+    expect(storedBlob.authorPubkey).toBe(alice.device.edPub)
+    expect(typeof storedBlob.authorSignature).toBe("string")
+    expect(storedBlob.data.authorPubkey).toBeUndefined()
     // The plaintext title is NOT visible to the server.
     expect(stableStringify(storedBlob.data)).not.toContain("first note")
 
@@ -444,9 +448,13 @@ describe("v3 full pipeline — pair bob, push from bob, pull as alice", () => {
     // Server stored an encrypted envelope authored by Bob's device key.
     const storedJson = await env.store.getString(notePath, undefined)
     expect(storedJson).not.toBeNull()
-    const storedBlob = JSON.parse(storedJson!) as { data: Record<string, unknown> }
+    const storedBlob = JSON.parse(storedJson!) as {
+      data: Record<string, unknown>
+      authorPubkey?: string
+    }
     expect(storedBlob.data._encrypted).toEqual(expect.any(String))
-    expect(storedBlob.data.authorPubkey).toBe(bobDevice.edPub)
+    // v3 author proof at the top level (raw key), no longer inside `data`.
+    expect(storedBlob.authorPubkey).toBe(bobDevice.edPub)
 
     // ── Alice pulls + decrypts Bob's note (alice's encryptor uses her own KEM key) ──
     const aliceEncryptor = await createKeyringEncryptor(

@@ -50,8 +50,9 @@ async def test_push_sends_data():
     assert result["hash"] == "def456"
     assert result["timestamp"] == 2000
     assert sync.hash == "def456"
+    # No signer configured → author proof is None (4th arg).
     client.push.assert_called_once_with(  # type: ignore
-        "/push/test", {"newKey": "newValue"}, None
+        "/push/test", {"newKey": "newValue"}, None, None
     )
 
 
@@ -99,7 +100,9 @@ def _stateful_client(initial_hash: str, initial_data: dict) -> tuple[StarfishCli
     would — a synchronous mock would run them serially and hide the conflict path."""
     state = {"hash": initial_hash, "data": dict(initial_data)}
 
-    async def push(path: str, data: dict, base_hash: str | None) -> PushSuccess:
+    async def push(
+        path: str, data: dict, base_hash: str | None, author: dict | None = None
+    ) -> PushSuccess:
         await asyncio.sleep(0)
         if base_hash != state["hash"]:
             raise ConflictError()

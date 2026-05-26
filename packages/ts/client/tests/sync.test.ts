@@ -52,10 +52,12 @@ describe("SyncManager", () => {
     expect(result.hash).toBe("new-hash")
     expect(result.timestamp).toBe(3000)
     expect(sync.getHash()).toBe("new-hash")
+    // No signer configured → author proof is undefined (4th arg).
     expect(pushFn).toHaveBeenCalledWith(
       "/push/test",
       { newKey: "newValue" },
       null,
+      undefined,
     )
   })
 

@@ -1,9 +1,17 @@
 import type { PullResult } from "@drakkar.software/starfish-protocol"
-import { deepMerge, getBase64, stableStringify } from "@drakkar.software/starfish-protocol"
+import {
+  AUTHOR_PUBKEY_FIELD,
+  AUTHOR_SIGNATURE_FIELD,
+  PUSH_PATH_PREFIX,
+  deepMerge,
+  docAuthorCanonicalInput,
+  getBase64,
+  type AppendAuthor,
+} from "@drakkar.software/starfish-protocol"
 import type { ConflictResolver } from "./types.js"
 import { ConflictError } from "./types.js"
 import type { Encryptor } from "@drakkar.software/starfish-protocol"
-import { StarfishClient } from "./client.js"
+import { StarfishClient, stripPushPrefix } from "./client.js"
 import type { SyncLogger } from "./logger.js"
 import type { Validator } from "./validate.js"
 import { ValidationError } from "./validate.js"
@@ -179,28 +187,29 @@ export class SyncManager {
           : pendingData
         if (this.aborted) throw new AbortError()
 
-        // v3.0 signer path: sign over stableStringify(payload-without-author-fields)
-        // and attach `authorPubkey` + `authorSignature` to the sealed payload.
-        // The author fields live INSIDE `data` so the server stores them with
-        // the encrypted document.
-        let payload: Record<string, unknown> = sealed
+        // v3.0 signer path: sign the document author proof over the doc-author
+        // canonical input (domain-tagged, bound to documentKey) and pass it as
+        // top-level body siblings of `data` (NOT inside `data`), where the server
+        // verifies it and stores the raw author pubkey.
+        let author: AppendAuthor | undefined
         if (this.signer) {
           const { devEdPubHex, sign } = await this.signer.getSigner()
           if (this.aborted) throw new AbortError()
-          const canonical = stableStringify(sealed as Record<string, unknown>)
+          const documentKey = stripPushPrefix(this.pushPath)
+          const canonical = docAuthorCanonicalInput(documentKey, sealed as Record<string, unknown>)
           const sigBytes = await sign(new TextEncoder().encode(canonical))
           if (this.aborted) throw new AbortError()
-          payload = {
-            ...sealed,
-            authorPubkey: devEdPubHex,
-            authorSignature: getBase64().encode(sigBytes),
+          author = {
+            [AUTHOR_PUBKEY_FIELD]: devEdPubHex,
+            [AUTHOR_SIGNATURE_FIELD]: getBase64().encode(sigBytes),
           }
         }
 
         const result = await this.client.push(
           this.pushPath,
-          payload,
+          sealed as Record<string, unknown>,
           this.lastHash,
+          author,
         )
         if (this.aborted) throw new AbortError()
         this.lastHash = result.hash

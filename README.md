@@ -1441,6 +1441,8 @@ Gated collection:
 
 Set `appendOnly: { type: "by_timestamp" }` on a collection to append every push to a stored array (default field: `items`) as a `{ ts, data }` element. There is no hash/conflict check — an authorized append is always accepted, never 409 (a client may supply a strictly-increasing `ts`, else the server assigns one). Pull with `?checkpoint=<ts>` to get only elements appended after a timestamp. Works under both `encryption: "none"` and `"delegated"` (the client encrypts each element's `data`; the server stores it opaquely). By default each document holds the whole array, so append is O(N) per call (building a log is O(N²)) and a checkpoint pull still parses the full document. Opt into `chunkSize` (segmented storage — bounded-cost append; checkpoint/last pulls read only the chunks they need) and/or `maxItems` (cap appends, returning `409 append_limit_exceeded`), or partition by a path param (see the append-only docs §Bounding & scaling).
 
+**Author proof (default on).** Every append carries a cryptographic author signature: `client.append()` signs the element `data` with the same key that authenticates the request, and the server requires `authorPubkey` to be that verified presenter and the signature to verify (`signAppendAuthor` / `verifyAppendAuthor`). The proof is stored on each element, so a reader verifies *who* wrote it instead of trusting a self-declared id. Set `appendOnly: { type: "by_timestamp", requireAuthorSignature: false }` to opt out for an unauthenticated/public-write log. See the append-only docs §Author proof.
+
 ```ts
 // TypeScript — stored array of { ts, data }
 { name: "events", storagePath: "events", /* ... */, appendOnly: { type: "by_timestamp" } }

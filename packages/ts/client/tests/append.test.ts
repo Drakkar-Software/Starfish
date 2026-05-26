@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest"
 import { StarfishClient } from "../src/client.js"
-import type { PushSuccess } from "@drakkar.software/starfish-protocol"
+import { verifyAppendAuthor, type PushSuccess } from "@drakkar.software/starfish-protocol"
 
 const PUSH_SUCCESS: PushSuccess = { hash: "abc123", timestamp: 1714000000 }
 
@@ -185,5 +185,58 @@ describe("client.pull input validation", () => {
   it("throws when last is negative", async () => {
     const client = new StarfishClient({ baseUrl: "https://api.example.com/v1", fetch: vi.fn() })
     await expect(client.pull("/pull/events", { last: -1 })).rejects.toThrow("last must be non-negative")
+  })
+})
+
+describe("client.append author proof", () => {
+  // A real Ed25519 keypair so the emitted signature actually verifies; the cap is
+  // a minimal stand-in (the client only base64-encodes it for the header).
+  const KP = {
+    priv: "1133557799bbddff1133557799bbddff1133557799bbddff1133557799bbddff",
+    pub: "062f2ba3c6a5590364b0864d539af151907d09ea0b741b0811e0d761a059bda4",
+  }
+  const fakeCap = {
+    v: 1,
+    kind: "audience",
+    issAlg: "ed25519",
+    iss: "aa".repeat(32),
+    issUserId: "x",
+    scope: { ops: ["write"], collections: ["c"] },
+    nbf: 0,
+    exp: 0,
+    nonce: Buffer.from(new Uint8Array(16)).toString("base64"),
+  } as never
+
+  it("signs the element so the server can verify the author (authorPubkey = cap key)", async () => {
+    let body: Record<string, unknown> = {}
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      body = JSON.parse(init.body as string)
+      return { ok: true, json: async () => ({ hash: "h", timestamp: 1 }) }
+    })
+    const client = new StarfishClient({
+      baseUrl: "https://api.example.com/v1",
+      fetch: fetchMock as never,
+      capProvider: { getCap: async () => ({ cap: fakeCap, devEdPrivHex: KP.priv, pubHex: KP.pub }) },
+    })
+    const data = { msg: "hi" }
+    await client.append("/push/events", data)
+
+    expect(body["authorPubkey"]).toBe(KP.pub)
+    // The client derives documentKey="events" from the push path "/push/events".
+    expect(
+      verifyAppendAuthor("events", data, body["authorPubkey"] as string, body["authorSignature"] as string, "ed25519"),
+    ).toBe(true)
+  })
+
+  it("sends no author fields when the client has no cap provider", async () => {
+    let body: Record<string, unknown> = {}
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      body = JSON.parse(init.body as string)
+      return { ok: true, json: async () => ({ hash: "h", timestamp: 1 }) }
+    })
+    const client = new StarfishClient({ baseUrl: "https://api.example.com/v1", fetch: fetchMock as never })
+    await client.append("/push/events", { msg: "hi" })
+    expect(body["authorPubkey"]).toBeUndefined()
+    expect(body["authorSignature"]).toBeUndefined()
   })
 })

@@ -1,4 +1,13 @@
-import { UNSAFE_KEYS } from "@drakkar.software/starfish-protocol"
+import {
+  UNSAFE_KEYS,
+  AUTHOR_PUBKEY_FIELD,
+  AUTHOR_SIGNATURE_FIELD,
+  DATA_FIELD,
+  BASE_HASH_FIELD,
+  DEFAULT_ALG,
+  verifyDocAuthor,
+  type Alg,
+} from "@drakkar.software/starfish-protocol"
 import type { ObjectStore, StoreContext } from "../storage/base.js"
 import { pull } from "../protocol/pull.js"
 import { push, appendSegPrefix, appendChunkKey, type Author } from "../protocol/push.js"
@@ -163,8 +172,8 @@ export async function handleSyncPull(
     hash: result.hash,
     timestamp: result.timestamp,
   }
-  if (result.authorPubkey) body["authorPubkey"] = result.authorPubkey
-  if (result.authorSignature) body["authorSignature"] = result.authorSignature
+  if (result.authorPubkey) body[AUTHOR_PUBKEY_FIELD] = result.authorPubkey
+  if (result.authorSignature) body[AUTHOR_SIGNATURE_FIELD] = result.authorSignature
 
   // ?withKeyring=1 optimization: piggyback the collection's sibling keyring
   // doc at `<documentKey>/_keyring` onto the pull response, saving a round-
@@ -386,14 +395,16 @@ export async function handleSyncPush(
   skipTimestamps: boolean = false,
   skipStorage: boolean = false,
   context?: StoreContext,
+  presenter?: { pubHex: string; alg: Alg },
 ): Promise<PushResponse> {
   if (isUnsafeDocumentKey(documentKey)) {
     return { body: { error: "Invalid path parameter" }, status: 400 }
   }
 
-  const data = body["data"]
-  const baseHash = body["baseHash"] as string | null | undefined
-  const authorSignature = body["authorSignature"] as string | undefined
+  const data = body[DATA_FIELD]
+  const baseHash = body[BASE_HASH_FIELD] as string | null | undefined
+  const authorPubkey = body[AUTHOR_PUBKEY_FIELD] as string | undefined
+  const authorSignature = body[AUTHOR_SIGNATURE_FIELD] as string | undefined
 
   if (data == null || typeof data !== "object" || Array.isArray(data)) {
     return { body: { error: "Missing or invalid data" }, status: 400 }
@@ -405,9 +416,24 @@ export async function handleSyncPush(
 
   const sanitized = deepSanitize(data as Record<string, unknown>)
 
+  // Document author proof (verify-if-present). When a client signs the push
+  // (a `SyncManager` signer is configured), the proof rides as top-level body
+  // fields: verify it over the stored data (bound to documentKey), require the
+  // author to be the authenticated request presenter, and store the RAW author
+  // pubkey. Absent proof is accepted (an unsigned merge-doc push is unchanged).
   let author: Author | undefined
-  if (typeof authorSignature === "string" && identity) {
-    author = { pubkey: identity, signature: authorSignature }
+  if (authorPubkey !== undefined || authorSignature !== undefined) {
+    if (typeof authorPubkey !== "string" || typeof authorSignature !== "string") {
+      return { body: { error: "author proof requires authorPubkey and authorSignature" }, status: 400 }
+    }
+    if (presenter && authorPubkey !== presenter.pubHex) {
+      return { body: { error: "document author must be the request presenter" }, status: 403 }
+    }
+    const verifyAlg = presenter?.alg ?? DEFAULT_ALG
+    if (!verifyDocAuthor(documentKey, sanitized, authorPubkey, authorSignature, verifyAlg)) {
+      return { body: { error: "invalid document author signature" }, status: 403 }
+    }
+    author = { pubkey: authorPubkey, signature: authorSignature }
   }
 
   const result = await push(

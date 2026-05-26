@@ -222,7 +222,11 @@ async def test_router_returns_409_past_cap():
         writeRoles=["admin"],
         encryption="none",
         maxBodyBytes=65536,
-        appendOnly=AppendOnlyConfig(type="by_timestamp", max_items=1),
+        # This case asserts the max_items 409 mechanic; opt out of author proof so
+        # the bare {data} push reaches the cap check (author proof tested elsewhere).
+        appendOnly=AppendOnlyConfig(
+            type="by_timestamp", max_items=1, requireAuthorSignature=False
+        ),
     )
     app = _build_app(col)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
