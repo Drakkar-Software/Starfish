@@ -238,14 +238,15 @@ async def test_checkpoint_zero_returns_full_array():
 
 @pytest.mark.asyncio
 async def test_checkpoint_after_second_push_returns_only_third():
+    # Explicit timestamps keep this deterministic — auto-ts uses max(now, latest+1),
+    # so back-to-back appends in the same millisecond can bump past a wall-clock
+    # checkpoint captured between them (mirrors the TS router/append-only test).
     app, _ = _build_app(_make_col())
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        await _push(client, {"n": 1})
-        await _push(client, {"n": 2})
-        after_two = int(time.time() * 1000)
-        await asyncio.sleep(0.002)
-        await _push(client, {"n": 3})
-        resp = await client.get(f"/pull/events?checkpoint={after_two}")
+        await _push(client, {"n": 1}, ts=100)
+        await _push(client, {"n": 2}, ts=200)
+        await _push(client, {"n": 3}, ts=300)
+        resp = await client.get("/pull/events?checkpoint=200")
     assert resp.status_code == 200
     assert _payloads(resp.json()["data"]["items"]) == [{"n": 3}]
 

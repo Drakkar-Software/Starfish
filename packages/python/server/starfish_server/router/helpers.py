@@ -1,6 +1,7 @@
 """Request handling helpers for sync routes."""
 
 
+import asyncio
 import bisect
 import ipaddress
 import json
@@ -15,7 +16,7 @@ from fastapi.responses import JSONResponse
 
 from starfish_server.storage.base import AbstractObjectStore, StoreContext
 from starfish_server.protocol.pull import pull
-from starfish_server.protocol.push import push
+from starfish_server.protocol.push import push, append_seg_prefix, append_chunk_key
 from starfish_server.protocol.push import Author
 from starfish_server.protocol.types import PushSuccess
 from starfish_server.constants import QUERY_CHECKPOINT, ERROR_HASH_MISMATCH, CONTENT_TYPE_JSON, APPEND_DEFAULT_FIELD
@@ -215,6 +216,56 @@ async def handle_sync_pull(
     return JSONResponse(body, headers=headers if headers else None)
 
 
+async def _read_append_chunks(
+    store: AbstractObjectStore,
+    document_key: str,
+    checkpoint: int,
+    last: int | None,
+    chunk_size: int,
+    context: StoreContext | None = None,
+) -> list:
+    """Read only the chunks a segmented (``chunk_size``) append-only pull needs.
+
+    Each chunk key encodes its first element's ``ts``, so the lexicographically
+    sorted key list (one ``list_keys`` call — no chunk contents) tells us every
+    chunk's ts range: ``?checkpoint=`` skips chunks entirely at/below it (reading
+    only the boundary chunk and those after); ``?last=K`` reads only the final
+    ``ceil(K/chunk_size)+1`` chunks. Returns the gathered ``{ts,data}`` envelopes
+    in order; the caller's checkpoint/last filtering then trims precisely.
+    """
+    if last == 0:
+        return []
+    chunk_keys = await store.list_keys(append_seg_prefix(document_key), context=context)
+    if not chunk_keys:
+        return []
+
+    start_idx = 0
+    if checkpoint > 0:
+        # Boundary = last chunk key <= the (same-width) key for the checkpoint ts.
+        cp_key = append_chunk_key(document_key, checkpoint)
+        lo = bisect.bisect_right(chunk_keys, cp_key)
+        start_idx = max(0, lo - 1)  # include the boundary chunk (may hold both <= and > checkpoint)
+
+    needed = chunk_keys[start_idx:]
+    if last is not None and last > 0 and chunk_size > 0:
+        max_chunks = (last + chunk_size - 1) // chunk_size + 1
+        if len(needed) > max_chunks:
+            needed = needed[-max_chunks:]
+
+    raws = await asyncio.gather(*(store.get_string(k, context=context) for k in needed))
+    items: list = []
+    for raw in raws:
+        if not raw:
+            continue
+        try:
+            arr = json.loads(raw)
+            if isinstance(arr, list):
+                items.extend(arr)
+        except (json.JSONDecodeError, ValueError) as exc:
+            logger.error("Corrupt append-only chunk under %r: %s", document_key, exc)
+    return items
+
+
 async def handle_append_only_pull(
     document_key: str,
     store: AbstractObjectStore,
@@ -278,18 +329,26 @@ async def handle_append_only_pull(
 
     stored_data: dict = stored.get("data") or {}
     stored_hash: str = stored.get("hash") or ""
-    all_items = stored_data.get(append_field)
-    if not isinstance(all_items, list):
-        all_items = []
+    # Segmented (``seg``) docs keep the array in sibling chunk objects; read only the
+    # chunks the checkpoint/last needs. Legacy single-docs keep the array inline.
+    if stored.get("seg") is True:
+        all_items = await _read_append_chunks(
+            store, document_key, checkpoint, last, stored.get("chunkSize") or 0, context
+        )
+    else:
+        all_items = stored_data.get(append_field)
+        if not isinstance(all_items, list):
+            all_items = []
 
     if checkpoint > 0:
         # Elements are strictly increasing in ``ts`` — binary search for the first
-        # index whose ts > checkpoint, then return that suffix.
-        element_ts = [
-            el["ts"] if isinstance(el, dict) and isinstance(el.get("ts"), int) else 0
-            for el in all_items
-        ]
-        lo = bisect.bisect_right(element_ts, checkpoint)
+        # index whose ts > checkpoint, then return that suffix. ``key=`` reads ts
+        # lazily during the search (O(log n) calls) — no full pre-pass over the array.
+        lo = bisect.bisect_right(
+            all_items,
+            checkpoint,
+            key=lambda el: el["ts"] if isinstance(el, dict) and isinstance(el.get("ts"), int) else 0,
+        )
         filtered_items = all_items[lo:]
     else:
         filtered_items = all_items

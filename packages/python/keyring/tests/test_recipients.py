@@ -524,3 +524,45 @@ async def test_remove_recipient_throws_when_no_keyring_exists():
             [bob.kem_pub],
             {"edPriv": admin.ed_priv, "edPub": admin.ed_pub, "kemPriv": admin.kem_priv},
         )
+
+
+@pytest.mark.asyncio
+async def test_remove_recipient_does_not_rewrap_to_tampered_retained_entry():
+    """Rotation must drop a retained entry whose addedSig no longer verifies.
+
+    A hostile server swaps a retained entry's ``sub_kem`` to an attacker key,
+    leaving ``added_by`` = a trusted adder. The ``addedSig`` was computed over
+    the original subKem, so it no longer verifies. A rotation that only checked
+    ``added_by`` (the old behavior) would re-wrap the fresh CEK to the attacker
+    — laundering a forged recipient into a legitimately signed new-epoch entry.
+    The rotation must verify ``addedSig`` and drop the entry. Mirrors the TS
+    twin in recipients.test.ts.
+    """
+    admin = _Party()
+    alice = _Party()
+    attacker = _Party()
+    keyring, _ = create_keyring(
+        admin.ed_priv, admin.ed_pub, [admin.kem_pub, alice.kem_pub]
+    )
+    alice_entry = next(
+        e for e in keyring.epochs["1"].wrapped_keys if e.sub_kem == alice.kem_pub
+    )
+    alice_entry.sub_kem = attacker.kem_pub  # added_by stays admin; addedSig now invalid
+
+    path = f"/pull/{keyring_path_for('vault')}"
+    push_path = f"/push/{keyring_path_for('vault')}"
+    client, store = _make_mock_client({"path": path, "data": keyring, "hash": "h0"})
+
+    # Rotate (remove nobody). The tampered subKem must not survive.
+    await remove_recipient(
+        client,
+        "vault",
+        [],
+        {"edPriv": admin.ed_priv, "edPub": admin.ed_pub, "kemPriv": admin.kem_priv},
+        trusted_adders=[admin.ed_pub],
+    )
+
+    updated = store[push_path]["data"]
+    subs_epoch2 = [e.sub_kem for e in updated.epochs["2"].wrapped_keys]
+    assert attacker.kem_pub not in subs_epoch2  # forged recipient not laundered in
+    assert admin.kem_pub in subs_epoch2  # untampered entry still survives

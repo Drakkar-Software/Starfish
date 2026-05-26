@@ -68,6 +68,8 @@ export function bytesToHex(bytes: Uint8Array): string {
 
 export function hexToBytes(hex: string): Uint8Array {
   if (hex.length % 2 !== 0) throw new Error("hex string has odd length")
+  // Reject non-hex chars: `parseInt` → NaN → 0, silently zeroing malformed input.
+  if (!/^[0-9a-fA-F]*$/.test(hex)) throw new Error("hex string has invalid characters")
   const out = new Uint8Array(hex.length / 2)
   for (let i = 0; i < out.length; i++) {
     out[i] = parseInt(hex.substring(i * 2, i * 2 + 2), 16)

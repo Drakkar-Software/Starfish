@@ -1105,6 +1105,17 @@ pytest -v
 
 TypeScript tests use [Vitest](https://vitest.dev/). Python tests use [pytest](https://docs.pytest.org/).
 
+**Stress tests** for the append-only feature are kept out of the default run (they push documents to 100k+ elements to characterize parse/serialize cost). Run them opt-in:
+
+```bash
+# TypeScript (from packages/ts/server)
+STARFISH_STRESS=1 pnpm exec vitest run tests/router/append-only.stress.test.ts --reporter=verbose
+# Python (from packages/python/server)
+uv run pytest -s -m stress tests/protocol/test_append_stress.py
+```
+
+See `docs/ts/server/append-only-collections.md` §Size considerations for what they measure.
+
 The TypeScript client has 259 tests across 23 test files covering sync, crypto, bindings, React hooks, broadcast, retry/circuit breaker, resolvers, migration, validation, polling, history, dedup, export, metrics, Suspense, and more. The TypeScript server has 149 tests across 17 test files covering config, protocol, encryption, router, queue, replica, storage, middleware (CORS, security headers, timeout), ETag, batch pull, field permissions, TTL, OpenAPI, and lifecycle. The Python server has 246 tests.
 
 Cross-language test vectors in `tests/test-vectors/` ensure identical behavior across all TypeScript and Python implementations:
@@ -1428,7 +1439,7 @@ Gated collection:
 
 #### Append-only collections
 
-Set `appendOnly: { type: "by_timestamp" }` on a collection to append every push to a stored array (default field: `items`) as a `{ ts, data }` element. There is no hash/conflict check — an authorized append is always accepted, never 409 (a client may supply a strictly-increasing `ts`, else the server assigns one). Pull with `?checkpoint=<ts>` to get only elements appended after a timestamp. Works under both `encryption: "none"` and `"delegated"` (the client encrypts each element's `data`; the server stores it opaquely).
+Set `appendOnly: { type: "by_timestamp" }` on a collection to append every push to a stored array (default field: `items`) as a `{ ts, data }` element. There is no hash/conflict check — an authorized append is always accepted, never 409 (a client may supply a strictly-increasing `ts`, else the server assigns one). Pull with `?checkpoint=<ts>` to get only elements appended after a timestamp. Works under both `encryption: "none"` and `"delegated"` (the client encrypts each element's `data`; the server stores it opaquely). By default each document holds the whole array, so append is O(N) per call (building a log is O(N²)) and a checkpoint pull still parses the full document. Opt into `chunkSize` (segmented storage — bounded-cost append; checkpoint/last pulls read only the chunks they need) and/or `maxItems` (cap appends, returning `409 append_limit_exceeded`), or partition by a path param (see the append-only docs §Bounding & scaling).
 
 ```ts
 // TypeScript — stored array of { ts, data }

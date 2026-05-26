@@ -38,6 +38,20 @@ class AppendOnlyConfig(BaseModel):
     (consumed by a plugin such as ``starfish-queuing``; replaces the old
     ``queueOnly`` behaviour)."""
 
+    max_items: int | None = Field(default=None, alias="maxItems")
+    """Opt-in cap: reject an append once the stored element count has reached this
+    many, with ``409 {"error": "append_limit_exceeded", "limit": ...}``. ``None`` =
+    unlimited. Bounds a single document; for higher volume, partition by a path
+    parameter (e.g. ``storage_path="events/{date}"``). Requires ``persist`` (default)."""
+
+    chunk_size: int | None = Field(default=None, alias="chunkSize")
+    """Opt-in segmented storage: store the log as fixed-size sealed chunks of this
+    many elements (plus a small head document) instead of one growing blob. Bounds
+    append cost to O(chunk_size) (no O(n²) build) and lets ``?checkpoint=``/``?last=``
+    pulls read only the chunks they need. ``None`` = single-document (legacy) layout.
+    Recommended ~10000. Server-internal only — the wire format is unchanged. Requires
+    ``persist`` (default)."""
+
 
 class AppendOnlyConfig(BaseModel):
     """Append-only collection configuration.

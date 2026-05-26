@@ -22,6 +22,18 @@ export interface AppendOnlyConfig {
    *  false — compute a hash and emit a write event without writing to storage
    *  (consumed by a plugin such as starfish-queuing; replaces queueOnly). */
   persist?: boolean
+  /** Opt-in cap: reject an append once the stored element count has reached this
+   *  many, with `409 { error: "append_limit_exceeded", limit }`. Unset = unlimited.
+   *  Bounds a single document; for higher volume, partition by a path parameter
+   *  (e.g. `storagePath: "events/{date}"`). Requires `persist` (the default). */
+  maxItems?: number
+  /** Opt-in segmented storage: store the log as fixed-size sealed chunks of this
+   *  many elements (plus a small head document) instead of one growing blob. Bounds
+   *  append cost to O(chunkSize) (no O(n²) build) and lets `?checkpoint=`/`?last=`
+   *  pulls read only the chunks they need. Unset = single-document (legacy) layout.
+   *  Recommended ~10000. Server-internal only — the wire format is unchanged.
+   *  Requires `persist` (the default). */
+  chunkSize?: number
 }
 
 export interface CollectionConfig {

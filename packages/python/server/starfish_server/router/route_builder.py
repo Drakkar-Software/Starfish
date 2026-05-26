@@ -28,7 +28,7 @@ from starfish_server.router.helpers import (
     is_unsafe_document_key,
     is_with_keyring_enabled,
 )
-from starfish_server.protocol.push import append_item, AppendConflict
+from starfish_server.protocol.push import append_item, AppendConflict, AppendLimitExceeded
 from starfish_server.protocol.types import PushSuccess
 from starfish_protocol.hash import compute_hash
 from starfish_server.router.middleware import check_body_limit, RateLimiter
@@ -464,7 +464,14 @@ async def _run_push(
 
         # persist=true (default): append the element under the per-key write lock.
         # No hash/conflict check — an authorized append is always accepted (content-wise).
-        outcome = await append_item(store, document_key, sanitized_item, append_field, provided_ts, context)
+        # ``max_items``/``chunk_size`` (opt-in) cap the log / select segmented storage.
+        outcome = await append_item(
+            store, document_key, sanitized_item, append_field, provided_ts,
+            max_items=append_cfg.max_items, chunk_size=append_cfg.chunk_size, context=context,
+        )
+        if isinstance(outcome, AppendLimitExceeded):
+            # The cap is configuration, not data — safe to echo the limit.
+            return JSONResponse({"error": outcome.error, "limit": outcome.limit}, status_code=409)
         if isinstance(outcome, AppendConflict):
             # Don't echo `latest` — it would leak the most-recent element's timestamp
             # to a write-only credential that has no read access to the log.

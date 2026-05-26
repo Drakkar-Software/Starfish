@@ -1400,6 +1400,61 @@ describe("createCapCertRoleResolver — scope.paths glob", () => {
     expect(auth.identity).toBe(alice.userId)
   })
 
+  it("a member cap with no scope.paths is rejected 403 at the resolver (defense-in-depth)", async () => {
+    // The mint / server-side shape barrier already rejects a no-paths member
+    // cap, but the resolver enforces it AGAIN as defense-in-depth (for a custom
+    // plugin that skips the shape check, or future drift). Wire a permissive
+    // plugin that registers `member` WITHOUT the barrier so the cap reaches the
+    // resolver path gate, and assert the gate rejects it. A device cap with no
+    // paths stays allowed (previous test) — only member/audience are gated.
+    const alice = makeRoot(0x42)
+    const bob = makeRoot(0x11)
+    const nowSec = Math.floor(Date.now() / 1000)
+    const unsigned: UnsignedCapCert = {
+      v: 1,
+      kind: "member",
+      issAlg: "ed25519",
+      iss: alice.edPubHex,
+      issUserId: alice.userId,
+      sub: bob.edPubHex,
+      subKem: bob.kemPubHex,
+      subUserId: bob.userId,
+      scope: { ops: ["read", "list", "write"], collections: ["notes"] }, // no `paths`
+      nbf: nowSec - 10,
+      exp: nowSec + 3600,
+      nonce: Buffer.from(new Uint8Array(16).fill(9)).toString("base64"),
+    }
+    const cert = await signCapCert(unsigned, bytesToHex(alice.edPriv))
+    const certB64 = Buffer.from(JSON.stringify(cert)).toString("base64")
+    const req: SignableRequest = {
+      method: "GET",
+      pathAndQuery: "/pull/notes/anything",
+      host: "api",
+    }
+    const sig = await signRequest(req, bytesToHex(bob.edPriv))
+    const c = fakeContext({
+      method: "GET",
+      url: "https://api/pull/notes/anything",
+      headers: {
+        Authorization: `Cap ${certB64}`,
+        "X-Starfish-Sig": sig.sig,
+        "X-Starfish-Ts": String(sig.ts),
+        "X-Starfish-Nonce": sig.nonce,
+      },
+    })
+    const permissivePlugin = {
+      name: "permissive-member",
+      capValidators: { member: () => {} },
+    }
+    await expect(
+      createCapCertRoleResolver({
+        nonceCache: createInMemoryNonceCache(),
+        revocationStore: createInMemoryRevocationStore(),
+        plugins: [permissivePlugin],
+      })(c),
+    ).rejects.toThrow(/explicit scope\.paths/)
+  })
+
   it("only deny entries → no allow ever matches → 403", async () => {
     const { dev, certB64 } = await setupCertWithPaths(["!notes/_keyring"])
     const req: SignableRequest = {

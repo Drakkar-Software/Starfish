@@ -184,6 +184,62 @@ describe("useSyncInit", () => {
     })
   })
 
+  it("forwards `namespace` so the store's client pulls the namespaced path", async () => {
+    const mockFetch = vi.fn(async (url: string) =>
+      url.includes("/pull/")
+        ? new Response(JSON.stringify({ data: { ok: true }, hash: "h1", timestamp: 100 }), {
+            status: 200, headers: { "Content-Type": "application/json" },
+          })
+        : new Response("ok", { status: 200 }),
+    )
+
+    renderHook(() =>
+      useSyncInit({
+        serverUrl: "https://example.com",
+        namespace: "octobot",
+        pullPath: "/pull/test",
+        pushPath: "/push/test",
+        storeName: "ns-test",
+        storage: false,
+        fetch: mockFetch as unknown as typeof fetch,
+      }),
+    )
+
+    await waitFor(() => {
+      expect(mockFetch).toHaveBeenCalled()
+    })
+    const pullUrl = String(mockFetch.mock.calls.find((c) => String(c[0]).includes("/pull/"))?.[0])
+    expect(pullUrl).toContain("/v1/octobot/pull/test")
+  })
+
+  it("omits the `/v1/<ns>` prefix when `namespace` is unset", async () => {
+    const mockFetch = vi.fn(async (url: string) =>
+      url.includes("/pull/")
+        ? new Response(JSON.stringify({ data: {}, hash: "h1", timestamp: 100 }), {
+            status: 200, headers: { "Content-Type": "application/json" },
+          })
+        : new Response("ok", { status: 200 }),
+    )
+
+    renderHook(() =>
+      useSyncInit({
+        serverUrl: "https://example.com",
+        pullPath: "/pull/test",
+        pushPath: "/push/test",
+        storeName: "no-ns-test",
+        storage: false,
+        fetch: mockFetch as unknown as typeof fetch,
+      }),
+    )
+
+    await waitFor(() => {
+      expect(mockFetch).toHaveBeenCalled()
+    })
+    const pullUrl = String(mockFetch.mock.calls.find((c) => String(c[0]).includes("/pull/"))?.[0])
+    expect(pullUrl).toContain("/pull/test")
+    expect(pullUrl).not.toContain("/v1/")
+  })
+
   it("tears down store on config change to null", async () => {
     const mockFetch = vi.fn(async () =>
       new Response(JSON.stringify({ data: {}, hash: "h", timestamp: 1 }), {

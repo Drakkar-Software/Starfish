@@ -61,6 +61,23 @@ def _validate_collections(collections: list[CollectionConfig], scope_label: str)
                         f'{prefix}Collection "{col.name}": appendOnly with persist=true cannot be used with bundle'
                     )
 
+            def _is_pos_int(n: int | None) -> bool:
+                return n is None or (isinstance(n, int) and not isinstance(n, bool) and n > 0)
+
+            if not _is_pos_int(col.append_only.max_items):
+                errors.append(f'{prefix}Collection "{col.name}": appendOnly.maxItems must be a positive integer')
+            if not _is_pos_int(col.append_only.chunk_size):
+                errors.append(f'{prefix}Collection "{col.name}": appendOnly.chunkSize must be a positive integer')
+            if persist is False:
+                if col.append_only.max_items is not None:
+                    errors.append(
+                        f'{prefix}Collection "{col.name}": appendOnly.maxItems requires persist=true (nothing is stored when persist=false)'
+                    )
+                if col.append_only.chunk_size is not None:
+                    errors.append(
+                        f'{prefix}Collection "{col.name}": appendOnly.chunkSize requires persist=true (nothing is stored when persist=false)'
+                    )
+
         if col.listable:
             param_matches = re.findall(r"\{[^}]+\}", col.storage_path)
             if not param_matches:

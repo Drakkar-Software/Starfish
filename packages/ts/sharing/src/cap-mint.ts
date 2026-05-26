@@ -156,6 +156,8 @@ function bytesToHex(bytes: Uint8Array): string {
 
 function hexToBytes(hex: string): Uint8Array {
   if (hex.length % 2 !== 0) throw new Error("hex string has odd length")
+  // Reject non-hex chars: `parseInt` → NaN → 0, silently zeroing malformed input.
+  if (!/^[0-9a-fA-F]*$/.test(hex)) throw new Error("hex string has invalid characters")
   const out = new Uint8Array(hex.length / 2)
   for (let i = 0; i < out.length; i++) {
     out[i] = parseInt(hex.substring(i * 2, i * 2 + 2), 16)
@@ -321,7 +323,14 @@ function assertScopeBarriers(
     }
   }
   // Compute resolved allows and denies once; reused by the `_members` and
-  // `_keyring` rules below.
+  // `_keyring` rules below. A cap with NO `scope.paths` (or an empty list) is
+  // path-UNRESTRICTED: `matchScopePath(_, undefined)` returns true at request
+  // time, so it effectively allows every path with no deny — including the
+  // owner-only `_members`/`_keyring`. Model that as an implicit `**` allow so
+  // the barriers below fire (a subject-scoped member/audience cap must carry an
+  // explicit path scope that denies those paths; only a device/root cap, which
+  // does not go through these barriers, may be path-unrestricted).
+  const pathUnrestricted = !cert.scope.paths || cert.scope.paths.length === 0
   const resolvedAllows: { raw: string; resolved: string }[] = []
   const resolvedDenies: string[] = []
   if (cert.scope.paths) {
@@ -340,9 +349,12 @@ function assertScopeBarriers(
   // would match it, require a sibling deny — regardless of ops.
   for (const col of cert.scope.collections) {
     const membersPath = `${col}/_members`
-    const matchingAllow = resolvedAllows.find((a) => pathGlobMatch(a.resolved, membersPath))
+    const matchingAllow = pathUnrestricted
+      ? { raw: "**", resolved: "**" }
+      : resolvedAllows.find((a) => pathGlobMatch(a.resolved, membersPath))
     if (!matchingAllow) continue
-    const blockingDeny = resolvedDenies.some((d) => pathGlobMatch(d, membersPath))
+    const blockingDeny =
+      !pathUnrestricted && resolvedDenies.some((d) => pathGlobMatch(d, membersPath))
     if (!blockingDeny) {
       throwWithCode(
         codes.membersNotDenied,
@@ -355,9 +367,12 @@ function assertScopeBarriers(
   if (cert.scope.ops.includes("write")) {
     for (const col of cert.scope.collections) {
       const keyringPath = `${col}/_keyring`
-      const matchingAllow = resolvedAllows.find((a) => pathGlobMatch(a.resolved, keyringPath))
+      const matchingAllow = pathUnrestricted
+        ? { raw: "**", resolved: "**" }
+        : resolvedAllows.find((a) => pathGlobMatch(a.resolved, keyringPath))
       if (!matchingAllow) continue
-      const blockingDeny = resolvedDenies.some((d) => pathGlobMatch(d, keyringPath))
+      const blockingDeny =
+        !pathUnrestricted && resolvedDenies.some((d) => pathGlobMatch(d, keyringPath))
       if (!blockingDeny) {
         throwWithCode(
           codes.keyringNotDenied,

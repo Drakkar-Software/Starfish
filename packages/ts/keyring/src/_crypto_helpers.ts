@@ -54,6 +54,9 @@ export function bytesToHex(bytes: Uint8Array): string {
 
 /** Decode a lowercase- or uppercase-hex string into bytes. */
 export function hexToBytes(hex: string): Uint8Array {
+  if (hex.length % 2 !== 0) throw new Error("hex string has odd length")
+  // Reject non-hex chars: `parseInt` → NaN → 0, silently zeroing malformed input.
+  if (!/^[0-9a-fA-F]*$/.test(hex)) throw new Error("hex string has invalid characters")
   const bytes = new Uint8Array(hex.length / 2)
   for (let i = 0; i < bytes.length; i++) {
     bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16)

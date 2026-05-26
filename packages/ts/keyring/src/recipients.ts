@@ -239,15 +239,34 @@ export async function removeRecipient(
     throw new Error(`Epoch ${pulled.keyring.currentEpoch} not found in keyring`)
   }
 
-  // Entries written by an untrusted adder (e.g. a recipient a hostile server
-  // injected) are not carried into the new epoch — the rotation would otherwise
-  // re-wrap the fresh CEK for them. `trustedAdders` is mandatory (fail closed).
+  // Decide which entries survive the rotation. An entry is only carried into
+  // the new epoch if it (a) is not being removed, (b) was added by a trusted
+  // adder, AND (c) has a valid `addedSig`. The signature check is essential:
+  // `addedBy` and `subKem` are public fields bound to each other ONLY by
+  // `addedSig`, so without verifying it a hostile server could swap a retained
+  // entry's `subKem` to an attacker key (leaving `addedBy` a trusted adder) and
+  // the rotation would re-wrap the fresh CEK to the attacker — laundering a
+  // forged recipient into a legitimately signed post-rotation entry. This
+  // mirrors `recoverCurrentCek`; `trustedAdders` is mandatory (fail closed).
   const trustedAdders = requireTrustedAdders(opts.trustedAdders, "removeRecipient")
   const removeSet = new Set(removeSubKems)
-  const retainedRecipients = epoch.wrappedKeys
-    .filter((e) => !removeSet.has(e.subKem))
-    .filter((e) => trustedAdders.has(e.addedBy))
-    .map((e) => ({ subKemHex: e.subKem, kemAlg: e.kemAlg }))
+  const retainedRecipients: { subKemHex: string; kemAlg?: Alg }[] = []
+  for (const e of epoch.wrappedKeys) {
+    if (removeSet.has(e.subKem)) continue
+    if (!trustedAdders.has(e.addedBy)) {
+      console.warn(
+        `[starfish:recipients] dropping entry subKem=${e.subKem} from rotation: addedBy ${e.addedBy} is not a trusted adder`,
+      )
+      continue
+    }
+    if (!(await verifyEntrySignature(e, pulled.keyring.currentEpoch))) {
+      console.warn(
+        `[starfish:recipients] dropping entry subKem=${e.subKem} from rotation: addedSig verification failed (possible tampering)`,
+      )
+      continue
+    }
+    retainedRecipients.push({ subKemHex: e.subKem, kemAlg: e.kemAlg })
+  }
 
   const { keyring: rotated } = await rotateEpoch(
     pulled.keyring,

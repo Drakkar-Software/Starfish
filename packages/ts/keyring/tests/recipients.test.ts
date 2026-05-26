@@ -484,4 +484,41 @@ describe("removeRecipient (collection-scoped)", () => {
       ),
     ).rejects.toThrow()
   })
+
+  it("does NOT re-wrap the fresh CEK to a tampered retained entry (laundering guard)", async () => {
+    // A hostile server swaps a retained entry's `subKem` to an attacker key,
+    // leaving `addedBy` = a trusted adder. The `addedSig` was computed over the
+    // original subKem, so it no longer verifies. A rotation that only checked
+    // `addedBy` (the old behavior) would re-wrap the fresh CEK to the attacker —
+    // laundering a forged recipient into a legitimately signed new-epoch entry.
+    // The rotation must verify `addedSig` and drop the entry. Mirrors the
+    // Python twin in test_recipients.py.
+    const admin = makeParty()
+    const alice = makeParty()
+    const attacker = makeParty()
+    const { keyring } = await createKeyring(
+      { edPrivHex: admin.edPriv, edPubHex: admin.edPub },
+      [{ subKemHex: admin.kemPub }, { subKemHex: alice.kemPub }],
+    )
+    const aliceEntry = keyring.epochs["1"]!.wrappedKeys.find((e) => e.subKem === alice.kemPub)!
+    aliceEntry.subKem = attacker.kemPub // addedBy stays admin (trusted); addedSig now invalid
+
+    const path = `/pull/${keyringPathFor("vault")}`
+    const pushPath = `/push/${keyringPathFor("vault")}`
+    const { client, store } = makeMockClient({ path, data: keyring, hash: "h0" })
+
+    // Rotate (remove nobody). The tampered subKem must not survive.
+    await removeRecipient(
+      client,
+      "vault",
+      [],
+      { edPriv: admin.edPriv, edPub: admin.edPub, kemPriv: admin.kemPriv },
+      { trustedAdders: [admin.edPub] },
+    )
+
+    const stored = store.get(pushPath)!.data
+    const epoch2Subs = stored.epochs["2"].wrappedKeys.map((e) => e.subKem)
+    expect(epoch2Subs).not.toContain(attacker.kemPub) // forged recipient not laundered in
+    expect(epoch2Subs).toContain(admin.kemPub) // untampered entry still survives
+  })
 })
