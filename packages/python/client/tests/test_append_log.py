@@ -371,3 +371,157 @@ async def test_set_checkpoint_rejects_rewind_below_held():
 def test_checkpoint_of():
     assert checkpoint_of([]) == 0
     assert checkpoint_of([{"ts": 5}, {"ts": 3}, {"ts": 9}]) == 9
+
+
+# --- on_element_error: skip ---
+
+
+@pytest.mark.asyncio
+async def test_skip_drops_undecryptable_keeps_rest_and_advances_checkpoint():
+    items = [{"ts": 1, "data": {"ok": True}}, {"ts": 2, "data": {"bad": True}}, {"ts": 3, "data": {"ok": True}}]
+    with respx.mock(base_url="https://api.example.com") as mock:
+        mock.get("/v1/pull/events").mock(return_value=_json_resp({"items": items}))
+        async with StarfishClient(BASE) as client:
+            log = AppendLogCursor(client, "/pull/events", encryptor=_FailingEncryptor(), on_element_error="skip")
+            batch = await log.pull()
+    assert batch == [{"ts": 1, "data": {"ok": True}}, {"ts": 3, "data": {"ok": True}}]
+    # Checkpoint advanced PAST the skipped ts=2 so it is never re-fetched.
+    assert log.checkpoint == 3
+
+
+@pytest.mark.asyncio
+async def test_skip_does_not_refetch_skipped_element():
+    with respx.mock(base_url="https://api.example.com") as mock:
+        mock.get("/v1/pull/events").mock(
+            side_effect=[
+                _json_resp({"items": [{"ts": 1, "data": {"ok": True}}, {"ts": 2, "data": {"bad": True}}]}),
+                _json_resp({"items": [{"ts": 3, "data": {"ok": True}}]}),
+            ]
+        )
+        async with StarfishClient(BASE) as client:
+            log = AppendLogCursor(client, "/pull/events", encryptor=_FailingEncryptor(), on_element_error="skip")
+            await log.pull()
+            assert log.checkpoint == 2
+            await log.pull()
+        assert "checkpoint=2" in str(mock.calls[1].request.url)
+
+
+@pytest.mark.asyncio
+async def test_skip_drops_author_verification_failure():
+    good = _signed_element(1, {"msg": "a"})
+    tampered = {**_signed_element(2, {"msg": "b"}), "data": {"msg": "TAMPERED"}}
+    with respx.mock(base_url="https://api.example.com") as mock:
+        mock.get("/v1/pull/events").mock(return_value=_json_resp({"items": [good, tampered]}))
+        async with StarfishClient(BASE) as client:
+            log = AppendLogCursor(client, "/pull/events", verify_author=True, on_element_error="skip")
+            batch = await log.pull()
+    assert batch == [good]
+    assert log.checkpoint == 2
+
+
+# --- concurrent pull() is serialized ---
+
+
+@pytest.mark.asyncio
+async def test_concurrent_pulls_are_serialized():
+    import asyncio
+
+    with respx.mock(base_url="https://api.example.com") as mock:
+        mock.get("/v1/pull/events").mock(
+            side_effect=[
+                _json_resp({"items": [{"ts": 1, "data": {"a": 1}}, {"ts": 2, "data": {"b": 2}}]}),
+                _json_resp({"items": [{"ts": 3, "data": {"c": 3}}]}),
+            ]
+        )
+        async with StarfishClient(BASE) as client:
+            log = AppendLogCursor(client, "/pull/events")
+            b1, b2 = await asyncio.gather(log.pull(), log.pull())
+        # The 2nd pull ran AFTER the 1st advanced the checkpoint → carried ?checkpoint=2.
+        assert "checkpoint=2" in str(mock.calls[1].request.url)
+    assert b1 == [{"ts": 1, "data": {"a": 1}}, {"ts": 2, "data": {"b": 2}}]
+    assert b2 == [{"ts": 3, "data": {"c": 3}}]
+    assert log.checkpoint == 3
+    assert len(log.items) == 3
+
+
+@pytest.mark.asyncio
+async def test_failed_pull_does_not_wedge_the_lock():
+    import asyncio
+
+    with respx.mock(base_url="https://api.example.com") as mock:
+        mock.get("/v1/pull/events").mock(
+            side_effect=[httpx.ConnectError("network"), _json_resp({"items": [{"ts": 1, "data": {"a": 1}}]})]
+        )
+        async with StarfishClient(BASE) as client:
+            log = AppendLogCursor(client, "/pull/events")
+            r1, r2 = await asyncio.gather(log.pull(), log.pull(), return_exceptions=True)
+    assert isinstance(r1, Exception)
+    assert r2 == [{"ts": 1, "data": {"a": 1}}]
+
+
+# --- persist_encrypted (E2EE-safe persistence) ---
+
+
+def _cipher(o: object) -> dict[str, Any]:
+    return {"_encrypted": json.dumps(o)}
+
+
+@pytest.mark.asyncio
+async def test_persist_encrypted_keeps_ciphertext_pull_returns_plaintext():
+    items = [{"ts": 1, "data": _cipher({"msg": "a"})}, {"ts": 2, "data": _cipher({"msg": "b"})}]
+    with respx.mock(base_url="https://api.example.com") as mock:
+        mock.get("/v1/pull/streamchat").mock(return_value=_json_resp({"items": items}))
+        async with StarfishClient(BASE) as client:
+            log = AppendLogCursor(client, "/pull/streamchat", encryptor=_Encryptor(), persist_encrypted=True)
+            batch = await log.pull()
+    assert batch == [{"ts": 1, "data": {"msg": "a"}}, {"ts": 2, "data": {"msg": "b"}}]
+    # items is the persistable CIPHERTEXT — no plaintext at rest.
+    assert log.items == [{"ts": 1, "data": _cipher({"msg": "a"})}, {"ts": 2, "data": _cipher({"msg": "b"})}]
+    assert log.get_decrypted_items() == [{"ts": 1, "data": {"msg": "a"}}, {"ts": 2, "data": {"msg": "b"}}]
+
+
+@pytest.mark.asyncio
+async def test_persist_encrypted_round_trip_renders_history_without_network():
+    items = [{"ts": 1, "data": _cipher({"msg": "a"})}, {"ts": 2, "data": _cipher({"msg": "b"})}]
+    with respx.mock(base_url="https://api.example.com") as mock:
+        mock.get("/v1/pull/streamchat").mock(return_value=_json_resp({"items": items}))
+        async with StarfishClient(BASE) as client:
+            log1 = AppendLogCursor(client, "/pull/streamchat", encryptor=_Encryptor(), persist_encrypted=True)
+            await log1.pull()
+            persisted = log1.items  # ciphertext written to "disk"
+
+    # New session: warm-start from persisted ciphertext; render history with NO network.
+    async with StarfishClient(BASE) as client:
+        log2 = AppendLogCursor(
+            client, "/pull/streamchat", encryptor=_Encryptor(), persist_encrypted=True, initial_items=persisted
+        )
+        assert log2.checkpoint == 2
+        assert log2.get_decrypted_items() == [{"ts": 1, "data": {"msg": "a"}}, {"ts": 2, "data": {"msg": "b"}}]
+
+
+@pytest.mark.asyncio
+async def test_persist_encrypted_get_decrypted_items_honors_skip():
+    async with StarfishClient(BASE) as client:
+        log = AppendLogCursor(
+            client,
+            "/pull/streamchat",
+            encryptor=_FailingEncryptor(),
+            persist_encrypted=True,
+            on_element_error="skip",
+            initial_items=[{"ts": 1, "data": {"_encrypted": json.dumps({"msg": "a"})}}, {"ts": 2, "data": {"bad": True}}],
+        )
+        # _FailingEncryptor.decrypt raises on the {"bad": True} element and returns the
+        # other wrapper unchanged — so skip drops ts=2 and keeps ts=1.
+        decrypted = log.get_decrypted_items()
+    assert [d["ts"] for d in decrypted] == [1]
+
+
+@pytest.mark.asyncio
+async def test_persist_encrypted_is_noop_without_encryptor():
+    with respx.mock(base_url="https://api.example.com") as mock:
+        mock.get("/v1/pull/events").mock(return_value=_json_resp({"items": [{"ts": 1, "data": {"a": 1}}]}))
+        async with StarfishClient(BASE) as client:
+            log = AppendLogCursor(client, "/pull/events", persist_encrypted=True)
+            await log.pull()
+    assert log.items == [{"ts": 1, "data": {"a": 1}}]
+    assert log.get_decrypted_items() == [{"ts": 1, "data": {"a": 1}}]

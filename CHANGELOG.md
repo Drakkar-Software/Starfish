@@ -1,5 +1,45 @@
 # Changelog
 
+## 3.0.0-alpha.10 — append-log cursor: skip policy, safe concurrency, E2EE-safe persistence
+
+`AppendLogCursor` (TypeScript + Python) gains three opt-in, additive capabilities that let it
+back a multi-writer, end-to-end-encrypted append-only log directly — behaviors a consumer
+previously had to hand-roll around the cursor. All defaults preserve the prior behavior.
+Lockstep bump of all twenty packages to 3.0.0-alpha.10 / 3.0.0a10.
+
+### Added
+
+- **Per-element error policy `onElementError: "throw" | "skip"`** (TS) / `on_element_error`
+  (Python), default `"throw"`. Under `"skip"`, an element that fails author verification or
+  decryption is dropped from the returned batch **and the checkpoint still advances past it**,
+  so one poison element (keyring skew, a foreign / corrupt / wrong-key element) cannot blank —
+  or permanently wedge — the log. `"throw"` keeps the prior atomic-pull behavior (first bad
+  element throws, no state mutated). SECURITY: `"skip"` also silently drops author-verification
+  failures, so combine it with `verifyAuthor.expectedAuthorPubkey` (single author) or a
+  post-pull `authorPubkey` check against your authorized set if you need strict authorship.
+- **`persistEncrypted` mode** (TS) / `persist_encrypted` (Python). With an `encryptor`, the
+  cursor retains each element's **ciphertext** in its accumulated log, so `getItems()` returns
+  the persistable ciphertext — safe to write to disk for an E2EE log without leaking plaintext
+  at rest — while `pull()` still returns the freshly-decrypted batch. A no-op without an
+  encryptor (plaintext is already its own stored form).
+- **`getDecryptedItems()`** (TS, async) / **`get_decrypted_items()`** (Python). Returns the full
+  accumulated log decrypted — for rendering warm-started history seeded from persisted
+  ciphertext (`initialItems`). Honors the `onElementError` policy.
+- **`SyncMetrics.skippedCount`** (TS): the number of elements a `"skip"` pull dropped, reported
+  via `logger.pullSuccess` (omitted when none were skipped).
+- **`ElementErrorPolicy`** type exported from `@drakkar.software/starfish-client`.
+
+### Changed
+
+- **`AppendLogCursor.pull()` is now safe to call concurrently** (TS + Python). Overlapping calls
+  are serialized internally — a promise chain in TypeScript, an `asyncio.Lock` in Python — so
+  each runs against the checkpoint the previous one advanced; no two overlapping pulls fetch and
+  double-append the same window. A failed pull does not wedge the queue for the next call. The
+  prior "not safe to call concurrently" caveat is retired.
+- Docs: `docs/ts/server/append-only-collections.md` documents the skip policy, the
+  `persistEncrypted` warm-start persistence flow, and concurrency safety; both client
+  `README.md` files gain the new options.
+
 ## 3.0.0-alpha.9 — incremental append-only cursor
 
 A new client helper, `AppendLogCursor`, makes incremental pulling of append-only collections

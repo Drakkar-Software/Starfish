@@ -6,7 +6,8 @@ and ``docs/ts/server/append-only-collections.md`` for the full design.
 
 from __future__ import annotations
 
-from typing import Any, TypedDict, cast
+import asyncio
+from typing import Any, Literal, TypedDict, cast
 
 from starfish_protocol.append_author import verify_append_author
 from starfish_protocol.crypto import Encryptor
@@ -15,6 +16,19 @@ from starfish_sdk.client import StarfishClient
 
 # The ``/pull/`` action prefix; mirrors ``PUSH_PATH_PREFIX`` for the read side.
 PULL_PATH_PREFIX = "/pull/"
+
+# What to do when a single element fails verification or decryption during a
+# pull (or ``get_decrypted_items``):
+#   - "throw" (default): the pull is atomic — the first bad element raises and NO
+#     state is mutated, so the checkpoint never advances past an element that
+#     could not be re-fetched.
+#   - "skip": a bad element is dropped from the returned/decrypted batch and the
+#     checkpoint still advances past it (so it is never re-fetched). Intended for
+#     tolerating decrypt failures in a multi-writer / E2EE log. SECURITY NOTE:
+#     "skip" ALSO silently drops elements that fail author verification — if you
+#     also need strict authorship, set ``verify_author.expected_author_pubkey``
+#     or check each element's ``authorPubkey`` against your authorized set.
+ElementErrorPolicy = Literal["throw", "skip"]
 
 
 class AuthorVerifier(TypedDict, total=False):
@@ -44,6 +58,16 @@ def checkpoint_of(items: list[dict[str, Any]]) -> int:
     return max((it["ts"] for it in items), default=0)
 
 
+def _with_author(ts: int, data: dict[str, Any], src: dict[str, Any]) -> dict[str, Any]:
+    """Copy the optional author fields from ``src`` onto a fresh element with ``data``."""
+    out: dict[str, Any] = {"ts": ts, "data": data}
+    if "authorPubkey" in src:
+        out["authorPubkey"] = src["authorPubkey"]
+    if "authorSignature" in src:
+        out["authorSignature"] = src["authorSignature"]
+    return out
+
+
 class AppendLogCursor:
     """A stateful cursor over an append-only collection.
 
@@ -62,24 +86,36 @@ class AppendLogCursor:
         all_items = await log.pull()
 
     Warm start (resume from persisted data) — first ``pull()`` fetches only newer
-    elements; persistence is a round-trip of ``items`` (see the ``encryptor``
-    caveat when decrypting)::
+    elements; persistence is a round-trip of ``items``::
 
         log = AppendLogCursor(client, "/pull/events", initial_items=store.load())
         fresh = await log.pull()
         store.save(log.items)
 
-    Each stored/returned element is the raw envelope ``{"ts", "data",
-    "authorPubkey"?, "authorSignature"?}``. When an ``encryptor`` is given, the
-    freshly-pulled elements carry the **decrypted** ``data`` (``ts``/author fields
-    preserved); author verification, when enabled, runs over the original
-    (pre-decryption) ``data``.
+    Warm start for an **E2EE** log — persist ciphertext, render decrypted::
 
-    Caveat: with an ``encryptor`` a returned element holds DECRYPTED ``data`` but
-    an ``authorSignature`` computed over the stored CIPHERTEXT — they no longer
-    match, so do NOT re-verify a decrypted element with ``verify_append_author``.
-    The cursor already verified it (over the ciphertext) at pull time when
-    ``verify_author`` is on; ``authorPubkey`` is retained for identity.
+        log = AppendLogCursor(client, "/pull/streamchat", encryptor=enc,
+                              persist_encrypted=True, on_element_error="skip",
+                              initial_items=store.load())     # ciphertext from disk
+        history = log.get_decrypted_items()                   # render persisted history
+        fresh = await log.pull()                              # decrypted delta
+        store.save(log.items)                                 # ciphertext back to disk
+
+    Each stored/returned element is the raw envelope ``{"ts", "data",
+    "authorPubkey"?, "authorSignature"?}``. When an ``encryptor`` is given (and
+    ``persist_encrypted`` is off), the freshly-pulled elements carry the
+    **decrypted** ``data`` (``ts``/author fields preserved); author verification,
+    when enabled, runs over the original (pre-decryption) ``data``. Under
+    ``persist_encrypted`` the stored elements keep their **ciphertext** ``data``
+    (E2EE-safe to persist) and decryption happens only on read via :meth:`pull`
+    and :meth:`get_decrypted_items`.
+
+    Caveat (default mode, with an ``encryptor``): a returned element holds
+    DECRYPTED ``data`` but an ``authorSignature`` computed over the stored
+    CIPHERTEXT — they no longer match, so do NOT re-verify a decrypted element
+    with ``verify_append_author``. The cursor already verified it (over the
+    ciphertext) at pull time when ``verify_author`` is on; ``authorPubkey`` is
+    retained for identity.
 
     ``verify_author`` checks each signature is valid for the element's
     self-declared ``authorPubkey`` — it does NOT by itself restrict WHICH authors
@@ -100,6 +136,8 @@ class AppendLogCursor:
         initial_items: list[dict[str, Any]] | None = None,
         since: int | None = None,
         encryptor: Encryptor | None = None,
+        on_element_error: ElementErrorPolicy = "throw",
+        persist_encrypted: bool = False,
         verify_author: bool | AuthorVerifier = False,
     ) -> None:
         seed = list(initial_items) if initial_items else []
@@ -117,23 +155,35 @@ class AppendLogCursor:
         self._pull_path = pull_path
         self._append_field = append_field
         self._encryptor = encryptor
+        self._on_element_error: ElementErrorPolicy = on_element_error
+        self._persist_encrypted = persist_encrypted
         self._verify_author = verify_author
         self._document_key = pull_path.removeprefix(PULL_PATH_PREFIX)
         self._items: list[dict[str, Any]] = seed
         self._last_checkpoint: int = checkpoint
+        # Serializes overlapping pull() calls so each runs against the checkpoint
+        # the previous one advanced — no two fetch and double-append the same window.
+        self._pull_lock = asyncio.Lock()
 
     async def pull(self) -> list[dict[str, Any]]:
         """Fetch elements newer than the current checkpoint, verify + decrypt them,
-        append them to the local log, and return ONLY the newly-fetched batch.
+        append them to the local log, and return ONLY the newly-fetched batch
+        (decrypted when an ``encryptor`` is set).
 
-        Atomic: the batch is fully verified and decrypted into a local before any
-        state mutation, so a verify/decrypt failure raises without advancing the
-        checkpoint past elements that could never be re-fetched.
+        Atomic under ``on_element_error="throw"`` (the default): the batch is fully
+        verified and decrypted into a local before any state mutation, so a
+        verify/decrypt failure raises without advancing the checkpoint past
+        elements that could never be re-fetched. Under ``"skip"`` a failing element
+        is dropped from the returned batch but the checkpoint still advances past it.
 
-        Not safe to call concurrently: like ``SyncManager.pull``, overlapping
-        calls read the same checkpoint and would fetch — and append — the same
-        window twice.
+        Safe to call concurrently: overlapping calls are serialized internally, so
+        each runs against the checkpoint the previous one advanced (no double-fetch
+        of the same window).
         """
+        async with self._pull_lock:
+            return await self._do_pull()
+
+    async def _do_pull(self) -> list[dict[str, Any]]:
         since = self._last_checkpoint
         # Omit ``since`` on cold start so the request carries no ``?checkpoint=``.
         raw = await self._client.pull(
@@ -143,7 +193,8 @@ class AppendLogCursor:
         )
         elements = cast("list[dict[str, Any]]", raw)
 
-        batch: list[dict[str, Any]] = []
+        batch: list[dict[str, Any]] = []  # decrypted, returned to the caller
+        stored: list[dict[str, Any]] = []  # what we keep in ``_items`` (cipher- or plaintext)
         max_ts = since
         for el in elements:
             ts = el["ts"]
@@ -153,18 +204,31 @@ class AppendLogCursor:
             # ``since`` is 0 and we must NOT drop a legitimate ``ts == 0`` first element.
             if since > 0 and ts <= since:
                 continue
-            self._verify_one(el)
-            data = self._encryptor.decrypt(el["data"]) if self._encryptor is not None else el["data"]
-            out: dict[str, Any] = {"ts": ts, "data": data}
-            if "authorPubkey" in el:
-                out["authorPubkey"] = el["authorPubkey"]
-            if "authorSignature" in el:
-                out["authorSignature"] = el["authorSignature"]
-            batch.append(out)
+            # Advance past every windowed element BEFORE verify/decrypt so a skipped
+            # element still moves the checkpoint and is never re-fetched.
             if ts > max_ts:
                 max_ts = ts
 
-        self._items.extend(batch)
+            decrypted: dict[str, Any] | None = None
+            try:
+                self._verify_one(el)
+                data = self._encryptor.decrypt(el["data"]) if self._encryptor is not None else el["data"]
+                decrypted = _with_author(ts, data, el)
+            except Exception:
+                # "throw" re-raises here, before any state mutation below — atomic.
+                if self._on_element_error != "skip":
+                    raise
+
+            if self._persist_encrypted:
+                # Keep the original ciphertext envelope (even for a skipped element:
+                # it is valid data we simply cannot read now — a later key might).
+                stored.append(_with_author(ts, el["data"], el))
+            elif decrypted is not None:
+                stored.append(decrypted)
+            if decrypted is not None:
+                batch.append(decrypted)
+
+        self._items.extend(stored)
         self._last_checkpoint = max_ts
         return batch
 
@@ -193,8 +257,30 @@ class AppendLogCursor:
 
     @property
     def items(self) -> list[dict[str, Any]]:
-        """The full accumulated log (a shallow copy), in ``ts`` order."""
+        """The full accumulated log (a shallow copy), in ``ts`` order. Under
+        ``persist_encrypted`` these carry CIPHERTEXT ``data`` (persist them as-is,
+        then re-seed via ``initial_items``); otherwise decrypted/plaintext data."""
         return list(self._items)
+
+    def get_decrypted_items(self) -> list[dict[str, Any]]:
+        """The full accumulated log, DECRYPTED — for rendering warm-started history
+        in ``persist_encrypted`` mode (where :attr:`items` holds ciphertext). Honors
+        ``on_element_error`` (a ``"skip"`` cursor drops elements it cannot read).
+        When the cursor has no ``encryptor``, or is not in ``persist_encrypted``
+        mode, the held elements are already plaintext/decrypted and returned as-is."""
+        snapshot = list(self._items)
+        if self._encryptor is None or not self._persist_encrypted:
+            return snapshot
+        out: list[dict[str, Any]] = []
+        for el in snapshot:
+            try:
+                self._verify_one(el)
+                data = self._encryptor.decrypt(el["data"])
+                out.append(_with_author(el["ts"], data, el))
+            except Exception:
+                if self._on_element_error != "skip":
+                    raise
+        return out
 
     @property
     def checkpoint(self) -> int:

@@ -316,3 +316,202 @@ describe("checkpointOf", () => {
     expect(checkpointOf([{ ts: 5 }, { ts: 3 }, { ts: 9 }])).toBe(9)
   })
 })
+
+describe("AppendLogCursor — onElementError: skip", () => {
+  const failing: Encryptor = {
+    encrypt: async (d) => d,
+    decrypt: async (w) => {
+      if ((w as { bad?: boolean }).bad) throw new Error("bad key")
+      return w
+    },
+  }
+  // A real Ed25519 keypair so a valid signature actually verifies.
+  const KP = {
+    priv: "1133557799bbddff1133557799bbddff1133557799bbddff1133557799bbddff",
+    pub: "062f2ba3c6a5590364b0864d539af151907d09ea0b741b0811e0d761a059bda4",
+  }
+
+  it("drops an undecryptable element, keeps the rest, and advances the checkpoint past it", async () => {
+    const fetchSpy = fetchReturning({
+      items: [{ ts: 1, data: { ok: true } }, { ts: 2, data: { bad: true } }, { ts: 3, data: { ok: true } }],
+    })
+    const log = new AppendLogCursor({
+      client: makeClient(fetchSpy),
+      pullPath: "/pull/events",
+      encryptor: failing,
+      onElementError: "skip",
+    })
+
+    const batch = await log.pull()
+    expect(batch).toEqual([{ ts: 1, data: { ok: true } }, { ts: 3, data: { ok: true } }])
+    // Checkpoint advanced PAST the skipped ts=2 so it is never re-fetched.
+    expect(log.getCheckpoint()).toBe(3)
+  })
+
+  it("does not re-fetch a skipped element on the next pull", async () => {
+    const fetchSpy = fetchReturning(
+      { items: [{ ts: 1, data: { ok: true } }, { ts: 2, data: { bad: true } }] },
+      { items: [{ ts: 3, data: { ok: true } }] },
+    )
+    const log = new AppendLogCursor({
+      client: makeClient(fetchSpy),
+      pullPath: "/pull/events",
+      encryptor: failing,
+      onElementError: "skip",
+    })
+    await log.pull()
+    expect(log.getCheckpoint()).toBe(2)
+    await log.pull()
+    expect(fetchSpy).toHaveBeenNthCalledWith(2, `${URL_EVENTS}?checkpoint=2`, expect.any(Object))
+  })
+
+  it("skips an element that fails author verification instead of throwing", async () => {
+    const good = { ts: 1, data: { msg: "a" }, ...signAppendAuthor("events", { msg: "a" }, KP.pub, KP.priv, "ed25519") }
+    const tampered = { ts: 2, data: { msg: "TAMPERED" }, ...signAppendAuthor("events", { msg: "b" }, KP.pub, KP.priv, "ed25519") }
+    const fetchSpy = fetchReturning({ items: [good, tampered] })
+    const log = new AppendLogCursor({
+      client: makeClient(fetchSpy),
+      pullPath: "/pull/events",
+      verifyAuthor: true,
+      onElementError: "skip",
+    })
+
+    const batch = await log.pull()
+    expect(batch).toEqual([good])
+    expect(log.getCheckpoint()).toBe(2)
+  })
+
+  it("reports skippedCount to the logger", async () => {
+    const pullSuccess = vi.fn()
+    const logger = {
+      pullStart: () => {},
+      pullSuccess,
+      pullError: () => {},
+      pushStart: () => {},
+      pushSuccess: () => {},
+      pushError: () => {},
+      conflict: () => {},
+    }
+    const fetchSpy = fetchReturning({ items: [{ ts: 1, data: { ok: true } }, { ts: 2, data: { bad: true } }] })
+    const log = new AppendLogCursor({
+      client: makeClient(fetchSpy),
+      pullPath: "/pull/events",
+      encryptor: failing,
+      onElementError: "skip",
+      logger,
+    })
+    await log.pull()
+    expect(pullSuccess).toHaveBeenCalledWith("events", expect.any(Number), { skippedCount: 1 })
+  })
+
+  it("default policy ('throw') still fails the whole pull atomically", async () => {
+    const fetchSpy = fetchReturning({ items: [{ ts: 1, data: { ok: true } }, { ts: 2, data: { bad: true } }] })
+    const log = new AppendLogCursor({ client: makeClient(fetchSpy), pullPath: "/pull/events", encryptor: failing })
+    await expect(log.pull()).rejects.toThrow("bad key")
+    expect(log.getItems()).toEqual([])
+    expect(log.getCheckpoint()).toBe(0)
+  })
+})
+
+describe("AppendLogCursor — concurrent pull() is serialized", () => {
+  it("two overlapping pulls run one-after-another and never double-append a window", async () => {
+    const fetchSpy = fetchReturning(
+      { items: [{ ts: 1, data: { a: 1 } }, { ts: 2, data: { b: 2 } }] },
+      { items: [{ ts: 3, data: { c: 3 } }] },
+    )
+    const log = new AppendLogCursor({ client: makeClient(fetchSpy), pullPath: "/pull/events" })
+
+    const [b1, b2] = await Promise.all([log.pull(), log.pull()])
+
+    expect(b1).toEqual([{ ts: 1, data: { a: 1 } }, { ts: 2, data: { b: 2 } }])
+    expect(b2).toEqual([{ ts: 3, data: { c: 3 } }])
+    expect(log.getItems()).toHaveLength(3)
+    expect(log.getCheckpoint()).toBe(3)
+    // The 2nd pull ran AFTER the 1st advanced the checkpoint, so it carried ?checkpoint=2.
+    expect(fetchSpy).toHaveBeenNthCalledWith(2, `${URL_EVENTS}?checkpoint=2`, expect.any(Object))
+  })
+
+  it("a rejected pull does not wedge the chain for the next call", async () => {
+    const spy = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("network"))
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ data: { items: [{ ts: 1, data: { a: 1 } }] }, hash: "h", timestamp: 0 }) })
+    const log = new AppendLogCursor({ client: makeClient(spy), pullPath: "/pull/events" })
+
+    const [r1, r2] = await Promise.allSettled([log.pull(), log.pull()])
+
+    expect(r1.status).toBe("rejected")
+    expect(r2.status).toBe("fulfilled")
+    if (r2.status === "fulfilled") expect(r2.value).toEqual([{ ts: 1, data: { a: 1 } }])
+  })
+})
+
+describe("AppendLogCursor — persistEncrypted (E2EE-safe persistence)", () => {
+  const encryptor: Encryptor = {
+    encrypt: async (d) => ({ _encrypted: JSON.stringify(d) }),
+    decrypt: async (w) => JSON.parse(w._encrypted as string),
+  }
+  const cipher = (o: unknown) => ({ _encrypted: JSON.stringify(o) })
+
+  it("getItems() keeps ciphertext while pull() returns decrypted and getDecryptedItems() returns the full plaintext log", async () => {
+    const fetchSpy = fetchReturning({ items: [{ ts: 1, data: cipher({ msg: "a" }) }, { ts: 2, data: cipher({ msg: "b" }) }] })
+    const log = new AppendLogCursor({
+      client: makeClient(fetchSpy),
+      pullPath: "/pull/streamchat",
+      encryptor,
+      persistEncrypted: true,
+    })
+
+    const batch = await log.pull()
+    expect(batch).toEqual([{ ts: 1, data: { msg: "a" } }, { ts: 2, data: { msg: "b" } }])
+    // getItems() is the persistable CIPHERTEXT — no plaintext at rest.
+    expect(log.getItems()).toEqual([{ ts: 1, data: cipher({ msg: "a" }) }, { ts: 2, data: cipher({ msg: "b" }) }])
+    expect(await log.getDecryptedItems()).toEqual([{ ts: 1, data: { msg: "a" } }, { ts: 2, data: { msg: "b" } }])
+  })
+
+  it("round-trips: persisted ciphertext re-seeds and renders decrypted with no network fetch for history", async () => {
+    const fetch1 = fetchReturning({ items: [{ ts: 1, data: cipher({ msg: "a" }) }, { ts: 2, data: cipher({ msg: "b" }) }] })
+    const log1 = new AppendLogCursor({ client: makeClient(fetch1), pullPath: "/pull/streamchat", encryptor, persistEncrypted: true })
+    await log1.pull()
+    const persisted = log1.getItems() // ciphertext written to "disk"
+
+    const fetch2 = fetchReturning({ items: [] })
+    const log2 = new AppendLogCursor({
+      client: makeClient(fetch2),
+      pullPath: "/pull/streamchat",
+      encryptor,
+      persistEncrypted: true,
+      initialItems: persisted,
+    })
+    expect(log2.getCheckpoint()).toBe(2)
+    // Renders history WITHOUT touching the network.
+    expect(await log2.getDecryptedItems()).toEqual([{ ts: 1, data: { msg: "a" } }, { ts: 2, data: { msg: "b" } }])
+  })
+
+  it("getDecryptedItems() honors skip for an unreadable persisted element", async () => {
+    const failing: Encryptor = {
+      encrypt: async (d) => d,
+      decrypt: async (w) => {
+        if ((w as { bad?: boolean }).bad) throw new Error("bad key")
+        return JSON.parse((w as { _encrypted: string })._encrypted)
+      },
+    }
+    const log = new AppendLogCursor({
+      client: makeClient(fetchReturning({ items: [] })),
+      pullPath: "/pull/streamchat",
+      encryptor: failing,
+      persistEncrypted: true,
+      onElementError: "skip",
+      initialItems: [{ ts: 1, data: cipher({ msg: "a" }) }, { ts: 2, data: { bad: true } }],
+    })
+    expect(await log.getDecryptedItems()).toEqual([{ ts: 1, data: { msg: "a" } }])
+  })
+
+  it("without an encryptor, persistEncrypted is a no-op (plaintext is its own stored form)", async () => {
+    const fetchSpy = fetchReturning({ items: [{ ts: 1, data: { a: 1 } }] })
+    const log = new AppendLogCursor({ client: makeClient(fetchSpy), pullPath: "/pull/events", persistEncrypted: true })
+    await log.pull()
+    expect(log.getItems()).toEqual([{ ts: 1, data: { a: 1 } }])
+    expect(await log.getDecryptedItems()).toEqual([{ ts: 1, data: { a: 1 } }])
+  })
+})

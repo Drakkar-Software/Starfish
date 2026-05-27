@@ -5,6 +5,9 @@ export interface SyncMetrics {
   conflictCount?: number
   retryCount?: number
   cacheHit?: boolean
+  /** Elements an append-log pull dropped under `onElementError: "skip"`
+   *  (failed verification/decryption). Omitted when none were skipped. */
+  skippedCount?: number
 }
 
 /** Structured logger for sync operations. */

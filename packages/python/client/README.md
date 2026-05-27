@@ -230,14 +230,20 @@ log = AppendLogCursor(
     initial_items=...,           # warm-start seed (raw {ts,data} envelopes) — or since=...
     encryptor=...,               # optional: decrypt each element's data (ts/author preserved)
     verify_author=...,           # optional: True | {"expected_author_pubkey": ..., "alg": ...}
+    on_element_error="throw",    # optional: "throw" (default) | "skip" — see below
+    persist_encrypted=False,     # optional: keep ciphertext for E2EE-safe persistence — see below
 )
-fresh = await log.pull()         # only elements newer than the last held
-log.items                        # full accumulated log
+fresh = await log.pull()         # only elements newer than the last held (safe to call concurrently)
+log.items                        # full accumulated log (ciphertext under persist_encrypted)
+log.get_decrypted_items()        # full log decrypted — render warm-started history
 log.checkpoint                   # max ts held — persist, and restore via set_checkpoint()
 ```
 
 - Cold start (no seed) → first `pull()` fetches the whole collection; warm start (seeded) → resumes incrementally.
 - `verify_author` verifies each element's author signature over the stored (pre-decryption) data and raises `AppendAuthorError` atomically on any failure (nothing is appended, checkpoint unchanged).
+- `on_element_error="skip"` drops an element that fails verify/decrypt **and advances the checkpoint past it** (never re-fetched), so one unreadable element in a multi-writer / E2EE log can't blank the whole log. Default `"throw"` keeps the atomic behavior. SECURITY: `"skip"` also drops author-verification failures silently — combine with `verify_author`'s `expected_author_pubkey` or a post-pull `authorPubkey` check for strict authorship.
+- `persist_encrypted=True` (with an `encryptor`) stores each element's **ciphertext** so `log.items` is safe to persist at rest for an E2EE log; `pull()` still returns decrypted, and `get_decrypted_items()` decrypts the full held log for warm-start rendering.
+- `pull()` is safe to call concurrently — overlapping calls serialize internally (via an `asyncio.Lock`) so they never double-append a window.
 
 ## Removed in v3.0
 
