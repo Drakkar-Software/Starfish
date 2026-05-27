@@ -165,6 +165,26 @@ const notesStore = createStarfishObservable({
 })
 ```
 
+## Append-only logs
+
+For **append-only collections**, use `createStarfishLogObservable` instead of `createStarfishObservable`. It's backed by an [`AppendLogCursor`](../server/append-only-collections.md#incremental-cursor-appendlogcursor) and is **read-only**: the observable holds `{ items, loading, online, error, checkpoint }` and exposes a `pull()` that fetches new elements and appends them (no `set`/`flush`/`dirty`).
+
+```ts
+import { AppendLogCursor } from "@drakkar.software/starfish-client"
+import { createStarfishLogObservable } from "@drakkar.software/starfish-client/legend"
+import { observer } from "@legendapp/state/react"
+
+const cursor = new AppendLogCursor({ client, pullPath: "/pull/events", initialItems: await store.load() })
+const log = createStarfishLogObservable({ cursor })
+await log.pull()
+
+const Feed = observer(function Feed() {
+  return <>{log.state.items.get().map((e) => <Row key={e.ts} {...e} />)}</>
+})
+```
+
+The cursor owns the items + checkpoint; persist by saving `cursor.getItems()` and rehydrate via `initialItems`.
+
 ## Next Steps
 
 - [Zustand Binding](05-state-zustand.md) — alternative with persistence and devtools

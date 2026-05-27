@@ -228,9 +228,37 @@ encrypted payload, and pull responses surface them so verifying clients
 can check that a document was written by a device whose cap was valid at
 the time.
 
+## Append-only logs: `AppendLogCursor`
+
+`SyncManager` is for documents you read-merge-write. For **append-only
+collections** (a log that only grows, with strictly increasing `ts` per
+element), use `AppendLogCursor` instead — the stateful, incremental
+counterpart that owns the accumulated log and pulls only what's new:
+
+```ts
+import { AppendLogCursor } from "@drakkar.software/starfish-client"
+
+// Cold start → first pull() fetches the whole collection.
+// Warm start → seed from persisted data and pull() resumes incrementally.
+const log = new AppendLogCursor({
+  client,
+  pullPath: "/pull/events",
+  initialItems: await store.load(), // omit on a cold start
+})
+const fresh = await log.pull()       // only elements newer than the last held
+await store.save(log.getItems())     // persist; the checkpoint is derived from the data
+```
+
+It can also decrypt each element (`encryptor`) and verify author signatures
+on read (`verifyAuthor`). Unlike `SyncManager`, there is no merge or
+push-conflict machinery — a log only grows. See
+[Append-only collections](../server/append-only-collections.md#incremental-cursor-appendlogcursor)
+for the full reference.
+
 ## Next Steps
 
 - [Encryption](04-encryption.md) — E2E encryption deep dive
 - [Conflict Resolution](07-conflict-resolution.md) — custom merge strategies
+- [Append-only collections](../server/append-only-collections.md) — `AppendLogCursor`, checkpoints, segmented storage
 - [23. Multi-Recipient Delegated Encryption](23-multi-recipient-delegated.md) — keyring lifecycle
 - [Zustand Binding](05-state-zustand.md) — reactive state management on top of SyncManager

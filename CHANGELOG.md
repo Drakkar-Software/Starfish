@@ -1,5 +1,80 @@
 # Changelog
 
+## 3.0.0-alpha.9 — incremental append-only cursor
+
+A new client helper, `AppendLogCursor`, makes incremental pulling of append-only collections
+automatic: it owns the accumulated log locally and derives its checkpoint from the last element it
+holds, so each pull fetches only newer elements. Because the checkpoint comes from the data (not a
+separately-tracked number), it resumes correctly on a fresh page from persisted local data — or
+fetches the whole collection on a cold start — through one code path. Opt-in and additive (the
+stateless `client.pull(path, { since })` is unchanged); shipped in **both** TypeScript and Python
+with matching test suites. Lockstep bump of all twenty packages to 3.0.0-alpha.9 / 3.0.0a9.
+
+### Added
+
+- **`AppendLogCursor`** (TS `@drakkar.software/starfish-client`, Python `starfish-sdk`): a stateful,
+  incremental cursor over an append-only collection — the log counterpart to `SyncManager`. Each
+  `pull()` derives `since` from the max `ts` it holds, fetches only newer elements via
+  `client.pull(path, { appendField, since })`, appends them, and returns just the new batch.
+  `getItems()` / `items` exposes the full accumulated log; `getCheckpoint()` / `checkpoint` and
+  `setCheckpoint()` / `set_checkpoint()` support persistence across restarts.
+- **Warm vs. cold start through one path.** Construct empty for a cold start (first pull fetches
+  everything), or seed `initialItems` (raw `{ ts, data }` envelopes) and/or `since` to resume from
+  persisted data. Persistence is a round-trip of the cursor's items (under an `encryptor` the
+  round-tripped `data` is decrypted, so its `authorSignature` — over the stored ciphertext — must
+  not be re-verified post-decryption).
+- **Optional per-element decryption** (`encryptor`): freshly-pulled elements carry decrypted `data`
+  with `ts`/author fields preserved. **Optional author verification on read** (`verifyAuthor`):
+  verifies each element's signature over its stored (pre-decryption) `data` and throws
+  `AppendAuthorError` atomically on failure (nothing appended, checkpoint unchanged).
+- **`checkpointOf` / `checkpoint_of`**: pure helper returning the max `ts` of a list of elements
+  (`0` when empty).
+- **Reactive bindings for the cursor** (TS only — these integrations are React-oriented):
+  `createStarfishLog` (Zustand, via `@drakkar.software/starfish-client/zustand`) with hooks
+  `useStarfishLog` / `useStarfishLogItems` / `useLogStatus` / `subscribeLogStatus` /
+  `useLogConnectivity`; `createStarfishLogObservable` (Legend-State, via `…/legend`); and
+  `createAppendLogMobileLifecycle` (pull on app foreground). All are read-only `{ items, loading,
+  online, error, checkpoint }` stores with a single `pull()` action — no `set`/`flush`/conflict
+  surface, since a log only grows. `startPolling` / `createSuspenseResource` already work with
+  `cursor.pull()` unchanged.
+- **Path-param resolution for `/batch/pull`** (TS + Python server): the batch endpoint now resolves
+  `{param}` collections instead of rejecting them. `{identity}` is auto-filled from the
+  authenticated caller; other params (e.g. `{teamId}`) are supplied via a new optional `params`
+  query parameter holding URL-encoded JSON mapping collection name → params, e.g.
+  `?collections=profile,notes&params={"notes":{"teamId":"42"}}`. Backward compatible — existing
+  `?collections=` calls are unchanged. The `params` query is documented in the OpenAPI spec.
+- **Cap-scope enforcement for batch pull.** A `/batch/pull` URL carries no storage path, so the
+  cap-cert resolver can no longer path-bind it: it now skips the URL path-scope check for `/batch/*`
+  (keeping full signature / nonce / revocation verification) and the batch handler enforces
+  `scope.paths` against each RESOLVED key — a cap reads only the keys its scope covers (its own
+  room, not a sibling). A supplied identity that isn't the caller's earns no `self` role and falls
+  outside scope → `Forbidden`; an anonymous caller has no identity to bind → `Missing required path
+  parameter`. Never a side-channel around the `{identity}` self-binding.
+- **Batch-pull hardening** (TS + Python server): a configurable `maxCollectionsPerBatch` (default
+  100) bounds the per-request fan-out (a `Too many collections` 400 above it); the batch path now
+  writes per-collection **audit records** on denials and successful reads, plus a request-level
+  record when an invalid/revoked cap degrades to anonymous (closing an audit blind spot); `list`
+  joins the reserved namespace names so the batch-route detector stays unambiguous; and a malformed
+  `params` blob is rejected `400` even when pathologically deep. The `RoleEnricher` contract now
+  documents that it may be invoked once per collection and must be idempotent.
+
+### Changed
+
+- Docs: `docs/ts/server/append-only-collections.md` and `docs/ts/client/03-sync-manager.md` now lead
+  with `AppendLogCursor` for incremental pulls; manual `since` tracking remains documented as the
+  escape hatch. Both client `README.md` files gained an `AppendLogCursor` section.
+- **`resolveEffectiveRoles` split** (TS + Python server) into `resolveBaseAuth` (runs the
+  nonce-consuming resolver once) + `foldCollectionRoles` (per-collection `self`/enricher folding),
+  so batch pull can authorize many collections from a single resolve. The standalone and bundle
+  pull paths are unchanged — a thin wrapper preserves the prior signature.
+- **Batch-pull error strings**: the retired `"Collection requires path parameters; not
+  batch-pullable"` is replaced by per-collection `"Missing required path parameter"`; a malformed
+  `params` blob returns a whole-request 400 `"Invalid params parameter"`; an unsafe / `..` param
+  value returns a per-collection `"Invalid path parameter"` (the resolved key is guarded before any
+  store read).
+- The Python `/batch/pull` handler now uses the shared field-read filter, fixing a latent case
+  where a `read_roles: ["public"]` field was stripped for a non-`public`-role caller.
+
 ## 3.0.0-alpha.8 — author proof (append elements + merge documents)
 
 Stored writes now carry a cryptographic **author proof** — bound to both the payload and the

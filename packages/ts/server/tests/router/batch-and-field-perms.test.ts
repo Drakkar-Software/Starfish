@@ -107,14 +107,20 @@ describe("batch pull endpoint", () => {
     expect(body.collections["private-data"].data).toBeDefined()
   })
 
-  it("reports parameterized collections as not batch-pullable (no masked error)", async () => {
-    const { app } = makeRouter()
+  it("resolves a {identity}-templated collection from the authenticated caller", async () => {
+    const { app, store } = makeRouter()
+    // Seed the caller's own doc; the default resolver authenticates as "user-1".
+    await store.put(
+      "users/user-1/doc",
+      JSON.stringify({ data: { v: 1 }, hash: "h", ts: Date.now() }),
+    )
     const res = await app.request("/batch/pull?collections=user-doc,public-data")
     expect(res.status).toBe(200)
     const body = await res.json()
-    // The {identity}-templated collection can't be addressed without params.
-    expect(body.collections["user-doc"].data).toBeUndefined()
-    expect(body.collections["user-doc"].error).toContain("not batch-pullable")
+    // `{identity}` is auto-filled from the caller, so their own doc resolves —
+    // no longer rejected as "not batch-pullable".
+    expect(body.collections["user-doc"].error).toBeUndefined()
+    expect(body.collections["user-doc"].data).toEqual({ v: 1 })
     // A singleton collection in the same request is still served.
     expect(body.collections["public-data"].data).toBeDefined()
   })
@@ -138,6 +144,332 @@ describe("batch pull endpoint", () => {
     expect(res.status).toBe(200)
     const body = await res.json()
     expect(body.collections).toEqual({})
+  })
+})
+
+describe("batch pull param resolution", () => {
+  // A `self`-gated per-user collection and a `{teamId}` collection that takes a
+  // caller-supplied param. Default resolver authenticates as "user-1".
+  function makeParamRouter(overrides: Partial<SyncRouterOptions> = {}) {
+    const store = new MemoryObjectStore(new Map())
+    const app = createSyncRouter({
+      store,
+      config: {
+        version: 1,
+        collections: [
+          {
+            name: "public-data",
+            storagePath: "public/data",
+            readRoles: ["public"],
+            writeRoles: ["admin"],
+            encryption: "none",
+            maxBodyBytes: 1_000_000,
+            allowedMimeTypes: ["application/json"],
+          },
+          {
+            name: "journal",
+            storagePath: "users/{identity}/journal",
+            readRoles: ["self"],
+            writeRoles: ["self"],
+            encryption: "none",
+            maxBodyBytes: 1_000_000,
+            allowedMimeTypes: ["application/json"],
+          },
+          {
+            name: "team-notes",
+            storagePath: "teams/{teamId}/notes",
+            readRoles: ["public"],
+            writeRoles: ["admin"],
+            encryption: "none",
+            maxBodyBytes: 1_000_000,
+            allowedMimeTypes: ["application/json"],
+          },
+          {
+            name: "team-journal",
+            storagePath: "users/{identity}/teams/{teamId}/notes",
+            readRoles: ["public"],
+            writeRoles: ["self"],
+            encryption: "none",
+            maxBodyBytes: 1_000_000,
+            allowedMimeTypes: ["application/json"],
+          },
+        ],
+      },
+      roleResolver: async () => ({ identity: "user-1", roles: [] }),
+      ...overrides,
+    })
+    return { app, store }
+  }
+
+  const enc = (o: unknown) => encodeURIComponent(JSON.stringify(o))
+
+  it("resolves a caller-supplied non-identity param", async () => {
+    const { app, store } = makeParamRouter()
+    await store.put(
+      "teams/42/notes",
+      JSON.stringify({ data: { topic: "launch" }, hash: "h", ts: Date.now() }),
+    )
+    const res = await app.request(
+      `/batch/pull?collections=team-notes&params=${enc({ "team-notes": { teamId: "42" } })}`,
+    )
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.collections["team-notes"].data).toEqual({ topic: "launch" })
+  })
+
+  it("auto-fills {identity} so the caller reads their OWN self-gated doc", async () => {
+    const { app, store } = makeParamRouter()
+    await store.put(
+      "users/user-1/journal",
+      JSON.stringify({ data: { entries: 3 }, hash: "h", ts: Date.now() }),
+    )
+    // No params supplied — identity is filled from the authenticated caller, and
+    // the resulting `self` role satisfies the collection's readRoles.
+    const res = await app.request("/batch/pull?collections=journal")
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.collections["journal"].data).toEqual({ entries: 3 })
+  })
+
+  it("denies a forged identity on a self-gated collection (no self role)", async () => {
+    const { app, store } = makeParamRouter()
+    // user-2's journal exists, but the caller authenticates as user-1.
+    await store.put(
+      "users/user-2/journal",
+      JSON.stringify({ data: { secret: true }, hash: "h", ts: Date.now() }),
+    )
+    const res = await app.request(
+      `/batch/pull?collections=journal&params=${enc({ journal: { identity: "user-2" } })}`,
+    )
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    // Supplied identity != caller → no `self` role → readRoles unmet → Forbidden,
+    // and crucially no `data` leaks.
+    expect(body.collections["journal"].error).toBe("Forbidden")
+    expect(body.collections["journal"].data).toBeUndefined()
+  })
+
+  it("reports a missing required param", async () => {
+    const { app } = makeParamRouter()
+    // team-notes needs {teamId}; none supplied and it is not identity-auto-fillable.
+    const res = await app.request("/batch/pull?collections=team-notes")
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.collections["team-notes"].error).toBe("Missing required path parameter")
+    expect(body.collections["team-notes"].data).toBeUndefined()
+  })
+
+  it("merges an auto-filled {identity} with a supplied {teamId} in one path", async () => {
+    // team-journal needs BOTH {identity} (auto-filled) and {teamId} (supplied).
+    // Getting data back proves the two sources merge into the resolved key —
+    // a regression that gated auto-fill on "no params at all" would miss identity
+    // here and return "Missing required path parameter" instead.
+    const { app, store } = makeParamRouter()
+    await store.put(
+      "users/user-1/teams/42/notes",
+      JSON.stringify({ data: { n: 7 }, hash: "h", ts: Date.now() }),
+    )
+    const res = await app.request(
+      `/batch/pull?collections=team-journal&params=${enc({ "team-journal": { teamId: "42" } })}`,
+    )
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.collections["team-journal"].error).toBeUndefined()
+    expect(body.collections["team-journal"].data).toEqual({ n: 7 })
+  })
+
+  it("applies TTL expiry against the RESOLVED key (not the template)", async () => {
+    // Guards the param case of the TTL read: the stored-doc timestamp must be
+    // read from the resolved `users/user-1/ephemeral` key, not the `{identity}`
+    // template. An expired doc is zeroed exactly as on the standalone path.
+    const store = new MemoryObjectStore(new Map())
+    const app = createSyncRouter({
+      store,
+      config: {
+        version: 1,
+        collections: [
+          {
+            name: "user-ephemeral",
+            storagePath: "users/{identity}/ephemeral",
+            readRoles: ["self"],
+            writeRoles: ["self"],
+            encryption: "none",
+            maxBodyBytes: 1_000_000,
+            allowedMimeTypes: ["application/json"],
+            ttlMs: 1000,
+          },
+        ],
+      },
+      roleResolver: async () => ({ identity: "user-1", roles: [] }),
+    })
+    await store.put(
+      "users/user-1/ephemeral",
+      JSON.stringify({ data: { v: 1 }, hash: "h", ts: Date.now() - 999_999 }),
+    )
+    const res = await app.request("/batch/pull?collections=user-ephemeral")
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.collections["user-ephemeral"].data).toEqual({})
+  })
+
+  it("rejects a malformed params blob with a whole-request 400", async () => {
+    const { app } = makeParamRouter()
+    const res = await app.request("/batch/pull?collections=public-data&params=not-json")
+    expect(res.status).toBe(400)
+    const body = await res.json()
+    expect(body.error).toBe("Invalid params parameter")
+  })
+
+  it("rejects an unsafe param value per-collection while serving siblings", async () => {
+    const { app } = makeParamRouter()
+    const res = await app.request(
+      `/batch/pull?collections=team-notes,public-data&params=${enc({ "team-notes": { teamId: "a/b" } })}`,
+    )
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    // "a/b" contains "/", which fails the per-segment charset check.
+    expect(body.collections["team-notes"].error).toBe("Invalid path parameter")
+    // The sibling singleton is unaffected.
+    expect(body.collections["public-data"].data).toBeDefined()
+  })
+
+  it("blocks a `..` traversal value via the resolved-key guard", async () => {
+    const { app } = makeParamRouter()
+    // ".." passes the per-segment charset (dots are allowed) but composes a
+    // traversal key, which isUnsafeDocumentKey rejects before any store read.
+    const res = await app.request(
+      `/batch/pull?collections=team-notes&params=${enc({ "team-notes": { teamId: ".." } })}`,
+    )
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.collections["team-notes"].error).toBe("Invalid path parameter")
+  })
+
+  it("enforces cap scope.paths against the resolved key", async () => {
+    // A cap-cert resolver returns `scopePaths`; the batch handler re-checks each
+    // RESOLVED key against it (the resolver can't path-bind /batch/pull). A caller
+    // scoped to team 42 reads 42 but is Forbidden on 99 — batch can't side-step
+    // the per-path scope.
+    const { app, store } = makeParamRouter({
+      roleResolver: async () => ({ identity: "user-1", roles: [], scopePaths: ["teams/42/notes"] }),
+    })
+    await store.put("teams/42/notes", JSON.stringify({ data: { ok: 1 }, hash: "h", ts: Date.now() }))
+    await store.put("teams/99/notes", JSON.stringify({ data: { secret: 1 }, hash: "h", ts: Date.now() }))
+    const rOk = await app.request(
+      `/batch/pull?collections=team-notes&params=${enc({ "team-notes": { teamId: "42" } })}`,
+    )
+    expect((await rOk.json()).collections["team-notes"].data).toEqual({ ok: 1 })
+    const rNo = await app.request(
+      `/batch/pull?collections=team-notes&params=${enc({ "team-notes": { teamId: "99" } })}`,
+    )
+    const body = await rNo.json()
+    expect(body.collections["team-notes"].error).toBe("Forbidden")
+    expect(body.collections["team-notes"].data).toBeUndefined()
+  })
+
+  it("rejects a batch naming more than maxCollectionsPerBatch collections", async () => {
+    const { app } = makeParamRouter({ maxCollectionsPerBatch: 2 })
+    const res = await app.request("/batch/pull?collections=public-data,team-notes,journal")
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toBe("Too many collections")
+  })
+
+  it("writes audit records for batch denials and successes", async () => {
+    const records: Array<Record<string, unknown>> = []
+    const { app, store } = makeParamRouter({
+      auditLogger: {
+        record: (e: Record<string, unknown>) => {
+          records.push(e)
+        },
+      } as unknown as SyncRouterOptions["auditLogger"],
+    })
+    await store.put(
+      "teams/42/notes",
+      JSON.stringify({ data: { ok: 1 }, hash: "h", ts: Date.now() }),
+    )
+    // team-notes (public, in scope) → success; journal forged identity → Forbidden.
+    await app.request(
+      `/batch/pull?collections=team-notes,journal&params=${enc({
+        "team-notes": { teamId: "42" },
+        journal: { identity: "user-2" },
+      })}`,
+    )
+    const pulls = records.filter((r) => r.action === "pull")
+    expect(pulls.find((r) => r.collection === "team-notes")).toMatchObject({
+      success: true,
+      statusCode: 200,
+    })
+    expect(pulls.find((r) => r.collection === "journal")).toMatchObject({
+      success: false,
+      statusCode: 403,
+    })
+  })
+
+  it("audits the degrade-to-anonymous when an invalid cap is presented", async () => {
+    const records: Array<Record<string, unknown>> = []
+    const { app } = makeParamRouter({
+      // A revoked/invalid cap: the resolver throws with a 403 status.
+      roleResolver: async () => {
+        throw Object.assign(new Error("revoked"), { status: 403 })
+      },
+      auditLogger: {
+        record: (e: Record<string, unknown>) => {
+          records.push(e)
+        },
+      } as unknown as SyncRouterOptions["auditLogger"],
+    })
+    // public-data is still served (degrade-to-anonymous), and the auth failure is
+    // recorded as a request-level audit entry (collection: "").
+    const res = await app.request("/batch/pull?collections=public-data")
+    expect(res.status).toBe(200)
+    expect((await res.json()).collections["public-data"].data).toBeDefined()
+    const pulls = records.filter((r) => r.action === "pull")
+    expect(pulls.find((r) => r.collection === "")).toMatchObject({ success: false, statusCode: 403 })
+    expect(pulls.find((r) => r.collection === "public-data")).toMatchObject({ success: true, statusCode: 200 })
+  })
+
+  it("does not relabel a successful read as an error when the audit logger throws", async () => {
+    // The success-audit runs inside the per-collection read try/catch, so a
+    // throwing logger must be swallowed — best-effort audit can't corrupt data.
+    const { app, store } = makeParamRouter({
+      auditLogger: {
+        record: async () => {
+          throw new Error("audit down")
+        },
+      } as unknown as SyncRouterOptions["auditLogger"],
+    })
+    await store.put(
+      "teams/42/notes",
+      JSON.stringify({ data: { ok: 1 }, hash: "h", ts: Date.now() }),
+    )
+    const res = await app.request(
+      `/batch/pull?collections=team-notes&params=${enc({ "team-notes": { teamId: "42" } })}`,
+    )
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.collections["team-notes"].data).toEqual({ ok: 1 })
+    expect(body.collections["team-notes"].error).toBeUndefined()
+  })
+
+  it("ignores caller-supplied params outside the collection's template", async () => {
+    const { app, store } = makeParamRouter()
+    await store.put(
+      "teams/42/notes",
+      JSON.stringify({ data: { ok: 1 }, hash: "h", ts: Date.now() }),
+    )
+    // `junk` is not a template param of teams/{teamId}/notes — it's dropped, not
+    // validated or passed downstream. Even an UNSAFE value for it is ignored, so
+    // the collection still resolves on its template param alone (under the old
+    // pass-through code the "a/b" would have triggered "Invalid path parameter").
+    const res = await app.request(
+      `/batch/pull?collections=team-notes&params=${enc({
+        "team-notes": { teamId: "42", junk: "a/b" },
+      })}`,
+    )
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.collections["team-notes"].error).toBeUndefined()
+    expect(body.collections["team-notes"].data).toEqual({ ok: 1 })
   })
 })
 

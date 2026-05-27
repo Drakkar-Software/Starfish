@@ -212,7 +212,18 @@ def _build_batch_pull_operation(*, ns_name: str | None = None) -> dict[str, Any]
                     "required": True,
                     "schema": {"type": "string"},
                     "description": "Comma-separated list of collection names to pull",
-                }
+                },
+                {
+                    "name": "params",
+                    "in": "query",
+                    "required": False,
+                    "schema": {"type": "string"},
+                    "description": (
+                        "URL-encoded JSON mapping a collection name to its path params, e.g. "
+                        '{"notes":{"teamId":"42"}}. The {identity} param is auto-filled from '
+                        "the authenticated caller."
+                    ),
+                },
             ],
             "responses": {
                 "200": {

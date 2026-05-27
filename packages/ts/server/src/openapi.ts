@@ -72,6 +72,14 @@ export function generateOpenApiSpec(
               schema: { type: "string" },
               description: `Comma-separated list of collection names in namespace "${nsName}"`,
             },
+            {
+              name: "params",
+              in: "query",
+              required: false,
+              schema: { type: "string" },
+              description:
+                'URL-encoded JSON mapping a collection name to its path params, e.g. {"notes":{"teamId":"42"}}. The {identity} param is auto-filled from the authenticated caller.',
+            },
           ],
           responses: {
             "200": {

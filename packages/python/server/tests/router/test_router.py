@@ -161,22 +161,28 @@ async def test_deeply_nested_body_rejected_not_crash():
 
 
 @pytest.mark.asyncio
-async def test_batch_pull_reports_parameterized_collections_explicitly():
-    """A collection whose storage_path needs a `{param}` can't be batch-pulled.
+async def test_batch_pull_resolves_identity_from_authenticated_caller():
+    """A `{identity}`-templated collection resolves to the caller's OWN document.
 
-    Batch pull resolves with no params, so the handler now reports such a collection
-    with an explicit error instead of attempting a doomed store read on the literal
-    template (which surfaced as a masked "Internal error"). A singleton collection in
-    the same request is still served normally.
+    Batch pull auto-fills `{identity}` from the authenticated caller and folds in the
+    resulting `self` role, so a per-user collection is reachable through the batch
+    endpoint (it used to be rejected as "not batch-pullable"). A singleton collection
+    in the same request is still served normally.
     """
-    app, _ = _build_app(roles=["public"])
+    import json as _json
+
+    app, store = _build_app(roles=[])
+    await store.put(
+        "users/user-1/settings",
+        _json.dumps({"data": {"theme": "dark"}, "hash": "h", "ts": 0}),
+    )
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/batch/pull?collections=settings,public-config")
     assert resp.status_code == 200
     cols = resp.json()["collections"]
-    assert "data" not in cols["settings"]
-    assert "not batch-pullable" in cols["settings"]["error"]
-    assert "data" in cols["public-config"]  # singleton, reachable with the public role
+    assert "error" not in cols["settings"]
+    assert cols["settings"]["data"] == {"theme": "dark"}  # the caller's own doc
+    assert "data" in cols["public-config"]  # singleton, public-read
 
 
 def test_json_depth_within_helper():
@@ -325,6 +331,458 @@ async def test_batch_pull_all_empty_csv_returns_empty_result_set():
         resp = await client.get("/batch/pull?collections=,,")
     assert resp.status_code == 200
     assert resp.json()["collections"] == {}
+
+
+def _build_param_app(
+    identity: str = "user-1",
+    roles: list[str] | None = None,
+) -> tuple[FastAPI, MemoryObjectStore]:
+    """App with a `self`-gated per-user collection and a `{teamId}` collection that
+    takes a caller-supplied param. Mirrors the TS `makeParamRouter` harness."""
+    store = MemoryObjectStore()
+    config = SyncConfig(
+        version=1,
+        collections=[
+            CollectionConfig(
+                name="public-data", storagePath="public/data",
+                readRoles=["public"], writeRoles=["admin"],
+                encryption="none", maxBodyBytes=65536,
+            ),
+            CollectionConfig(
+                name="journal", storagePath="users/{identity}/journal",
+                readRoles=["self"], writeRoles=["self"],
+                encryption="none", maxBodyBytes=65536,
+            ),
+            CollectionConfig(
+                name="team-notes", storagePath="teams/{teamId}/notes",
+                readRoles=["public"], writeRoles=["admin"],
+                encryption="none", maxBodyBytes=65536,
+            ),
+            CollectionConfig(
+                name="team-journal", storagePath="users/{identity}/teams/{teamId}/notes",
+                readRoles=["public"], writeRoles=["self"],
+                encryption="none", maxBodyBytes=65536,
+            ),
+        ],
+    )
+
+    async def role_resolver(request: Request) -> AuthResult:
+        return AuthResult(identity=identity, roles=roles or [])
+
+    router = create_sync_router(SyncRouterOptions(store=store, config=config, role_resolver=role_resolver))
+    app = FastAPI()
+    app.include_router(router)
+    return app, store
+
+
+@pytest.mark.asyncio
+async def test_batch_pull_resolves_supplied_non_identity_param():
+    """A caller-supplied `{teamId}` is substituted into the storage key."""
+    import json as _json
+
+    app, store = _build_param_app()
+    await store.put(
+        "teams/42/notes",
+        _json.dumps({"data": {"topic": "launch"}, "hash": "h", "ts": 0}),
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get(
+            "/batch/pull",
+            params={"collections": "team-notes", "params": _json.dumps({"team-notes": {"teamId": "42"}})},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["collections"]["team-notes"]["data"] == {"topic": "launch"}
+
+
+@pytest.mark.asyncio
+async def test_batch_pull_auto_fills_identity_for_self_gated_collection():
+    """No params supplied — `{identity}` is filled from the caller and the resulting
+    `self` role satisfies the collection's readRoles, so the caller reads their OWN doc."""
+    import json as _json
+
+    app, store = _build_param_app()
+    await store.put(
+        "users/user-1/journal",
+        _json.dumps({"data": {"entries": 3}, "hash": "h", "ts": 0}),
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/batch/pull?collections=journal")
+    assert resp.status_code == 200
+    assert resp.json()["collections"]["journal"]["data"] == {"entries": 3}
+
+
+@pytest.mark.asyncio
+async def test_batch_pull_denies_forged_identity_on_self_gated_collection():
+    """A supplied identity != the caller earns no `self` role → Forbidden, no data leak."""
+    import json as _json
+
+    app, store = _build_param_app(identity="user-1")
+    await store.put(
+        "users/user-2/journal",
+        _json.dumps({"data": {"secret": True}, "hash": "h", "ts": 0}),
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get(
+            "/batch/pull",
+            params={"collections": "journal", "params": _json.dumps({"journal": {"identity": "user-2"}})},
+        )
+    assert resp.status_code == 200
+    cols = resp.json()["collections"]
+    assert cols["journal"]["error"] == "Forbidden"
+    assert "data" not in cols["journal"]
+
+
+@pytest.mark.asyncio
+async def test_batch_pull_reports_missing_required_param():
+    """A required `{teamId}` with no supplied value (and not identity-auto-fillable)
+    yields a per-collection error, not data."""
+    app, _ = _build_param_app()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/batch/pull?collections=team-notes")
+    assert resp.status_code == 200
+    cols = resp.json()["collections"]
+    assert cols["team-notes"]["error"] == "Missing required path parameter"
+    assert "data" not in cols["team-notes"]
+
+
+@pytest.mark.asyncio
+async def test_batch_pull_merges_auto_identity_with_supplied_param():
+    """team-journal needs BOTH {identity} (auto-filled) and {teamId} (supplied).
+    Getting data back proves the two sources merge into the resolved key — a
+    regression that gated auto-fill on "no params at all" would miss identity here
+    and return "Missing required path parameter" instead."""
+    import json as _json
+
+    app, store = _build_param_app()
+    await store.put(
+        "users/user-1/teams/42/notes",
+        _json.dumps({"data": {"n": 7}, "hash": "h", "ts": 0}),
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get(
+            "/batch/pull",
+            params={"collections": "team-journal", "params": _json.dumps({"team-journal": {"teamId": "42"}})},
+        )
+    assert resp.status_code == 200
+    cols = resp.json()["collections"]
+    assert "error" not in cols["team-journal"]
+    assert cols["team-journal"]["data"] == {"n": 7}
+
+
+@pytest.mark.asyncio
+async def test_batch_pull_rejects_malformed_params_blob():
+    """A `params` value that is not JSON is a client framing error → whole-request 400."""
+    app, _ = _build_param_app()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/batch/pull", params={"collections": "public-data", "params": "not-json"})
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "Invalid params parameter"
+
+
+@pytest.mark.asyncio
+async def test_batch_pull_rejects_unsafe_param_value_per_collection():
+    """A param value with `/` fails the per-segment charset check for that collection
+    only; a sibling singleton in the same request is still served."""
+    import json as _json
+
+    app, _ = _build_param_app()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get(
+            "/batch/pull",
+            params={
+                "collections": "team-notes,public-data",
+                "params": _json.dumps({"team-notes": {"teamId": "a/b"}}),
+            },
+        )
+    assert resp.status_code == 200
+    cols = resp.json()["collections"]
+    assert cols["team-notes"]["error"] == "Invalid path parameter"
+    assert "data" in cols["public-data"]
+
+
+@pytest.mark.asyncio
+async def test_batch_pull_blocks_dotdot_traversal_via_key_guard():
+    """`..` passes the per-segment charset (dots allowed) but composes a traversal key,
+    which is_unsafe_document_key rejects before any store read."""
+    import json as _json
+
+    app, _ = _build_param_app()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get(
+            "/batch/pull",
+            params={"collections": "team-notes", "params": _json.dumps({"team-notes": {"teamId": ".."}})},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["collections"]["team-notes"]["error"] == "Invalid path parameter"
+
+
+@pytest.mark.asyncio
+async def test_batch_pull_applies_ttl_against_resolved_key():
+    """Guards the param case of the TTL read: the stored-doc timestamp is read
+    from the RESOLVED `users/user-1/ephemeral` key, not the `{identity}` template.
+    An expired doc is zeroed exactly as on the standalone path."""
+    import json as _json
+
+    store = MemoryObjectStore()
+    config = SyncConfig(
+        version=1,
+        collections=[
+            CollectionConfig(
+                name="user-ephemeral", storagePath="users/{identity}/ephemeral",
+                readRoles=["self"], writeRoles=["self"],
+                encryption="none", maxBodyBytes=65536, ttlMs=1000,
+            ),
+        ],
+    )
+
+    async def role_resolver(request: Request) -> AuthResult:
+        return AuthResult(identity="user-1", roles=[])
+
+    router = create_sync_router(SyncRouterOptions(store=store, config=config, role_resolver=role_resolver))
+    app = FastAPI()
+    app.include_router(router)
+
+    await store.put(
+        "users/user-1/ephemeral",
+        _json.dumps({"data": {"v": 1}, "hash": "h", "ts": 1}),  # write-time far in the past
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/batch/pull?collections=user-ephemeral")
+    assert resp.status_code == 200
+    assert resp.json()["collections"]["user-ephemeral"]["data"] == {}  # expired → zeroed
+
+
+@pytest.mark.asyncio
+async def test_batch_pull_enforces_cap_scope_paths_against_resolved_key():
+    """A cap-cert resolver returns `scope_paths`; the batch handler re-checks each
+    RESOLVED key against it (the resolver can't path-bind /batch/pull). A caller
+    scoped to team 42 reads 42 but is Forbidden on 99 — batch can't side-step the
+    per-path scope."""
+    import json as _json
+
+    store = MemoryObjectStore()
+    config = SyncConfig(
+        version=1,
+        collections=[
+            CollectionConfig(
+                name="team-notes", storagePath="teams/{teamId}/notes",
+                readRoles=["public"], writeRoles=["admin"],
+                encryption="none", maxBodyBytes=65536,
+            ),
+        ],
+    )
+
+    async def role_resolver(request: Request) -> AuthResult:
+        return AuthResult(identity="user-1", roles=[], scope_paths=["teams/42/notes"])
+
+    router = create_sync_router(SyncRouterOptions(store=store, config=config, role_resolver=role_resolver))
+    app = FastAPI()
+    app.include_router(router)
+
+    await store.put("teams/42/notes", _json.dumps({"data": {"ok": 1}, "hash": "h", "ts": 0}))
+    await store.put("teams/99/notes", _json.dumps({"data": {"secret": 1}, "hash": "h", "ts": 0}))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r_ok = await client.get(
+            "/batch/pull",
+            params={"collections": "team-notes", "params": _json.dumps({"team-notes": {"teamId": "42"}})},
+        )
+        r_no = await client.get(
+            "/batch/pull",
+            params={"collections": "team-notes", "params": _json.dumps({"team-notes": {"teamId": "99"}})},
+        )
+    assert r_ok.json()["collections"]["team-notes"]["data"] == {"ok": 1}
+    c_no = r_no.json()["collections"]["team-notes"]
+    assert c_no["error"] == "Forbidden"
+    assert "data" not in c_no
+
+
+@pytest.mark.asyncio
+async def test_batch_pull_rejects_too_many_collections():
+    """A batch naming more than `max_collections_per_batch` is rejected up front —
+    bounds the per-request work one signed request can drive."""
+    store = MemoryObjectStore()
+    config = SyncConfig(
+        version=1,
+        collections=[
+            CollectionConfig(name=n, storagePath=n, readRoles=["public"],
+                             writeRoles=["admin"], encryption="none", maxBodyBytes=65536)
+            for n in ("a", "b", "c")
+        ],
+    )
+
+    async def role_resolver(request: Request) -> AuthResult:
+        return AuthResult(identity="u", roles=[])
+
+    router = create_sync_router(
+        SyncRouterOptions(store=store, config=config, role_resolver=role_resolver, max_collections_per_batch=2)
+    )
+    app = FastAPI()
+    app.include_router(router)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/batch/pull?collections=a,b,c")
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "Too many collections"
+
+
+@pytest.mark.asyncio
+async def test_batch_pull_writes_audit_records_for_denials_and_successes():
+    """Batch pull records an audit entry per collection on auth denials and
+    successful reads — mirroring the standalone pull's audit points."""
+    import json as _json
+    from starfish_protocol.audit import AuditLogger, AuditEntry
+
+    class _CollectingAudit(AuditLogger):
+        def __init__(self) -> None:
+            self.records: list[AuditEntry] = []
+
+        async def record(self, entry: AuditEntry) -> None:
+            self.records.append(entry)
+
+    audit = _CollectingAudit()
+    store = MemoryObjectStore()
+    config = SyncConfig(
+        version=1,
+        collections=[
+            CollectionConfig(name="team-notes", storagePath="teams/{teamId}/notes",
+                             readRoles=["public"], writeRoles=["admin"], encryption="none", maxBodyBytes=65536),
+            CollectionConfig(name="journal", storagePath="users/{identity}/journal",
+                             readRoles=["self"], writeRoles=["self"], encryption="none", maxBodyBytes=65536),
+        ],
+    )
+
+    async def role_resolver(request: Request) -> AuthResult:
+        return AuthResult(identity="user-1", roles=[])
+
+    router = create_sync_router(
+        SyncRouterOptions(store=store, config=config, role_resolver=role_resolver, audit_logger=audit)
+    )
+    app = FastAPI()
+    app.include_router(router)
+    await store.put("teams/42/notes", _json.dumps({"data": {"ok": 1}, "hash": "h", "ts": 0}))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        # team-notes (public, in scope) → success; journal forged identity → Forbidden.
+        await client.get(
+            "/batch/pull",
+            params={
+                "collections": "team-notes,journal",
+                "params": _json.dumps({"team-notes": {"teamId": "42"}, "journal": {"identity": "user-2"}}),
+            },
+        )
+    pulls = [r for r in audit.records if r.action == "pull"]
+    tn = next(r for r in pulls if r.collection == "team-notes")
+    jr = next(r for r in pulls if r.collection == "journal")
+    assert tn.success is True and tn.status_code == 200
+    assert jr.success is False and jr.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_batch_pull_audits_degrade_when_cap_invalid():
+    """An invalid/revoked cap degrades to anonymous (public collections still
+    served) AND records a request-level audit entry, so the auth failure isn't an
+    audit blind spot."""
+    from starfish_protocol.audit import AuditLogger, AuditEntry
+
+    class _CollectingAudit(AuditLogger):
+        def __init__(self) -> None:
+            self.records: list[AuditEntry] = []
+
+        async def record(self, entry: AuditEntry) -> None:
+            self.records.append(entry)
+
+    class _Revoked(Exception):
+        status = 403
+
+    audit = _CollectingAudit()
+    store = MemoryObjectStore()
+    config = SyncConfig(
+        version=1,
+        collections=[
+            CollectionConfig(name="public-config", storagePath="app/config",
+                             readRoles=["public"], writeRoles=["admin"], encryption="none", maxBodyBytes=65536),
+        ],
+    )
+
+    async def role_resolver(request: Request) -> AuthResult:
+        raise _Revoked("revoked")
+
+    router = create_sync_router(
+        SyncRouterOptions(store=store, config=config, role_resolver=role_resolver, audit_logger=audit)
+    )
+    app = FastAPI()
+    app.include_router(router)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/batch/pull?collections=public-config")
+    assert resp.status_code == 200
+    assert "data" in resp.json()["collections"]["public-config"]  # public served despite bad cap
+    pulls = [r for r in audit.records if r.action == "pull"]
+    degrade = next(r for r in pulls if r.collection == "")
+    assert degrade.success is False and degrade.status_code == 403
+    ok = next(r for r in pulls if r.collection == "public-config")
+    assert ok.success is True and ok.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_batch_pull_audit_failure_does_not_corrupt_result():
+    """A throwing audit logger must not relabel a successful read as an error —
+    the success record runs inside the per-collection read try/except, so audit is
+    best-effort and swallowed."""
+    import json as _json
+    from starfish_protocol.audit import AuditLogger, AuditEntry
+
+    class _ThrowingAudit(AuditLogger):
+        async def record(self, entry: AuditEntry) -> None:
+            raise RuntimeError("audit down")
+
+    store = MemoryObjectStore()
+    config = SyncConfig(
+        version=1,
+        collections=[
+            CollectionConfig(name="team-notes", storagePath="teams/{teamId}/notes",
+                             readRoles=["public"], writeRoles=["admin"], encryption="none", maxBodyBytes=65536),
+        ],
+    )
+
+    async def role_resolver(request: Request) -> AuthResult:
+        return AuthResult(identity="u", roles=[])
+
+    router = create_sync_router(
+        SyncRouterOptions(store=store, config=config, role_resolver=role_resolver, audit_logger=_ThrowingAudit())
+    )
+    app = FastAPI()
+    app.include_router(router)
+    await store.put("teams/42/notes", _json.dumps({"data": {"ok": 1}, "hash": "h", "ts": 0}))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get(
+            "/batch/pull",
+            params={"collections": "team-notes", "params": _json.dumps({"team-notes": {"teamId": "42"}})},
+        )
+    assert resp.status_code == 200
+    col = resp.json()["collections"]["team-notes"]
+    assert col["data"] == {"ok": 1}
+    assert "error" not in col
+
+
+@pytest.mark.asyncio
+async def test_batch_pull_ignores_params_outside_template():
+    """Caller-supplied keys outside a collection's template are dropped (parity
+    with the standalone path) — not validated or passed downstream. Even an unsafe
+    value for a non-template key is ignored, so the collection still resolves."""
+    import json as _json
+
+    app, store = _build_param_app()
+    await store.put("teams/42/notes", _json.dumps({"data": {"ok": 1}, "hash": "h", "ts": 0}))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get(
+            "/batch/pull",
+            params={
+                "collections": "team-notes",
+                "params": _json.dumps({"team-notes": {"teamId": "42", "junk": "a/b"}}),
+            },
+        )
+    assert resp.status_code == 200
+    col = resp.json()["collections"]["team-notes"]
+    assert "error" not in col
+    assert col["data"] == {"ok": 1}
 
 
 @pytest.mark.asyncio

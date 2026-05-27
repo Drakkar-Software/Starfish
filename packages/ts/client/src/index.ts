@@ -11,9 +11,19 @@ export type {
 export type { PullResult, PushSuccess, PullKeyringProjection } from "@drakkar.software/starfish-protocol"
 
 export { StarfishClient } from "./client.js"
-export type { BlobPullResult, BlobPushResult, AppendPullOptions, PullOptions } from "./client.js"
+export type {
+  BlobPullResult,
+  BlobPushResult,
+  AppendPullOptions,
+  PullOptions,
+  BatchPullOptions,
+  BatchPullResult,
+  BatchPullEntry,
+} from "./client.js"
 export { SyncManager, AbortError } from "./sync.js"
 export type { SyncManagerOptions, SyncSigner } from "./sync.js"
+export { AppendLogCursor, AppendAuthorError, checkpointOf } from "./append-log.js"
+export type { AppendLogCursorOptions, AppendElement, AuthorVerifier } from "./append-log.js"
 export { ENCRYPTED_KEY } from "@drakkar.software/starfish-protocol"
 export type { Encryptor } from "@drakkar.software/starfish-protocol"
 export {
@@ -60,8 +70,8 @@ export type { ServiceWorkerOptions } from "./service-worker.js"
 export { createSuspenseResource } from "./bindings/suspense.js"
 export { createDebouncedSync, createDebouncedPush } from "./debounced-sync.js"
 export type { DebouncedSyncOptions, DebouncedSync, DebouncedPushOptions, DebouncedPush } from "./debounced-sync.js"
-export { createMobileLifecycle } from "./mobile-lifecycle.js"
-export type { AppStateModule, NetInfoModule, MobileLifecycleDeps, MobileLifecycleOptions } from "./mobile-lifecycle.js"
+export { createMobileLifecycle, createAppendLogMobileLifecycle } from "./mobile-lifecycle.js"
+export type { AppStateModule, NetInfoModule, MobileLifecycleDeps, MobileLifecycleOptions, AppendLogLifecycleOptions } from "./mobile-lifecycle.js"
 export { createMultiStoreSync } from "./multi-store.js"
 export type {
   StoreSlice,

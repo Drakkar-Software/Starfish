@@ -177,6 +177,27 @@ const res = await client.fetch(
 )
 ```
 
+### Resolving path parameters
+
+Batch pull resolves `{param}` collections too. The `{identity}` param is **auto-filled from the
+authenticated caller**, so a per-user collection like `users/{identity}/settings` works with no
+extra arguments. Other params are supplied via an optional `params` query parameter — URL-encoded
+JSON mapping each collection name to its params:
+
+```ts
+const params = encodeURIComponent(JSON.stringify({ notes: { teamId: "42" } }))
+const res = await client.fetch(
+  `https://api.example.com/v1/tenantA/batch/pull?collections=settings,notes&params=${params}`,
+  { headers: await client.getAuthHeaders() }
+)
+// → { collections: { settings: {...own doc...}, notes: {...team 42...} } }
+```
+
+Each collection is still authorized independently: a cap reads only the keys its `scope.paths`
+covers, and a supplied identity that isn't the caller's is `Forbidden` (no `self` role). A required
+param that is neither supplied nor auto-fillable returns `{ error: "Missing required path
+parameter" }` for that collection.
+
 ## Storage isolation
 
 Namespaces are **URL prefixes only**. Two collections with the same `storagePath` in different namespaces share the same underlying data. For true data isolation, use distinct storagePaths per namespace — prefix the path with the namespace name:

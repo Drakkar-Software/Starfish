@@ -68,6 +68,14 @@ def test_includes_root_batch_pull_path():
     assert "/batch/pull" in spec["paths"]
 
 
+def test_batch_pull_documents_optional_params_query():
+    spec = generate_openapi_spec(_make_config())
+    params = spec["paths"]["/batch/pull"]["get"]["parameters"]
+    p = next((x for x in params if x["name"] == "params"), None)
+    assert p is not None
+    assert p["required"] is False
+
+
 def _make_ns_config() -> SyncConfig:
     from starfish_server.config.schema import NamespaceConfig
     return SyncConfig(

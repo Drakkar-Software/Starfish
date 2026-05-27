@@ -217,6 +217,60 @@ events = await client.pull("/pull/events", append_field="items")
 new_events = await client.pull("/pull/events", since=last_sync_ts)
 ```
 
+### Incremental cursor (`AppendLogCursor`)
+
+For the common "pull only what's new" pattern, `AppendLogCursor` tracks the checkpoint for you. The checkpoint is **derived from the last element the cursor holds**, so it resumes correctly whether that element came from this session's pull or was persisted and rehydrated on a fresh page. The manual `since` calls above remain the escape hatch; `last`/windowing stays a raw `client.pull` concern (a cursor only ever moves forward).
+
+```ts
+import { AppendLogCursor } from "@drakkar.software/starfish-client"
+
+// Cold start (nothing persisted) → first pull() fetches the whole collection
+const log = new AppendLogCursor({ client, pullPath: "/pull/events" })
+const all = await log.pull()
+
+// Warm start: rehydrate from persisted data → first pull() resumes incrementally
+const log2 = new AppendLogCursor({
+  client,
+  pullPath: "/pull/events",
+  initialItems: await store.load(),  // raw {ts,data} envelopes; or pass { since: persistedCheckpoint }
+})
+const fresh = await log2.pull()      // only elements newer than the last held
+await store.save(log2.getItems())    // persist the full log for next session
+
+// Optional: decrypt each element's data + verify its author signature on read.
+// Verification runs over the stored (pre-decryption) data and throws
+// AppendAuthorError on any failure, leaving the cursor unchanged.
+const secure = new AppendLogCursor({
+  client,
+  pullPath: "/pull/events",
+  encryptor: createKeyringEncryptor(keyring, deviceKemKeys),
+  verifyAuthor: true,
+})
+```
+
+```python
+from starfish_sdk import AppendLogCursor
+
+# Cold start → first pull() fetches everything
+log = AppendLogCursor(client, "/pull/events")
+all_items = await log.pull()
+
+# Warm start: resume from persisted data (or since=persisted_checkpoint)
+log2 = AppendLogCursor(client, "/pull/events", initial_items=store.load())
+fresh = await log2.pull()
+store.save(log2.items)
+
+# Optional: decrypt + verify author on read
+secure = AppendLogCursor(
+    client,
+    "/pull/events",
+    encryptor=create_keyring_encryptor(keyring, device_kem_keys),
+    verify_author=True,
+)
+```
+
+> `verifyAuthor` checks each signature is valid for the element's self-declared `authorPubkey`; it does **not** by itself restrict *which* authors are accepted. For a single-author log set `expectedAuthorPubkey`; for a multi-writer log, check each `authorPubkey` against your authorization source (keyring / member list) after pull. The signature binds `data` + the document key but **not** `ts`, so a malicious server can reorder/re-timestamp authentic elements without breaking verification — trust `ts` only as far as you trust the server.
+
 ## Compatibility matrix
 
 | Combination | Supported |
@@ -234,7 +288,9 @@ new_events = await client.pull("/pull/events", since=last_sync_ts)
 
 ## Author signatures
 
-Author signature verification is **skipped** for append-only collections. Stored data is a transformed wrapper (`{ items: [{ ts, data }, …] }`), not the raw client payload, so signatures cannot be meaningfully verified against it.
+**Whole-document** author proof (`signDocAuthor`, the kind `SyncManager` attaches) does **not** apply to append-only collections: the stored value is a transformed wrapper (`{ items: [{ ts, data }, …] }`), not the raw client payload, so a document-level signature can't be verified against it.
+
+**Per-element** author proof does apply. Each appended element can carry its own `authorPubkey` + `authorSignature` (`signAppendAuthor` over that element's `data`, bound to the document key); the server verifies it on append, and a reader can re-verify it — either directly via `verifyAppendAuthor` / `verify_append_author`, or automatically by passing `verifyAuthor` to [`AppendLogCursor`](#incremental-cursor-appendlogcursor).
 
 ## Size considerations
 
@@ -293,7 +349,7 @@ Result:
 
 **Lazy migration**: enabling `chunkSize` on a collection that already has a single-document log migrates it to chunks on the next append (a one-time O(N) append; bounded thereafter). **Stickiness**: once a document is segmented it stays segmented even if `chunkSize` is later removed from config — otherwise the next append would orphan the existing chunks.
 
-**Batch-pull caveat**: the `/batch/pull` endpoint is not append/checkpoint-aware. For a **chunked** append-only collection it returns only the head's non-array `data` (no elements). Use the normal `/pull/...` endpoint (with `?checkpoint=`/`?last=`) for append-only data.
+**Batch-pull caveat**: the `/batch/pull` endpoint is not append/checkpoint-aware. For a **chunked** append-only collection it returns only the head's non-array `data` (no elements). Use the normal `/pull/...` endpoint (with `?checkpoint=`/`?last=`) for append-only data. (Batch pull *can* now address `{param}` collections — `{identity}` is auto-filled and other params come from its `params` query — but the checkpoint caveat above still applies to chunked append-only ones.)
 
 ## Migration
 

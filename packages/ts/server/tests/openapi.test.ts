@@ -111,6 +111,15 @@ describe("generateOpenApiSpec", () => {
     expect(paths["/tenantA/batch/pull"]).toBeDefined()
   })
 
+  it("documents the optional params query parameter on batch/pull", () => {
+    const spec = generateOpenApiSpec(nsConfig)
+    const paths = spec["paths"] as Record<string, any>
+    const params = paths["/tenantA/batch/pull"].get.parameters as Array<Record<string, unknown>>
+    const p = params.find((x) => x["name"] === "params")
+    expect(p).toBeDefined()
+    expect(p!["required"]).toBe(false)
+  })
+
   it("uses -- separator in operationIds to avoid collisions with underscore-named namespaces", () => {
     // Without the -- separator, namespace "a_b" + collection "c" would produce "pull_a_b_c",
     // which is the same as namespace "a" + collection "b_c". The -- separator prevents this.

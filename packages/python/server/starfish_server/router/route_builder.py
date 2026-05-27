@@ -100,6 +100,12 @@ class AuthResult:
 
 
 RoleResolver = Callable[[Request], Awaitable[AuthResult]]
+# Derives extra roles from the authenticated ``AuthResult`` and the request
+# params. MUST be idempotent and free of observable side effects: it can be
+# invoked MORE THAN ONCE per request — the ``/batch/pull`` handler calls it once
+# per requested collection (each with that collection's params) off a single auth
+# resolve. (The replay-protected resolver runs once; the enricher does not
+# consume the nonce.)
 RoleEnricher = Callable[[AuthResult, dict[str, str]], Awaitable[list[str]]]
 
 
@@ -113,6 +119,10 @@ class SyncRouterOptions:
     role_resolver_timeout: float = 5.0
     config_endpoint: ConfigEndpointOptions | None = None
     audit_logger: AuditLogger | None = None
+    # Max collections a single ``/batch/pull`` request may name. Bounds the
+    # per-request work (store reads + enricher + scope checks) one signed request
+    # can drive, since the rate limiter caps requests, not work-per-request.
+    max_collections_per_batch: int = 100
 
 
 from pydantic import BaseModel as _BaseModel
@@ -237,39 +247,37 @@ def _extract_path_params(storage_path: str, request_path: str, action: str) -> d
     return match.groupdict()
 
 
-async def _resolve_effective_roles(
+async def _resolve_base_auth(
     request: Request,
-    params: dict[str, str],
     opts: SyncRouterOptions,
-    storage_path: str,
-) -> tuple[str | None, frozenset[str], JSONResponse | None]:
-    """Run the role resolver ONCE and fold in the conditional ``self`` role and
-    any enricher roles. Returns ``(identity, effective_roles, error)`` without
-    checking against a specific collection — callers do that themselves.
+) -> tuple[Any, str | None, set[str], JSONResponse | None]:
+    """Run the role resolver ONCE and return ``(auth, identity, base_roles,
+    error)`` WITHOUT folding in the per-collection ``self``/enricher roles.
 
-    Extracted so a bundle pull can authorize many collections from a single
-    resolver invocation: the resolver consumes the request nonce (replay
-    protection) and must run at most once per request.
+    The resolver consumes the request nonce (replay protection) and must run at
+    most once per request: a handler that authorizes many collections (bundle
+    pull, batch pull) calls this once, then ``_fold_collection_roles`` per
+    collection. Stashes the cap scope + presenter for downstream handlers.
     """
     try:
         auth = await asyncio.wait_for(
             opts.role_resolver(request), timeout=opts.role_resolver_timeout
         )
     except asyncio.TimeoutError:
-        return None, frozenset(), JSONResponse({"error": "Unauthorized"}, status_code=503)
+        return None, None, set(), JSONResponse({"error": "Unauthorized"}, status_code=503)
     except Exception as exc:
         # Honour a resolver-supplied ``.status`` (used by CapAuthError to
         # signal 403 / 413 vs the default 401). Fall back to 401 otherwise.
         status = getattr(exc, "status", None)
         if status == 403:
-            return None, frozenset(), JSONResponse({"error": "Forbidden"}, status_code=403)
+            return None, None, set(), JSONResponse({"error": "Forbidden"}, status_code=403)
         if status == 413:
             message = str(exc) if str(exc) else "Payload too large"
-            return None, frozenset(), JSONResponse({"error": message}, status_code=413)
+            return None, None, set(), JSONResponse({"error": message}, status_code=413)
         logging.getLogger(__name__).error(
-            "_resolve_effective_roles: role_resolver raised: %s", exc, exc_info=True
+            "_resolve_base_auth: role_resolver raised: %s", exc, exc_info=True
         )
-        return None, frozenset(), JSONResponse({"error": "Unauthorized"}, status_code=401)
+        return None, None, set(), JSONResponse({"error": "Unauthorized"}, status_code=401)
 
     # Stash the cap scope (if any) for sibling-read authorization downstream
     # (e.g. the ?withKeyring=1 keyring shortcut in the pull handler). None for
@@ -280,7 +288,22 @@ async def _resolve_effective_roles(
     # for a pure role-based resolver that carries no per-request key.
     request.state.presenter = auth.presenter
 
-    effective_roles: set[str] = set(auth.roles)
+    return auth, auth.identity, set(auth.roles), None
+
+
+async def _fold_collection_roles(
+    auth: Any,
+    base_roles: set[str],
+    params: dict[str, str],
+    storage_path: str,
+    opts: SyncRouterOptions,
+) -> tuple[frozenset[str], JSONResponse | None]:
+    """Fold the conditional ``self`` role and any enricher roles into a COPY of
+    the caller's base roles, for ONE collection's params + storage_path. Does NOT
+    re-run the resolver (never re-consumes the nonce) — a multi-collection handler
+    calls this once per collection with that collection's resolved params.
+    """
+    effective_roles: set[str] = set(base_roles)
     if IDENTITY_PARAM in storage_path:
         if params.get(IDENTITY_KEY) == auth.identity:
             effective_roles.add(ROLE_SELF)
@@ -290,14 +313,36 @@ async def _resolve_effective_roles(
             effective_roles.update(extra)
         except Exception as exc:
             logging.getLogger(__name__).error(
-                "_resolve_effective_roles: role_enricher raised: %s", exc, exc_info=True
+                "_fold_collection_roles: role_enricher raised: %s", exc, exc_info=True
             )
             return (
-                auth.identity,
                 frozenset(effective_roles),
                 JSONResponse({"error": "Authorization error"}, status_code=500),
             )
-    return auth.identity, frozenset(effective_roles), None
+    return frozenset(effective_roles), None
+
+
+async def _resolve_effective_roles(
+    request: Request,
+    params: dict[str, str],
+    opts: SyncRouterOptions,
+    storage_path: str,
+) -> tuple[str | None, frozenset[str], JSONResponse | None]:
+    """Run the role resolver ONCE and fold in the conditional ``self`` role and
+    any enricher roles. Returns ``(identity, effective_roles, error)`` without
+    checking against a specific collection — callers do that themselves.
+
+    Thin wrapper over ``_resolve_base_auth`` + ``_fold_collection_roles`` for the
+    standalone and bundle pull paths (one params set); batch pull calls the two
+    halves directly so it can fold per-collection params after a single resolve.
+    """
+    auth, identity, base_roles, error = await _resolve_base_auth(request, opts)
+    if error is not None or auth is None:
+        return identity, frozenset(base_roles), error
+    roles, fold_error = await _fold_collection_roles(
+        auth, base_roles, params, storage_path, opts
+    )
+    return identity, roles, fold_error
 
 
 def _apply_field_read_filter(
@@ -1139,6 +1184,10 @@ def _make_batch_pull_handler(
 ) -> Callable:
     """Create a ``/batch/pull`` handler scoped to *collections_by_name*."""
     async def batch_pull_handler(request: Request) -> JSONResponse:
+        # 400 only when `collections` itself is absent/empty; once present, empty
+        # CSV slots (`,a,,`) are dropped rather than turned into spurious `""` →
+        # "Collection not found" entries. An all-empty `,,` therefore resolves to
+        # no names and returns `{ collections: {} }`. (Parity with the TS handler.)
         raw_param = request.query_params.get("collections")
         if not raw_param:
             return JSONResponse(
@@ -1146,7 +1195,95 @@ def _make_batch_pull_handler(
                 status_code=400,
             )
 
-        names = [n.strip() for n in raw_param.split(",") if n.strip()]
+        # De-duplicate (preserving order): the result map is keyed by name, so a
+        # repeated name only ever overwrote itself — deduping makes that explicit
+        # and stops `?collections=a,a,a,…` from driving repeated reads of one doc.
+        names = list(dict.fromkeys(n.strip() for n in raw_param.split(",") if n.strip()))
+
+        # Bound the per-request work: one signed request fans out to a store read +
+        # enricher + scope check per collection, and the rate limiter caps requests,
+        # not work-per-request. Reject an oversized batch (distinct names) up front.
+        if len(names) > opts.max_collections_per_batch:
+            return JSONResponse({"error": "Too many collections"}, status_code=400)
+
+        # Optional `params`: URL-encoded JSON mapping collection name → its path
+        # params, e.g. `{"notes":{"teamId":"42"}}`. `{identity}` is auto-filled from
+        # the caller below, so it need not be supplied. A malformed blob is a client
+        # framing error → whole-request 400, rather than silently dropping params
+        # for every collection.
+        params_by_collection: dict[str, dict[str, Any]] = {}
+        raw_params = request.query_params.get("params")
+        if raw_params:
+            try:
+                parsed = json.loads(raw_params)
+            except (ValueError, TypeError, RecursionError):
+                # RecursionError guards a pathologically deep blob (json's C
+                # decoder can raise it rather than a ValueError) — still a client
+                # framing error, not a 500.
+                return JSONResponse({"error": "Invalid params parameter"}, status_code=400)
+            if not isinstance(parsed, dict) or any(
+                not isinstance(v, dict) for v in parsed.values()
+            ):
+                return JSONResponse({"error": "Invalid params parameter"}, status_code=400)
+            params_by_collection = parsed
+
+        # Resolve the caller's base auth ONCE — the resolver consumes the request
+        # nonce, so it must not run per-collection. Per-collection `self`/enricher
+        # roles are folded below from this single resolve. A resolver error is NOT
+        # fatal to the batch: it degrades to anonymous so public collections still
+        # resolve and private ones return per-collection "Forbidden", matching the
+        # pre-params handler (which authorized each collection independently and
+        # mapped any auth error to a per-collection "Forbidden").
+        auth, base_identity, base_roles, auth_error = await _resolve_base_auth(request, opts)
+        identity = base_identity if auth is not None else None
+        # Cap-scoped auth carries `scope.paths`; the resolver skips its URL
+        # path-scope check for /batch/pull (the URL names no storage path), so we
+        # re-check each RESOLVED key against this scope below. None (role-based auth
+        # or an unrestricted device cap) imposes no restriction.
+        scope_paths = getattr(request.state, "cap_scope_paths", None)
+
+        # Audit: mirror the standalone pull's points — a per-collection record on
+        # each auth denial (403/500) and successful read. Awaited like the standalone
+        # path. (The 400-class missing/invalid-param branches are NOT audited,
+        # matching the standalone path which only audits via _check_auth's denials.)
+        async def _record_audit(
+            collection: str, document_key: str, success: bool,
+            status_code: int, audit_params: dict[str, str],
+        ) -> None:
+            if opts.audit_logger is None:
+                return
+            try:
+                await opts.audit_logger.record(_AuditEntry(
+                    timestamp=time.time() * 1000,
+                    action="pull",
+                    collection=collection,
+                    identity=identity,
+                    document_key=document_key,
+                    success=success,
+                    status_code=status_code,
+                    # Snapshot: the entry may be persisted/async-processed by the
+                    # logger, so copy rather than alias the live params dict.
+                    params=dict(audit_params),
+                ))
+            except Exception:
+                # Audit is best-effort here: the success record runs inside the
+                # per-collection read try/except, so a throwing logger must NOT
+                # relabel a successful read as "Internal error" (nor 500 the batch
+                # from the request-level degrade record). Log and continue. This
+                # intentionally diverges from the standalone path, which lets an
+                # audit throw propagate — tolerable for a single-document request,
+                # not for a multi-collection one.
+                logging.getLogger(__name__).error(
+                    "Batch pull audit record failed", exc_info=True
+                )
+
+        # The resolver hard-failed but we degrade to anonymous (so public collections
+        # still resolve) — record it so a revoked/expired/bad-sig cap is not an audit
+        # blind spot. ``collection=""`` marks it a request-level event.
+        if auth_error is not None:
+            await _record_audit("", "", False, auth_error.status_code, {})
+
+        store = opts.store
         results: dict[str, Any] = {}
 
         for name in names:
@@ -1155,55 +1292,108 @@ def _make_batch_pull_handler(
                 results[name] = {"error": "Collection not found"}
                 continue
 
-            # Batch pull resolves storage paths with no params, so a collection whose
-            # storage_path has a `{param}` placeholder cannot be addressed here — the
-            # unresolved template is not a valid key. Report it explicitly instead of
-            # attempting a doomed store read that surfaces as a masked "Internal error".
-            if "{" in col.storage_path:
-                results[name] = {"error": "Collection requires path parameters; not batch-pullable"}
+            # Effective params built from ONLY the template's params (parity with
+            # the standalone path): caller-supplied keys outside the template are
+            # ignored, so they can't reach the store context, plugins, or audit
+            # log. Values must be str/number. `{identity}` auto-fills from the
+            # authenticated caller when the path needs it and none was supplied; an
+            # explicitly supplied identity is kept as-is, so a forged identity is
+            # denied below via the missing-`self` path rather than silently rewritten.
+            required_params = re.findall(r"\{(\w+)\}", col.storage_path)
+            supplied = params_by_collection.get(name, {})
+            effective_params: dict[str, str] = {}
+            for p in required_params:
+                v = supplied.get(p)
+                if isinstance(v, str):
+                    effective_params[p] = v
+                elif isinstance(v, (int, float)) and not isinstance(v, bool):
+                    effective_params[p] = str(v)
+            if (
+                IDENTITY_KEY in required_params
+                and IDENTITY_KEY not in effective_params
+                and identity
+            ):
+                # Truthy `identity` excludes both None and the anonymous "" — an
+                # anonymous caller has no identity to bind, so `{identity}` falls
+                # through to the missing-required-param guard below (no degenerate
+                # empty key).
+                effective_params[IDENTITY_KEY] = identity
+
+            # A required param with no supplied/auto-filled value cannot be addressed.
+            if any(p not in effective_params for p in required_params):
+                results[name] = {"error": "Missing required path parameter"}
+                continue
+            # Charset-validate each value (blocks `/` and other unsafe chars).
+            if not _validate_all_params(effective_params):
+                results[name] = {"error": "Invalid path parameter"}
+                continue
+
+            # Fold per-collection `self` + enricher roles from the single base
+            # resolve. Anonymous (or degraded) callers carry no roles, so only
+            # public-read collections pass _is_access_allowed below.
+            if auth is not None:
+                effective_roles, fold_error = await _fold_collection_roles(
+                    auth, base_roles, effective_params, col.storage_path, opts
+                )
+                if fold_error is not None:
+                    results[name] = {"error": "Authorization error"}
+                    await _record_audit(name, "", False, 500, effective_params)
+                    continue
+            else:
+                effective_roles = frozenset()
+
+            if not _is_access_allowed(col, OP_READ, effective_roles):
+                results[name] = {"error": "Forbidden"}
+                await _record_audit(name, "", False, 403, effective_params)
                 continue
 
             try:
-                identity, effective_roles, error = await _check_auth(col, OP_READ, request, {}, opts)
-                if error:
-                    results[name] = {"error": "Forbidden"}
+                key = _resolve_document_key(col.storage_path, effective_params)
+                # Guard the resolved key: validate_path_segment admits `..`, so a
+                # supplied param could compose a traversal key. Reject before
+                # touching the store (parity with the standalone and bundle paths).
+                if is_unsafe_document_key(key):
+                    results[name] = {"error": "Invalid path parameter"}
                     continue
-
-                store = opts.store
+                # Cap path-scope: the resolver couldn't bind /batch/pull to a
+                # storage path, so enforce the cap's scope against the RESOLVED key
+                # here — a cap may only batch-read keys its scope covers (e.g. its
+                # own room, not a sibling). This stops batch from side-stepping
+                # per-path scope.
+                if not match_scope_path(key, scope_paths):
+                    results[name] = {"error": "Forbidden"}
+                    await _record_audit(name, key, False, 403, effective_params)
+                    continue
                 batch_ctx = StoreContext(
                     collection=col.name,
-                    params={},
+                    params=effective_params,
                     identity=identity,
                     roles=tuple(effective_roles),
                     action=ACTION_PULL,
                     namespace=namespace_name,
                 )
-                pull_result = await pull(store, col.storage_path, batch_ctx)
+                pull_result = await pull(store, key, batch_ctx)
                 data = pull_result.data
 
                 # TTL check: pull() returns now as its timestamp, so read the stored
                 # doc-level write-time (`ts`) to expire stale documents.
                 if col.ttl_ms is not None:
-                    raw_doc = await opts.store.get_string(col.storage_path, context=batch_ctx)
+                    raw_doc = await opts.store.get_string(key, context=batch_ctx)
                     if raw_doc:
                         stored = json.loads(raw_doc)
                         doc_timestamp = stored.get("ts") or 0
                         if _is_expired(doc_timestamp, col.ttl_ms):
                             data = {}
 
-                # Field-level read filtering
-                if col.field_permissions and isinstance(data, dict):
-                    data = dict(data)
-                    for field_name, fp in col.field_permissions.items():
-                        if fp.read_roles and field_name in data:
-                            if not any(r in effective_roles for r in fp.read_roles):
-                                del data[field_name]
+                # Strip fields the caller cannot read (parity with the standalone path).
+                _apply_field_read_filter(data, col.field_permissions, effective_roles)
 
                 results[name] = {
                     "data": data,
                     "hash": pull_result.hash,
                     "timestamp": pull_result.timestamp,
                 }
+                await _record_audit(name, key, True, 200, effective_params)
             except Exception as exc:
                 logging.getLogger(__name__).error(
                     "Batch pull failed for collection %r: %s", name, exc, exc_info=True,

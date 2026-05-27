@@ -11,6 +11,7 @@ import { useEffect, useRef, useState, useCallback } from "react"
 import type { Encryptor } from "@drakkar.software/starfish-protocol"
 import { StarfishClient } from "../client.js"
 import { SyncManager } from "../sync.js"
+import { AppendLogCursor, type AppendElement } from "../append-log.js"
 import { setupCrossTabSync, type BroadcastableStore } from "../broadcast.js"
 import type { StarfishCapProvider, ConflictResolver } from "../types.js"
 import type { SyncLogger } from "../logger.js"
@@ -411,4 +412,155 @@ export function useSyncInit(config: SyncInitConfig | null): StoreApi<StarfishSto
   ])
 
   return store
+}
+
+// ── Append-only log binding ──────────────────────────────────────────
+//
+// The reactive counterpart for an append-only collection, backed by an
+// `AppendLogCursor` instead of a `SyncManager`. A log only grows, so the
+// store is read-only — there is no `set`/`flush`/`dirty`/conflict surface,
+// and no `persist` middleware: the cursor owns the items + checkpoint, so
+// persist by reading `getItems()` and rehydrate by constructing the cursor
+// with `initialItems` (see `AppendLogCursor`).
+//
+// The store assumes it is the SOLE driver of its cursor: it seeds `items` from
+// `cursor.getItems()` at construction and updates only via its own `pull()`.
+// Don't also call `cursor.pull()` directly on the same cursor, or the store's
+// `items`/`checkpoint` will go stale.
+
+export interface StarfishLogState {
+  /** The full accumulated log, newest appended last. */
+  items: AppendElement[]
+  /** A `pull()` is in flight. */
+  loading: boolean
+  online: boolean
+  error: string | null
+  /** The cursor's checkpoint (max `ts` held). */
+  checkpoint: number
+}
+
+export interface StarfishLogActions {
+  /** Pull elements newer than the checkpoint, append them, and return the new
+   *  batch. Errors are captured into `error` (mirroring the SyncManager store). */
+  pull: () => Promise<AppendElement[]>
+  setOnline: (online: boolean) => void
+}
+
+export type StarfishLogStore = StarfishLogState & StarfishLogActions
+
+export interface CreateStarfishLogOptions {
+  cursor: AppendLogCursor
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  devtools?: (storeCreator: any) => any
+}
+
+export function createStarfishLog(
+  options: CreateStarfishLogOptions,
+): StoreApi<StarfishLogStore> {
+  const { cursor } = options
+
+  type NamedSet = (partial: Partial<StarfishLogStore>, replace?: boolean, action?: string) => void
+
+  const storeCreator = (
+    rawSet: StoreApi<StarfishLogStore>["setState"],
+    get: StoreApi<StarfishLogStore>["getState"],
+  ): StarfishLogStore => {
+    const set = rawSet as NamedSet
+    return {
+      // Seed from the cursor so a warm-started cursor's items show immediately.
+      items: cursor.getItems(),
+      loading: false,
+      online: true,
+      error: null,
+      checkpoint: cursor.getCheckpoint(),
+
+      pull: async () => {
+        if (get().loading) return []
+        set({ loading: true, error: null }, false, "log/pull/start")
+        try {
+          const batch = await cursor.pull()
+          set(
+            { items: cursor.getItems(), checkpoint: cursor.getCheckpoint(), loading: false },
+            false,
+            "log/pull/success",
+          )
+          return batch
+        } catch (err) {
+          set({ loading: false, error: err instanceof Error ? err.message : String(err) }, false, "log/pull/error")
+          return []
+        }
+      },
+
+      setOnline: (online) => {
+        set({ online }, false, "log/setOnline")
+      },
+    }
+  }
+
+  const withSelector = subscribeWithSelector(storeCreator)
+  return createStore<StarfishLogStore>()(
+    options.devtools ? options.devtools(withSelector) : withSelector,
+  )
+}
+
+/** Derived status for an append-log store. */
+export type LogStatus = "idle" | "loading" | "error" | "offline"
+
+/** Derive a single status from log store state. */
+export function deriveLogStatus(state: StarfishLogState): LogStatus {
+  if (!state.online) return "offline"
+  if (state.error) return "error"
+  if (state.loading) return "loading"
+  return "idle"
+}
+
+/** Use the full append-log store state and actions. */
+export function useStarfishLog(store: StoreApi<StarfishLogStore>): StarfishLogStore {
+  return useStore(store)
+}
+
+/** Use only the accumulated items, with an optional selector for fine-grained subscriptions. */
+export function useStarfishLogItems<T = AppendElement[]>(
+  store: StoreApi<StarfishLogStore>,
+  selector?: (items: AppendElement[]) => T,
+): T {
+  return useStore(store, (state) =>
+    selector ? selector(state.items) : (state.items as unknown as T),
+  )
+}
+
+/** Use the derived log status (idle | loading | error | offline). */
+export function useLogStatus(store: StoreApi<StarfishLogStore>): LogStatus {
+  return useStore(store, deriveLogStatus)
+}
+
+/** Subscribe to log status changes outside of React. Invoked immediately with the
+ *  current status, then on every change. Returns an unsubscribe function. */
+export function subscribeLogStatus(
+  store: StoreApi<StarfishLogStore>,
+  callback: (status: LogStatus) => void,
+): () => void {
+  let prev = deriveLogStatus(store.getState())
+  callback(prev)
+  return store.subscribe((state) => {
+    const next = deriveLogStatus(state)
+    if (next !== prev) {
+      prev = next
+      callback(next)
+    }
+  })
+}
+
+/** Binds browser online/offline events to the log store's setOnline action. Cleans up on unmount. */
+export function useLogConnectivity(store: StoreApi<StarfishLogStore>): void {
+  useEffect(() => {
+    const handleOnline = () => store.getState().setOnline(true)
+    const handleOffline = () => store.getState().setOnline(false)
+    window.addEventListener("online", handleOnline)
+    window.addEventListener("offline", handleOffline)
+    return () => {
+      window.removeEventListener("online", handleOnline)
+      window.removeEventListener("offline", handleOffline)
+    }
+  }, [store])
 }

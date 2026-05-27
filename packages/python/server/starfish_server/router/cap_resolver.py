@@ -273,6 +273,28 @@ def _strip_action_prefix(path_and_query: str) -> str:
     return trimmed
 
 
+def _is_batch_pull_path(path_and_query: str) -> bool:
+    """True for the batch-pull routes (``/batch/pull`` and ``/<ns>/batch/pull``).
+
+    These carry no storage path in their URL — they name collections + params in
+    the query — so the per-request ``scope.paths`` check cannot run at the
+    resolver; the batch handler re-checks each RESOLVED key against
+    ``scope.paths`` instead. The length + action-prefix guard keeps a standalone
+    pull of a collection literally named ``batch/pull`` (``/pull/batch/pull``)
+    from being mistaken for the batch route.
+    """
+    q_idx = path_and_query.find("?")
+    path_only = path_and_query[:q_idx] if q_idx >= 0 else path_and_query
+    segs = [s for s in path_only.split("/") if s]
+    n = len(segs)
+    if n < 2 or segs[-2] != "batch" or segs[-1] != "pull":
+        return False
+    if n == 2:  # /batch/pull
+        return True
+    # /<ns>/batch/pull — a single namespace segment, never an action prefix.
+    return n == 3 and segs[0] not in ("pull", "push", "list")
+
+
 # ─── Private orchestrator helpers ────────────────────────────────────────────
 #
 # Each helper covers one concern of the resolver pipeline. They MUST preserve
@@ -652,7 +674,14 @@ def create_cap_cert_role_resolver(
             raise CapAuthError(
                 403, "member/audience cap must carry an explicit scope.paths"
             )
-        if not match_scope_path(storage_path, expanded_paths):
+        # Batch pull carries no single storage path in its URL, so the per-request
+        # path-scope check can't run here — the batch handler enforces
+        # ``scope.paths`` per RESOLVED key instead. Every other verify step (sig,
+        # nonce, revocation) still ran above, and ``scope_paths`` is returned below
+        # for that per-key check.
+        if not _is_batch_pull_path(_path_and_query(request)) and not match_scope_path(
+            storage_path, expanded_paths
+        ):
             raise CapAuthError(403, "request path is outside cap scope")
 
         # `{identity}` URL-param binding: when the route exposes an

@@ -287,7 +287,7 @@ class TestValidateConfigNamespaces:
 
     def test_reserved_namespace_names(self):
         from starfish_server.config.schema import NamespaceConfig
-        for name in ("pull", "push", "health", "batch"):
+        for name in ("pull", "push", "list", "health", "batch"):
             config = SyncConfig(
                 version=1, collections=[],
                 namespaces={name: NamespaceConfig(collections=[self._ns_col()])},

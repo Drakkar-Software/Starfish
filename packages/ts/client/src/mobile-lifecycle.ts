@@ -1,5 +1,5 @@
 import type { StoreApi } from "zustand/vanilla"
-import type { StarfishStore } from "./bindings/zustand.js"
+import type { StarfishStore, StarfishLogStore } from "./bindings/zustand.js"
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -97,6 +97,64 @@ export function createMobileLifecycle(
       }
     }
     // "inactive" (iOS transition) and other states are intentionally ignored
+  })
+
+  let netUnsub: (() => void) | null = null
+  if (deps.netInfo) {
+    netUnsub = deps.netInfo.addEventListener(({ isConnected }) => {
+      store.getState().setOnline(!!isConnected)
+    })
+  }
+
+  return () => {
+    appSub.remove()
+    netUnsub?.()
+  }
+}
+
+// ── Append-only log lifecycle ───────────────────────────────────────────────────
+
+export interface AppendLogLifecycleOptions {
+  /**
+   * Pull new elements when the app returns to the foreground.
+   * Only pulls if the store is online and not already loading.
+   * Default: `true`.
+   */
+  pullOnForeground?: boolean
+}
+
+/**
+ * Wires React Native app lifecycle events to an append-log store
+ * (`createStarfishLog`). A log is read-only, so this only pulls on foreground
+ * (there is nothing to flush on background). NetInfo connectivity changes are
+ * forwarded to `store.getState().setOnline()`.
+ *
+ * ```ts
+ * import { AppState } from "react-native"
+ * import NetInfo from "@react-native-community/netinfo"
+ * import { createStarfishLog, createAppendLogMobileLifecycle } from "@drakkar.software/starfish-client"
+ *
+ * const store = createStarfishLog({ cursor })
+ * const cleanup = createAppendLogMobileLifecycle(store, { appState: AppState, netInfo: NetInfo })
+ * useEffect(() => cleanup, [])
+ * ```
+ *
+ * @returns A cleanup function that removes all event listeners.
+ */
+export function createAppendLogMobileLifecycle(
+  store: StoreApi<StarfishLogStore>,
+  deps: MobileLifecycleDeps,
+  options: AppendLogLifecycleOptions = {},
+): () => void {
+  const { pullOnForeground = true } = options
+
+  const appSub = deps.appState.addEventListener("change", (appState) => {
+    if (appState === "active" && pullOnForeground) {
+      const { online, loading } = store.getState()
+      if (online && !loading) {
+        store.getState().pull().catch((err) => { console.error("[Starfish] foreground log pull failed:", err) })
+      }
+    }
   })
 
   let netUnsub: (() => void) | null = null
