@@ -320,6 +320,25 @@ function stripActionPrefix(pathAndQuery: string): string {
   return trimmed
 }
 
+/**
+ * True for the batch-pull routes (`/batch/pull` and `/<ns>/batch/pull`). These
+ * carry no storage path in their URL — they name collections + params in the
+ * query — so the per-request `scope.paths` check cannot run at the resolver; the
+ * batch handler re-checks each RESOLVED key against `scope.paths` instead. The
+ * length + action-prefix guard keeps a standalone pull of a collection literally
+ * named `batch/pull` (`/pull/batch/pull`) from being mistaken for the batch route.
+ */
+function isBatchPullPath(pathAndQuery: string): boolean {
+  const qIdx = pathAndQuery.indexOf("?")
+  const pathOnly = qIdx >= 0 ? pathAndQuery.slice(0, qIdx) : pathAndQuery
+  const segs = pathOnly.split("/").filter((s) => s.length > 0)
+  const n = segs.length
+  if (n < 2 || segs[n - 2] !== "batch" || segs[n - 1] !== "pull") return false
+  if (n === 2) return true // /batch/pull
+  // /<ns>/batch/pull — a single namespace segment, never an action prefix.
+  return n === 3 && segs[0] !== "pull" && segs[0] !== "push" && segs[0] !== "list"
+}
+
 // ─── Private orchestrator helpers ────────────────────────────────────────────
 //
 // Each helper covers one concern of the resolver pipeline. They MUST preserve
@@ -661,7 +680,11 @@ export function createCapCertRoleResolver(opts: CapResolverOptions): RoleResolve
     if (cert.kind !== "device" && (!expandedPaths || expandedPaths.length === 0)) {
       throw new CapAuthError(403, "member/audience cap must carry an explicit scope.paths")
     }
-    if (!matchScopePath(storagePath, expandedPaths)) {
+    // Batch pull carries no single storage path in its URL, so the per-request
+    // path-scope check can't run here — the batch handler enforces `scope.paths`
+    // per RESOLVED key instead. Every other verify step (sig, nonce, revocation)
+    // still ran above, and `scopePaths` is returned below for that per-key check.
+    if (!isBatchPullPath(req.pathAndQuery) && !matchScopePath(storagePath, expandedPaths)) {
       throw new CapAuthError(403, "request path is outside cap scope")
     }
 

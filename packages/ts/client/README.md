@@ -206,6 +206,27 @@ new SyncManager({
 - `signer.getSigner()` returns `{ devEdPubHex, sign(payload) }`. When set, every push attaches `authorPubkey = cap.sub` and `authorSignature = base64(Ed25519(payload))` over the encrypted payload (without the author fields).
 - `encryptor` is the only encryption option — the v2 single-secret `encryptionSecret`/`encryptionSalt` shorthand was removed in v3.
 
+## `AppendLogCursor`
+
+Incremental, stateful cursor over an append-only collection — the log counterpart to `SyncManager`. It owns the accumulated array and pulls only what's new; the checkpoint is **derived from the last element it holds**, so it resumes from persisted data on a fresh page.
+
+```ts
+const log = new AppendLogCursor({
+  client, pullPath: "/pull/events",
+  appendField,            // default "items"
+  initialItems,           // warm-start seed (raw {ts,data} envelopes) — or pass `since`
+  encryptor,              // optional: decrypt each element's data (ts/author preserved)
+  verifyAuthor,           // optional: true | { expectedAuthorPubkey?, alg? }
+})
+const fresh = await log.pull()  // only elements newer than the last held
+log.getItems()                  // full accumulated log
+log.getCheckpoint()             // max ts held — persist, and restore via setCheckpoint()
+```
+
+- Cold start (no seed) → first `pull()` fetches the whole collection; warm start (seeded) → resumes incrementally.
+- `verifyAuthor` verifies each element's author signature over the stored (pre-decryption) data and throws `AppendAuthorError` atomically on any failure (nothing is appended, checkpoint unchanged).
+- **Reactive bindings:** `createStarfishLog` (Zustand, `./zustand`) + hooks `useStarfishLog` / `useStarfishLogItems` / `useLogStatus` / `useLogConnectivity`; `createStarfishLogObservable` (Legend, `./legend`); `createAppendLogMobileLifecycle` (pull on app foreground). `startPolling` and `createSuspenseResource` work with `cursor.pull()` directly.
+
 ## Other utilities
 
 The package also re-exports the v2 ergonomics that survived intact: `consoleSyncLogger`, `noopSyncLogger`, `createMetricsCollector`, `createMigrator`, `createSchemaValidator`, `classifyError`, conflict resolvers (`createUnionMerge`, `createSoftDeleteResolver`, `timestampWinner`, `pruneTombstones`), `SnapshotHistory`, `startPolling`/`startAdaptivePolling`, `createDedupFetch`, `fetchServerConfig`, `pullEntitlements`, `createIndexedDBStorage`, `exportData`/`importData`, `createDebouncedSync`/`createDebouncedPush`, `createMultiStoreSync`, `createMobileLifecycle`, and the Zustand/Legend bindings via the `./zustand` and `./legend` subpaths.

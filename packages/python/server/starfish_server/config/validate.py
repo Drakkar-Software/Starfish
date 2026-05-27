@@ -9,7 +9,11 @@ from starfish_server.constants import ROLE_PUBLIC, ROLE_SELF
 MIME_JSON = "application/json"
 
 _NS_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
-_RESERVED_NS_NAMES = frozenset({"pull", "push", "health", "batch"})
+# ``list`` joins ``pull``/``push`` as a reserved action prefix: the batch-pull
+# route detector treats a leading ``pull``/``push``/``list`` segment as an action
+# (not a namespace), so a namespace named ``list`` would not be recognized as
+# carrying a ``/list/batch/pull`` batch route. Reserving it keeps it unambiguous.
+_RESERVED_NS_NAMES = frozenset({"pull", "push", "list", "health", "batch"})
 
 
 def _is_binary_collection(allowed_mime_types: list[str]) -> bool:

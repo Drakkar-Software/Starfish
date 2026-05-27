@@ -270,6 +270,37 @@ const notesStore = createStarfishStore({
 })
 ```
 
+## Append-only logs
+
+For **append-only collections** (a growing log rather than a read-merge-write document), use `createStarfishLog` instead of `createStarfishStore`. It's backed by an [`AppendLogCursor`](../server/append-only-collections.md#incremental-cursor-appendlogcursor) and is **read-only** — the store has `{ items, loading, online, error, checkpoint }` and a single `pull()` action that fetches new elements and appends them. There is no `set`/`flush`/`dirty`/conflict surface, and no `persist` middleware: the cursor owns the items + checkpoint (persist by saving `cursor.getItems()`, rehydrate via `initialItems`).
+
+```ts
+import { AppendLogCursor } from "@drakkar.software/starfish-client"
+import {
+  createStarfishLog,
+  useStarfishLogItems,
+  useLogStatus,
+  useLogConnectivity,
+} from "@drakkar.software/starfish-client/zustand"
+
+const cursor = new AppendLogCursor({
+  client,
+  pullPath: "/pull/events",
+  initialItems: await store.load(), // omit for a cold start
+})
+const logStore = createStarfishLog({ cursor })
+await logStore.getState().pull() // fetch new, append; returns the new batch
+
+function Feed() {
+  const items = useStarfishLogItems(logStore)
+  const status = useLogStatus(logStore) // "idle" | "loading" | "error" | "offline"
+  useLogConnectivity(logStore)
+  return <>{items.map((e) => <Row key={e.ts} {...e} />)}</>
+}
+```
+
+Hooks: `useStarfishLog`, `useStarfishLogItems(store, selector?)`, `useLogStatus`, `subscribeLogStatus` (framework-agnostic), `useLogConnectivity`. For React Native, [`createAppendLogMobileLifecycle`](08-offline-connectivity.md) pulls on foreground. Polling works as-is: `startPolling(() => logStore.getState().pull(), () => logStore.getState())`.
+
 ## Next Steps
 
 - [Legend State Binding](06-state-legend.md) — alternative with fine-grained reactivity

@@ -77,6 +77,30 @@ export interface PullOptions {
   withKeyring?: boolean
 }
 
+/** Per-collection result in a {@link BatchPullResult}: either the pulled
+ *  document (`data`/`hash`/`timestamp`) or a per-collection `error` string. */
+export interface BatchPullEntry {
+  data?: unknown
+  hash?: string
+  timestamp?: number
+  error?: string
+}
+
+/** Response of {@link StarfishClient.batchPull}: a map of requested collection
+ *  name → its {@link BatchPullEntry}. */
+export interface BatchPullResult {
+  collections: Record<string, BatchPullEntry>
+}
+
+/** Options for {@link StarfishClient.batchPull}. */
+export interface BatchPullOptions {
+  /** Per-collection path params, e.g. `{ notes: { teamId: "42" } }`. Serialized
+   *  to a URL-encoded JSON `params` query parameter. The `{identity}` param is
+   *  auto-filled by the server from the authenticated caller, so it need not be
+   *  supplied (and a supplied identity that isn't the caller's is rejected). */
+  params?: Record<string, Record<string, string>>
+}
+
 /**
  * Base64-encode the canonical stable-stringification of a cap-cert.
  *
@@ -307,6 +331,40 @@ export class StarfishClient {
       return (Array.isArray(list) ? list : []) as T[]
     }
     return result
+  }
+
+  /**
+   * Pull several collections in one round-trip via `/batch/pull`. `collections`
+   * is the list of collection names; `opts.params` supplies path params per
+   * collection (serialized to a URL-encoded JSON `params` query). The server
+   * auto-fills the `{identity}` param from the authenticated caller, so per-user
+   * collections need no params. Returns a map of collection name → its pulled
+   * document or a per-collection `{ error }`. Honors the configured namespace.
+   *
+   * Note: not append/checkpoint-aware — for incremental append-only reads use
+   * `pull(path, { since })` (or `AppendLogCursor`) per collection.
+   */
+  async batchPull(
+    collections: string[],
+    opts: BatchPullOptions = {},
+  ): Promise<BatchPullResult> {
+    const search = new URLSearchParams()
+    search.set("collections", collections.join(","))
+    if (opts.params && Object.keys(opts.params).length > 0) {
+      search.set("params", JSON.stringify(opts.params))
+    }
+    const pathAndQuery = `${this.applyNamespace("/batch/pull")}?${search.toString()}`
+    const url = `${this.baseUrl}${pathAndQuery}`
+    const authHeaders = await this.buildAuthHeaders("GET", pathAndQuery, undefined)
+
+    const res = await this.fetch(url, {
+      method: "GET",
+      headers: { [HEADER_ACCEPT]: "application/json", ...authHeaders },
+    })
+    if (!res.ok) {
+      throw new StarfishHttpError(res.status, await res.text())
+    }
+    return await res.json() as BatchPullResult
   }
 
   /**

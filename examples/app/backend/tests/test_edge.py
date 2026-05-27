@@ -38,6 +38,7 @@ import copy
 import hashlib
 import json
 import time
+from urllib.parse import quote
 
 import httpx
 import pytest
@@ -2531,46 +2532,71 @@ async def test_member_directory_write_respects_its_128kb_ceiling(sdk):
 # only ever reaches its OWN `user/{identity}/…` namespace — including the fact that
 # an attacker cannot forge another identity to cross that boundary.
 # ══════════════════════════════════════════════════════════════════════════════
-async def test_batch_pull_does_not_bypass_per_collection_scope(http):
-    """`/batch/pull` cannot side-step a cap's scope.
+async def test_batch_pull_enforces_cap_scope_per_resolved_key(http):
+    """`/batch/pull` honors a cap's `scope.paths` per RESOLVED key.
 
-    The handler authorizes each requested collection against the `/batch/pull` request
-    path, which lies outside any room-scoped cap's `scope.paths`, so every protected
-    collection returns an error — never data. (There is no batch-push or batch-list
-    endpoint, so the multi-document surface is read-only and still per-collection gated.)
+    The cap resolver can't path-bind a `/batch/pull` request (its URL names no
+    storage path), so the batch handler re-checks each collection's resolved key
+    against `scope.paths`. A cap scoped to room "room-a" reads room-a but is
+    Forbidden on room-b — batch is not a way around the per-path scope. (There is
+    no batch-push/list, so the multi-document surface stays read-only and gated.)
     """
     user = bootstrap_root_identity("edge-batch")
-    cap = mint_device_cap(user.device["edPriv"], user.device["edPub"], _sub(user), owner_scope())
-    path = "/batch/pull?collections=chat,chatkeyring,chatmembers"
-    headers = _signed_get_headers(cap, user.device["edPriv"], path)
-    resp = await http.get(path, headers=headers)
-    assert resp.status_code == 200
-    cols = resp.json()["collections"]
-    for name in ("chat", "chatkeyring", "chatmembers"):
-        assert "data" not in cols[name]  # no document leaks through
-        assert "not batch-pullable" in cols[name]["error"]
+    cap = mint_device_cap(
+        user.device["edPriv"], user.device["edPub"], _sub(user), member_scope("room-a", False),
+    )
+
+    def _batch_path(room: str) -> str:
+        q = quote(json.dumps({"chat": {"roomId": room}}, separators=(",", ":")))
+        return f"/batch/pull?collections=chat&params={q}"
+
+    # In-scope room → reachable (empty doc, but NOT an error).
+    p_ok = _batch_path("room-a")
+    r_ok = await http.get(p_ok, headers=_signed_get_headers(cap, user.device["edPriv"], p_ok))
+    assert r_ok.status_code == 200
+    assert "error" not in r_ok.json()["collections"]["chat"]
+
+    # Out-of-scope room → Forbidden, never data.
+    p_no = _batch_path("room-b")
+    r_no = await http.get(p_no, headers=_signed_get_headers(cap, user.device["edPriv"], p_no))
+    assert r_no.status_code == 200
+    cols = r_no.json()["collections"]
+    assert cols["chat"]["error"] == "Forbidden"
+    assert "data" not in cols["chat"]
 
 
 async def test_batch_pull_cannot_exfiltrate_another_users_namespace(sdk, http):
-    """Batch pull cannot read a user's profile / entitlements / devices.
+    """Batch pull cannot read another user's private namespace.
 
-    The handler resolves each collection's storage path with EMPTY params, so a
-    `{identity}`-templated path is never bound to a concrete user — the literal
-    template key is pulled (and rejected by the store), so no per-user document is
-    returned. Even the `public`-read `profile` collection yields an error, not the
-    stored pseudo. So batch is not a side-channel around the `{identity}` self-binding.
+    Two guards: (1) an anonymous caller has no identity to auto-fill `{identity}`,
+    so each `{identity}`-templated collection reports a missing param — never data.
+    (2) A cap that supplies SOMEONE ELSE's identity resolves a key outside its own
+    `scope.paths`, so the batch handler returns Forbidden. Batch is not a
+    side-channel around the `{identity}` self-binding.
     """
     alice = bootstrap_root_identity("edge-batch-alice")
     acap = mint_device_cap(alice.device["edPriv"], alice.device["edPub"], _sub(alice), account_scope(alice.user_id))
     await sdk(acap, alice.device["edPriv"]).push(
         f"/push/user/{alice.user_id}/profile", {"v": 1, "pseudo": "Alice"}, None,
     )  # a real profile doc now exists
+    bob = bootstrap_root_identity("edge-batch-bob")
 
+    # (1) Anonymous batch — no identity to bind, so {identity} collections report missing param.
     resp = await http.get("/batch/pull?collections=profile,entitlements,devices")  # anonymous
     assert resp.status_code == 200
     cols = resp.json()["collections"]
     for name in ("profile", "entitlements", "devices"):
         assert "data" not in cols[name]  # never returns a user's document
+
+    # (2) Alice's cap supplying BOB's identity → resolved key is outside Alice's
+    # scope.paths → Forbidden, no data leak.
+    q = quote(json.dumps({"entitlements": {"identity": bob.user_id}}, separators=(",", ":")))
+    p = f"/batch/pull?collections=entitlements&params={q}"
+    r2 = await http.get(p, headers=_signed_get_headers(acap, alice.device["edPriv"], p))
+    assert r2.status_code == 200
+    c2 = r2.json()["collections"]["entitlements"]
+    assert c2.get("error") == "Forbidden"
+    assert "data" not in c2
 
 
 async def test_self_namespace_is_bound_to_the_authenticated_identity(sdk, http):

@@ -4,7 +4,11 @@ import { ROLE_PUBLIC, ROLE_SELF } from "../constants.js"
 const MIME_JSON = "application/json"
 
 const NAMESPACE_NAME_RE = /^[a-zA-Z0-9_-]+$/
-const RESERVED_NAMESPACE_NAMES = new Set(["pull", "push", "health", "batch"])
+// `list` joins `pull`/`push` as a reserved action prefix: the batch-pull route
+// detector treats a leading `pull`/`push`/`list` segment as an action (not a
+// namespace), so a namespace named `list` would not be recognized as carrying a
+// `/list/batch/pull` batch route. Reserving it keeps the detector unambiguous.
+const RESERVED_NAMESPACE_NAMES = new Set(["pull", "push", "list", "health", "batch"])
 
 function isBinaryCollection(allowedMimeTypes: string[]): boolean {
   return !allowedMimeTypes.some((m) => m.toLowerCase() === MIME_JSON)

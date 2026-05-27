@@ -3,6 +3,7 @@
 import base64
 import json
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -328,6 +329,50 @@ class StarfishClient:
             return arr if isinstance(arr, list) else []
 
         return result
+
+    async def batch_pull(
+        self,
+        collections: list[str],
+        *,
+        params: dict[str, dict[str, str]] | None = None,
+    ) -> dict[str, Any]:
+        """Pull several collections in one round-trip via ``/batch/pull``.
+
+        Args:
+            collections: Collection names to pull.
+            params: Per-collection path params, e.g. ``{"notes": {"teamId": "42"}}``,
+                serialized to a URL-encoded JSON ``params`` query parameter. The
+                ``{identity}`` param is auto-filled by the server from the
+                authenticated caller, so per-user collections need no params (and a
+                supplied identity that isn't the caller's is rejected).
+
+        Returns the parsed response: ``{"collections": {<name>: {...doc...} | {"error": ...}}}``.
+
+        Not append/checkpoint-aware — for incremental append-only reads use
+        ``pull(path, since=...)`` (or ``AppendLogCursor``) per collection.
+        """
+        # Build the query ONCE and use it for BOTH the signed canonical and the
+        # sent URL, so the bytes signed equal the bytes on the wire (the cap-cert
+        # signature binds method+path+query). ``quote(safe="")`` percent-encodes the
+        # CSV and the JSON; the server URL-decodes each query param back.
+        query_parts = [f"collections={quote(','.join(collections), safe='')}"]
+        if params:
+            query_parts.append(
+                f"params={quote(json.dumps(params, separators=(',', ':')), safe='')}"
+            )
+        query = "&".join(query_parts)
+
+        signed_path_and_query = f"{self._sign_path('/batch/pull')}?{query}"
+        auth_headers = await self._auth_headers("GET", signed_path_and_query, None)
+        url = f"{self._base_url}{self._send_path('/batch/pull')}?{query}"
+
+        resp = await self._client.get(
+            url,
+            headers={HEADER_ACCEPT: "application/json", **auth_headers},
+        )
+        if resp.status_code != 200:
+            raise StarfishHttpError(resp.status_code, resp.text)
+        return resp.json()
 
     async def push(
         self,

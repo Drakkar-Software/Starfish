@@ -2,7 +2,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, act, waitFor } from "@testing-library/react"
 import { createStore } from "zustand/vanilla"
-import type { StarfishStore } from "../src/bindings/zustand.js"
+import type { StarfishStore, StarfishLogStore } from "../src/bindings/zustand.js"
 import {
   useStarfish,
   useStarfishData,
@@ -13,6 +13,9 @@ import {
   useCrossTabSync,
   useConnectivity,
   useLastSynced,
+  useStarfishLog,
+  useStarfishLogItems,
+  useLogStatus,
 } from "../src/bindings/zustand.js"
 
 function createMockStore(initial?: Partial<StarfishStore>) {
@@ -441,5 +444,58 @@ describe("useLastSynced", () => {
       vi.advanceTimersByTime(50_000) // total 65s
     })
     expect(result.current).toBe("1m ago")
+  })
+})
+
+// ── Append-log hooks ─────────────────────────────────────────────────
+
+function createMockLogStore(initial?: Partial<StarfishLogStore>) {
+  return createStore<StarfishLogStore>()(() => ({
+    items: [],
+    loading: false,
+    online: true,
+    error: null,
+    checkpoint: 0,
+    pull: async () => [],
+    setOnline: () => {},
+    ...initial,
+  }))
+}
+
+describe("useStarfishLog hooks", () => {
+  it("useStarfishLog returns full state and actions", () => {
+    const store = createMockLogStore({ checkpoint: 42 })
+    const { result } = renderHook(() => useStarfishLog(store))
+    expect(result.current.checkpoint).toBe(42)
+    expect(typeof result.current.pull).toBe("function")
+  })
+
+  it("useStarfishLogItems returns items and re-renders on change", () => {
+    const store = createMockLogStore({ items: [{ ts: 1, data: { a: 1 } }] })
+    const { result } = renderHook(() => useStarfishLogItems(store))
+    expect(result.current).toEqual([{ ts: 1, data: { a: 1 } }])
+
+    act(() => {
+      store.setState({ items: [{ ts: 1, data: { a: 1 } }, { ts: 2, data: { b: 2 } }] })
+    })
+    expect(result.current).toHaveLength(2)
+  })
+
+  it("useStarfishLogItems supports a selector", () => {
+    const store = createMockLogStore({ items: [{ ts: 1, data: { a: 1 } }, { ts: 2, data: { b: 2 } }] })
+    const { result } = renderHook(() => useStarfishLogItems(store, (items) => items.length))
+    expect(result.current).toBe(2)
+  })
+
+  it("useLogStatus derives status and updates on change", () => {
+    const store = createMockLogStore()
+    const { result } = renderHook(() => useLogStatus(store))
+    expect(result.current).toBe("idle")
+
+    act(() => { store.setState({ loading: true }) })
+    expect(result.current).toBe("loading")
+
+    act(() => { store.setState({ loading: false, online: false }) })
+    expect(result.current).toBe("offline")
   })
 })

@@ -223,7 +223,7 @@ describe("validateConfig — namespaces", () => {
   })
 
   it("detects reserved namespace names", () => {
-    for (const name of ["pull", "push", "health", "batch"]) {
+    for (const name of ["pull", "push", "list", "health", "batch"]) {
       const config: SyncConfig = {
         version: 1,
         collections: [],

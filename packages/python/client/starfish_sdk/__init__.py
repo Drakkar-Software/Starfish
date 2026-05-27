@@ -11,6 +11,12 @@ from starfish_sdk.types import (
 from starfish_protocol import Encryptor, ENCRYPTED_KEY
 from starfish_sdk.client import StarfishClient
 from starfish_sdk.sync import SyncManager, SyncSigner
+from starfish_sdk.append_log import (
+    AppendLogCursor,
+    AppendAuthorError,
+    AuthorVerifier,
+    checkpoint_of,
+)
 from starfish_sdk.config import fetch_server_config, ConfigResponse, CollectionClientInfo, NamespaceClientConfig, AppendOnlyClientInfo
 
 __all__ = [
@@ -29,6 +35,10 @@ __all__ = [
     "StarfishClient",
     "SyncManager",
     "SyncSigner",
+    "AppendLogCursor",
+    "AppendAuthorError",
+    "AuthorVerifier",
+    "checkpoint_of",
     "CapProvider",
     "fetch_server_config",
     "ConfigResponse",

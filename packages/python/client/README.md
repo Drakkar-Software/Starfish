@@ -219,6 +219,26 @@ SyncManager(
 - `signer.get_signer()` returns `{"dev_ed_pub_hex": ..., "sign": async fn}`. When set, every push attaches `authorPubkey = cap.sub` and `authorSignature = base64(Ed25519(payload))` over the encrypted payload (without the author fields).
 - `encryptor` is the only encryption option — the v2 single-secret `encryption_secret`/`encryption_salt` shorthand was removed in v3.
 
+## `AppendLogCursor`
+
+Incremental, stateful cursor over an append-only collection — the log counterpart to `SyncManager`. It owns the accumulated array and pulls only what's new; the checkpoint is **derived from the last element it holds**, so it resumes from persisted data on a fresh page.
+
+```python
+log = AppendLogCursor(
+    client, "/pull/events",
+    append_field="items",        # default
+    initial_items=...,           # warm-start seed (raw {ts,data} envelopes) — or since=...
+    encryptor=...,               # optional: decrypt each element's data (ts/author preserved)
+    verify_author=...,           # optional: True | {"expected_author_pubkey": ..., "alg": ...}
+)
+fresh = await log.pull()         # only elements newer than the last held
+log.items                        # full accumulated log
+log.checkpoint                   # max ts held — persist, and restore via set_checkpoint()
+```
+
+- Cold start (no seed) → first `pull()` fetches the whole collection; warm start (seeded) → resumes incrementally.
+- `verify_author` verifies each element's author signature over the stored (pre-decryption) data and raises `AppendAuthorError` atomically on any failure (nothing is appended, checkpoint unchanged).
+
 ## Removed in v3.0
 
 `derive_credentials`, `generate_passphrase`, `build_invite_url`, `parse_invite_url` (the v2 passphrase identity surface), `create_encryptor` and the `SyncManager` `encryption_secret`/`encryption_salt`/`encryption_info` options, `wrap_group_key`, `create_group_keyring`, `add_group_member`, `rotate_group_key`, `create_group_encryptor`, the v2 `auth` Bearer callback, the `sign_data` callback, and the `signature_verifier` server hook are all gone. Code that imports any of them will fail to import against v3.

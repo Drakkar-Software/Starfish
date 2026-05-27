@@ -96,6 +96,14 @@ export interface AuthResult {
 const scopePathsByContext = new WeakMap<Context, string[] | undefined>()
 
 export type RoleResolver = (c: Context) => Promise<AuthResult>
+/**
+ * Derives extra roles from the authenticated `auth` and the request `params`
+ * (e.g. team membership from `params.teamId`). MUST be idempotent and free of
+ * observable side effects: it can be invoked MORE THAN ONCE per request — the
+ * `/batch/pull` handler calls it once per requested collection (each with that
+ * collection's params) off a single auth resolve. (The replay-protected
+ * resolver runs once; the enricher does not consume the nonce.)
+ */
 export type RoleEnricher = (
   auth: AuthResult,
   params: Record<string, string>,
@@ -154,6 +162,11 @@ export interface SyncRouterOptions {
   /** When set, exposes a GET /config endpoint returning per-collection client metadata.
    *  Omit to disable the endpoint entirely (default). */
   configEndpoint?: ConfigEndpointOptions
+  /** Max collections a single `/batch/pull` request may name. Bounds the
+   *  per-request work (store reads + enricher + scope checks) one signed request
+   *  can drive, since the rate limiter caps requests, not work-per-request.
+   *  Defaults to `DEFAULT_MAX_BATCH_COLLECTIONS` (100). */
+  maxCollectionsPerBatch?: number
 }
 
 function toRoutePath(action: string, storagePath: string): string {
@@ -179,6 +192,9 @@ function toListPrefix(storagePath: string, params: Record<string, string>): stri
 
 const LIST_DEFAULT_LIMIT = 100
 const LIST_MAX_LIMIT = 1000
+
+/** Default cap on collections per `/batch/pull` request (see `maxCollectionsPerBatch`). */
+const DEFAULT_MAX_BATCH_COLLECTIONS = 100
 
 function resolveDocumentKey(
   template: string,
@@ -239,21 +255,20 @@ function applyFieldReadFilter(
 }
 
 /**
- * Run the role resolver ONCE and fold in the conditional `self` role and any
- * enricher roles. Returns the effective role set without checking it against a
- * specific collection — callers do that themselves. Extracted so a bundle pull
- * can authorize many collections from a single resolver invocation: the
+ * Run the role resolver ONCE and return the raw `AuthResult` plus the caller's
+ * base roles, WITHOUT folding in the per-collection `self`/enricher roles. The
  * resolver consumes the request nonce (replay protection), so it must run at
- * most once per request.
+ * most once per request: a handler that authorizes many collections (bundle
+ * pull, batch pull) calls this once, then `foldCollectionRoles` per collection.
+ * Stashes the cap scope (if any) for sibling-read authorization downstream.
  */
-async function resolveEffectiveRoles(
+async function resolveBaseAuth(
   c: Context,
-  params: Record<string, string>,
   opts: SyncRouterOptions,
-  storagePath: string,
 ): Promise<{
+  auth: AuthResult | null
   identity: string | null
-  roles: Set<string>
+  baseRoles: Set<string>
   error: Response | null
   presenter?: { pubHex: string; alg: Alg }
 }> {
@@ -268,18 +283,18 @@ async function resolveEffectiveRoles(
     ])
   } catch (e) {
     if (e instanceof Error && e.message === "timeout") {
-      return { identity: null, roles: new Set(), error: c.json({ error: "Unauthorized" }, 503) }
+      return { auth: null, identity: null, baseRoles: new Set(), error: c.json({ error: "Unauthorized" }, 503) }
     }
     const status = (e as { status?: unknown })?.status
     if (status === 403) {
-      return { identity: null, roles: new Set(), error: c.json({ error: "Forbidden" }, 403) }
+      return { auth: null, identity: null, baseRoles: new Set(), error: c.json({ error: "Forbidden" }, 403) }
     }
     if (status === 413) {
       const message = (e instanceof Error && e.message) || "Payload too large"
-      return { identity: null, roles: new Set(), error: c.json({ error: message }, 413) }
+      return { auth: null, identity: null, baseRoles: new Set(), error: c.json({ error: message }, 413) }
     }
     console.error("[Starfish] roleResolver failed:", e)
-    return { identity: null, roles: new Set(), error: c.json({ error: "Unauthorized" }, 401) }
+    return { auth: null, identity: null, baseRoles: new Set(), error: c.json({ error: "Unauthorized" }, 401) }
   }
 
   // Stash the cap scope (if any) for sibling-read authorization downstream
@@ -287,7 +302,24 @@ async function resolveEffectiveRoles(
   // for role-based resolvers that carry no path scope.
   scopePathsByContext.set(c, auth.scopePaths)
 
-  const effectiveRoles = new Set(auth.roles)
+  return { auth, identity: auth.identity, baseRoles: new Set(auth.roles), error: null, presenter: auth.presenter }
+}
+
+/**
+ * Fold the conditional `self` role and any enricher roles into a COPY of the
+ * caller's base roles, for ONE collection's params + storagePath. Does NOT
+ * re-run the resolver (so it never re-consumes the nonce) — a multi-collection
+ * handler calls this once per collection with that collection's resolved params.
+ */
+async function foldCollectionRoles(
+  auth: AuthResult,
+  baseRoles: Set<string>,
+  params: Record<string, string>,
+  storagePath: string,
+  opts: SyncRouterOptions,
+  c: Context,
+): Promise<{ roles: Set<string>; error: Response | null }> {
+  const effectiveRoles = new Set(baseRoles)
   if (storagePath.includes(IDENTITY_PARAM)) {
     if (params[IDENTITY_KEY] === auth.identity) {
       effectiveRoles.add(ROLE_SELF)
@@ -299,15 +331,37 @@ async function resolveEffectiveRoles(
       for (const r of extra) effectiveRoles.add(r)
     } catch (e) {
       console.error("[Starfish] roleEnricher failed:", e)
-      return {
-        identity: auth.identity,
-        roles: effectiveRoles,
-        error: c.json({ error: "Authorization error" }, 500),
-        presenter: auth.presenter,
-      }
+      return { roles: effectiveRoles, error: c.json({ error: "Authorization error" }, 500) }
     }
   }
-  return { identity: auth.identity, roles: effectiveRoles, error: null, presenter: auth.presenter }
+  return { roles: effectiveRoles, error: null }
+}
+
+/**
+ * Run the role resolver ONCE and fold in the conditional `self` role and any
+ * enricher roles. Returns the effective role set without checking it against a
+ * specific collection — callers do that themselves. Thin wrapper over
+ * `resolveBaseAuth` + `foldCollectionRoles` for the standalone and bundle pull
+ * paths (one params set); batch pull calls the two halves directly so it can
+ * fold per-collection params after a single resolve.
+ */
+async function resolveEffectiveRoles(
+  c: Context,
+  params: Record<string, string>,
+  opts: SyncRouterOptions,
+  storagePath: string,
+): Promise<{
+  identity: string | null
+  roles: Set<string>
+  error: Response | null
+  presenter?: { pubHex: string; alg: Alg }
+}> {
+  const base = await resolveBaseAuth(c, opts)
+  if (base.error || base.auth == null) {
+    return { identity: base.identity, roles: base.baseRoles, error: base.error, presenter: base.presenter }
+  }
+  const folded = await foldCollectionRoles(base.auth, base.baseRoles, params, storagePath, opts, c)
+  return { identity: base.identity, roles: folded.roles, error: folded.error, presenter: base.presenter }
 }
 
 /**
@@ -1243,19 +1297,116 @@ function createBatchPullHandler(
   namespaceName?: string,
 ) {
   return async (c: Context) => {
-    // Mirror the Python handler: 400 only when the param itself is absent/empty;
-    // once present, empty CSV slots (`,a,,`) are dropped rather than turned into
-    // spurious `""` → "Collection not found" entries. An all-empty `,,` therefore
-    // resolves to no names and returns `{ collections: {} }`, exactly as Python does.
+    // 400 only when `collections` itself is absent/empty; once present, empty CSV
+    // slots (`,a,,`) are dropped rather than turned into spurious `""` →
+    // "Collection not found" entries. An all-empty `,,` therefore resolves to no
+    // names and returns `{ collections: {} }`. (Parity with the Python handler.)
     const rawCollections = c.req.query("collections")
     if (!rawCollections) {
       return c.json({ error: "Missing collections parameter" }, 400)
     }
-    const colNames = rawCollections
-      .split(",")
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0)
+    // De-duplicate (preserving order): the result map is keyed by name, so a
+    // repeated name only ever overwrote itself — deduping makes that explicit and
+    // stops `?collections=a,a,a,…` from driving repeated reads of one document.
+    const colNames = [
+      ...new Set(
+        rawCollections
+          .split(",")
+          .map((s) => s.trim())
+          .filter((s) => s.length > 0),
+      ),
+    ]
 
+    // Bound the per-request work: one signed request fans out to a store read +
+    // enricher + scope check per collection, and the rate limiter caps requests,
+    // not work-per-request. Reject an oversized batch (distinct names) up front.
+    const maxBatch = opts.maxCollectionsPerBatch ?? DEFAULT_MAX_BATCH_COLLECTIONS
+    if (colNames.length > maxBatch) {
+      return c.json({ error: "Too many collections" }, 400)
+    }
+
+    // Optional `params`: URL-encoded JSON mapping collection name → its path
+    // params, e.g. `{"notes":{"teamId":"42"}}`. `{identity}` is auto-filled from
+    // the caller below, so it need not be supplied. A malformed blob is a client
+    // framing error → whole-request 400, rather than silently dropping params for
+    // every collection.
+    let paramsByCollection: Record<string, Record<string, unknown>> = {}
+    const rawParams = c.req.query("params")
+    if (rawParams != null && rawParams.length > 0) {
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(rawParams)
+      } catch {
+        return c.json({ error: "Invalid params parameter" }, 400)
+      }
+      if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return c.json({ error: "Invalid params parameter" }, 400)
+      }
+      for (const v of Object.values(parsed as Record<string, unknown>)) {
+        if (v == null || typeof v !== "object" || Array.isArray(v)) {
+          return c.json({ error: "Invalid params parameter" }, 400)
+        }
+      }
+      paramsByCollection = parsed as Record<string, Record<string, unknown>>
+    }
+
+    // Resolve the caller's base auth ONCE — the resolver consumes the request
+    // nonce, so it must not run per-collection. Per-collection `self`/enricher
+    // roles are folded below from this single resolve. A resolver error is NOT
+    // fatal to the batch: it degrades to anonymous so public collections still
+    // resolve and private ones return per-collection "Forbidden", matching the
+    // pre-params handler (which authorized each collection independently and
+    // mapped any auth error to a per-collection "Forbidden").
+    const base = await resolveBaseAuth(c, opts)
+    const identity = base.auth != null ? base.identity : null
+    // Cap-scoped auth carries `scope.paths`; the resolver skips its URL path-scope
+    // check for /batch/pull (the URL names no storage path), so we re-check each
+    // RESOLVED key against this scope below. `undefined` (role-based auth or an
+    // unrestricted device cap) imposes no restriction (matchScopePath → true).
+    const scopePaths = scopePathsByContext.get(c)
+
+    // Audit: mirror the standalone pull's points — a per-collection record on each
+    // auth denial (403/500) and successful read. Awaited like the standalone path.
+    // (The 400-class missing/invalid-param branches are NOT audited, matching the
+    // standalone path which only audits via checkAuth's auth-layer denials.)
+    const recordAudit = async (
+      collection: string,
+      documentKey: string,
+      success: boolean,
+      statusCode: number,
+      auditParams: Record<string, string>,
+    ): Promise<void> => {
+      try {
+        await opts.auditLogger?.record({
+          timestamp: Date.now(),
+          action: ACTION_PULL,
+          collection,
+          identity,
+          documentKey,
+          success,
+          statusCode,
+          // Snapshot: the entry may be persisted/async-processed by the logger,
+          // so copy rather than alias the live per-collection params object.
+          params: { ...auditParams },
+        })
+      } catch (e) {
+        // Audit is best-effort here: the success record runs inside the per-
+        // collection read try/catch, so a throwing logger must NOT relabel a
+        // successful read as "Internal error" (nor 500 the whole batch from the
+        // request-level degrade record). Log and continue. This intentionally
+        // diverges from the standalone path, which lets an audit throw propagate —
+        // tolerable for a single-document request, not for a multi-collection one.
+        console.error("[Starfish] Batch pull audit record failed:", e)
+      }
+    }
+    // The resolver hard-failed but we degrade to anonymous (so public collections
+    // still resolve) — record it so a revoked/expired/bad-sig cap is not an audit
+    // blind spot. `collection: ""` marks it a request-level event.
+    if (base.error) {
+      await recordAudit("", "", false, base.error.status, {})
+    }
+
+    const store = opts.store
     const results: Record<string, Record<string, unknown>> = {}
     for (const name of colNames) {
       const col = collections.find((cc) => cc.name === name)
@@ -1264,29 +1415,87 @@ function createBatchPullHandler(
         continue
       }
 
-      // Batch pull resolves storage paths with no params, so a collection whose
-      // storagePath has a `{param}` placeholder cannot be addressed here. Report it
-      // explicitly instead of reading a synthetic placeholder key that always returns
-      // empty (parity with the Python batch handler).
-      if (col.storagePath.includes("{")) {
-        results[name] = { error: "Collection requires path parameters; not batch-pullable" }
+      // Effective params built from ONLY the template's params (parity with the
+      // standalone path's `extractPathParams`): caller-supplied keys outside the
+      // template are ignored, so they can't reach the store context, plugins, or
+      // audit log. Values must be string/number. `{identity}` auto-fills from the
+      // authenticated caller when the path needs it and none was supplied; an
+      // explicitly supplied identity is kept as-is, so a forged identity is denied
+      // below via the missing-`self` path rather than silently rewritten.
+      const requiredParams = (col.storagePath.match(/\{(\w+)\}/g) ?? []).map((t) => t.slice(1, -1))
+      const supplied = paramsByCollection[name] ?? {}
+      const effectiveParams: Record<string, string> = {}
+      for (const p of requiredParams) {
+        const v = supplied[p]
+        if (typeof v === "string" || typeof v === "number") effectiveParams[p] = String(v)
+      }
+      if (
+        requiredParams.includes(IDENTITY_KEY) &&
+        effectiveParams[IDENTITY_KEY] == null &&
+        identity
+      ) {
+        // `identity` truthy excludes both null and the anonymous "" — an
+        // anonymous caller has no identity to bind, so `{identity}` falls through
+        // to the missing-required-param guard below (no degenerate empty key).
+        effectiveParams[IDENTITY_KEY] = identity
+      }
+
+      // A required param with no supplied/auto-filled value cannot be addressed.
+      if (requiredParams.some((p) => effectiveParams[p] == null)) {
+        results[name] = { error: "Missing required path parameter" }
+        continue
+      }
+      // Charset-validate each value (blocks `/` and other unsafe chars per segment).
+      if (!validateAllParams(effectiveParams)) {
+        results[name] = { error: "Invalid path parameter" }
         continue
       }
 
-      const { identity, roles, error: authError } = await checkAuth(col, OP_READ, c, {}, opts)
-      if (authError) {
+      // Fold per-collection `self` + enricher roles from the single base resolve.
+      // Anonymous (or degraded) callers carry no roles, so only public-read
+      // collections pass isAccessAllowed below.
+      let roles: Set<string>
+      if (base.auth != null) {
+        const folded = await foldCollectionRoles(base.auth, base.baseRoles, effectiveParams, col.storagePath, opts, c)
+        if (folded.error) {
+          results[name] = { error: "Authorization error" }
+          await recordAudit(name, "", false, 500, effectiveParams)
+          continue
+        }
+        roles = folded.roles
+      } else {
+        roles = new Set()
+      }
+
+      if (!isAccessAllowed(col, OP_READ, roles)) {
         results[name] = { error: "Forbidden" }
+        await recordAudit(name, "", false, 403, effectiveParams)
         continue
       }
 
       try {
-        const store = opts.store
-        const key = col.storagePath.replace(/\{[^}]+\}/g, "_batch_")
+        const key = resolveDocumentKey(col.storagePath, effectiveParams)
+        // Guard the resolved key: `validatePathSegment` admits `..`, so a supplied
+        // param could compose a traversal key. Reject before touching the store
+        // (parity with the standalone and bundle pull paths).
+        if (isUnsafeDocumentKey(key)) {
+          results[name] = { error: "Invalid path parameter" }
+          continue
+        }
+        // Cap path-scope: the resolver couldn't bind /batch/pull to a storage
+        // path, so enforce the cap's scope against the RESOLVED key here — a cap
+        // may only batch-read keys its scope covers (e.g. its own room, not a
+        // sibling). This is what stops batch from side-stepping per-path scope.
+        if (!matchScopePath(key, scopePaths)) {
+          results[name] = { error: "Forbidden" }
+          await recordAudit(name, key, false, 403, effectiveParams)
+          continue
+        }
         const batchCtx: StoreContext = {
           collection: col.name,
-          params: {},
+          params: effectiveParams,
           identity,
-          roles,
+          roles: [...roles],
           action: ACTION_PULL,
           ...(namespaceName != null && { namespace: namespaceName }),
         }
@@ -1294,7 +1503,7 @@ function createBatchPullHandler(
         let data = pullResult.data
         // TTL: pull() returns now as its timestamp, so read the stored doc-level
         // write-time to expire stale documents — parity with the standalone pull
-        // path (and the Python batch handler). Falls back to the legacy tree.
+        // path (and the Python batch handler).
         if (col.ttlMs != null) {
           try {
             const rawDoc = await store.getString(key, batchCtx)
@@ -1311,6 +1520,7 @@ function createBatchPullHandler(
         // Strip fields the caller cannot read (parity with the standalone path).
         applyFieldReadFilter(data, col.fieldPermissions, roles)
         results[name] = { data, hash: pullResult.hash, timestamp: pullResult.timestamp }
+        await recordAudit(name, key, true, 200, effectiveParams)
       } catch (e) {
         console.error(`[Starfish] Batch pull failed for collection "${name}":`, e)
         results[name] = { error: "Internal error" }
