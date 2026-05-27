@@ -66,7 +66,8 @@ describe("batch pull endpoint", () => {
     const res = await app.request("/batch/pull?collections=nonexistent")
     expect(res.status).toBe(200)
     const body = await res.json()
-    expect(body.collections.nonexistent.error).toBe("Collection not found")
+    // A name read with no params yields a one-element array.
+    expect(body.collections.nonexistent[0].error).toBe("Collection not found")
   })
 
   it("allows access to public collections", async () => {
@@ -74,8 +75,8 @@ describe("batch pull endpoint", () => {
     const res = await app.request("/batch/pull?collections=public-data")
     expect(res.status).toBe(200)
     const body = await res.json()
-    expect(body.collections["public-data"]).toBeDefined()
-    expect(body.collections["public-data"].data).toBeDefined()
+    expect(body.collections["public-data"]).toHaveLength(1)
+    expect(body.collections["public-data"][0].data).toBeDefined()
   })
 
   it("denies access to private collections without proper roles", async () => {
@@ -83,7 +84,7 @@ describe("batch pull endpoint", () => {
     const res = await app.request("/batch/pull?collections=private-data")
     expect(res.status).toBe(200)
     const body = await res.json()
-    expect(body.collections["private-data"].error).toBe("Forbidden")
+    expect(body.collections["private-data"][0].error).toBe("Forbidden")
   })
 
   it("returns mixed results for public and private collections", async () => {
@@ -92,9 +93,9 @@ describe("batch pull endpoint", () => {
     expect(res.status).toBe(200)
     const body = await res.json()
     // Public should succeed
-    expect(body.collections["public-data"].data).toBeDefined()
+    expect(body.collections["public-data"][0].data).toBeDefined()
     // Private should fail
-    expect(body.collections["private-data"].error).toBe("Forbidden")
+    expect(body.collections["private-data"][0].error).toBe("Forbidden")
   })
 
   it("allows admin to access private collections", async () => {
@@ -104,7 +105,7 @@ describe("batch pull endpoint", () => {
     const res = await app.request("/batch/pull?collections=private-data")
     expect(res.status).toBe(200)
     const body = await res.json()
-    expect(body.collections["private-data"].data).toBeDefined()
+    expect(body.collections["private-data"][0].data).toBeDefined()
   })
 
   it("resolves a {identity}-templated collection from the authenticated caller", async () => {
@@ -119,10 +120,10 @@ describe("batch pull endpoint", () => {
     const body = await res.json()
     // `{identity}` is auto-filled from the caller, so their own doc resolves —
     // no longer rejected as "not batch-pullable".
-    expect(body.collections["user-doc"].error).toBeUndefined()
-    expect(body.collections["user-doc"].data).toEqual({ v: 1 })
+    expect(body.collections["user-doc"][0].error).toBeUndefined()
+    expect(body.collections["user-doc"][0].data).toEqual({ v: 1 })
     // A singleton collection in the same request is still served.
-    expect(body.collections["public-data"].data).toBeDefined()
+    expect(body.collections["public-data"][0].data).toBeDefined()
   })
 
   it("drops empty slots in the collections CSV like the Python handler does", async () => {
@@ -133,7 +134,7 @@ describe("batch pull endpoint", () => {
     expect(res.status).toBe(200)
     const body = await res.json()
     expect(Object.keys(body.collections)).toEqual(["public-data"])
-    expect(body.collections["public-data"].data).toBeDefined()
+    expect(body.collections["public-data"][0].data).toBeDefined()
   })
 
   it("returns an empty result set for an all-empty CSV (parity with Python, not 400)", async () => {
@@ -210,11 +211,80 @@ describe("batch pull param resolution", () => {
       JSON.stringify({ data: { topic: "launch" }, hash: "h", ts: Date.now() }),
     )
     const res = await app.request(
-      `/batch/pull?collections=team-notes&params=${enc({ "team-notes": { teamId: "42" } })}`,
+      `/batch/pull?collections=team-notes&params=${enc({ "team-notes": [{ teamId: "42" }] })}`,
     )
     expect(res.status).toBe(200)
     const body = await res.json()
-    expect(body.collections["team-notes"].data).toEqual({ topic: "launch" })
+    expect(body.collections["team-notes"][0].data).toEqual({ topic: "launch" })
+  })
+
+  it("fans in MANY documents of one collection in a single request", async () => {
+    // The core of the generalization: one collection name, an array of param-sets,
+    // one result array aligned to input order.
+    const { app, store } = makeParamRouter()
+    await store.put("teams/42/notes", JSON.stringify({ data: { topic: "a" }, hash: "h", ts: Date.now() }))
+    await store.put("teams/99/notes", JSON.stringify({ data: { topic: "b" }, hash: "h", ts: Date.now() }))
+    const res = await app.request(
+      `/batch/pull?collections=team-notes&params=${enc({
+        "team-notes": [{ teamId: "42" }, { teamId: "99" }],
+      })}`,
+    )
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.collections["team-notes"].map((e: { data: unknown }) => e.data)).toEqual([
+      { topic: "a" },
+      { topic: "b" },
+    ])
+  })
+
+  it("returns per-document mixed success/error within one collection's fan-out", async () => {
+    // Entries stay index-aligned: a valid set yields data, a set missing a required
+    // param yields an error in the SAME position.
+    const { app, store } = makeParamRouter()
+    await store.put("teams/42/notes", JSON.stringify({ data: { topic: "a" }, hash: "h", ts: Date.now() }))
+    const res = await app.request(
+      `/batch/pull?collections=team-notes&params=${enc({
+        "team-notes": [{ teamId: "42" }, {}],
+      })}`,
+    )
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.collections["team-notes"][0].data).toEqual({ topic: "a" })
+    expect(body.collections["team-notes"][1].error).toBe("Missing required path parameter")
+  })
+
+  it("emits one 'Collection not found' entry per requested set (index-aligned)", async () => {
+    // An unknown collection with N param-sets returns N error entries so the result
+    // array length matches the caller's input (batchPullMany indexes by position).
+    const { app } = makeParamRouter()
+    const res = await app.request(
+      `/batch/pull?collections=nope&params=${enc({ nope: [{}, {}, {}] })}`,
+    )
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.collections.nope).toHaveLength(3)
+    expect(body.collections.nope.every((e: { error: string }) => e.error === "Collection not found")).toBe(true)
+  })
+
+  it("returns an empty array for an empty param-set list (no reads)", async () => {
+    const { app } = makeParamRouter()
+    const res = await app.request(
+      `/batch/pull?collections=team-notes&params=${enc({ "team-notes": [] })}`,
+    )
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.collections["team-notes"]).toEqual([])
+  })
+
+  it("rejects a non-array per-collection params value (array-of-objects required)", async () => {
+    // The pre-generalization object shape is no longer accepted — a bare object is a
+    // framing error → whole-request 400.
+    const { app } = makeParamRouter()
+    const res = await app.request(
+      `/batch/pull?collections=team-notes&params=${enc({ "team-notes": { teamId: "42" } })}`,
+    )
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toBe("Invalid params parameter")
   })
 
   it("auto-fills {identity} so the caller reads their OWN self-gated doc", async () => {
@@ -228,7 +298,7 @@ describe("batch pull param resolution", () => {
     const res = await app.request("/batch/pull?collections=journal")
     expect(res.status).toBe(200)
     const body = await res.json()
-    expect(body.collections["journal"].data).toEqual({ entries: 3 })
+    expect(body.collections["journal"][0].data).toEqual({ entries: 3 })
   })
 
   it("denies a forged identity on a self-gated collection (no self role)", async () => {
@@ -239,14 +309,14 @@ describe("batch pull param resolution", () => {
       JSON.stringify({ data: { secret: true }, hash: "h", ts: Date.now() }),
     )
     const res = await app.request(
-      `/batch/pull?collections=journal&params=${enc({ journal: { identity: "user-2" } })}`,
+      `/batch/pull?collections=journal&params=${enc({ journal: [{ identity: "user-2" }] })}`,
     )
     expect(res.status).toBe(200)
     const body = await res.json()
     // Supplied identity != caller → no `self` role → readRoles unmet → Forbidden,
     // and crucially no `data` leaks.
-    expect(body.collections["journal"].error).toBe("Forbidden")
-    expect(body.collections["journal"].data).toBeUndefined()
+    expect(body.collections["journal"][0].error).toBe("Forbidden")
+    expect(body.collections["journal"][0].data).toBeUndefined()
   })
 
   it("reports a missing required param", async () => {
@@ -255,8 +325,8 @@ describe("batch pull param resolution", () => {
     const res = await app.request("/batch/pull?collections=team-notes")
     expect(res.status).toBe(200)
     const body = await res.json()
-    expect(body.collections["team-notes"].error).toBe("Missing required path parameter")
-    expect(body.collections["team-notes"].data).toBeUndefined()
+    expect(body.collections["team-notes"][0].error).toBe("Missing required path parameter")
+    expect(body.collections["team-notes"][0].data).toBeUndefined()
   })
 
   it("merges an auto-filled {identity} with a supplied {teamId} in one path", async () => {
@@ -270,12 +340,12 @@ describe("batch pull param resolution", () => {
       JSON.stringify({ data: { n: 7 }, hash: "h", ts: Date.now() }),
     )
     const res = await app.request(
-      `/batch/pull?collections=team-journal&params=${enc({ "team-journal": { teamId: "42" } })}`,
+      `/batch/pull?collections=team-journal&params=${enc({ "team-journal": [{ teamId: "42" }] })}`,
     )
     expect(res.status).toBe(200)
     const body = await res.json()
-    expect(body.collections["team-journal"].error).toBeUndefined()
-    expect(body.collections["team-journal"].data).toEqual({ n: 7 })
+    expect(body.collections["team-journal"][0].error).toBeUndefined()
+    expect(body.collections["team-journal"][0].data).toEqual({ n: 7 })
   })
 
   it("applies TTL expiry against the RESOLVED key (not the template)", async () => {
@@ -309,7 +379,7 @@ describe("batch pull param resolution", () => {
     const res = await app.request("/batch/pull?collections=user-ephemeral")
     expect(res.status).toBe(200)
     const body = await res.json()
-    expect(body.collections["user-ephemeral"].data).toEqual({})
+    expect(body.collections["user-ephemeral"][0].data).toEqual({})
   })
 
   it("rejects a malformed params blob with a whole-request 400", async () => {
@@ -323,14 +393,14 @@ describe("batch pull param resolution", () => {
   it("rejects an unsafe param value per-collection while serving siblings", async () => {
     const { app } = makeParamRouter()
     const res = await app.request(
-      `/batch/pull?collections=team-notes,public-data&params=${enc({ "team-notes": { teamId: "a/b" } })}`,
+      `/batch/pull?collections=team-notes,public-data&params=${enc({ "team-notes": [{ teamId: "a/b" }] })}`,
     )
     expect(res.status).toBe(200)
     const body = await res.json()
     // "a/b" contains "/", which fails the per-segment charset check.
-    expect(body.collections["team-notes"].error).toBe("Invalid path parameter")
+    expect(body.collections["team-notes"][0].error).toBe("Invalid path parameter")
     // The sibling singleton is unaffected.
-    expect(body.collections["public-data"].data).toBeDefined()
+    expect(body.collections["public-data"][0].data).toBeDefined()
   })
 
   it("blocks a `..` traversal value via the resolved-key guard", async () => {
@@ -338,38 +408,51 @@ describe("batch pull param resolution", () => {
     // ".." passes the per-segment charset (dots are allowed) but composes a
     // traversal key, which isUnsafeDocumentKey rejects before any store read.
     const res = await app.request(
-      `/batch/pull?collections=team-notes&params=${enc({ "team-notes": { teamId: ".." } })}`,
+      `/batch/pull?collections=team-notes&params=${enc({ "team-notes": [{ teamId: ".." }] })}`,
     )
     expect(res.status).toBe(200)
     const body = await res.json()
-    expect(body.collections["team-notes"].error).toBe("Invalid path parameter")
+    expect(body.collections["team-notes"][0].error).toBe("Invalid path parameter")
   })
 
   it("enforces cap scope.paths against the resolved key", async () => {
     // A cap-cert resolver returns `scopePaths`; the batch handler re-checks each
     // RESOLVED key against it (the resolver can't path-bind /batch/pull). A caller
     // scoped to team 42 reads 42 but is Forbidden on 99 — batch can't side-step
-    // the per-path scope.
+    // the per-path scope. Proven in ONE fan-out request so the per-entry scope
+    // check is exercised, not just the per-collection one.
     const { app, store } = makeParamRouter({
       roleResolver: async () => ({ identity: "user-1", roles: [], scopePaths: ["teams/42/notes"] }),
     })
     await store.put("teams/42/notes", JSON.stringify({ data: { ok: 1 }, hash: "h", ts: Date.now() }))
     await store.put("teams/99/notes", JSON.stringify({ data: { secret: 1 }, hash: "h", ts: Date.now() }))
-    const rOk = await app.request(
-      `/batch/pull?collections=team-notes&params=${enc({ "team-notes": { teamId: "42" } })}`,
+    const res = await app.request(
+      `/batch/pull?collections=team-notes&params=${enc({
+        "team-notes": [{ teamId: "42" }, { teamId: "99" }],
+      })}`,
     )
-    expect((await rOk.json()).collections["team-notes"].data).toEqual({ ok: 1 })
-    const rNo = await app.request(
-      `/batch/pull?collections=team-notes&params=${enc({ "team-notes": { teamId: "99" } })}`,
-    )
-    const body = await rNo.json()
-    expect(body.collections["team-notes"].error).toBe("Forbidden")
-    expect(body.collections["team-notes"].data).toBeUndefined()
+    const body = await res.json()
+    expect(body.collections["team-notes"][0].data).toEqual({ ok: 1 })
+    expect(body.collections["team-notes"][1].error).toBe("Forbidden")
+    expect(body.collections["team-notes"][1].data).toBeUndefined()
   })
 
   it("rejects a batch naming more than maxCollectionsPerBatch collections", async () => {
     const { app } = makeParamRouter({ maxCollectionsPerBatch: 2 })
     const res = await app.request("/batch/pull?collections=public-data,team-notes,journal")
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toBe("Too many collections")
+  })
+
+  it("rejects a fan-out whose TOTAL reads exceed maxCollectionsPerBatch (one name)", async () => {
+    // The distinct-name cap is no longer sufficient: a single name with an
+    // oversized param-set array must also be rejected by the total-reads guard.
+    const { app } = makeParamRouter({ maxCollectionsPerBatch: 2 })
+    const res = await app.request(
+      `/batch/pull?collections=team-notes&params=${enc({
+        "team-notes": [{ teamId: "1" }, { teamId: "2" }, { teamId: "3" }],
+      })}`,
+    )
     expect(res.status).toBe(400)
     expect((await res.json()).error).toBe("Too many collections")
   })
@@ -390,8 +473,8 @@ describe("batch pull param resolution", () => {
     // team-notes (public, in scope) → success; journal forged identity → Forbidden.
     await app.request(
       `/batch/pull?collections=team-notes,journal&params=${enc({
-        "team-notes": { teamId: "42" },
-        journal: { identity: "user-2" },
+        "team-notes": [{ teamId: "42" }],
+        journal: [{ identity: "user-2" }],
       })}`,
     )
     const pulls = records.filter((r) => r.action === "pull")
@@ -422,7 +505,7 @@ describe("batch pull param resolution", () => {
     // recorded as a request-level audit entry (collection: "").
     const res = await app.request("/batch/pull?collections=public-data")
     expect(res.status).toBe(200)
-    expect((await res.json()).collections["public-data"].data).toBeDefined()
+    expect((await res.json()).collections["public-data"][0].data).toBeDefined()
     const pulls = records.filter((r) => r.action === "pull")
     expect(pulls.find((r) => r.collection === "")).toMatchObject({ success: false, statusCode: 403 })
     expect(pulls.find((r) => r.collection === "public-data")).toMatchObject({ success: true, statusCode: 200 })
@@ -443,12 +526,12 @@ describe("batch pull param resolution", () => {
       JSON.stringify({ data: { ok: 1 }, hash: "h", ts: Date.now() }),
     )
     const res = await app.request(
-      `/batch/pull?collections=team-notes&params=${enc({ "team-notes": { teamId: "42" } })}`,
+      `/batch/pull?collections=team-notes&params=${enc({ "team-notes": [{ teamId: "42" }] })}`,
     )
     expect(res.status).toBe(200)
     const body = await res.json()
-    expect(body.collections["team-notes"].data).toEqual({ ok: 1 })
-    expect(body.collections["team-notes"].error).toBeUndefined()
+    expect(body.collections["team-notes"][0].data).toEqual({ ok: 1 })
+    expect(body.collections["team-notes"][0].error).toBeUndefined()
   })
 
   it("ignores caller-supplied params outside the collection's template", async () => {
@@ -463,13 +546,13 @@ describe("batch pull param resolution", () => {
     // pass-through code the "a/b" would have triggered "Invalid path parameter").
     const res = await app.request(
       `/batch/pull?collections=team-notes&params=${enc({
-        "team-notes": { teamId: "42", junk: "a/b" },
+        "team-notes": [{ teamId: "42", junk: "a/b" }],
       })}`,
     )
     expect(res.status).toBe(200)
     const body = await res.json()
-    expect(body.collections["team-notes"].error).toBeUndefined()
-    expect(body.collections["team-notes"].data).toEqual({ ok: 1 })
+    expect(body.collections["team-notes"][0].error).toBeUndefined()
+    expect(body.collections["team-notes"][0].data).toEqual({ ok: 1 })
   })
 })
 
@@ -508,7 +591,7 @@ describe("batch pull TTL expiry", () => {
     const res = await app.request("/batch/pull?collections=ephemeral")
     expect(res.status).toBe(200)
     const body = await res.json()
-    expect(body.collections.ephemeral.data).toEqual({})
+    expect(body.collections.ephemeral[0].data).toEqual({})
   })
 
   it("returns data for a fresh document within ttlMs", async () => {
@@ -519,7 +602,7 @@ describe("batch pull TTL expiry", () => {
     )
     const res = await app.request("/batch/pull?collections=ephemeral")
     const body = await res.json()
-    expect(body.collections.ephemeral.data).toEqual({ v: 1 })
+    expect(body.collections.ephemeral[0].data).toEqual({ v: 1 })
   })
 })
 

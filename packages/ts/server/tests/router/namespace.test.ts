@@ -389,8 +389,8 @@ describe("namespace batch pull", () => {
     const res = await app.request("/tenantA/batch/pull?collections=config")
     expect(res.status).toBe(200)
     const body = await res.json()
-    expect(body.collections.config).toBeDefined()
-    expect(body.collections.config.error).toBeUndefined()
+    expect(body.collections.config[0]).toBeDefined()
+    expect(body.collections.config[0].error).toBeUndefined()
   })
 
   it("/{ns}/batch/pull does not find root collections", async () => {
@@ -404,7 +404,7 @@ describe("namespace batch pull", () => {
     const res = await app.request("/tenantA/batch/pull?collections=config")
     expect(res.status).toBe(200)
     const body = await res.json()
-    expect(body.collections.config.error).toBe("Collection not found")
+    expect(body.collections.config[0].error).toBe("Collection not found")
   })
 
   it("/batch/pull does not find namespaced collections", async () => {
@@ -418,7 +418,7 @@ describe("namespace batch pull", () => {
     const res = await app.request("/batch/pull?collections=config")
     expect(res.status).toBe(200)
     const body = await res.json()
-    expect(body.collections.config.error).toBe("Collection not found")
+    expect(body.collections.config[0].error).toBe("Collection not found")
   })
 
   it("/{ns}/batch/pull returns 400 for missing collections param", async () => {

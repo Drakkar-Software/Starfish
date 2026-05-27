@@ -2547,22 +2547,22 @@ async def test_batch_pull_enforces_cap_scope_per_resolved_key(http):
     )
 
     def _batch_path(room: str) -> str:
-        q = quote(json.dumps({"chat": {"roomId": room}}, separators=(",", ":")))
+        q = quote(json.dumps({"chat": [{"roomId": room}]}, separators=(",", ":")))
         return f"/batch/pull?collections=chat&params={q}"
 
     # In-scope room → reachable (empty doc, but NOT an error).
     p_ok = _batch_path("room-a")
     r_ok = await http.get(p_ok, headers=_signed_get_headers(cap, user.device["edPriv"], p_ok))
     assert r_ok.status_code == 200
-    assert "error" not in r_ok.json()["collections"]["chat"]
+    assert "error" not in r_ok.json()["collections"]["chat"][0]
 
     # Out-of-scope room → Forbidden, never data.
     p_no = _batch_path("room-b")
     r_no = await http.get(p_no, headers=_signed_get_headers(cap, user.device["edPriv"], p_no))
     assert r_no.status_code == 200
     cols = r_no.json()["collections"]
-    assert cols["chat"]["error"] == "Forbidden"
-    assert "data" not in cols["chat"]
+    assert cols["chat"][0]["error"] == "Forbidden"
+    assert "data" not in cols["chat"][0]
 
 
 async def test_batch_pull_cannot_exfiltrate_another_users_namespace(sdk, http):
@@ -2586,15 +2586,15 @@ async def test_batch_pull_cannot_exfiltrate_another_users_namespace(sdk, http):
     assert resp.status_code == 200
     cols = resp.json()["collections"]
     for name in ("profile", "entitlements", "devices"):
-        assert "data" not in cols[name]  # never returns a user's document
+        assert "data" not in cols[name][0]  # never returns a user's document
 
     # (2) Alice's cap supplying BOB's identity → resolved key is outside Alice's
     # scope.paths → Forbidden, no data leak.
-    q = quote(json.dumps({"entitlements": {"identity": bob.user_id}}, separators=(",", ":")))
+    q = quote(json.dumps({"entitlements": [{"identity": bob.user_id}]}, separators=(",", ":")))
     p = f"/batch/pull?collections=entitlements&params={q}"
     r2 = await http.get(p, headers=_signed_get_headers(acap, alice.device["edPriv"], p))
     assert r2.status_code == 200
-    c2 = r2.json()["collections"]["entitlements"]
+    c2 = r2.json()["collections"]["entitlements"][0]
     assert c2.get("error") == "Forbidden"
     assert "data" not in c2
 

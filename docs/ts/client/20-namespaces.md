@@ -182,21 +182,35 @@ const res = await client.fetch(
 Batch pull resolves `{param}` collections too. The `{identity}` param is **auto-filled from the
 authenticated caller**, so a per-user collection like `users/{identity}/settings` works with no
 extra arguments. Other params are supplied via an optional `params` query parameter — URL-encoded
-JSON mapping each collection name to its params:
+JSON mapping each collection name to an **array of param-sets**, one per document to read. The
+result for each name is an **array of entries** in the same order, so the SAME collection can fan
+in many documents (e.g. many users' `profile`) in one round-trip:
 
 ```ts
-const params = encodeURIComponent(JSON.stringify({ notes: { teamId: "42" } }))
+const params = encodeURIComponent(JSON.stringify({
+  notes: [{ teamId: "42" }],
+  profile: [{ identity: "alice" }, { identity: "bob" }],
+}))
 const res = await client.fetch(
-  `https://api.example.com/v1/tenantA/batch/pull?collections=settings,notes&params=${params}`,
+  `https://api.example.com/v1/tenantA/batch/pull?collections=settings,notes,profile&params=${params}`,
   { headers: await client.getAuthHeaders() }
 )
-// → { collections: { settings: {...own doc...}, notes: {...team 42...} } }
+// → { collections: {
+//      settings: [{...own doc...}],            // no params → one auto-filled doc
+//      notes:    [{...team 42...}],
+//      profile:  [{...alice...}, {...bob...}],  // fanned in, in request order
+//    } }
 ```
 
-Each collection is still authorized independently: a cap reads only the keys its `scope.paths`
+The typed SDK exposes this via `client.batchPull(names, { params })` and, for the common
+"many docs of one collection" case, `client.batchPullMany("profile", [{ identity: "alice" }, …])`
+which returns the entry array aligned to the param-sets by index.
+
+Each entry is still authorized independently: a cap reads only the keys its `scope.paths`
 covers, and a supplied identity that isn't the caller's is `Forbidden` (no `self` role). A required
 param that is neither supplied nor auto-fillable returns `{ error: "Missing required path
-parameter" }` for that collection.
+parameter" }` for that document. The total number of reads across all collections is bounded by
+`maxCollectionsPerBatch`.
 
 ## Storage isolation
 

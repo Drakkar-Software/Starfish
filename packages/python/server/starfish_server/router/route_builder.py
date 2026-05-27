@@ -1206,12 +1206,13 @@ def _make_batch_pull_handler(
         if len(names) > opts.max_collections_per_batch:
             return JSONResponse({"error": "Too many collections"}, status_code=400)
 
-        # Optional `params`: URL-encoded JSON mapping collection name → its path
-        # params, e.g. `{"notes":{"teamId":"42"}}`. `{identity}` is auto-filled from
-        # the caller below, so it need not be supplied. A malformed blob is a client
-        # framing error → whole-request 400, rather than silently dropping params
-        # for every collection.
-        params_by_collection: dict[str, dict[str, Any]] = {}
+        # Optional `params`: URL-encoded JSON mapping collection name → an ARRAY of
+        # path-param sets, one per document to read from that collection, e.g.
+        # `{"profile":[{"identity":"a"},{"identity":"b"}]}` reads two profiles.
+        # `{identity}` is auto-filled from the caller below, so a set may omit it. A
+        # malformed blob is a client framing error → whole-request 400, rather than
+        # silently dropping params for every collection.
+        params_by_collection: dict[str, list[dict[str, Any]]] = {}
         raw_params = request.query_params.get("params")
         if raw_params:
             try:
@@ -1221,11 +1222,25 @@ def _make_batch_pull_handler(
                 # decoder can raise it rather than a ValueError) — still a client
                 # framing error, not a 500.
                 return JSONResponse({"error": "Invalid params parameter"}, status_code=400)
+            # Each value is an array of param-sets; every element must be a dict. An
+            # array of arrays/scalars (or a bare object) is a framing error → 400.
             if not isinstance(parsed, dict) or any(
-                not isinstance(v, dict) for v in parsed.values()
+                not isinstance(v, list) or any(not isinstance(e, dict) for e in v)
+                for v in parsed.values()
             ):
                 return JSONResponse({"error": "Invalid params parameter"}, status_code=400)
             params_by_collection = parsed
+
+        # Bound the TOTAL reads (Σ param-sets across collections), not just the count
+        # of distinct names: with array params one name can fan in many documents, so
+        # the distinct-name cap above is necessary but no longer sufficient. A name
+        # absent from `params` reads one auto-filled doc (counts as 1).
+        total_reads = sum(
+            len(params_by_collection[name]) if name in params_by_collection else 1
+            for name in names
+        )
+        if total_reads > opts.max_collections_per_batch:
+            return JSONResponse({"error": "Too many collections"}, status_code=400)
 
         # Resolve the caller's base auth ONCE — the resolver consumes the request
         # nonce, so it must not run per-collection. Per-collection `self`/enricher
@@ -1284,14 +1299,16 @@ def _make_batch_pull_handler(
             await _record_audit("", "", False, auth_error.status_code, {})
 
         store = opts.store
-        results: dict[str, Any] = {}
 
-        for name in names:
-            col = collections_by_name.get(name)
-            if col is None:
-                results[name] = {"error": "Collection not found"}
-                continue
-
+        async def _resolve_entry(
+            col: CollectionConfig, supplied: dict[str, Any]
+        ) -> dict[str, Any]:
+            # Resolve ONE document of `col` for a single supplied param-set,
+            # returning its result entry (`{data,hash,timestamp}` or `{error}`).
+            # Factored out of the loop so a collection's array of param-sets each
+            # runs the identical params → auth-fold → access → key → scope → pull →
+            # field-filter pipeline.
+            #
             # Effective params built from ONLY the template's params (parity with
             # the standalone path): caller-supplied keys outside the template are
             # ignored, so they can't reach the store context, plugins, or audit
@@ -1300,7 +1317,6 @@ def _make_batch_pull_handler(
             # explicitly supplied identity is kept as-is, so a forged identity is
             # denied below via the missing-`self` path rather than silently rewritten.
             required_params = re.findall(r"\{(\w+)\}", col.storage_path)
-            supplied = params_by_collection.get(name, {})
             effective_params: dict[str, str] = {}
             for p in required_params:
                 v = supplied.get(p)
@@ -1321,12 +1337,10 @@ def _make_batch_pull_handler(
 
             # A required param with no supplied/auto-filled value cannot be addressed.
             if any(p not in effective_params for p in required_params):
-                results[name] = {"error": "Missing required path parameter"}
-                continue
+                return {"error": "Missing required path parameter"}
             # Charset-validate each value (blocks `/` and other unsafe chars).
             if not _validate_all_params(effective_params):
-                results[name] = {"error": "Invalid path parameter"}
-                continue
+                return {"error": "Invalid path parameter"}
 
             # Fold per-collection `self` + enricher roles from the single base
             # resolve. Anonymous (or degraded) callers carry no roles, so only
@@ -1336,16 +1350,14 @@ def _make_batch_pull_handler(
                     auth, base_roles, effective_params, col.storage_path, opts
                 )
                 if fold_error is not None:
-                    results[name] = {"error": "Authorization error"}
-                    await _record_audit(name, "", False, 500, effective_params)
-                    continue
+                    await _record_audit(col.name, "", False, 500, effective_params)
+                    return {"error": "Authorization error"}
             else:
                 effective_roles = frozenset()
 
             if not _is_access_allowed(col, OP_READ, effective_roles):
-                results[name] = {"error": "Forbidden"}
-                await _record_audit(name, "", False, 403, effective_params)
-                continue
+                await _record_audit(col.name, "", False, 403, effective_params)
+                return {"error": "Forbidden"}
 
             try:
                 key = _resolve_document_key(col.storage_path, effective_params)
@@ -1353,17 +1365,15 @@ def _make_batch_pull_handler(
                 # supplied param could compose a traversal key. Reject before
                 # touching the store (parity with the standalone and bundle paths).
                 if is_unsafe_document_key(key):
-                    results[name] = {"error": "Invalid path parameter"}
-                    continue
+                    return {"error": "Invalid path parameter"}
                 # Cap path-scope: the resolver couldn't bind /batch/pull to a
                 # storage path, so enforce the cap's scope against the RESOLVED key
                 # here — a cap may only batch-read keys its scope covers (e.g. its
                 # own room, not a sibling). This stops batch from side-stepping
                 # per-path scope.
                 if not match_scope_path(key, scope_paths):
-                    results[name] = {"error": "Forbidden"}
-                    await _record_audit(name, key, False, 403, effective_params)
-                    continue
+                    await _record_audit(col.name, key, False, 403, effective_params)
+                    return {"error": "Forbidden"}
                 batch_ctx = StoreContext(
                     collection=col.name,
                     params=effective_params,
@@ -1388,17 +1398,32 @@ def _make_batch_pull_handler(
                 # Strip fields the caller cannot read (parity with the standalone path).
                 _apply_field_read_filter(data, col.field_permissions, effective_roles)
 
-                results[name] = {
+                await _record_audit(col.name, key, True, 200, effective_params)
+                return {
                     "data": data,
                     "hash": pull_result.hash,
                     "timestamp": pull_result.timestamp,
                 }
-                await _record_audit(name, key, True, 200, effective_params)
             except Exception as exc:
                 logging.getLogger(__name__).error(
-                    "Batch pull failed for collection %r: %s", name, exc, exc_info=True,
+                    "Batch pull failed for collection %r: %s", col.name, exc, exc_info=True,
                 )
-                results[name] = {"error": "Internal error"}
+                return {"error": "Internal error"}
+
+        results: dict[str, Any] = {}
+        for name in names:
+            # A name absent from `params` reads one auto-filled doc (`[{}]`);
+            # present means an array of param-sets, possibly empty (→ no reads, []).
+            param_sets = params_by_collection.get(name)
+            if param_sets is None:
+                param_sets = [{}]
+            col = collections_by_name.get(name)
+            if col is None:
+                # One error entry PER requested set so the array stays index-aligned
+                # with the caller's input (batch_pull_many indexes by position).
+                results[name] = [{"error": "Collection not found"} for _ in param_sets]
+                continue
+            results[name] = [await _resolve_entry(col, supplied) for supplied in param_sets]
 
         return JSONResponse({"collections": results})
 

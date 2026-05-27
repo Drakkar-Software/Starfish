@@ -87,18 +87,23 @@ export interface BatchPullEntry {
 }
 
 /** Response of {@link StarfishClient.batchPull}: a map of requested collection
- *  name → its {@link BatchPullEntry}. */
+ *  name → an ARRAY of {@link BatchPullEntry}, one per requested param-set, in
+ *  request order. A collection read with no params yields a one-element array. */
 export interface BatchPullResult {
-  collections: Record<string, BatchPullEntry>
+  collections: Record<string, BatchPullEntry[]>
 }
 
 /** Options for {@link StarfishClient.batchPull}. */
 export interface BatchPullOptions {
-  /** Per-collection path params, e.g. `{ notes: { teamId: "42" } }`. Serialized
-   *  to a URL-encoded JSON `params` query parameter. The `{identity}` param is
-   *  auto-filled by the server from the authenticated caller, so it need not be
-   *  supplied (and a supplied identity that isn't the caller's is rejected). */
-  params?: Record<string, Record<string, string>>
+  /** Per-collection path params: collection name → an ARRAY of param-sets, one
+   *  per document to read from that collection, e.g.
+   *  `{ profile: [{ identity: "a" }, { identity: "b" }] }` reads two profiles in
+   *  one round-trip. Serialized to a URL-encoded JSON `params` query. The
+   *  `{identity}` param is auto-filled by the server from the authenticated
+   *  caller when a set omits it, so a single self-doc read can pass `[{}]` — or
+   *  omit the collection from `params` entirely (an unlisted collection reads one
+   *  auto-filled doc). Results come back under the same name in request order. */
+  params?: Record<string, Record<string, string>[]>
 }
 
 /**
@@ -334,12 +339,16 @@ export class StarfishClient {
   }
 
   /**
-   * Pull several collections in one round-trip via `/batch/pull`. `collections`
-   * is the list of collection names; `opts.params` supplies path params per
-   * collection (serialized to a URL-encoded JSON `params` query). The server
-   * auto-fills the `{identity}` param from the authenticated caller, so per-user
-   * collections need no params. Returns a map of collection name → its pulled
-   * document or a per-collection `{ error }`. Honors the configured namespace.
+   * Pull several documents in one round-trip via `/batch/pull`. `collections` is
+   * the list of distinct collection names; `opts.params` supplies, per collection,
+   * an ARRAY of path-param sets — one per document to read — so the SAME collection
+   * can fan in many documents (e.g. many users' `profile`) in a single request.
+   * The server auto-fills the `{identity}` param from the authenticated caller for
+   * any set that omits it, so a self-doc collection needs no params. Returns a map
+   * of collection name → an ARRAY of pulled documents (or per-document `{ error }`),
+   * in request order. Honors the configured namespace.
+   *
+   * For the common "many docs of one collection" case prefer {@link batchPullMany}.
    *
    * Note: not append/checkpoint-aware — for incremental append-only reads use
    * `pull(path, { since })` (or `AppendLogCursor`) per collection.
@@ -365,6 +374,22 @@ export class StarfishClient {
       throw new StarfishHttpError(res.status, await res.text())
     }
     return await res.json() as BatchPullResult
+  }
+
+  /**
+   * Convenience over {@link batchPull} for reading MANY documents of ONE
+   * collection in a single round-trip: pass the per-document param-sets and get
+   * back the {@link BatchPullEntry} array aligned to `paramsList` by index (each
+   * entry is `{ data, hash, timestamp }` or `{ error }`). An empty `paramsList`
+   * issues no request and returns `[]`.
+   */
+  async batchPullMany(
+    collection: string,
+    paramsList: Record<string, string>[],
+  ): Promise<BatchPullEntry[]> {
+    if (paramsList.length === 0) return []
+    const res = await this.batchPull([collection], { params: { [collection]: paramsList } })
+    return res.collections[collection] ?? []
   }
 
   /**

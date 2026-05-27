@@ -266,7 +266,7 @@ async def test_ns_batch_pull_returns_collections_in_namespace():
     assert resp.status_code == 200
     body = resp.json()
     assert "config" in body["collections"]
-    assert "error" not in body["collections"]["config"]
+    assert "error" not in body["collections"]["config"][0]
 
 
 @pytest.mark.asyncio
@@ -279,7 +279,7 @@ async def test_ns_batch_pull_does_not_find_root_collections():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/tenantA/batch/pull?collections=config")
     assert resp.status_code == 200
-    assert resp.json()["collections"]["config"]["error"] == "Collection not found"
+    assert resp.json()["collections"]["config"][0]["error"] == "Collection not found"
 
 
 @pytest.mark.asyncio
@@ -291,7 +291,7 @@ async def test_root_batch_pull_does_not_find_namespaced_collections():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/batch/pull?collections=config")
     assert resp.status_code == 200
-    assert resp.json()["collections"]["config"]["error"] == "Collection not found"
+    assert resp.json()["collections"]["config"][0]["error"] == "Collection not found"
 
 
 @pytest.mark.asyncio
@@ -319,7 +319,7 @@ async def test_root_batch_pull_returns_root_collections():
     assert resp.status_code == 200
     body = resp.json()
     assert "config" in body["collections"]
-    assert "error" not in body["collections"]["config"]
+    assert "error" not in body["collections"]["config"][0]
 
 
 @pytest.mark.asyncio
@@ -328,7 +328,7 @@ async def test_root_batch_pull_returns_error_for_unknown_collection():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/batch/pull?collections=nonexistent")
     assert resp.status_code == 200
-    assert resp.json()["collections"]["nonexistent"]["error"] == "Collection not found"
+    assert resp.json()["collections"]["nonexistent"][0]["error"] == "Collection not found"
 
 
 @pytest.mark.asyncio

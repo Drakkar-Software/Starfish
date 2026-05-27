@@ -1325,12 +1325,13 @@ function createBatchPullHandler(
       return c.json({ error: "Too many collections" }, 400)
     }
 
-    // Optional `params`: URL-encoded JSON mapping collection name → its path
-    // params, e.g. `{"notes":{"teamId":"42"}}`. `{identity}` is auto-filled from
-    // the caller below, so it need not be supplied. A malformed blob is a client
-    // framing error → whole-request 400, rather than silently dropping params for
-    // every collection.
-    let paramsByCollection: Record<string, Record<string, unknown>> = {}
+    // Optional `params`: URL-encoded JSON mapping collection name → an ARRAY of
+    // path-param sets, one per document to read from that collection, e.g.
+    // `{"profile":[{"identity":"a"},{"identity":"b"}]}` reads two profiles.
+    // `{identity}` is auto-filled from the caller below, so a set may omit it. A
+    // malformed blob is a client framing error → whole-request 400, rather than
+    // silently dropping params for every collection.
+    let paramsByCollection: Record<string, Record<string, unknown>[]> = {}
     const rawParams = c.req.query("params")
     if (rawParams != null && rawParams.length > 0) {
       let parsed: unknown
@@ -1342,12 +1343,29 @@ function createBatchPullHandler(
       if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) {
         return c.json({ error: "Invalid params parameter" }, 400)
       }
+      // Each value is an array of param-sets; every element must be a plain object.
+      // An array of arrays/scalars (or a bare object) is a framing error → 400.
       for (const v of Object.values(parsed as Record<string, unknown>)) {
-        if (v == null || typeof v !== "object" || Array.isArray(v)) {
+        if (
+          !Array.isArray(v) ||
+          v.some((e) => e == null || typeof e !== "object" || Array.isArray(e))
+        ) {
           return c.json({ error: "Invalid params parameter" }, 400)
         }
       }
-      paramsByCollection = parsed as Record<string, Record<string, unknown>>
+      paramsByCollection = parsed as Record<string, Record<string, unknown>[]>
+    }
+
+    // Bound the TOTAL reads (Σ param-sets across collections), not just the count
+    // of distinct names: with array params one name can fan in many documents, so
+    // the distinct-name cap above is necessary but no longer sufficient. A name
+    // absent from `params` reads one auto-filled doc (counts as 1).
+    const totalReads = colNames.reduce(
+      (n, name) => n + (paramsByCollection[name]?.length ?? 1),
+      0,
+    )
+    if (totalReads > maxBatch) {
+      return c.json({ error: "Too many collections" }, 400)
     }
 
     // Resolve the caller's base auth ONCE — the resolver consumes the request
@@ -1407,14 +1425,15 @@ function createBatchPullHandler(
     }
 
     const store = opts.store
-    const results: Record<string, Record<string, unknown>> = {}
-    for (const name of colNames) {
-      const col = collections.find((cc) => cc.name === name)
-      if (!col) {
-        results[name] = { error: "Collection not found" }
-        continue
-      }
 
+    // Resolve ONE document of `col` for a single supplied param-set, returning its
+    // result entry (`{ data, hash, timestamp }` or `{ error }`). Factored out of
+    // the loop so a collection's array of param-sets each runs the identical
+    // params → auth-fold → access → key → scope → pull → field-filter pipeline.
+    const resolveEntry = async (
+      col: CollectionConfig,
+      supplied: Record<string, unknown>,
+    ): Promise<Record<string, unknown>> => {
       // Effective params built from ONLY the template's params (parity with the
       // standalone path's `extractPathParams`): caller-supplied keys outside the
       // template are ignored, so they can't reach the store context, plugins, or
@@ -1423,7 +1442,6 @@ function createBatchPullHandler(
       // explicitly supplied identity is kept as-is, so a forged identity is denied
       // below via the missing-`self` path rather than silently rewritten.
       const requiredParams = (col.storagePath.match(/\{(\w+)\}/g) ?? []).map((t) => t.slice(1, -1))
-      const supplied = paramsByCollection[name] ?? {}
       const effectiveParams: Record<string, string> = {}
       for (const p of requiredParams) {
         const v = supplied[p]
@@ -1442,13 +1460,11 @@ function createBatchPullHandler(
 
       // A required param with no supplied/auto-filled value cannot be addressed.
       if (requiredParams.some((p) => effectiveParams[p] == null)) {
-        results[name] = { error: "Missing required path parameter" }
-        continue
+        return { error: "Missing required path parameter" }
       }
       // Charset-validate each value (blocks `/` and other unsafe chars per segment).
       if (!validateAllParams(effectiveParams)) {
-        results[name] = { error: "Invalid path parameter" }
-        continue
+        return { error: "Invalid path parameter" }
       }
 
       // Fold per-collection `self` + enricher roles from the single base resolve.
@@ -1458,9 +1474,8 @@ function createBatchPullHandler(
       if (base.auth != null) {
         const folded = await foldCollectionRoles(base.auth, base.baseRoles, effectiveParams, col.storagePath, opts, c)
         if (folded.error) {
-          results[name] = { error: "Authorization error" }
-          await recordAudit(name, "", false, 500, effectiveParams)
-          continue
+          await recordAudit(col.name, "", false, 500, effectiveParams)
+          return { error: "Authorization error" }
         }
         roles = folded.roles
       } else {
@@ -1468,9 +1483,8 @@ function createBatchPullHandler(
       }
 
       if (!isAccessAllowed(col, OP_READ, roles)) {
-        results[name] = { error: "Forbidden" }
-        await recordAudit(name, "", false, 403, effectiveParams)
-        continue
+        await recordAudit(col.name, "", false, 403, effectiveParams)
+        return { error: "Forbidden" }
       }
 
       try {
@@ -1479,17 +1493,15 @@ function createBatchPullHandler(
         // param could compose a traversal key. Reject before touching the store
         // (parity with the standalone and bundle pull paths).
         if (isUnsafeDocumentKey(key)) {
-          results[name] = { error: "Invalid path parameter" }
-          continue
+          return { error: "Invalid path parameter" }
         }
         // Cap path-scope: the resolver couldn't bind /batch/pull to a storage
         // path, so enforce the cap's scope against the RESOLVED key here — a cap
         // may only batch-read keys its scope covers (e.g. its own room, not a
         // sibling). This is what stops batch from side-stepping per-path scope.
         if (!matchScopePath(key, scopePaths)) {
-          results[name] = { error: "Forbidden" }
-          await recordAudit(name, key, false, 403, effectiveParams)
-          continue
+          await recordAudit(col.name, key, false, 403, effectiveParams)
+          return { error: "Forbidden" }
         }
         const batchCtx: StoreContext = {
           collection: col.name,
@@ -1519,12 +1531,29 @@ function createBatchPullHandler(
         }
         // Strip fields the caller cannot read (parity with the standalone path).
         applyFieldReadFilter(data, col.fieldPermissions, roles)
-        results[name] = { data, hash: pullResult.hash, timestamp: pullResult.timestamp }
-        await recordAudit(name, key, true, 200, effectiveParams)
+        await recordAudit(col.name, key, true, 200, effectiveParams)
+        return { data, hash: pullResult.hash, timestamp: pullResult.timestamp }
       } catch (e) {
-        console.error(`[Starfish] Batch pull failed for collection "${name}":`, e)
-        results[name] = { error: "Internal error" }
+        console.error(`[Starfish] Batch pull failed for collection "${col.name}":`, e)
+        return { error: "Internal error" }
       }
+    }
+
+    const results: Record<string, Record<string, unknown>[]> = {}
+    for (const name of colNames) {
+      // A name absent from `params` reads one auto-filled doc (`[{}]`); present
+      // means an array of param-sets, possibly empty (→ no reads, `[]`).
+      const paramSets = paramsByCollection[name] ?? [{}]
+      const col = collections.find((cc) => cc.name === name)
+      if (!col) {
+        // One error entry PER requested set so the array stays index-aligned with
+        // the caller's input (batchPullMany indexes results by position).
+        results[name] = paramSets.map(() => ({ error: "Collection not found" }))
+        continue
+      }
+      const entries: Record<string, unknown>[] = []
+      for (const supplied of paramSets) entries.push(await resolveEntry(col, supplied))
+      results[name] = entries
     }
 
     return c.json({ collections: results })

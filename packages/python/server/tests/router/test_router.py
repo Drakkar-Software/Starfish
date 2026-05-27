@@ -180,9 +180,9 @@ async def test_batch_pull_resolves_identity_from_authenticated_caller():
         resp = await client.get("/batch/pull?collections=settings,public-config")
     assert resp.status_code == 200
     cols = resp.json()["collections"]
-    assert "error" not in cols["settings"]
-    assert cols["settings"]["data"] == {"theme": "dark"}  # the caller's own doc
-    assert "data" in cols["public-config"]  # singleton, public-read
+    assert "error" not in cols["settings"][0]
+    assert cols["settings"][0]["data"] == {"theme": "dark"}  # the caller's own doc
+    assert "data" in cols["public-config"][0]  # singleton, public-read
 
 
 def test_json_depth_within_helper():
@@ -272,7 +272,7 @@ async def test_batch_pull_ignores_empty_csv_slots():
     assert resp.status_code == 200
     cols = resp.json()["collections"]
     assert list(cols.keys()) == ["public-config"]  # empties never become keys
-    assert "data" in cols["public-config"]
+    assert "data" in cols["public-config"][0]
 
 
 @pytest.mark.asyncio
@@ -316,7 +316,7 @@ async def test_batch_pull_honors_ttl_expiry():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/batch/pull?collections=ephemeral")
     assert resp.status_code == 200
-    assert resp.json()["collections"]["ephemeral"]["data"] == {}  # expired → zeroed
+    assert resp.json()["collections"]["ephemeral"][0]["data"] == {}  # expired → zeroed
 
 
 @pytest.mark.asyncio
@@ -388,10 +388,10 @@ async def test_batch_pull_resolves_supplied_non_identity_param():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get(
             "/batch/pull",
-            params={"collections": "team-notes", "params": _json.dumps({"team-notes": {"teamId": "42"}})},
+            params={"collections": "team-notes", "params": _json.dumps({"team-notes": [{"teamId": "42"}]})},
         )
     assert resp.status_code == 200
-    assert resp.json()["collections"]["team-notes"]["data"] == {"topic": "launch"}
+    assert resp.json()["collections"]["team-notes"][0]["data"] == {"topic": "launch"}
 
 
 @pytest.mark.asyncio
@@ -408,7 +408,7 @@ async def test_batch_pull_auto_fills_identity_for_self_gated_collection():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/batch/pull?collections=journal")
     assert resp.status_code == 200
-    assert resp.json()["collections"]["journal"]["data"] == {"entries": 3}
+    assert resp.json()["collections"]["journal"][0]["data"] == {"entries": 3}
 
 
 @pytest.mark.asyncio
@@ -424,12 +424,12 @@ async def test_batch_pull_denies_forged_identity_on_self_gated_collection():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get(
             "/batch/pull",
-            params={"collections": "journal", "params": _json.dumps({"journal": {"identity": "user-2"}})},
+            params={"collections": "journal", "params": _json.dumps({"journal": [{"identity": "user-2"}]})},
         )
     assert resp.status_code == 200
     cols = resp.json()["collections"]
-    assert cols["journal"]["error"] == "Forbidden"
-    assert "data" not in cols["journal"]
+    assert cols["journal"][0]["error"] == "Forbidden"
+    assert "data" not in cols["journal"][0]
 
 
 @pytest.mark.asyncio
@@ -441,8 +441,8 @@ async def test_batch_pull_reports_missing_required_param():
         resp = await client.get("/batch/pull?collections=team-notes")
     assert resp.status_code == 200
     cols = resp.json()["collections"]
-    assert cols["team-notes"]["error"] == "Missing required path parameter"
-    assert "data" not in cols["team-notes"]
+    assert cols["team-notes"][0]["error"] == "Missing required path parameter"
+    assert "data" not in cols["team-notes"][0]
 
 
 @pytest.mark.asyncio
@@ -461,12 +461,12 @@ async def test_batch_pull_merges_auto_identity_with_supplied_param():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get(
             "/batch/pull",
-            params={"collections": "team-journal", "params": _json.dumps({"team-journal": {"teamId": "42"}})},
+            params={"collections": "team-journal", "params": _json.dumps({"team-journal": [{"teamId": "42"}]})},
         )
     assert resp.status_code == 200
     cols = resp.json()["collections"]
-    assert "error" not in cols["team-journal"]
-    assert cols["team-journal"]["data"] == {"n": 7}
+    assert "error" not in cols["team-journal"][0]
+    assert cols["team-journal"][0]["data"] == {"n": 7}
 
 
 @pytest.mark.asyncio
@@ -491,13 +491,13 @@ async def test_batch_pull_rejects_unsafe_param_value_per_collection():
             "/batch/pull",
             params={
                 "collections": "team-notes,public-data",
-                "params": _json.dumps({"team-notes": {"teamId": "a/b"}}),
+                "params": _json.dumps({"team-notes": [{"teamId": "a/b"}]}),
             },
         )
     assert resp.status_code == 200
     cols = resp.json()["collections"]
-    assert cols["team-notes"]["error"] == "Invalid path parameter"
-    assert "data" in cols["public-data"]
+    assert cols["team-notes"][0]["error"] == "Invalid path parameter"
+    assert "data" in cols["public-data"][0]
 
 
 @pytest.mark.asyncio
@@ -510,10 +510,10 @@ async def test_batch_pull_blocks_dotdot_traversal_via_key_guard():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get(
             "/batch/pull",
-            params={"collections": "team-notes", "params": _json.dumps({"team-notes": {"teamId": ".."}})},
+            params={"collections": "team-notes", "params": _json.dumps({"team-notes": [{"teamId": ".."}]})},
         )
     assert resp.status_code == 200
-    assert resp.json()["collections"]["team-notes"]["error"] == "Invalid path parameter"
+    assert resp.json()["collections"]["team-notes"][0]["error"] == "Invalid path parameter"
 
 
 @pytest.mark.asyncio
@@ -549,7 +549,7 @@ async def test_batch_pull_applies_ttl_against_resolved_key():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/batch/pull?collections=user-ephemeral")
     assert resp.status_code == 200
-    assert resp.json()["collections"]["user-ephemeral"]["data"] == {}  # expired → zeroed
+    assert resp.json()["collections"]["user-ephemeral"][0]["data"] == {}  # expired → zeroed
 
 
 @pytest.mark.asyncio
@@ -582,18 +582,16 @@ async def test_batch_pull_enforces_cap_scope_paths_against_resolved_key():
     await store.put("teams/42/notes", _json.dumps({"data": {"ok": 1}, "hash": "h", "ts": 0}))
     await store.put("teams/99/notes", _json.dumps({"data": {"secret": 1}, "hash": "h", "ts": 0}))
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        r_ok = await client.get(
+        # One fan-out request so the per-ENTRY scope check is exercised (not just
+        # the per-collection one): 42 is in scope, 99 is not.
+        resp = await client.get(
             "/batch/pull",
-            params={"collections": "team-notes", "params": _json.dumps({"team-notes": {"teamId": "42"}})},
+            params={"collections": "team-notes", "params": _json.dumps({"team-notes": [{"teamId": "42"}, {"teamId": "99"}]})},
         )
-        r_no = await client.get(
-            "/batch/pull",
-            params={"collections": "team-notes", "params": _json.dumps({"team-notes": {"teamId": "99"}})},
-        )
-    assert r_ok.json()["collections"]["team-notes"]["data"] == {"ok": 1}
-    c_no = r_no.json()["collections"]["team-notes"]
-    assert c_no["error"] == "Forbidden"
-    assert "data" not in c_no
+    notes = resp.json()["collections"]["team-notes"]
+    assert notes[0]["data"] == {"ok": 1}
+    assert notes[1]["error"] == "Forbidden"
+    assert "data" not in notes[1]
 
 
 @pytest.mark.asyncio
@@ -665,7 +663,7 @@ async def test_batch_pull_writes_audit_records_for_denials_and_successes():
             "/batch/pull",
             params={
                 "collections": "team-notes,journal",
-                "params": _json.dumps({"team-notes": {"teamId": "42"}, "journal": {"identity": "user-2"}}),
+                "params": _json.dumps({"team-notes": [{"teamId": "42"}], "journal": [{"identity": "user-2"}]}),
             },
         )
     pulls = [r for r in audit.records if r.action == "pull"]
@@ -713,7 +711,7 @@ async def test_batch_pull_audits_degrade_when_cap_invalid():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/batch/pull?collections=public-config")
     assert resp.status_code == 200
-    assert "data" in resp.json()["collections"]["public-config"]  # public served despite bad cap
+    assert "data" in resp.json()["collections"]["public-config"][0]  # public served despite bad cap
     pulls = [r for r in audit.records if r.action == "pull"]
     degrade = next(r for r in pulls if r.collection == "")
     assert degrade.success is False and degrade.status_code == 403
@@ -754,10 +752,10 @@ async def test_batch_pull_audit_failure_does_not_corrupt_result():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get(
             "/batch/pull",
-            params={"collections": "team-notes", "params": _json.dumps({"team-notes": {"teamId": "42"}})},
+            params={"collections": "team-notes", "params": _json.dumps({"team-notes": [{"teamId": "42"}]})},
         )
     assert resp.status_code == 200
-    col = resp.json()["collections"]["team-notes"]
+    col = resp.json()["collections"]["team-notes"][0]
     assert col["data"] == {"ok": 1}
     assert "error" not in col
 
@@ -776,13 +774,131 @@ async def test_batch_pull_ignores_params_outside_template():
             "/batch/pull",
             params={
                 "collections": "team-notes",
-                "params": _json.dumps({"team-notes": {"teamId": "42", "junk": "a/b"}}),
+                "params": _json.dumps({"team-notes": [{"teamId": "42", "junk": "a/b"}]}),
             },
         )
     assert resp.status_code == 200
-    col = resp.json()["collections"]["team-notes"]
+    col = resp.json()["collections"]["team-notes"][0]
     assert "error" not in col
     assert col["data"] == {"ok": 1}
+
+
+@pytest.mark.asyncio
+async def test_batch_pull_fans_in_many_docs_of_one_collection():
+    """The core of the generalization: one collection name, an array of param-sets,
+    one result array aligned to input order."""
+    import json as _json
+
+    app, store = _build_param_app()
+    await store.put("teams/42/notes", _json.dumps({"data": {"topic": "a"}, "hash": "h", "ts": 0}))
+    await store.put("teams/99/notes", _json.dumps({"data": {"topic": "b"}, "hash": "h", "ts": 0}))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get(
+            "/batch/pull",
+            params={"collections": "team-notes", "params": _json.dumps({"team-notes": [{"teamId": "42"}, {"teamId": "99"}]})},
+        )
+    assert resp.status_code == 200
+    notes = resp.json()["collections"]["team-notes"]
+    assert [e["data"] for e in notes] == [{"topic": "a"}, {"topic": "b"}]
+
+
+@pytest.mark.asyncio
+async def test_batch_pull_returns_mixed_per_document_results():
+    """Entries stay index-aligned: a valid set yields data, a set missing a required
+    param yields an error in the SAME position."""
+    import json as _json
+
+    app, store = _build_param_app()
+    await store.put("teams/42/notes", _json.dumps({"data": {"topic": "a"}, "hash": "h", "ts": 0}))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get(
+            "/batch/pull",
+            params={"collections": "team-notes", "params": _json.dumps({"team-notes": [{"teamId": "42"}, {}]})},
+        )
+    notes = resp.json()["collections"]["team-notes"]
+    assert notes[0]["data"] == {"topic": "a"}
+    assert notes[1]["error"] == "Missing required path parameter"
+
+
+@pytest.mark.asyncio
+async def test_batch_pull_not_found_emits_one_entry_per_set():
+    """An unknown collection with N param-sets returns N error entries so the result
+    array length matches the caller's input (batch_pull_many indexes by position)."""
+    import json as _json
+
+    app, _ = _build_param_app()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get(
+            "/batch/pull",
+            params={"collections": "nope", "params": _json.dumps({"nope": [{}, {}, {}]})},
+        )
+    assert resp.status_code == 200
+    nope = resp.json()["collections"]["nope"]
+    assert len(nope) == 3
+    assert all(e["error"] == "Collection not found" for e in nope)
+
+
+@pytest.mark.asyncio
+async def test_batch_pull_empty_param_list_returns_empty_array():
+    """An empty param-set list means zero reads → an empty result array."""
+    import json as _json
+
+    app, _ = _build_param_app()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get(
+            "/batch/pull",
+            params={"collections": "team-notes", "params": _json.dumps({"team-notes": []})},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["collections"]["team-notes"] == []
+
+
+@pytest.mark.asyncio
+async def test_batch_pull_rejects_non_array_params_value():
+    """The pre-generalization object shape is no longer accepted — a bare object per
+    collection is a framing error → whole-request 400."""
+    import json as _json
+
+    app, _ = _build_param_app()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get(
+            "/batch/pull",
+            params={"collections": "team-notes", "params": _json.dumps({"team-notes": {"teamId": "42"}})},
+        )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "Invalid params parameter"
+
+
+@pytest.mark.asyncio
+async def test_batch_pull_rejects_fan_out_exceeding_total_reads():
+    """The distinct-name cap is not sufficient: a single name with an oversized
+    param-set array must also be rejected by the total-reads guard."""
+    import json as _json
+
+    store = MemoryObjectStore()
+    config = SyncConfig(
+        version=1,
+        collections=[
+            CollectionConfig(name="team-notes", storagePath="teams/{teamId}/notes",
+                             readRoles=["public"], writeRoles=["admin"], encryption="none", maxBodyBytes=65536),
+        ],
+    )
+
+    async def role_resolver(request: Request) -> AuthResult:
+        return AuthResult(identity="u", roles=[])
+
+    router = create_sync_router(
+        SyncRouterOptions(store=store, config=config, role_resolver=role_resolver, max_collections_per_batch=2)
+    )
+    app = FastAPI()
+    app.include_router(router)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get(
+            "/batch/pull",
+            params={"collections": "team-notes", "params": _json.dumps({"team-notes": [{"teamId": "1"}, {"teamId": "2"}, {"teamId": "3"}]})},
+        )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "Too many collections"
 
 
 @pytest.mark.asyncio

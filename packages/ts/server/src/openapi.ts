@@ -78,7 +78,7 @@ export function generateOpenApiSpec(
               required: false,
               schema: { type: "string" },
               description:
-                'URL-encoded JSON mapping a collection name to its path params, e.g. {"notes":{"teamId":"42"}}. The {identity} param is auto-filled from the authenticated caller.',
+                'URL-encoded JSON mapping a collection name to an ARRAY of path-param sets (one per document to read), e.g. {"profile":[{"identity":"a"},{"identity":"b"}]}. The {identity} param is auto-filled from the authenticated caller when a set omits it.',
             },
           ],
           responses: {
