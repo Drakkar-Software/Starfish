@@ -576,8 +576,8 @@ describe("bundle / batch per-collection authorization + field permissions", () =
     const res = await anonApp.request("/batch/pull?collections=notes")
     expect(res.status).toBe(200)
     const body = await res.json()
-    expect(body.collections.notes?.data?.name).toBe("Bob")
-    expect(body.collections.notes?.data?.ssn).toBeUndefined() // admin-only field stripped on batch pull
+    expect(body.collections.notes?.[0]?.data?.name).toBe("Bob")
+    expect(body.collections.notes?.[0]?.data?.ssn).toBeUndefined() // admin-only field stripped on batch pull
   })
 })
 

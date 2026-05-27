@@ -334,19 +334,24 @@ class StarfishClient:
         self,
         collections: list[str],
         *,
-        params: dict[str, dict[str, str]] | None = None,
+        params: dict[str, list[dict[str, str]]] | None = None,
     ) -> dict[str, Any]:
-        """Pull several collections in one round-trip via ``/batch/pull``.
+        """Pull several documents in one round-trip via ``/batch/pull``.
 
         Args:
-            collections: Collection names to pull.
-            params: Per-collection path params, e.g. ``{"notes": {"teamId": "42"}}``,
-                serialized to a URL-encoded JSON ``params`` query parameter. The
-                ``{identity}`` param is auto-filled by the server from the
-                authenticated caller, so per-user collections need no params (and a
-                supplied identity that isn't the caller's is rejected).
+            collections: Distinct collection names to pull.
+            params: Per collection, an ARRAY of path-param sets — one per document to
+                read — so the SAME collection can fan in many documents, e.g.
+                ``{"profile": [{"identity": "a"}, {"identity": "b"}]}``. Serialized to
+                a URL-encoded JSON ``params`` query parameter. The ``{identity}`` param
+                is auto-filled by the server from the authenticated caller for any set
+                that omits it, so a self-doc collection needs no params.
 
-        Returns the parsed response: ``{"collections": {<name>: {...doc...} | {"error": ...}}}``.
+        Returns the parsed response: ``{"collections": {<name>: [{...doc...} |
+        {"error": ...}]}}`` — each name maps to an ARRAY of entries in request order.
+
+        For the common "many docs of one collection" case prefer
+        :meth:`batch_pull_many`.
 
         Not append/checkpoint-aware — for incremental append-only reads use
         ``pull(path, since=...)`` (or ``AppendLogCursor``) per collection.
@@ -373,6 +378,25 @@ class StarfishClient:
         if resp.status_code != 200:
             raise StarfishHttpError(resp.status_code, resp.text)
         return resp.json()
+
+    async def batch_pull_many(
+        self,
+        collection: str,
+        params_list: list[dict[str, str]],
+    ) -> list[dict[str, Any]]:
+        """Read MANY documents of ONE collection in a single round-trip.
+
+        Convenience over :meth:`batch_pull`: pass the per-document param-sets and get
+        back the entry list aligned to ``params_list`` by index (each entry is
+        ``{"data", "hash", "timestamp"}`` or ``{"error": ...}``). An empty
+        ``params_list`` issues no request and returns ``[]``.
+        """
+        if not params_list:
+            return []
+        res = await self.batch_pull([collection], params={collection: params_list})
+        collections = res.get("collections", {})
+        entries = collections.get(collection, [])
+        return entries if isinstance(entries, list) else []
 
     async def push(
         self,
