@@ -23,7 +23,7 @@ export type {
 export { SyncManager, AbortError } from "./sync.js"
 export type { SyncManagerOptions, SyncSigner } from "./sync.js"
 export { AppendLogCursor, AppendAuthorError, checkpointOf } from "./append-log.js"
-export type { AppendLogCursorOptions, AppendElement, AuthorVerifier } from "./append-log.js"
+export type { AppendLogCursorOptions, AppendElement, AuthorVerifier, ElementErrorPolicy } from "./append-log.js"
 export { ENCRYPTED_KEY } from "@drakkar.software/starfish-protocol"
 export type { Encryptor } from "@drakkar.software/starfish-protocol"
 export {

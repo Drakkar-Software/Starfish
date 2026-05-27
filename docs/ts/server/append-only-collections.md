@@ -271,6 +271,49 @@ secure = AppendLogCursor(
 
 > `verifyAuthor` checks each signature is valid for the element's self-declared `authorPubkey`; it does **not** by itself restrict *which* authors are accepted. For a single-author log set `expectedAuthorPubkey`; for a multi-writer log, check each `authorPubkey` against your authorization source (keyring / member list) after pull. The signature binds `data` + the document key but **not** `ts`, so a malicious server can reorder/re-timestamp authentic elements without breaking verification — trust `ts` only as far as you trust the server.
 
+#### Tolerating unreadable elements (`onElementError`)
+
+By default a verify/decrypt failure is **atomic**: the pull throws and the checkpoint does not advance, so nothing that could never be re-fetched is silently skipped. For a **multi-writer / E2EE** log where the occasional element is legitimately unreadable (keyring skew, a foreign or wrong-key element), set `onElementError: "skip"` (`on_element_error="skip"` in Python): the bad element is dropped from the returned batch and **the checkpoint still advances past it**, so one poison element can't blank — or permanently wedge — the log. TS reports the dropped count via `logger.pullSuccess` (`SyncMetrics.skippedCount`).
+
+> SECURITY: `"skip"` also silently drops **author-verification** failures, not just decryption failures. If you need strict authorship, keep `onElementError: "throw"` for the verification step, or set `verifyAuthor.expectedAuthorPubkey` / check each `authorPubkey` against your authorized set after pull.
+
+#### Concurrency
+
+`pull()` is **safe to call concurrently** — overlapping calls are serialized internally (a promise chain in TS, an `asyncio.Lock` in Python), so each runs against the checkpoint the previous one advanced and no two pulls fetch and double-append the same window. A failed pull does not wedge the queue. (You still get one network round-trip per call; coalesce upstream if you fire many triggers.)
+
+#### E2EE-safe persistence (`persistEncrypted`)
+
+The warm-start round-trip above persists `getItems()`. With an `encryptor` that defaults to storing **decrypted** data — so persisting it would write plaintext to disk. For an end-to-end-encrypted log, set `persistEncrypted: true` (`persist_encrypted=True`): the cursor keeps each element's **ciphertext**, so `getItems()` is safe to persist at rest, while `pull()` still returns the freshly-decrypted batch. Render warm-started history (the seeded ciphertext) with `getDecryptedItems()` (`get_decrypted_items()` in Python), which decrypts the full held log and honors the `onElementError` policy.
+
+```ts
+// E2EE stream: persist ciphertext, render decrypted, tolerate unreadable elements
+const log = new AppendLogCursor({
+  client,
+  pullPath: "/pull/streamchat",
+  encryptor: createKeyringEncryptor(keyring, deviceKemKeys),
+  persistEncrypted: true,
+  onElementError: "skip",
+  initialItems: await store.load(),     // ciphertext persisted last session
+})
+const history = await log.getDecryptedItems()  // render seeded history (no network)
+const fresh = await log.pull()                  // decrypted delta
+await store.save(log.getItems())                // ciphertext back to disk
+```
+
+```python
+log = AppendLogCursor(
+    client,
+    "/pull/streamchat",
+    encryptor=create_keyring_encryptor(keyring, device_kem_keys),
+    persist_encrypted=True,
+    on_element_error="skip",
+    initial_items=store.load(),          # ciphertext persisted last session
+)
+history = log.get_decrypted_items()      # render seeded history (no network)
+fresh = await log.pull()                 # decrypted delta
+store.save(log.items)                    # ciphertext back to disk
+```
+
 ## Compatibility matrix
 
 | Combination | Supported |

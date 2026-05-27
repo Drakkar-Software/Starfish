@@ -26,7 +26,11 @@ function stripPullPrefix(path: string): string {
  *
  * When an {@link AppendLogCursor} is given an `encryptor`, the elements it
  * stores and returns carry the **decrypted** `data` while preserving `ts` and
- * the author fields — so the shape is uniform and re-seedable.
+ * the author fields — so the shape is uniform and re-seedable. The exception is
+ * `persistEncrypted` mode (see {@link AppendLogCursorOptions.persistEncrypted}),
+ * where the stored elements keep their **ciphertext** `data` (E2EE-safe to
+ * persist) and decryption happens only on read via {@link AppendLogCursor.pull}
+ * and {@link AppendLogCursor.getDecryptedItems}.
  */
 export interface AppendElement {
   ts: number
@@ -46,6 +50,24 @@ export interface AuthorVerifier {
   alg?: Alg
 }
 
+/**
+ * What to do when a single element fails verification or decryption during a
+ * {@link AppendLogCursor.pull} (or {@link AppendLogCursor.getDecryptedItems}).
+ *
+ * - `"throw"` (default): the pull is **atomic** — the first bad element throws
+ *   and NO state is mutated, so the checkpoint never advances past an element
+ *   that could not be re-fetched. Use when every element must be readable.
+ * - `"skip"`: a bad element is dropped from the returned/decrypted batch and the
+ *   checkpoint still **advances past it** (so it is never re-fetched), letting one
+ *   poison element fail without blanking the whole log. Intended for tolerating
+ *   **decrypt** failures in a multi-writer / E2EE log (keyring skew, a foreign or
+ *   corrupt element). SECURITY NOTE: `"skip"` ALSO silently drops elements that
+ *   fail *author* verification rather than failing loudly — so if you also need
+ *   strict authorship, set `verifyAuthor.expectedAuthorPubkey` (single author) or
+ *   check each element's `authorPubkey` against your authorized set after pull.
+ */
+export type ElementErrorPolicy = "throw" | "skip"
+
 export interface AppendLogCursorOptions {
   client: StarfishClient
   /** Pull endpoint path, e.g. `"/pull/events"`. */
@@ -54,8 +76,10 @@ export interface AppendLogCursorOptions {
   appendField?: string
   /**
    * Warm-start seed: raw envelopes the caller persisted last session. The
-   * cursor adopts them verbatim (never re-decrypts/re-verifies them) and
-   * derives its initial checkpoint from their max `ts`.
+   * cursor adopts them verbatim and derives its initial checkpoint from their
+   * max `ts`. Under the default mode they are taken as already-decrypted (and
+   * never re-decrypted/re-verified); under `persistEncrypted` they are the
+   * persisted **ciphertext** and are decrypted on read (see `persistEncrypted`).
    */
   initialItems?: AppendElement[]
   /**
@@ -69,13 +93,32 @@ export interface AppendLogCursorOptions {
    * encryptor (the `ts`/author fields are preserved). Author verification, when
    * enabled, runs over the original (pre-decryption) `data`.
    *
-   * Caveat: a returned / `getItems()` element then holds DECRYPTED `data` but an
-   * `authorSignature` computed over the stored CIPHERTEXT — they no longer match,
-   * so do NOT re-verify a decrypted element with `verifyAppendAuthor`. The cursor
-   * already verified it (over the ciphertext) at pull time when `verifyAuthor` is
-   * on; `authorPubkey` is retained for identity.
+   * Caveat (default mode): a returned / `getItems()` element then holds DECRYPTED
+   * `data` but an `authorSignature` computed over the stored CIPHERTEXT — they no
+   * longer match, so do NOT re-verify a decrypted element with `verifyAppendAuthor`.
+   * The cursor already verified it (over the ciphertext) at pull time when
+   * `verifyAuthor` is on; `authorPubkey` is retained for identity. (Under
+   * `persistEncrypted` the stored elements keep their ciphertext, so this caveat
+   * does not apply to `getItems()`.)
    */
   encryptor?: Encryptor
+  /**
+   * Per-element failure policy for verification/decryption. Defaults to
+   * `"throw"` (atomic pull — preserves the pre-existing behavior). See
+   * {@link ElementErrorPolicy}.
+   */
+  onElementError?: ElementErrorPolicy
+  /**
+   * Keep the **ciphertext** form of each element in the cursor's accumulated log
+   * instead of the decrypted form (requires `encryptor`; a no-op without one,
+   * since plaintext is already its own stored form). This makes
+   * {@link AppendLogCursor.getItems} return the persistable ciphertext — safe to
+   * write to disk for an end-to-end-encrypted log without leaking plaintext at
+   * rest — while {@link AppendLogCursor.pull} still returns the freshly-decrypted
+   * batch and {@link AppendLogCursor.getDecryptedItems} returns the full log
+   * decrypted (for warm-start rendering). Defaults to `false` (store decrypted).
+   */
+  persistEncrypted?: boolean
   /**
    * `true` to verify every element's author signature, or a policy object.
    *
@@ -114,6 +157,14 @@ export function checkpointOf(items: readonly { ts: number }[]): number {
   return max
 }
 
+/** Copy the optional author fields from `src` onto a fresh element with `data`. */
+function withAuthor(ts: number, data: Record<string, unknown>, src: AppendElement): AppendElement {
+  const out: AppendElement = { ts, data }
+  if (src.authorPubkey !== undefined) out.authorPubkey = src.authorPubkey
+  if (src.authorSignature !== undefined) out.authorSignature = src.authorSignature
+  return out
+}
+
 /**
  * A stateful cursor over an append-only collection. It owns the accumulated
  * array of elements and pulls only what is new: each {@link pull} derives the
@@ -134,13 +185,21 @@ export function checkpointOf(items: readonly { ts: number }[]): number {
  * const all = await log.pull()
  * ```
  * Warm start (resume from persisted data) — first `pull()` fetches only newer
- * elements; persistence is a round-trip of `getItems()` (see the `encryptor`
- * caveat when decrypting):
+ * elements; persistence is a round-trip of `getItems()`:
  * ```ts
  * const log = new AppendLogCursor({ client, pullPath: "/pull/events",
  *   initialItems: await store.load() })
  * const fresh = await log.pull()
  * await store.save(log.getItems())
+ * ```
+ * Warm start for an **E2EE** log — persist ciphertext, render decrypted:
+ * ```ts
+ * const log = new AppendLogCursor({ client, pullPath: "/pull/streamchat",
+ *   encryptor, persistEncrypted: true, onElementError: "skip",
+ *   initialItems: await store.load() })           // ciphertext from disk
+ * const history = await log.getDecryptedItems()    // render persisted history
+ * const fresh = await log.pull()                   // decrypted delta
+ * await store.save(log.getItems())                 // ciphertext back to disk
  * ```
  */
 export class AppendLogCursor {
@@ -149,6 +208,8 @@ export class AppendLogCursor {
   private readonly appendField: string
   private readonly encryptor?: Encryptor
   private readonly verifyAuthor?: boolean | AuthorVerifier
+  private readonly onElementError: ElementErrorPolicy
+  private readonly persistEncrypted: boolean
   private readonly documentKey: string
   private readonly logger?: SyncLogger
   private readonly loggerName: string
@@ -156,12 +217,19 @@ export class AppendLogCursor {
   private readonly items: AppendElement[]
   private lastCheckpoint: number
 
+  /** Tail of the serialized pull chain. Concurrent `pull()` calls queue behind
+   *  it so each runs against the checkpoint the previous one advanced — no two
+   *  overlapping fetches read the same checkpoint and double-append a window. */
+  private pullChain: Promise<unknown> = Promise.resolve()
+
   constructor(options: AppendLogCursorOptions) {
     this.client = options.client
     this.pullPath = options.pullPath
     this.appendField = options.appendField ?? "items"
     this.encryptor = options.encryptor
     this.verifyAuthor = options.verifyAuthor
+    this.onElementError = options.onElementError ?? "throw"
+    this.persistEncrypted = options.persistEncrypted ?? false
     this.documentKey = stripPullPrefix(options.pullPath)
     this.logger = options.logger
     this.loggerName =
@@ -183,16 +251,36 @@ export class AppendLogCursor {
 
   /**
    * Fetch elements newer than the current checkpoint, verify + decrypt them,
-   * append them to the local log, and return ONLY the newly-fetched batch.
+   * append them to the local log, and return ONLY the newly-fetched batch
+   * (decrypted when an `encryptor` is set).
    *
-   * Atomic: the batch is fully verified and decrypted into a local before any
-   * state mutation, so a verify/decrypt failure throws without advancing the
-   * checkpoint past elements that could never be re-fetched.
+   * Atomic under `onElementError: "throw"` (the default): the batch is fully
+   * verified and decrypted into a local before any state mutation, so a
+   * verify/decrypt failure throws without advancing the checkpoint past elements
+   * that could never be re-fetched. Under `"skip"`, a failing element is dropped
+   * from the returned batch but the checkpoint still advances past it.
    *
-   * Not safe to call concurrently: like `SyncManager.pull`, overlapping calls
-   * read the same checkpoint and would fetch — and append — the same window twice.
+   * Safe to call concurrently: overlapping calls are serialized internally, so
+   * each runs against the checkpoint the previous one advanced (no double-fetch
+   * of the same window). The next pull after one completes will pick up anything
+   * that arrived in between.
    */
   async pull(): Promise<AppendElement[]> {
+    // Chain onto the previous pull (whether it resolved or rejected) so calls
+    // run one-at-a-time against the latest checkpoint. `pullChain` swallows
+    // outcomes to stay alive; the caller still sees this call's real result.
+    const run = this.pullChain.then(
+      () => this.doPull(),
+      () => this.doPull(),
+    )
+    this.pullChain = run.then(
+      () => undefined,
+      () => undefined,
+    )
+    return run
+  }
+
+  private async doPull(): Promise<AppendElement[]> {
     this.logger?.pullStart(this.loggerName)
     const start = performance.now()
     try {
@@ -202,26 +290,48 @@ export class AppendLogCursor {
         since > 0 ? { appendField: this.appendField, since } : { appendField: this.appendField }
       const raw = await this.client.pull<AppendElement>(this.pullPath, opts)
 
-      const batch: AppendElement[] = []
+      const batch: AppendElement[] = [] // decrypted, returned to the caller
+      const stored: AppendElement[] = [] // what we keep in `items` (cipher- or plaintext)
       let maxTs = since
+      let skipped = 0
       for (const el of raw) {
         // Defensive: guard a misbehaving/mocked server from making us
         // double-append a held element. Gated on `since > 0` to mirror the
         // server (which only filters when checkpoint > 0): on a cold start
         // `since` is 0 and we must NOT drop a legitimate `ts: 0` first element.
         if (since > 0 && el.ts <= since) continue
-        this.verifyOne(el)
-        const data = this.encryptor ? await this.encryptor.decrypt(el.data) : el.data
-        const out: AppendElement = { ts: el.ts, data }
-        if (el.authorPubkey !== undefined) out.authorPubkey = el.authorPubkey
-        if (el.authorSignature !== undefined) out.authorSignature = el.authorSignature
-        batch.push(out)
+        // Advance past every windowed element BEFORE verify/decrypt so a skipped
+        // element still moves the checkpoint and is never re-fetched.
         if (el.ts > maxTs) maxTs = el.ts
+
+        let decrypted: AppendElement | null = null
+        try {
+          this.verifyOne(el)
+          const data = this.encryptor ? await this.encryptor.decrypt(el.data) : el.data
+          decrypted = withAuthor(el.ts, data, el)
+        } catch (err) {
+          // "throw" rethrows here, before any state mutation below — atomic.
+          if (this.onElementError !== "skip") throw err
+          skipped++
+        }
+
+        if (this.persistEncrypted) {
+          // Keep the original ciphertext envelope (even for a skipped element:
+          // it is valid data we simply cannot read now — a later key might).
+          stored.push(withAuthor(el.ts, el.data, el))
+        } else if (decrypted) {
+          stored.push(decrypted)
+        }
+        if (decrypted) batch.push(decrypted)
       }
 
-      this.items.push(...batch)
+      this.items.push(...stored)
       this.lastCheckpoint = maxTs
-      this.logger?.pullSuccess(this.loggerName, Math.round(performance.now() - start))
+      this.logger?.pullSuccess(
+        this.loggerName,
+        Math.round(performance.now() - start),
+        skipped > 0 ? { skippedCount: skipped } : undefined,
+      )
       return batch
     } catch (err) {
       this.logger?.pullError(this.loggerName, err instanceof Error ? err.message : String(err))
@@ -255,9 +365,34 @@ export class AppendLogCursor {
     if (!ok) throw new AppendAuthorError(el.ts)
   }
 
-  /** The full accumulated log (a shallow copy), in `ts` order. */
+  /** The full accumulated log (a shallow copy), in `ts` order. Under
+   *  `persistEncrypted` these carry CIPHERTEXT `data` (persist them as-is, then
+   *  re-seed via `initialItems`); otherwise they carry decrypted/plaintext data. */
   getItems(): AppendElement[] {
     return [...this.items]
+  }
+
+  /**
+   * The full accumulated log, DECRYPTED — for rendering warm-started history in
+   * `persistEncrypted` mode (where {@link getItems} holds ciphertext). Honors
+   * `onElementError` (a `"skip"` cursor drops elements it cannot read). When the
+   * cursor has no `encryptor`, or is not in `persistEncrypted` mode, the held
+   * elements are already plaintext/decrypted and are returned as-is.
+   */
+  async getDecryptedItems(): Promise<AppendElement[]> {
+    const snapshot = [...this.items]
+    if (!this.encryptor || !this.persistEncrypted) return snapshot
+    const out: AppendElement[] = []
+    for (const el of snapshot) {
+      try {
+        this.verifyOne(el)
+        const data = await this.encryptor.decrypt(el.data)
+        out.push(withAuthor(el.ts, data, el))
+      } catch (err) {
+        if (this.onElementError !== "skip") throw err
+      }
+    }
+    return out
   }
 
   /** The current checkpoint: the max `ts` held (the next pull's `since`). `0`
