@@ -23,11 +23,6 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from _common import ed_sign, ed_verify, load_fixture, stable_stringify  # noqa: E402
 
 
-_ALG = "ed25519"
-
-# Domain-separation tag — must equal the protocol's _REQUEST_SIG_DOMAIN /
-# REQUEST_SIG_DOMAIN (request_signing.py / request-signing.ts). The cross-language
-# vector tests fail loudly if it drifts (a mismatched tag → verify fails).
 _REQUEST_SIG_DOMAIN = "starfish-req-v1\n"
 
 
@@ -41,7 +36,6 @@ def _canon(
 ) -> str:
     body_hash = hashlib.sha256(body).hexdigest()
     return _REQUEST_SIG_DOMAIN + stable_stringify({
-        "alg": _ALG,
         "m": method,
         "p": path_and_query,
         "b": body_hash,
@@ -79,7 +73,7 @@ def main() -> None:
     assert ed_verify(laptop.ed_pub, sig, canon.encode("utf-8"))
     cases.append({
         "label": "pull-empty-body",
-        "alg": _ALG,
+        
         "method": "GET",
         "pathAndQuery": "/pull/notes/alice/0?checkpoint=0",
         "bodyUtf8": "",
@@ -105,7 +99,7 @@ def main() -> None:
     assert ed_verify(laptop.ed_pub, sig, canon.encode("utf-8"))
     cases.append({
         "label": "push-json-body",
-        "alg": _ALG,
+        
         "method": "POST",
         "pathAndQuery": "/push/notes/alice/0",
         "bodyUtf8": push_body.decode("utf-8"),
@@ -130,7 +124,7 @@ def main() -> None:
     bad_sig = ed_sign(bob.ed_priv, canon.encode("utf-8"))
     cases.append({
         "label": "wrong-signer",
-        "alg": _ALG,
+        
         "method": "POST",
         "pathAndQuery": "/push/notes/alice/0",
         "bodyUtf8": push_body.decode("utf-8"),
@@ -160,7 +154,7 @@ def main() -> None:
     assert ed_verify(laptop.ed_pub, sig, canon.encode("utf-8"))
     cases.append({
         "label": "host-mismatch",
-        "alg": _ALG,
+        
         "method": "POST",
         "pathAndQuery": "/push/notes/alice/0",
         "bodyUtf8": push_body.decode("utf-8"),

@@ -61,7 +61,7 @@ def _build_app(col: CollectionConfig):
         return AuthResult(
             identity="user-1",
             roles=["admin"],
-            presenter=Presenter(pub_hex=_SIGNER_PUB, alg="ed25519"),
+            presenter=Presenter(pub_hex=_SIGNER_PUB),
         )
 
     router = create_sync_router(
@@ -486,7 +486,7 @@ def _build_author_app(presenter_pub: str | None = _SIGNER_PUB):
 
     async def role_resolver(request: Request) -> AuthResult:
         presenter = (
-            Presenter(pub_hex=presenter_pub, alg="ed25519") if presenter_pub else None
+            Presenter(pub_hex=_SIGNER_PUB) if presenter_pub else None
         )
         return AuthResult(identity="user-1", roles=["admin"], presenter=presenter)
 

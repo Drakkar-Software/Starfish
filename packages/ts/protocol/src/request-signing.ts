@@ -1,25 +1,23 @@
 /**
  * Per-request signing (v3.0).
  *
- * Each authenticated HTTP request carries a signature — under the crypto suite
- * named by `alg` (see `suites/`) — over a canonical encoding of
- * (alg, method, pathAndQuery, sha256(body), host, ts, nonce). The canonical
- * input is identical byte-for-byte across TypeScript and Python — see
+ * Each authenticated HTTP request carries an Ed25519 signature over a canonical
+ * encoding of (method, pathAndQuery, sha256(body), host, ts, nonce). The
+ * canonical input is identical byte-for-byte across TypeScript and Python — see
  * `tests/test-vectors/request-signature.json` for locked cases.
  *
  * The `host` field binds a signature to one specific server host. Without
- * it, an Ed25519-signed request could be replayed against a different
- * Starfish server that shares no nonce cache with the original target.
- * The field is always present in the canonical input — it is the empty
- * string `""` when the caller omits `host` on `SignableRequest` — so an
- * attacker cannot bypass the bind by leaving the field off.
+ * it, a signed request could be replayed against a different Starfish server
+ * that shares no nonce cache with the original target. The field is always
+ * present in the canonical input — it is the empty string `""` when the caller
+ * omits `host` on `SignableRequest` — so an attacker cannot bypass the bind by
+ * leaving the field off.
  */
 
 import { sha256 } from "@noble/hashes/sha2.js"
 import { stableStringify } from "./hash.js"
 import { getCrypto, getBase64 } from "./platform.js"
-import { getSuite, DEFAULT_ALG } from "./suites/index.js"
-import type { Alg } from "./suites/types.js"
+import * as ed25519Suite from "./suites/ed25519.js"
 
 /** HTTP methods the request-signing protocol supports. */
 export type SignableMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE"
@@ -48,9 +46,7 @@ export interface SignableRequest {
 
 /** Signature bundle attached to an outbound request. */
 export interface RequestSignature {
-  /** Crypto suite used to produce `sig` (and to reconstruct the canonical input). */
-  alg: Alg
-  /** Base64-encoded signature under `alg`. */
+  /** Base64-encoded Ed25519 signature. */
   sig: string
   /** Unix milliseconds; included verbatim in the canonical input. */
   ts: number
@@ -81,32 +77,29 @@ function bytesToHex(bytes: Uint8Array): string {
 const REQUEST_SIG_DOMAIN = "starfish-req-v1\n"
 
 /**
- * Canonical UTF-8 string used as the per-request signing input under `alg`:
+ * Canonical UTF-8 string used as the per-request signing input:
  * the domain tag {@link REQUEST_SIG_DOMAIN} followed by
- * `stableStringify({alg, m, p, b: sha256hex(bodyBytes), h, ts, nonce})`.
+ * `stableStringify({m, p, b: sha256hex(bodyBytes), h, ts, nonce})`.
  * `b` is the lowercase hex SHA-256 of the request body bytes; empty body
  * yields the SHA-256 of an empty buffer
  * (`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`).
  * `h` is the host the request is bound to — `req.host ?? ""`. The field
  * is always present, so an attacker who strips the property on the wire
  * still has to forge a signature against `h: ""`. `nonce` is the same
- * base64 string included on the returned signature. `alg` names the crypto
- * suite and is folded in so a signature cannot be downgraded to a weaker
- * scheme. Keys are sorted alphabetically by `stableStringify`, yielding the
- * order `{"alg":…,"b":…,"h":…,"m":…,"nonce":…,"p":…,"ts":…}`.
+ * base64 string included on the returned signature. Keys are sorted
+ * alphabetically by `stableStringify`, yielding the order
+ * `{"b":…,"h":…,"m":…,"nonce":…,"p":…,"ts":…}`.
  */
 export function requestSigningCanonicalInput(
   req: SignableRequest,
   ts: number,
   nonceBase64: string,
-  alg: Alg,
 ): string {
   const bodyBytes = bodyToBytes(req.body)
   const bodyHash = bytesToHex(sha256(bodyBytes))
   return (
     REQUEST_SIG_DOMAIN +
     stableStringify({
-      alg,
       m: req.method,
       p: req.pathAndQuery,
       b: bodyHash,
@@ -127,17 +120,16 @@ export function requestSigningCanonicalInput(
 export async function signRequest(
   req: SignableRequest,
   devPrivHex: string,
-  opts?: { ts?: number; nonce?: Uint8Array; alg?: Alg },
+  opts?: { ts?: number; nonce?: Uint8Array },
 ): Promise<RequestSignature> {
-  const alg = opts?.alg ?? DEFAULT_ALG
   const ts = opts?.ts ?? Date.now()
   const nonceBytes = opts?.nonce ?? getCrypto().getRandomValues(new Uint8Array(16))
   const nonceB64 = getBase64().encode(nonceBytes)
-  const canon = requestSigningCanonicalInput(req, ts, nonceB64, alg)
+  const canon = requestSigningCanonicalInput(req, ts, nonceB64)
   const msg = new TextEncoder().encode(canon)
-  const sigBytes = getSuite(alg).sign(msg, devPrivHex)
+  const sigBytes = ed25519Suite.sign(msg, devPrivHex)
   const sigB64 = getBase64().encode(sigBytes)
-  return { alg, sig: sigB64, ts, nonce: nonceB64 }
+  return { sig: sigB64, ts, nonce: nonceB64 }
 }
 
 /**
@@ -153,10 +145,10 @@ export async function verifyRequestSignature(
   signerPubHex: string,
 ): Promise<boolean> {
   try {
-    const canon = requestSigningCanonicalInput(req, signature.ts, signature.nonce, signature.alg)
+    const canon = requestSigningCanonicalInput(req, signature.ts, signature.nonce)
     const msg = new TextEncoder().encode(canon)
     const sigBytes = getBase64().decode(signature.sig)
-    return getSuite(signature.alg).verify(sigBytes, msg, signerPubHex)
+    return ed25519Suite.verify(sigBytes, msg, signerPubHex)
   } catch {
     return false
   }

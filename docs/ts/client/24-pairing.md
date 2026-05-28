@@ -2,7 +2,7 @@
 
 Starfish 3.0 has three onboarding flows. All three end with the same shape: a `DeviceCredentials` (root pub, userId, device key pair, signed cap-cert) plus the per-collection CEKs the new device is authorized to read.
 
-> **Crypto suite:** pairing currently assumes the default **`ed25519`** suite (Ed25519 + X25519) — the bundle's CEK wrap is still X25519-only. Unlike the per-collection keyring (which became suite-aware in 3.0.0-alpha.4), multi-device pairing for a `secp256k1-schnorr` ("Nostr") root has a hard prerequisite that isn't built yet: secp256k1 **root creation** (passphrase derivation is `ed25519`-only today). It lands with the bring-your-own-nsec / NIP-06 phase. A `secp256k1-schnorr` identity is a keyring **recipient/member** today, not yet a paired-device root. The boundary is **enforced**: `assemblePairingBundle` / `installPairingBundle` reject a non-`ed25519` device or bundle cap-cert with an explicit "secp256k1 root pairing not yet supported" error rather than producing a garbage X25519 secret. See [Identity Models](26-identity-models.md).
+> **Crypto suite:** pairing uses Ed25519 signing + X25519 KEM throughout — same primitives as everywhere else on the wire. External secp256k1 roots bootstrap into a Starfish Ed25519 identity *before* pairing (see [Identity Models](26-identity-models.md)); from pairing's point of view the resulting identity is a normal Ed25519 root.
 
 | Flow | Network | User interaction | When to use |
 |------|---------|------------------|-------------|

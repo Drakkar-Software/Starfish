@@ -16,7 +16,7 @@ import { signRequest } from "@drakkar.software/starfish-protocol"
 const signRequestMock = vi.mocked(signRequest)
 
 const PRIV = "1".repeat(64)
-const CAP = { kind: "device", iss: "issuer", issAlg: "ed25519", subAlg: "ed25519" }
+const CAP = { kind: "device", iss: "issuer", }
 const capProvider = { getCap: async () => ({ cap: CAP as never, devEdPrivHex: PRIV }) }
 
 function jsonResponse(body: unknown): Response {

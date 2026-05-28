@@ -68,8 +68,6 @@ def main() -> None:
     cert_body = {
         "v": 1,
         "kind": "device",
-        "issAlg": "ed25519",
-        "subAlg": "ed25519",
         "iss": alice.ed_pub.hex(),
         "issUserId": alice.user_id,
         "sub": new_device.ed_pub.hex(),

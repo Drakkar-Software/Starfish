@@ -67,7 +67,6 @@ def _mint_device(iss: _Root, sub: _Root, nbf: int, ttl: int = 3600) -> dict:
     unsigned = {
         "v": 1,
         "kind": "device",
-        "issAlg": "ed25519",
         "iss": iss.ed_pub_hex,
         "issUserId": iss.user_id,
         "sub": sub.ed_pub_hex,
@@ -88,7 +87,6 @@ def _mint_member(iss: _Root, sub: _Root, nbf: int, ttl: int = 3600) -> dict:
     unsigned = {
         "v": 1,
         "kind": "member",
-        "issAlg": "ed25519",
         "iss": iss.ed_pub_hex,
         "issUserId": iss.user_id,
         "sub": sub.ed_pub_hex,
@@ -910,7 +908,7 @@ async def test_content_length_canonicalization_and_leading_zeros() -> None:
 
 def _mint_with_paths(iss, sub, nbf, paths, ttl=3600):
     unsigned = {
-        "v": 1, "kind": "device", "issAlg": "ed25519",
+        "v": 1, "kind": "device",
         "iss": iss.ed_pub_hex, "issUserId": iss.user_id,
         "sub": sub.ed_pub_hex, "subKem": sub.kem_pub_hex,
         "scope": {"ops": ["read","write","list"], "collections": ["notes"], "paths": paths},
@@ -1082,7 +1080,6 @@ async def test_member_cap_with_no_scope_paths_rejected_at_resolver() -> None:
     unsigned = {
         "v": 1,
         "kind": "member",
-        "issAlg": "ed25519",
         "iss": alice.ed_pub_hex,
         "issUserId": alice.user_id,
         "sub": bob.ed_pub_hex,

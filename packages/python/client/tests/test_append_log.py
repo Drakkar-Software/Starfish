@@ -230,7 +230,7 @@ _KP_PUB = "062f2ba3c6a5590364b0864d539af151907d09ea0b741b0811e0d761a059bda4"
 
 
 def _signed_element(ts: int, data: dict[str, Any]) -> dict[str, Any]:
-    author = sign_append_author("events", data, _KP_PUB, _KP_PRIV, "ed25519")
+    author = sign_append_author("events", data, _KP_PUB, _KP_PRIV)
     return {"ts": ts, "data": data, **author}
 
 
@@ -293,7 +293,7 @@ async def test_rejects_element_signed_for_different_document_key():
     # Valid signature, but bound to "other" — pulling from "/pull/events" makes the
     # cursor verify over document_key "events", so it must reject the replay.
     data = {"msg": "a"}
-    author = sign_append_author("other", data, _KP_PUB, _KP_PRIV, "ed25519")
+    author = sign_append_author("other", data, _KP_PUB, _KP_PRIV)
     el = {"ts": 1, "data": data, **author}
     with respx.mock(base_url="https://api.example.com") as mock:
         mock.get("/v1/pull/events").mock(return_value=_json_resp({"items": [el]}))
@@ -307,7 +307,7 @@ async def test_rejects_element_signed_for_different_document_key():
 @pytest.mark.asyncio
 async def test_expected_author_pubkey_case_insensitive():
     data = {"msg": "a"}
-    author = sign_append_author("events", data, _KP_PUB, _KP_PRIV, "ed25519")
+    author = sign_append_author("events", data, _KP_PUB, _KP_PRIV)
     el = {"ts": 1, "data": data, **author}
     with respx.mock(base_url="https://api.example.com") as mock:
         mock.get("/v1/pull/events").mock(return_value=_json_resp({"items": [el]}))
@@ -324,7 +324,7 @@ async def test_expected_author_pubkey_case_insensitive():
 async def test_verify_over_ciphertext_then_decrypt():
     # The author proof is signed over the STORED bytes — the ciphertext, not the plaintext.
     ciphertext = {"_encrypted": json.dumps({"msg": "secret"})}
-    author = sign_append_author("events", ciphertext, _KP_PUB, _KP_PRIV, "ed25519")
+    author = sign_append_author("events", ciphertext, _KP_PUB, _KP_PRIV)
     el = {"ts": 1, "data": ciphertext, **author}
     with respx.mock(base_url="https://api.example.com") as mock:
         mock.get("/v1/pull/events").mock(return_value=_json_resp({"items": [el]}))

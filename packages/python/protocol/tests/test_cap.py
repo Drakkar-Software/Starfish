@@ -37,22 +37,6 @@ def test_forged_device_cap_canonical_signing_input():
     assert cap_cert_canonical_signing_input(_strip_sig(cert)) == expected
 
 
-def test_cross_suite_member_cap_canonical_signing_input():
-    # ed25519 issuer → secp256k1 subject (no subKem). Locks the canonical byte
-    # placement of a non-default subAlg cross-language (TS counterpart in cap.test.ts).
-    cert = VECTORS["crossSuiteMemberCap"]["cert"]
-    expected = VECTORS["crossSuiteMemberCap"]["canonicalSigningInput"]
-    assert cap_cert_canonical_signing_input(_strip_sig(cert)) == expected
-
-
-def test_mixed_kem_member_cap_canonical_signing_input():
-    # secp256k1 signing + decoupled ed25519 subKemAlg (distinct X25519 subKem).
-    # Locks the canonical byte placement of subKemAlg cross-language.
-    cert = VECTORS["mixedKemMemberCap"]["cert"]
-    expected = VECTORS["mixedKemMemberCap"]["canonicalSigningInput"]
-    assert cap_cert_canonical_signing_input(_strip_sig(cert)) == expected
-
-
 def test_cap_cert_canonical_signing_input_strips_sig_when_present():
     # The function must strip `sig` from the input dict before serializing,
     # so passing the full cert (with sig) yields the same canonical string.

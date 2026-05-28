@@ -4,7 +4,6 @@ import {
   getCrypto,
   computeHash,
   verifyAppendAuthor,
-  DEFAULT_ALG,
   AUTHOR_PUBKEY_FIELD,
   AUTHOR_SIGNATURE_FIELD,
   DATA_FIELD,
@@ -59,7 +58,7 @@ import {
   APPEND_DEFAULT_FIELD,
   APPEND_MAX_FUTURE_TS_SKEW_MS,
 } from "../constants.js"
-import type { ServerPlugin, WriteEvent, Alg } from "@drakkar.software/starfish-protocol"
+import type { ServerPlugin, WriteEvent } from "@drakkar.software/starfish-protocol"
 import { dispatchAfterWrite, dispatchBeforePull, dispatchInterceptPush } from "../plugins.js"
 import type { ServerLogger } from "../logger.js"
 import type { AuditLogger, AuditEntry } from "@drakkar.software/starfish-protocol"
@@ -83,7 +82,7 @@ export interface AuthResult {
    * bind a signed append's `authorPubkey` to its authenticated writer so the
    * stored author cannot be forged.
    */
-  presenter?: { pubHex: string; alg: Alg }
+  presenter?: { pubHex: string }
 }
 
 /**
@@ -270,7 +269,7 @@ async function resolveBaseAuth(
   identity: string | null
   baseRoles: Set<string>
   error: Response | null
-  presenter?: { pubHex: string; alg: Alg }
+  presenter?: { pubHex: string }
 }> {
   let auth: AuthResult
   try {
@@ -354,7 +353,7 @@ async function resolveEffectiveRoles(
   identity: string | null
   roles: Set<string>
   error: Response | null
-  presenter?: { pubHex: string; alg: Alg }
+  presenter?: { pubHex: string }
 }> {
   const base = await resolveBaseAuth(c, opts)
   if (base.error || base.auth == null) {
@@ -396,7 +395,7 @@ async function checkAuth(
   identity: string | null
   roles: string[]
   error: Response | null
-  presenter?: { pubHex: string; alg: Alg }
+  presenter?: { pubHex: string }
 }> {
   const requiredRoles = operation === OP_READ ? col.readRoles : col.writeRoles
 
@@ -492,7 +491,7 @@ async function runPush(
   rateLimiter: RateLimiter | null,
   opts: SyncRouterOptions,
   context?: StoreContext,
-  presenter?: { pubHex: string; alg: Alg },
+  presenter?: { pubHex: string },
 ): Promise<Response> {
   const contentLength = c.req.header("content-length")
   const limitErr = checkBodyLimit(contentLength ?? null, col.maxBodyBytes)
@@ -599,10 +598,9 @@ async function runPush(
       if (presenter && authorPubkey !== presenter.pubHex) {
         return c.json({ error: "append author must be the request presenter" }, 403)
       }
-      const verifyAlg = presenter?.alg ?? DEFAULT_ALG
       // Bound to `documentKey` so a signed element cannot be replayed under a
       // different document key (see appendAuthorCanonicalInput).
-      if (!verifyAppendAuthor(documentKey, sanitizedItem, authorPubkey, authorSignature, verifyAlg)) {
+      if (!verifyAppendAuthor(documentKey, sanitizedItem, authorPubkey, authorSignature)) {
         return c.json({ error: "invalid append author signature" }, 403)
       }
     }

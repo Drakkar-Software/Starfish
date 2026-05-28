@@ -8,13 +8,10 @@
 
 import {
   assertCapCertWellFormed,
-  DEFAULT_ALG,
   getBase64,
   getCrypto,
   pathGlobMatch,
   signCapCert,
-  suiteHasSeparateKem,
-  type Alg,
   type CapCert,
   type UnsignedCapCert,
 } from "@drakkar.software/starfish-protocol"
@@ -110,12 +107,6 @@ export interface MintOpts {
   nbf?: number
   /** Random nonce bytes (16 recommended). Defaults to fresh randomness. */
   nonce?: Uint8Array
-  /** Issuer's crypto suite (governs the cap signature). Defaults to the system default. */
-  alg?: Alg
-  /** Subject's signing suite (governs `sub` + per-request sigs). Defaults to `alg`. */
-  subAlg?: Alg
-  /** Subject's KEM suite (governs `subKem`). Defaults to `subAlg`. */
-  subKemAlg?: Alg
 }
 
 /** Optional knobs for {@link mintAudienceCap}. */
@@ -209,24 +200,13 @@ export async function mintMemberCap(
   const { nbf, exp } = resolveValidity(opts)
   const nonceBytes = opts.nonce ?? defaultNonce()
   const nonce = getBase64().encode(nonceBytes)
-  const issAlg = opts.alg ?? DEFAULT_ALG
-  const subAlg = opts.subAlg ?? issAlg
-  const subKemAlg = opts.subKemAlg ?? subAlg
-  // subKem is omitted only when the KEM key IS the signing key (same-suite
-  // single-key suite); otherwise it carries a distinct KEM pubkey of suite
-  // `subKemAlg`. The keyring now wraps under any suite's ECDH (`recipientKem`),
-  // so every `subKemAlg` is mintable.
-  const kemKeyIsSignKey = subKemAlg === subAlg && !suiteHasSeparateKem(subKemAlg)
   const unsigned: UnsignedCapCert = {
     v: 1,
     kind: "member",
-    issAlg,
-    subAlg,
-    ...(opts.subKemAlg !== undefined && opts.subKemAlg !== subAlg ? { subKemAlg } : {}),
     iss: issEdPubHex,
     issUserId: await userIdFromPubHex(issEdPubHex),
     sub: sub.edPubHex,
-    ...(kemKeyIsSignKey ? {} : { subKem: sub.kemPubHex }),
+    subKem: sub.kemPubHex,
     subUserId: sub.userIdHex,
     scope: { ...scope, collections: [collection] },
     nbf,
@@ -410,7 +390,6 @@ export async function mintAudienceCap(
   const unsigned: UnsignedCapCert = {
     v: 1,
     kind: "audience",
-    issAlg: opts.alg ?? DEFAULT_ALG,
     iss: issEdPubHex,
     issUserId: await userIdFromPubHex(issEdPubHex),
     scope: { ...scope, collections: [collection] },

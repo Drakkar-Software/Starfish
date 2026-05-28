@@ -30,7 +30,6 @@ function baseAudience(overrides: Record<string, unknown> = {}): unknown {
   return {
     v: 1,
     kind: "audience",
-    issAlg: "ed25519",
     iss: ISS,
     issUserId: userIdFromPubHex(ISS),
     scope: { ops: ["read", "list"], collections: ["broadcast"], paths: ["broadcast/**"] },
@@ -126,8 +125,7 @@ describe("audience cap well-formedness", () => {
     const member = {
       v: 1,
       kind: "member",
-      issAlg: "ed25519",
-      iss: ISS,
+        iss: ISS,
       issUserId: userIdFromPubHex(ISS),
       sub: "dd".repeat(32),
       subKem: "ee".repeat(32),

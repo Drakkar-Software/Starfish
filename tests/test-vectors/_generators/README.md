@@ -17,9 +17,9 @@ pip install 'cryptography>=41.0' 'argon2-cffi>=21.0' 'coincurve>=19.0'
 ```
 
 `cryptography` supplies HKDF / Ed25519 / X25519 / AES-GCM; `argon2-cffi` the
-root-passphrase Argon2id stretch; `coincurve` the secp256k1 BIP-340 Schnorr +
-ECDH used by `suite_secp256k1*.py`, `keyring_wrap_secp256k1.py`, and the
-cross-suite member caps in `cap_cert.py`.
+root-passphrase Argon2id stretch; `coincurve` the BIP-340 Schnorr +
+secp256k1 ECDH used by `identity_derivation_secp256k1.py` (the external-root
+bootstrap derivation — Starfish itself speaks ed25519 only on the wire).
 
 ## Run a generator
 
@@ -28,6 +28,7 @@ From the repository root (or any directory — the scripts resolve paths via
 
 ```bash
 python3 tests/test-vectors/_generators/identity_derivation.py
+python3 tests/test-vectors/_generators/identity_derivation_secp256k1.py
 python3 tests/test-vectors/_generators/cap_cert.py
 python3 tests/test-vectors/_generators/multi_recipient_wrap.py
 python3 tests/test-vectors/_generators/pairing_bundle.py
@@ -37,14 +38,15 @@ python3 tests/test-vectors/_generators/revocation_list.py
 
 Each script writes a sibling file inside `tests/test-vectors/`:
 
-| Generator                       | Output vector                          |
-| ------------------------------- | -------------------------------------- |
-| `identity_derivation.py`        | `identity-derivation.json`             |
-| `cap_cert.py`                   | `cap-cert.json`                        |
-| `multi_recipient_wrap.py`       | `multi-recipient-wrap.json`            |
-| `pairing_bundle.py`             | `pairing-bundle.json`                  |
-| `request_signature.py`          | `request-signature.json`               |
-| `revocation_list.py`            | `revocation-list.json`                 |
+| Generator                              | Output vector                            |
+| -------------------------------------- | ---------------------------------------- |
+| `identity_derivation.py`               | `identity-derivation.json`               |
+| `identity_derivation_secp256k1.py`     | `identity-derivation-secp256k1.json`     |
+| `cap_cert.py`                          | `cap-cert.json`                          |
+| `multi_recipient_wrap.py`              | `multi-recipient-wrap.json`              |
+| `pairing_bundle.py`                    | `pairing-bundle.json`                    |
+| `request_signature.py`                 | `request-signature.json`                 |
+| `revocation_list.py`                   | `revocation-list.json`                   |
 
 ## Shared module: `_common.py`
 

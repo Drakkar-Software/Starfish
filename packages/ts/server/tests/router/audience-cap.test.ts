@@ -1,13 +1,11 @@
 import { describe, it, expect, beforeAll } from "vitest"
 import { ed25519 } from "@noble/curves/ed25519.js"
-import { schnorr } from "@noble/curves/secp256k1.js"
 import { sha256 } from "@noble/hashes/sha2.js"
 import {
   configurePlatform,
   signRequest,
   buildRevocationList,
   userIdFromPubHex,
-  type Alg,
   type CapCert,
   type SignableRequest,
 } from "@drakkar.software/starfish-protocol"
@@ -42,14 +40,6 @@ interface Key {
 function makeKey(seed: number): Key {
   const priv = new Uint8Array(32).fill(seed)
   const pub = ed25519.getPublicKey(priv)
-  const edPubHex = hex(pub)
-  return { edPrivHex: hex(priv), edPubHex, userId: hex(sha256(pub)).slice(0, 32) }
-}
-
-/** A secp256k1-schnorr presenter (x-only pubkey). Field names reuse `Key`. */
-function makeSecpKey(seed: number): Key {
-  const priv = new Uint8Array(32).fill(seed)
-  const pub = schnorr.getPublicKey(priv) // 32-byte x-only
   const edPubHex = hex(pub)
   return { edPrivHex: hex(priv), edPubHex, userId: hex(sha256(pub)).slice(0, 32) }
 }
@@ -93,10 +83,6 @@ async function redeemHeaders(
     includePub?: boolean
     nonce?: Uint8Array
     ts?: number
-    /** Suite the presenter signs under (defaults to ed25519). */
-    signAlg?: Alg
-    /** Literal X-Starfish-Alg header value; omit to send no header. */
-    algHeader?: string
   } = { url: "" },
 ): Promise<Record<string, string>> {
   const u = new URL(opts.url)
@@ -108,7 +94,6 @@ async function redeemHeaders(
   const sig = await signRequest(req, presenter.edPrivHex, {
     nonce: opts.nonce,
     ts: opts.ts,
-    alg: opts.signAlg,
   })
   const headers: Record<string, string> = {
     Authorization: `Cap ${Buffer.from(JSON.stringify(cert)).toString("base64")}`,
@@ -117,7 +102,6 @@ async function redeemHeaders(
     "X-Starfish-Nonce": sig.nonce,
   }
   if (opts.includePub !== false) headers["X-Starfish-Pub"] = presenter.edPubHex
-  if (opts.algHeader !== undefined) headers["X-Starfish-Alg"] = opts.algHeader
   return headers
 }
 
@@ -166,35 +150,7 @@ describe("audience cap resolver", () => {
     expect(auth.identity).toBe(bob.userId)
   })
 
-  it("restricted cap: a secp256k1 presenter is rejected 401 (allow-list is ed25519-only)", async () => {
-    // The allow-list stores bare 32-byte hex with no suite tag. A secp256k1
-    // x-only presenter must NOT be admitted by a raw-hex match against an
-    // Ed25519 allow-list — the resolver pins allow-listed audiences to ed25519.
-    const presenter = makeSecpKey(0x71)
-    const cert = await mintAudienceCap(
-      ISSUER.edPrivHex,
-      ISSUER.edPubHex,
-      "broadcast",
-      scopes.readOnly("broadcast"),
-      // Even with the presenter's own hex listed, the suite mismatch is rejected.
-      { audience: [presenter.edPubHex], nbf: nowSec() - 10, ttlSec: 3600 },
-    )
-    await expect(
-      resolver()(
-        fakeContext({
-          method: "GET",
-          url: URL_OK,
-          headers: await redeemHeaders(cert, presenter, {
-            url: URL_OK,
-            signAlg: "secp256k1-schnorr",
-            algHeader: "secp256k1-schnorr",
-          }),
-        }),
-      ),
-    ).rejects.toMatchObject({ status: 401 })
-  })
-
-  it("restricted cap: a non-listed identity is rejected 403", async () => {
+it("restricted cap: a non-listed identity is rejected 403", async () => {
     const bob = makeKey(0x55)
     const mallory = makeKey(0x66)
     const cert = await mintAudienceCap(
@@ -235,55 +191,7 @@ describe("audience cap resolver", () => {
     ).rejects.toMatchObject({ status: 401 })
   })
 
-  it("a malformed X-Starfish-Alg on an audience cap is rejected 401 (fail-closed)", async () => {
-    const cert = await openCap()
-    const anyone = makeKey(0x71)
-    // Signs ed25519 but declares an unknown suite — the resolver must reject the
-    // header before dispatching to any suite, not fall back silently.
-    const headers = await redeemHeaders(cert, anyone, { url: URL_OK, algHeader: "rsa" })
-    await expect(
-      resolver()(fakeContext({ method: "GET", url: URL_OK, headers })),
-    ).rejects.toMatchObject({ status: 401 })
-  })
-
-  it("an explicit X-Starfish-Alg: ed25519 on an audience cap is accepted", async () => {
-    const cert = await openCap()
-    const anyone = makeKey(0x71)
-    const headers = await redeemHeaders(cert, anyone, { url: URL_OK, algHeader: "ed25519" })
-    const auth = await resolver()(fakeContext({ method: "GET", url: URL_OK, headers }))
-    expect(auth.identity).toBe(userIdFromPubHex(anyone.edPubHex))
-  })
-
-  it("a secp256k1-schnorr presenter redeems an audience cap (cross-suite, header-driven)", async () => {
-    // The presenter's suite is unrelated to the cap's issAlg; it arrives only in
-    // X-Starfish-Alg and the resolver must verify the request signature under it.
-    const cert = await openCap()
-    const presenter = makeSecpKey(0x71)
-    const headers = await redeemHeaders(cert, presenter, {
-      url: URL_OK,
-      signAlg: "secp256k1-schnorr",
-      algHeader: "secp256k1-schnorr",
-    })
-    const auth = await resolver()(fakeContext({ method: "GET", url: URL_OK, headers }))
-    expect(auth.identity).toBe(userIdFromPubHex(presenter.edPubHex))
-  })
-
-  it("a secp256k1 presenter whose X-Starfish-Alg lies (claims ed25519) fails 401", async () => {
-    // Signature bytes are secp256k1 but the header says ed25519 → verify under the
-    // wrong suite must fail closed, never authorize.
-    const cert = await openCap()
-    const presenter = makeSecpKey(0x71)
-    const headers = await redeemHeaders(cert, presenter, {
-      url: URL_OK,
-      signAlg: "secp256k1-schnorr",
-      algHeader: "ed25519",
-    })
-    await expect(
-      resolver()(fakeContext({ method: "GET", url: URL_OK, headers })),
-    ).rejects.toMatchObject({ status: 401 })
-  })
-
-  it("two different presenters reusing the same nonce both succeed (nonce-cache keyed by presenter)", async () => {
+it("two different presenters reusing the same nonce both succeed (nonce-cache keyed by presenter)", async () => {
     const cert = await openCap()
     const a = makeKey(0x71)
     const b = makeKey(0x72)

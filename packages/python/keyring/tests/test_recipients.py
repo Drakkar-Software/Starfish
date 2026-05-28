@@ -9,7 +9,6 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 
-from starfish_protocol.suites import get_suite
 from starfish_protocol.types import PullResult, PushSuccess
 from starfish_sdk.client import StarfishClient
 from starfish_keyring.keyring import (
@@ -58,17 +57,6 @@ class _Party:
         self.ed_pub = ed_pub_bytes.hex()
         self.kem_priv = kem_priv_bytes.hex()
         self.kem_pub = kem_pub_bytes.hex()
-
-
-class _SecpParty:
-    """A secp256k1 party — one key does both signing and KEM (Nostr convention)."""
-
-    def __init__(self) -> None:
-        priv, pub = get_suite("secp256k1-schnorr").generate_kem_keypair()
-        self.ed_priv = priv
-        self.ed_pub = pub
-        self.kem_priv = priv
-        self.kem_pub = pub
 
 
 def _make_mock_client(initial: dict | None = None) -> tuple[StarfishClient, dict]:
@@ -243,44 +231,6 @@ async def test_add_recipient_adds_to_current_epoch_and_recoverable():
     assert charlie_entry is not None
     recovered_cek = unwrap_from_entry(charlie_entry, charlie.kem_priv)
     assert recovered_cek == cek
-
-
-@pytest.mark.asyncio
-async def test_secp256k1_owner_grants_secp256k1_member_access():
-    # End-to-end through the HTTP layer: a secp owner recovers the current CEK
-    # from its own secp entry, then wraps it for a secp member and pushes.
-    owner = _SecpParty()
-    member = _SecpParty()
-    keyring, cek = create_keyring(
-        owner.ed_priv,
-        owner.ed_pub,
-        [(owner.kem_pub, "secp256k1-schnorr")],
-        added_by_alg="secp256k1-schnorr",
-    )
-    path = f"/pull/{keyring_path_for('vault')}"
-    push_path = f"/push/{keyring_path_for('vault')}"
-    client, store = _make_mock_client({"path": path, "data": keyring, "hash": "h0"})
-
-    await add_collection_recipient(
-        client,
-        "vault",
-        {"subKem": member.kem_pub, "kemAlg": "secp256k1-schnorr", "userId": "nostr-member"},
-        {
-            "edPriv": owner.ed_priv,
-            "edPub": owner.ed_pub,
-            "kemPriv": owner.kem_priv,
-            "alg": "secp256k1-schnorr",
-        },
-        trusted_adders=[owner.ed_pub],
-    )
-
-    updated = store[push_path]["data"]
-    member_entry = next(
-        (e for e in updated.epochs["1"].wrapped_keys if e.sub_kem == member.kem_pub), None
-    )
-    assert member_entry is not None
-    assert member_entry.kem_alg == "secp256k1-schnorr"
-    assert unwrap_from_entry(member_entry, member.kem_priv) == cek
 
 
 @pytest.mark.asyncio

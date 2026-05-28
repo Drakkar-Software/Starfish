@@ -74,7 +74,6 @@ def _device_cert(k: _Keys, collections: list[str]) -> dict:
     unsigned = {
         "v": 1,
         "kind": "device",
-        "issAlg": "ed25519",
         "iss": k.ed_pub_hex,
         "issUserId": k.user_id,
         "sub": k.ed_pub_hex,

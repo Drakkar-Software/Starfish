@@ -4,9 +4,7 @@ import {
   AUTHOR_SIGNATURE_FIELD,
   DATA_FIELD,
   BASE_HASH_FIELD,
-  DEFAULT_ALG,
   verifyDocAuthor,
-  type Alg,
 } from "@drakkar.software/starfish-protocol"
 import type { ObjectStore, StoreContext } from "../storage/base.js"
 import { pull } from "../protocol/pull.js"
@@ -395,7 +393,7 @@ export async function handleSyncPush(
   skipTimestamps: boolean = false,
   skipStorage: boolean = false,
   context?: StoreContext,
-  presenter?: { pubHex: string; alg: Alg },
+  presenter?: { pubHex: string },
 ): Promise<PushResponse> {
   if (isUnsafeDocumentKey(documentKey)) {
     return { body: { error: "Invalid path parameter" }, status: 400 }
@@ -429,8 +427,7 @@ export async function handleSyncPush(
     if (presenter && authorPubkey !== presenter.pubHex) {
       return { body: { error: "document author must be the request presenter" }, status: 403 }
     }
-    const verifyAlg = presenter?.alg ?? DEFAULT_ALG
-    if (!verifyDocAuthor(documentKey, sanitized, authorPubkey, authorSignature, verifyAlg)) {
+    if (!verifyDocAuthor(documentKey, sanitized, authorPubkey, authorSignature)) {
       return { body: { error: "invalid document author signature" }, status: 403 }
     }
     author = { pubkey: authorPubkey, signature: authorSignature }

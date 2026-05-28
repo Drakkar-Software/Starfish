@@ -36,7 +36,6 @@ HEADER_AUTHORIZATION = "Authorization"
 HEADER_SIG = "X-Starfish-Sig"
 HEADER_TS = "X-Starfish-Ts"
 HEADER_NONCE = "X-Starfish-Nonce"
-HEADER_ALG = "X-Starfish-Alg"
 HEADER_PUB = "X-Starfish-Pub"
 HEADER_CONTENT_TYPE = "Content-Type"
 HEADER_ACCEPT = "Accept"
@@ -52,7 +51,6 @@ __all__ = [
     "HEADER_SIG",
     "HEADER_TS",
     "HEADER_NONCE",
-    "HEADER_ALG",
     "HEADER_PUB",
     "HEADER_CONTENT_TYPE",
     "HEADER_ACCEPT",

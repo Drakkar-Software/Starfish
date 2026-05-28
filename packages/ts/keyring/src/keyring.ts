@@ -1,32 +1,25 @@
 /**
  * v3.0 multi-recipient keyring with delegated encryption.
  *
- * Each `WrappedKeyEntry` uses per-entry ephemeral ECDH (HPKE-DHKEM-style),
- * dispatched by the recipient's KEM suite (`kemAlg`):
+ * Each `WrappedKeyEntry` uses per-entry ephemeral X25519 ECDH (HPKE-DHKEM-style):
  *
- *     shared  = suite(kemAlg).deriveSharedSecret(ephPriv, recipient.kemPub)
- *     wrapKey = HKDF-SHA256(shared, salt="starfish-wrap", info=wrapInfo(kemAlg))
+ *     shared  = X25519(ephPriv, recipient.subKem)
+ *     wrapKey = HKDF-SHA256(shared, salt="starfish-wrap", info="starfish-wrap")
  *     ct      = base64(iv || AES-256-GCM(wrapKey, iv, cek))
- *     addedSig = base64( suite(addedByAlg).sign(adder.priv, stableStringify(canonical)) )
+ *     addedSig = base64( Ed25519(adder.priv, stableStringify(canonical)) )
  *
- * `kemAlg` / `addedByAlg` are optional and default to `ed25519` (tolerant
- * reader); both are folded into the `addedSig` canonical input ONLY when present
- * so an `ed25519` entry is byte-identical to the pre-suite format (the existing
- * cross-language wrap vector is the no-drift proof). Recipients are identified
- * by exact `subKem` match (for a same-suite secp256k1 recipient, `subKem` is
- * their one secp256k1 key — see `recipientKem` in the protocol package).
+ * Starfish speaks ed25519 only on the wire — the keyring entry carries no suite
+ * discriminator. Recipients are identified by exact `subKem` match.
  *
  * This module replaces the removed v2 `group-crypto.ts` (deleted in 3.0): the
  * per-collection delegated keyring is the only encryption surface.
  */
 
 import {
-  DEFAULT_ALG,
   getCrypto,
   getBase64,
-  getSuite,
   stableStringify,
-  type Alg,
+  ed25519Suite,
 } from "@drakkar.software/starfish-protocol"
 
 import { bytesToHex, concat, hkdfBytes } from "./_crypto_helpers.js"
@@ -68,28 +61,18 @@ function blobAad(epoch: number, aad: string | undefined): Uint8Array {
 
 /** A single recipient's wrapped CEK, with audit signature from the adder. */
 export interface WrappedKeyEntry {
-  /** Recipient KEM pubkey (hex) of suite `kemAlg`. Identifies the recipient by exact match. */
+  /** Recipient X25519 KEM pubkey (hex). Identifies the recipient by exact match. */
   subKem: string
-  /** Ephemeral KEM pubkey for this entry (hex), of suite `kemAlg`. */
+  /** Ephemeral X25519 KEM pubkey for this entry (hex). */
   ephKem: string
   /** `base64(iv || AES-GCM(wrapKey, iv, cek))`. */
   ct: string
-  /** Adder's signing pubkey (hex), of suite `addedByAlg`. */
+  /** Adder's Ed25519 signing pubkey (hex). */
   addedBy: string
-  /** Signature over the canonical signing input under `addedByAlg`, base64. */
+  /** Ed25519 signature over the canonical signing input, base64. */
   addedSig: string
   /** Unix seconds when the entry was added. */
   addedAt: number
-  /**
-   * Recipient KEM suite (governs `subKem`/`ephKem` and which ECDH runs).
-   * Optional; absent ⇒ `ed25519` (X25519). Folded into `addedSig` when present.
-   */
-  kemAlg?: Alg
-  /**
-   * Adder's signing suite (governs `addedBy`/`addedSig`). Optional; absent ⇒
-   * `ed25519`. Folded into `addedSig` when present.
-   */
-  addedByAlg?: Alg
 }
 
 /** All recipients with access to a given CEK epoch. */
@@ -123,12 +106,9 @@ function randomBytes(n: number): Uint8Array {
 }
 
 /**
- * Canonical signing input for an `addedSig`. Stable-stringify of {addedAt,
- * addedBy, ct, ephKem, epoch, subKem}, plus `kemAlg` / `addedByAlg` **only when
- * present**. The tolerant-reader rule: an `ed25519`/X25519 entry omits both, so
- * its canonical input is byte-identical to the pre-suite format (the existing
- * cross-language wrap vector is the regression proof). Stripping a present tag
- * changes these bytes ⇒ `addedSig` fails ⇒ fail closed (downgrade caught).
+ * Canonical signing input for an `addedSig`. Stable-stringify of
+ * {addedAt, addedBy, ct, ephKem, epoch, subKem}. Locked by the cross-language
+ * wrap vector — byte-identical across TS and Python.
  */
 function canonicalAddedSigInput(args: {
   addedAt: number
@@ -137,49 +117,26 @@ function canonicalAddedSigInput(args: {
   ephKem: string
   epoch: number
   subKem: string
-  kemAlg?: Alg
-  addedByAlg?: Alg
 }): string {
-  const obj: Record<string, unknown> = {
+  return stableStringify({
     addedAt: args.addedAt,
     addedBy: args.addedBy,
     ct: args.ct,
     ephKem: args.ephKem,
     epoch: args.epoch,
     subKem: args.subKem,
-  }
-  if (args.kemAlg !== undefined) obj.kemAlg = args.kemAlg
-  if (args.addedByAlg !== undefined) obj.addedByAlg = args.addedByAlg
-  return stableStringify(obj)
-}
-
-/**
- * HKDF `info` for the wrap-key derivation, domain-separated per KEM suite. The
- * `ed25519`/X25519 value (`"starfish-wrap"`) is **frozen by the existing
- * cross-language vector and must not change**; other suites get a distinct info
- * so a shared secret from one curve can never derive the same wrap key as
- * another.
- */
-function wrapInfo(kemAlg: Alg): Uint8Array {
-  return kemAlg === "ed25519" ? KEYRING_WRAP_INFO : ENC.encode(`starfish-wrap:${kemAlg}`)
-}
-
-/** A present alg tag, or `undefined` when it is the `ed25519` default (omitted on the wire). */
-function tagIfPresent(alg: Alg): Alg | undefined {
-  return alg === DEFAULT_ALG ? undefined : alg
+  })
 }
 
 // ── Core wrap / unwrap ────────────────────────────────────────────────────────
 
 /**
- * Wraps a CEK for a single recipient using ephemeral ECDH under the recipient's
- * KEM suite (`opts.kemAlg`, default `ed25519`/X25519).
+ * Wraps a CEK for a single recipient using ephemeral X25519 ECDH.
  *
- * Generates a fresh ephemeral keypair of that suite (or uses `opts.ephPriv` if
- * provided, useful for reproducible vectors), runs the suite ECDH with the
- * recipient's KEM pubkey, derives the wrap key via HKDF-SHA256 (info
- * domain-separated per suite), and encrypts the CEK with AES-256-GCM. The adder
- * signs the entry under `opts.addedByAlg` (default `ed25519`) for audit.
+ * Generates a fresh ephemeral X25519 keypair (or uses `opts.ephPriv` if provided,
+ * useful for reproducible vectors), runs X25519 ECDH with the recipient's KEM
+ * pubkey, derives the wrap key via HKDF-SHA256, and encrypts the CEK with
+ * AES-256-GCM. The adder signs the entry with Ed25519 for audit.
  */
 export async function wrapForRecipient(
   cek: Uint8Array,
@@ -189,23 +146,18 @@ export async function wrapForRecipient(
     adderEdPubHex: string
     addedAt: number
     epoch: number
-    kemAlg?: Alg
-    addedByAlg?: Alg
     ephPriv?: Uint8Array
     iv?: Uint8Array
   },
 ): Promise<WrappedKeyEntry> {
-  const kemAlg = opts.kemAlg ?? DEFAULT_ALG
-  const addedByAlg = opts.addedByAlg ?? DEFAULT_ALG
-  const kemSuite = getSuite(kemAlg)
-  const signSuite = getSuite(addedByAlg)
-
-  const ephPrivHex = opts.ephPriv ? bytesToHex(opts.ephPriv) : kemSuite.generateKemKeypair().privHex
-  const ephKemHex = kemSuite.kemPublic(ephPrivHex)
+  const ephPrivHex = opts.ephPriv
+    ? bytesToHex(opts.ephPriv)
+    : ed25519Suite.generateKemKeypair().privHex
+  const ephKemHex = ed25519Suite.kemPublic(ephPrivHex)
 
   // deriveSharedSecret asserts a usable (non-degenerate) secret, fail closed.
-  const shared = kemSuite.deriveSharedSecret(ephPrivHex, recipientKemPubHex)
-  const wrapKeyBytes = await hkdfBytes(shared, KEYRING_WRAP_SALT, wrapInfo(kemAlg), 32)
+  const shared = ed25519Suite.deriveSharedSecret(ephPrivHex, recipientKemPubHex)
+  const wrapKeyBytes = await hkdfBytes(shared, KEYRING_WRAP_SALT, KEYRING_WRAP_INFO, 32)
   const wrapKey = await importAesKey(wrapKeyBytes)
 
   const iv = opts.iv ?? randomBytes(KEYRING_IV_BYTES)
@@ -221,10 +173,8 @@ export async function wrapForRecipient(
     ephKem: ephKemHex,
     epoch: opts.epoch,
     subKem: recipientKemPubHex,
-    kemAlg: tagIfPresent(kemAlg),
-    addedByAlg: tagIfPresent(addedByAlg),
   })
-  const sigBytes = signSuite.sign(ENC.encode(canonical), opts.adderEdPrivHex)
+  const sigBytes = ed25519Suite.sign(ENC.encode(canonical), opts.adderEdPrivHex)
   const addedSig = getBase64().encode(sigBytes)
 
   // Best-effort wipe of secret intermediates before returning.
@@ -238,13 +188,11 @@ export async function wrapForRecipient(
     addedBy: opts.adderEdPubHex,
     addedSig,
     addedAt: opts.addedAt,
-    ...(tagIfPresent(kemAlg) !== undefined ? { kemAlg } : {}),
-    ...(tagIfPresent(addedByAlg) !== undefined ? { addedByAlg } : {}),
   }
 }
 
 /**
- * Recovers the CEK from a `WrappedKeyEntry` using the recipient's KEM private key.
+ * Recovers the CEK from a `WrappedKeyEntry` using the recipient's X25519 private key.
  *
  * Throws if AES-GCM authentication fails (wrong key, tampered ciphertext).
  *
@@ -260,10 +208,8 @@ export async function unwrapFromEntry(
   entry: WrappedKeyEntry,
   recipientKemPrivHex: string,
 ): Promise<Uint8Array> {
-  const kemAlg = entry.kemAlg ?? DEFAULT_ALG
-  // deriveSharedSecret asserts a usable secret + validates the peer point, fail closed.
-  const shared = getSuite(kemAlg).deriveSharedSecret(recipientKemPrivHex, entry.ephKem)
-  const wrapKeyBytes = await hkdfBytes(shared, KEYRING_WRAP_SALT, wrapInfo(kemAlg), 32)
+  const shared = ed25519Suite.deriveSharedSecret(recipientKemPrivHex, entry.ephKem)
+  const wrapKeyBytes = await hkdfBytes(shared, KEYRING_WRAP_SALT, KEYRING_WRAP_INFO, 32)
   const wrapKey = await importAesKey(wrapKeyBytes)
 
   const combined = getBase64().decode(entry.ct)
@@ -290,8 +236,6 @@ export async function unwrapFromEntry(
  * Ed25519 signature against `entry.addedBy`.
  */
 export async function verifyEntrySignature(entry: WrappedKeyEntry, epoch: number): Promise<boolean> {
-  // Re-derive the canonical input from the entry's own (possibly absent) tags:
-  // a stripped/swapped kemAlg or addedByAlg changes these bytes and fails here.
   const canonical = canonicalAddedSigInput({
     addedAt: entry.addedAt,
     addedBy: entry.addedBy,
@@ -299,12 +243,10 @@ export async function verifyEntrySignature(entry: WrappedKeyEntry, epoch: number
     ephKem: entry.ephKem,
     epoch,
     subKem: entry.subKem,
-    kemAlg: entry.kemAlg,
-    addedByAlg: entry.addedByAlg,
   })
   try {
     const sig = getBase64().decode(entry.addedSig)
-    return getSuite(entry.addedByAlg ?? DEFAULT_ALG).verify(sig, ENC.encode(canonical), entry.addedBy)
+    return ed25519Suite.verify(sig, ENC.encode(canonical), entry.addedBy)
   } catch {
     return false
   }
@@ -317,8 +259,8 @@ export async function verifyEntrySignature(entry: WrappedKeyEntry, epoch: number
  * Generates a random 32-byte CEK if none is provided.
  */
 export async function createKeyring(
-  adder: { edPrivHex: string; edPubHex: string; alg?: Alg },
-  recipients: { subKemHex: string; kemAlg?: Alg }[],
+  adder: { edPrivHex: string; edPubHex: string },
+  recipients: { subKemHex: string }[],
   cek?: Uint8Array,
   addedAt: number = Math.floor(Date.now() / 1000),
 ): Promise<{ keyring: Keyring; cek: Uint8Array }> {
@@ -331,8 +273,6 @@ export async function createKeyring(
         adderEdPubHex: adder.edPubHex,
         addedAt,
         epoch: 1,
-        kemAlg: r.kemAlg,
-        addedByAlg: adder.alg,
       }),
     )
   }
@@ -359,11 +299,10 @@ export async function createKeyring(
  */
 export async function addRecipient(
   keyring: Keyring,
-  adder: { edPrivHex: string; edPubHex: string; alg?: Alg },
+  adder: { edPrivHex: string; edPubHex: string },
   currentCek: Uint8Array,
   recipientKemHex: string,
   addedAt: number = Math.floor(Date.now() / 1000),
-  kemAlg: Alg = DEFAULT_ALG,
 ): Promise<Keyring> {
   const epochKey = String(keyring.currentEpoch)
   const epoch = keyring.epochs[epochKey]
@@ -377,8 +316,6 @@ export async function addRecipient(
     adderEdPubHex: adder.edPubHex,
     addedAt,
     epoch: keyring.currentEpoch,
-    kemAlg,
-    addedByAlg: adder.alg,
   })
   return {
     ...keyring,
@@ -399,8 +336,8 @@ export async function addRecipient(
  */
 export async function rotateEpoch(
   keyring: Keyring,
-  adder: { edPrivHex: string; edPubHex: string; alg?: Alg },
-  retainedRecipients: { subKemHex: string; kemAlg?: Alg }[],
+  adder: { edPrivHex: string; edPubHex: string },
+  retainedRecipients: { subKemHex: string }[],
   addedAt: number = Math.floor(Date.now() / 1000),
 ): Promise<{ keyring: Keyring; cek: Uint8Array }> {
   const newEpoch = keyring.currentEpoch + 1
@@ -413,8 +350,6 @@ export async function rotateEpoch(
         adderEdPubHex: adder.edPubHex,
         addedAt,
         epoch: newEpoch,
-        kemAlg: r.kemAlg,
-        addedByAlg: adder.alg,
       }),
     )
   }
@@ -488,11 +423,6 @@ export async function createKeyringEncryptor(
   recipient: { kemPubHex: string; kemPrivHex: string },
   opts: { trustedAdders?: string[]; minEpoch?: number } = {},
 ): Promise<KeyringEncryptor> {
-  // Fail closed: `trustedAdders` is mandatory. The per-entry `addedSig` is
-  // self-attesting (any key signs its own entry), so without a provenance pin a
-  // hostile server could REPLACE the caller's entry with one wrapping an
-  // attacker-chosen CEK to the caller's KEM pubkey and self-sign it. Requiring
-  // the trusted-adder set closes that substitution by construction.
   if (!opts.trustedAdders || opts.trustedAdders.length === 0) {
     throw new Error(
       "createKeyringEncryptor: `trustedAdders` is required — pass the Ed25519 pubkey(s) " +
@@ -500,9 +430,6 @@ export async function createKeyringEncryptor(
         "Without it a hostile server could substitute a wrapped-key entry (the addedSig is self-attesting).",
     )
   }
-  // Epoch rollback guard: the keyring has no built-in epoch floor, so a hostile
-  // server could serve a STALE keyring (lower currentEpoch) to undo a rotation.
-  // Reject any keyring below the caller's last-seen epoch (persisted client-side).
   if (opts.minEpoch !== undefined && keyring.currentEpoch < opts.minEpoch) {
     throw new Error(
       `createKeyringEncryptor: keyring epoch ${keyring.currentEpoch} is below the last-seen ` +
@@ -516,8 +443,6 @@ export async function createKeyringEncryptor(
     if (matches.length === 0) continue
     const epochNum = parseInt(epochStr, 10)
     if (matches.length > 1) {
-      // Duplicate entries for one recipient: the keyring was tampered with.
-      // Fail closed — never pick one and risk adopting an attacker CEK.
       console.warn(
         `[starfish:keyring] skipping epoch ${epochNum} for recipient ${recipient.kemPubHex}: ${matches.length} entries share this subKem (tampering)`,
       )

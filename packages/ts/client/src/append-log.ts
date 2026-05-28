@@ -1,7 +1,5 @@
 import {
-  DEFAULT_ALG,
   verifyAppendAuthor,
-  type Alg,
   type Encryptor,
 } from "@drakkar.software/starfish-protocol"
 import type { StarfishClient, AppendPullOptions } from "./client.js"
@@ -46,8 +44,6 @@ export interface AuthorVerifier {
    *  (verify only that the signature is valid for the element's self-declared
    *  `authorPubkey` — see the `verifyAuthor` note on restricting authors). */
   expectedAuthorPubkey?: string
-  /** Signing suite the signatures were produced under. Defaults to `DEFAULT_ALG`. */
-  alg?: Alg
 }
 
 /**
@@ -355,12 +351,12 @@ export class AppendLogCursor {
     ) {
       throw new AppendAuthorError(el.ts)
     }
+    void policy
     const ok = verifyAppendAuthor(
       this.documentKey,
       el.data,
       authorPubkey,
       authorSignature,
-      policy.alg ?? DEFAULT_ALG,
     )
     if (!ok) throw new AppendAuthorError(el.ts)
   }

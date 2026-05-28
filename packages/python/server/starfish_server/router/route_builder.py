@@ -38,7 +38,6 @@ from starfish_protocol.constants import (
     DATA_FIELD,
     TS_FIELD,
 )
-from starfish_protocol.suites import DEFAULT_ALG
 from starfish_server.router.middleware import check_body_limit, RateLimiter
 from starfish_server.router.mime import matches_allowed_mime, is_json_collection
 from starfish_server.router.cap_resolver import match_scope_path
@@ -74,13 +73,11 @@ from starfish_server.constants import (
 
 @dataclass(frozen=True)
 class Presenter:
-    """The verified request presenter: the public key that signed THIS request
-    (the cap subject for a device/member cap, the redeemer for an audience cap)
-    and its crypto suite. Used to bind a signed append's ``authorPubkey`` to its
-    authenticated writer so the stored author cannot be forged."""
+    """The verified request presenter: the Ed25519 public key that signed THIS
+    request. Used to bind a signed append's ``authorPubkey`` to its authenticated
+    writer so the stored author cannot be forged."""
 
     pub_hex: str
-    alg: str
 
 
 @dataclass
@@ -540,11 +537,10 @@ async def _run_push(
                     {"error": "append author must be the request presenter"},
                     status_code=403,
                 )
-            verify_alg = presenter.alg if presenter is not None else DEFAULT_ALG
             # Bound to ``document_key`` so a signed element cannot be replayed
             # under a different document key (see append_author_canonical_input).
             if not verify_append_author(
-                document_key, sanitized_item, author_pubkey, author_signature, verify_alg
+                document_key, sanitized_item, author_pubkey, author_signature
             ):
                 return JSONResponse(
                     {"error": "invalid append author signature"}, status_code=403

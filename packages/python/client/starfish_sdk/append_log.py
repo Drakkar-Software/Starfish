@@ -11,7 +11,6 @@ from typing import Any, Literal, TypedDict, cast
 
 from starfish_protocol.append_author import verify_append_author
 from starfish_protocol.crypto import Encryptor
-from starfish_protocol.suites import DEFAULT_ALG
 from starfish_sdk.client import StarfishClient
 
 # The ``/pull/`` action prefix; mirrors ``PUSH_PATH_PREFIX`` for the read side.
@@ -39,8 +38,6 @@ class AuthorVerifier(TypedDict, total=False):
     # (verify only that the signature is valid for the element's self-declared
     # ``authorPubkey`` — see the ``verify_author`` note on restricting authors).
     expected_author_pubkey: str
-    # Signing suite the signatures were produced under. Defaults to DEFAULT_ALG.
-    alg: str
 
 
 class AppendAuthorError(Exception):
@@ -240,19 +237,15 @@ class AppendLogCursor:
         if not v:
             return
         expected: str | None = None
-        alg: str = DEFAULT_ALG
         if isinstance(v, dict):
             expected = v.get("expected_author_pubkey")
-            alg = v.get("alg") or DEFAULT_ALG
         pub = el.get("authorPubkey")
         sig = el.get("authorSignature")
         if not pub or not sig:
             raise AppendAuthorError(el["ts"])
-        # Public keys are hex (case-insensitive) — compare normalized so a caller
-        # passing a differently-cased expected key isn't falsely rejected.
         if expected is not None and pub.lower() != expected.lower():
             raise AppendAuthorError(el["ts"])
-        if not verify_append_author(self._document_key, el["data"], pub, sig, alg):
+        if not verify_append_author(self._document_key, el["data"], pub, sig):
             raise AppendAuthorError(el["ts"])
 
     @property

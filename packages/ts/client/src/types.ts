@@ -1,4 +1,4 @@
-import type { Alg, CapCert } from "@drakkar.software/starfish-protocol"
+import type { CapCert } from "@drakkar.software/starfish-protocol"
 
 /** Push conflict error (HTTP 409). */
 export class ConflictError extends Error {
@@ -39,19 +39,11 @@ export interface StarfishCapProvider {
    * The client then sends it as `X-Starfish-Pub` so the server can verify the
    * request signature against it and check the cap's `aud` allow-list. Omit
    * `pubHex` for device/member caps (the server uses `cap.sub`).
-   *
-   * `presenterAlg` is the crypto suite of `devEdPrivHex` (the key that signs
-   * the request). It matters only for `audience` caps, where the presenter is
-   * an arbitrary redeemer whose suite is unrelated to the cap's `issAlg`; the
-   * client sends it as `X-Starfish-Alg`. For device/member caps the subject's
-   * suite is taken authoritatively from the verified cert, so this is ignored.
-   * Defaults to `"ed25519"` when omitted.
    */
   getCap(): Promise<{
     cap: CapCert
     devEdPrivHex: string
     pubHex?: string
-    presenterAlg?: Alg
   }>
 }
 

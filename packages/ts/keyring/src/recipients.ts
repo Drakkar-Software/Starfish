@@ -10,7 +10,6 @@
  * the prior pull as `baseHash`. Callers may retry on `ConflictError`.
  */
 
-import type { Alg } from "@drakkar.software/starfish-protocol"
 import type { StarfishClient } from "@drakkar.software/starfish-client"
 import { StarfishHttpError } from "@drakkar.software/starfish-client"
 import type { Keyring, WrappedKeyEntry } from "./keyring.js"
@@ -30,12 +29,10 @@ export function keyringPathFor(collectionName: string): string {
   return `${collectionName}/_keyring`
 }
 
-/** A recipient referenced by its KEM public key, with optional metadata. */
+/** A recipient referenced by its X25519 KEM public key, with optional metadata. */
 export interface RecipientRef {
-  /** Recipient KEM pubkey (hex) of suite `kemAlg` (X25519 for ed25519). */
+  /** Recipient X25519 KEM pubkey (hex). */
   subKem: string
-  /** Recipient KEM suite. Absent ⇒ `ed25519` (X25519). */
-  kemAlg?: Alg
   userId?: string
   label?: string
 }
@@ -45,8 +42,6 @@ export interface AdderKeys {
   edPriv: string
   edPub: string
   kemPriv: string
-  /** Adder's signing suite (governs the entry's `addedSig`). Absent ⇒ `ed25519`. */
-  alg?: Alg
 }
 
 /** Optional knobs shared by the recipient-mutation helpers. */
@@ -112,12 +107,6 @@ async function pullKeyring(
 /**
  * Locates the adder's wrapped key entry in the current epoch and recovers the
  * CEK. Throws if the adder is not a member of the current epoch.
- *
- * Each candidate entry's `addedSig` is verified before the unwrap attempt:
- * a tampered audit signature (e.g. `addedBy` or `addedAt` mutated by an
- * intermediary) causes the entry to be skipped, so the client never trusts
- * unattested wrap material. A single corrupted entry does not prevent the
- * adder from recovering the CEK via another valid entry in the same epoch.
  */
 async function recoverCurrentCek(
   keyring: Keyring,
@@ -130,10 +119,6 @@ async function recoverCurrentCek(
     throw new Error(`Epoch ${keyring.currentEpoch} not found in keyring`)
   }
 
-  // A valid epoch has unique subKems (enforced on write by addRecipient).
-  // Duplicates mean the keyring was tampered with — e.g. a hostile server
-  // injected an entry wrapping an attacker-chosen CEK to this adder's key.
-  // Fail closed rather than risk recovering and re-wrapping a forged CEK.
   const seenSubKems = new Set<string>()
   for (const e of epoch.wrappedKeys) {
     if (seenSubKems.has(e.subKem)) {
@@ -198,11 +183,9 @@ export async function addRecipient(
   const currentCek = await recoverCurrentCek(pulled.keyring, adder.kemPriv, trustedAdders)
   const next = await keyringAddRecipient(
     pulled.keyring,
-    { edPrivHex: adder.edPriv, edPubHex: adder.edPub, alg: adder.alg },
+    { edPrivHex: adder.edPriv, edPubHex: adder.edPub },
     currentCek,
     recipient.subKem,
-    undefined,
-    recipient.kemAlg,
   )
 
   await client.push(
@@ -239,18 +222,9 @@ export async function removeRecipient(
     throw new Error(`Epoch ${pulled.keyring.currentEpoch} not found in keyring`)
   }
 
-  // Decide which entries survive the rotation. An entry is only carried into
-  // the new epoch if it (a) is not being removed, (b) was added by a trusted
-  // adder, AND (c) has a valid `addedSig`. The signature check is essential:
-  // `addedBy` and `subKem` are public fields bound to each other ONLY by
-  // `addedSig`, so without verifying it a hostile server could swap a retained
-  // entry's `subKem` to an attacker key (leaving `addedBy` a trusted adder) and
-  // the rotation would re-wrap the fresh CEK to the attacker — laundering a
-  // forged recipient into a legitimately signed post-rotation entry. This
-  // mirrors `recoverCurrentCek`; `trustedAdders` is mandatory (fail closed).
   const trustedAdders = requireTrustedAdders(opts.trustedAdders, "removeRecipient")
   const removeSet = new Set(removeSubKems)
-  const retainedRecipients: { subKemHex: string; kemAlg?: Alg }[] = []
+  const retainedRecipients: { subKemHex: string }[] = []
   for (const e of epoch.wrappedKeys) {
     if (removeSet.has(e.subKem)) continue
     if (!trustedAdders.has(e.addedBy)) {
@@ -265,12 +239,12 @@ export async function removeRecipient(
       )
       continue
     }
-    retainedRecipients.push({ subKemHex: e.subKem, kemAlg: e.kemAlg })
+    retainedRecipients.push({ subKemHex: e.subKem })
   }
 
   const { keyring: rotated } = await rotateEpoch(
     pulled.keyring,
-    { edPrivHex: adder.edPriv, edPubHex: adder.edPub, alg: adder.alg },
+    { edPrivHex: adder.edPriv, edPubHex: adder.edPub },
     retainedRecipients,
   )
 

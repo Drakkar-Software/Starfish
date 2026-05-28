@@ -68,7 +68,7 @@ async function buildSignedDeviceCap(iss: RootKeys, sub: RootKeys): Promise<CapCe
   const unsigned: UnsignedCapCert = {
     v: 1,
     kind: "device",
-    issAlg: "ed25519",
+
     iss: iss.edPubHex,
     issUserId: iss.userId,
     sub: sub.edPubHex,
@@ -86,7 +86,7 @@ async function buildSignedMemberCap(iss: RootKeys, sub: RootKeys): Promise<CapCe
   const unsigned: UnsignedCapCert = {
     v: 1,
     kind: "member",
-    issAlg: "ed25519",
+
     iss: iss.edPubHex,
     issUserId: iss.userId,
     sub: sub.edPubHex,

@@ -17,8 +17,6 @@ const vectors = JSON.parse(readFileSync(vectorPath, "utf-8")) as {
   deviceCap: { cert: CapCert; canonicalSigningInput: string }
   memberCap: { cert: CapCert; canonicalSigningInput: string }
   forgedDeviceCap: { cert: CapCert; canonicalSigningInput: string }
-  crossSuiteMemberCap: { cert: CapCert; canonicalSigningInput: string }
-  mixedKemMemberCap: { cert: CapCert; canonicalSigningInput: string }
 }
 
 function stripSig(cert: CapCert): UnsignedCapCert {
@@ -46,18 +44,6 @@ describe("capCertCanonicalSigningInput", () => {
     expect(capCertCanonicalSigningInput(unsigned)).toBe(canonicalSigningInput)
   })
 
-  it("matches the crossSuiteMemberCap vector (ed25519 issuer → secp256k1 subject, no subKem)", () => {
-    // Locks the canonical byte placement of a non-default `subAlg` cross-language.
-    const { cert, canonicalSigningInput } = vectors.crossSuiteMemberCap
-    expect(capCertCanonicalSigningInput(stripSig(cert))).toBe(canonicalSigningInput)
-  })
-
-  it("matches the mixedKemMemberCap vector (secp256k1 signing + decoupled ed25519 subKemAlg)", () => {
-    // Locks the canonical byte placement of `subKemAlg` alongside a present subKem.
-    const { cert, canonicalSigningInput } = vectors.mixedKemMemberCap
-    expect(capCertCanonicalSigningInput(stripSig(cert))).toBe(canonicalSigningInput)
-  })
-
   it("strips sig internally: a signed cert yields the same canonical input as the unsigned cert", () => {
     // The helper must strip `sig` itself (matching Python). Passing the full
     // signed cert must produce the unsigned canonical bytes, not fold `sig` in.
@@ -71,7 +57,6 @@ describe("capCertCanonicalSigningInput", () => {
     const memberCap: CapCert = vectors.memberCap.cert
     expect(deviceCap.kind).toBe("device")
     expect(memberCap.kind).toBe("member")
-    // memberCap requires subUserId per the schema; ensure it round-trips.
     expect(memberCap.subUserId).toBeDefined()
   })
 })

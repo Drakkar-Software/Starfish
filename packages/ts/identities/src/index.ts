@@ -6,8 +6,17 @@
  * per-user device directory.
  */
 
-export { deriveRootIdentity } from "./identity.js"
-export type { RootIdentity, RootKeyPair } from "./identity.js"
+export {
+  deriveRootIdentity,
+  deriveRootIdentityFromSecp256k1Signature,
+  SECP256K1_BOOTSTRAP_CHALLENGE,
+} from "./identity.js"
+export type {
+  RootIdentity,
+  RootKeyPair,
+  BootstrapOrigin,
+  Secp256k1BootstrapInput,
+} from "./identity.js"
 
 export { mintDeviceCap, scopes } from "./cap-mint.js"
 export type { ScopePreset, MintOpts } from "./cap-mint.js"
