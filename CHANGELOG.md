@@ -57,6 +57,47 @@ appears on the wire. Lockstep bump of all twenty packages to 3.0.0-alpha.12 / 3.
   3.0.0-alpha series. Persisted documents in production should be re-signed; no migration
   path is provided.
 
+## 3.0.0-alpha.11 — `batchPull` fan-in: many documents per collection in one round-trip
+
+`batchPull` (TypeScript + Python, client + server) reshapes its params + response
+so the SAME collection can fan in many documents in a single round-trip — e.g.
+ten users' `profile` documents fetched together, instead of one collection name
+per request. Adds a thin `batchPullMany` / `batch_pull_many` helper for the
+common single-collection case. Lockstep bump of all twenty packages to
+3.0.0-alpha.11 / 3.0.0a11.
+
+### Changed
+
+- **`batchPull` params shape** — `params[collectionName]` is now an **array of
+  param-sets**, one per document to read from that collection (e.g.
+  `{profile: [{identity: "a"}, {identity: "b"}]}` reads two profiles in one
+  round-trip). A collection passed with `[{}]` (or omitted from `params`
+  entirely) reads one self-doc with `{identity}` auto-filled from the
+  authenticated caller. Mirrored across TS + Python clients and the server's
+  router + OpenAPI.
+- **`batchPull` response shape** — `collections[name]` comes back an **array of
+  `BatchPullEntry`** in request order (one per requested param-set), instead of
+  a single object. A collection read with no params yields a one-element array.
+- **`maxCollectionsPerBatch`** now bounds the **total number of reads** (sum of
+  param-set arrays across collections), not the count of distinct collection
+  names — a single batch with one collection × 50 param-sets is bounded the
+  same way as 50 collections × one param-set.
+- OpenAPI `params` query parameter documentation and the namespaces guide
+  (`docs/ts/client/20-namespaces.md`) updated to the new array shape.
+
+### Added
+
+- **`batchPullMany` (TS) / `batch_pull_many` (Python)** — convenience helper
+  for fanning in many documents from a single collection without building the
+  outer `params` object manually. Wraps the array shape under the hood.
+
+### Breaking
+
+- The old object-per-collection `params` shape (`{notes: {teamId: "x"}}`) is
+  no longer accepted — the server returns **400** when a value is a plain
+  object instead of an array. Callers must rewrite to the array form
+  (`{notes: [{teamId: "x"}]}`). Pre-stable break.
+
 ## 3.0.0-alpha.10 — append-log cursor: skip policy, safe concurrency, E2EE-safe persistence
 
 `AppendLogCursor` (TypeScript + Python) gains three opt-in, additive capabilities that let it
