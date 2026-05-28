@@ -38,7 +38,6 @@ def _base_audience(**overrides) -> dict:
     cert = {
         "v": 1,
         "kind": "audience",
-        "issAlg": "ed25519",
         "iss": _ISS,
         "issUserId": user_id_from_pub_hex(_ISS),
         "scope": {"ops": ["read", "list"], "collections": ["broadcast"], "paths": ["broadcast/**"]},
@@ -136,7 +135,6 @@ def test_rejects_member_with_aud() -> None:
     member = {
         "v": 1,
         "kind": "member",
-        "issAlg": "ed25519",
         "iss": _ISS,
         "issUserId": user_id_from_pub_hex(_ISS),
         "sub": "dd" * 32,

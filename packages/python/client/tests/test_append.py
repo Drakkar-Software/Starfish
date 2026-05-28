@@ -195,7 +195,6 @@ _KP_PUB = "062f2ba3c6a5590364b0864d539af151907d09ea0b741b0811e0d761a059bda4"
 _FAKE_CAP = {
     "v": 1,
     "kind": "audience",
-    "issAlg": "ed25519",
     "iss": "aa" * 32,
     "issUserId": "x",
     "scope": {"ops": ["write"], "collections": ["c"]},

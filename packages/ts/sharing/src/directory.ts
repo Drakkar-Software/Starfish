@@ -15,7 +15,7 @@
  * `@drakkar.software/starfish-identities`.
  */
 
-import type { Alg, CapCert } from "@drakkar.software/starfish-protocol"
+import type { CapCert } from "@drakkar.software/starfish-protocol"
 import { recipientKem } from "@drakkar.software/starfish-protocol"
 import type { StarfishClient } from "@drakkar.software/starfish-client"
 import { ConflictError, StarfishHttpError } from "@drakkar.software/starfish-client"
@@ -26,12 +26,10 @@ import { ConflictError, StarfishHttpError } from "@drakkar.software/starfish-cli
 export interface DirectoryEntry {
   /** Base64 cap nonce — identifies the cert. */
   nonce: string
-  /** Subject signing pubkey, hex (32 B), of suite `subAlg`. */
+  /** Subject Ed25519 signing pubkey, hex (32 B). */
   sub: string
-  /** Subject KEM pubkey, hex (32 B), of suite `subKemAlg` — the keyring recipient key. */
+  /** Subject X25519 KEM pubkey, hex (32 B) — the keyring recipient key. */
   subKem: string
-  /** Subject KEM suite. Absent ⇒ `ed25519` (X25519). */
-  subKemAlg?: Alg
   /** `sha256(sub)[0:32]`. Required for member caps; undefined for device caps. */
   subUserId?: string
   /** Cap's `scope` block, mirrored verbatim. */
@@ -100,14 +98,12 @@ function entryFromCert(
   addedBy?: string,
 ): DirectoryEntry {
   // The `_members` directory records single-subject grants. `recipientKem`
-  // resolves the recipient's KEM pubkey + suite (the dedicated `subKem` for
-  // ed25519/mixed pairs, or the signing `sub` for same-suite secp256k1); it
-  // throws for an audience cap, which is distributed as a public link, not a
-  // roster entry.
+  // resolves the recipient's X25519 KEM pubkey; it throws for an audience cap,
+  // which is distributed as a public link, not a roster entry.
   if (cert.sub === undefined) {
     throw new Error("cannot publish a subject-less cap (e.g. audience) to the member directory")
   }
-  const { kemPubHex, kemAlg } = recipientKem(cert)
+  const { kemPubHex } = recipientKem(cert)
   const entry: DirectoryEntry = {
     nonce: cert.nonce,
     sub: cert.sub,
@@ -117,7 +113,6 @@ function entryFromCert(
     exp: cert.exp,
     addedAt: Math.floor(Date.now() / 1000),
     cert,
-    ...(kemAlg !== "ed25519" ? { subKemAlg: kemAlg } : {}),
   }
   if (cert.subUserId !== undefined) entry.subUserId = cert.subUserId
   if (label !== undefined) entry.label = label

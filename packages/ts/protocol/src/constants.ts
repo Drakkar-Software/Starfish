@@ -41,15 +41,13 @@ export const PUSH_PATH_PREFIX = "/push/"
 // (which sends them) and the server cap-resolver (which reads them) cannot drift.
 /** `Authorization: Cap <base64(stableStringify(cap))>`. */
 export const HEADER_AUTHORIZATION = "Authorization"
-/** Base64 request signature under the presenter's suite. */
+/** Base64 Ed25519 request signature. */
 export const HEADER_SIG = "X-Starfish-Sig"
 /** Request signature timestamp (ms). */
 export const HEADER_TS = "X-Starfish-Ts"
 /** Request signature nonce (base64). */
 export const HEADER_NONCE = "X-Starfish-Nonce"
-/** Crypto suite (`alg`) the request signature was produced under. */
-export const HEADER_ALG = "X-Starfish-Alg"
-/** Presenter's public key (hex) — required for an audience-cap redemption. */
+/** Presenter's Ed25519 public key (hex) — required for an audience-cap redemption. */
 export const HEADER_PUB = "X-Starfish-Pub"
 /** `Content-Type` header name. */
 export const HEADER_CONTENT_TYPE = "Content-Type"

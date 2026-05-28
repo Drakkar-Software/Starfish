@@ -1,17 +1,13 @@
 """Per-request signing (v3.0).
 
-Each authenticated HTTP request carries a signature — under the crypto suite
-named by ``alg`` (see ``suites``) — over a canonical encoding of
-(alg, method, pathAndQuery, sha256(body), host, ts, nonce). The canonical input
-is identical byte-for-byte across TypeScript and Python — see
+Each authenticated HTTP request carries an Ed25519 signature over a canonical
+encoding of (method, pathAndQuery, sha256(body), host, ts, nonce). The
+canonical input is identical byte-for-byte across TypeScript and Python — see
 ``tests/test-vectors/request-signature.json`` for locked cases.
 
 The ``host`` field binds a signature to one specific server host. Without
-it, an Ed25519-signed request could be replayed against a different
-Starfish server that shares no nonce cache with the original target. The
-field is always present in the canonical input — it is the empty string
-``""`` when the caller omits ``host`` — so an attacker cannot bypass the
-bind by leaving the field off.
+it, a signed request could be replayed against a different Starfish server
+that shares no nonce cache with the original target.
 """
 
 from __future__ import annotations
@@ -25,30 +21,20 @@ from typing import Literal, Optional, TypedDict, Union
 
 try:
     from typing import NotRequired
-except ImportError:  # pragma: no cover - safety net for older runtimes
+except ImportError:  # pragma: no cover
     from typing_extensions import NotRequired  # type: ignore[assignment]
 
 from starfish_protocol.hash import stable_stringify
-from starfish_protocol.suites import Alg, DEFAULT_ALG, get_suite
+from starfish_protocol.suites import ed25519 as ed25519_suite
 
 
 DEFAULT_MAX_SKEW_MS = 300_000
 
 
 SignableMethod = Literal["GET", "POST", "PUT", "PATCH", "DELETE"]
-"""HTTP methods the request-signing protocol supports."""
 
 
 class SignableRequest(TypedDict):
-    """Minimal request shape used as input to the signature.
-
-    The optional ``host`` field is folded into the canonical input as the
-    ``h`` key; an absent value is encoded as ``h: ""``. The host binds a
-    signature to one specific server (e.g. ``"api.example.com"``) so an
-    intercepted request cannot be replayed against a different Starfish
-    server that shares no nonce cache.
-    """
-
     method: SignableMethod
     pathAndQuery: str
     body: NotRequired[Union[bytes, str]]
@@ -60,7 +46,7 @@ class RequestSignature:
     """Signature bundle attached to an outbound request."""
 
     sig: str
-    """Base64-encoded signature under ``alg``."""
+    """Base64-encoded Ed25519 signature."""
 
     ts: int
     """Unix milliseconds; included verbatim in the canonical input."""
@@ -68,14 +54,7 @@ class RequestSignature:
     nonce: str
     """Standard (with padding) base64 of a random 16-byte nonce."""
 
-    alg: Alg = DEFAULT_ALG
-    """Crypto suite used to produce ``sig`` and reconstruct the canonical input."""
 
-
-# Domain-separation tag prepended to a per-request signing input. Binds the
-# signature to the "request" message type by construction so it can never be
-# reinterpreted as a cap-cert or revocation-list signature. Must stay
-# byte-identical across TS, Python, and the vector generators.
 _REQUEST_SIG_DOMAIN = "starfish-req-v1\n"
 
 
@@ -87,23 +66,14 @@ def request_signing_canonical_input(
     nonce_b64: str,
     *,
     host: Optional[str] = None,
-    alg: Alg = DEFAULT_ALG,
 ) -> str:
     """Canonical UTF-8 string used as the Ed25519 signing input.
 
-    Definition:
-    ``stable_stringify({m, p, b: sha256hex(body), h, ts, nonce})``.
-    ``b`` is the lowercase hex SHA-256 of the request body bytes; an empty
-    body yields the SHA-256 of an empty buffer
-    (``e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855``).
-    ``h`` is ``host`` or ``""`` when omitted — it is ALWAYS present so a
-    client cannot bypass the host bind by skipping the field. ``nonce`` is
-    the same base64 string included on the returned signature.
+    Definition: ``stable_stringify({m, p, b: sha256hex(body), h, ts, nonce})``.
     """
     body_hash = hashlib.sha256(body).hexdigest()
     return _REQUEST_SIG_DOMAIN + stable_stringify(
         {
-            "alg": alg,
             "m": method,
             "p": path_and_query,
             "b": body_hash,
@@ -123,30 +93,19 @@ def sign_request(
     host: Optional[str] = None,
     ts: Optional[int] = None,
     nonce: Optional[bytes] = None,
-    alg: Alg = DEFAULT_ALG,
 ) -> RequestSignature:
-    """Produce an Ed25519 signature over the canonical request input.
-
-    Defaults: ``ts`` is ``int(time.time() * 1000)``; ``nonce`` is 16
-    random bytes from :func:`secrets.token_bytes`. The returned
-    ``nonce`` field is the same base64 string used inside the canonical
-    signing input.
-
-    ``host`` is keyword-only and optional; when supplied, it is folded
-    into the canonical input as the ``h`` field. Verifiers must pass the
-    same ``host`` value reconstructed from the inbound request URL.
-    """
+    """Produce an Ed25519 signature over the canonical request input."""
     if ts is None:
         ts = int(time.time() * 1000)
     if nonce is None:
         nonce = secrets.token_bytes(16)
     nonce_b64 = base64.b64encode(nonce).decode("ascii")
     canon = request_signing_canonical_input(
-        method, path_and_query, body, ts, nonce_b64, host=host, alg=alg
+        method, path_and_query, body, ts, nonce_b64, host=host
     )
-    sig_bytes = get_suite(alg).sign(canon.encode("utf-8"), dev_priv_hex)
+    sig_bytes = ed25519_suite.sign(canon.encode("utf-8"), dev_priv_hex)
     sig_b64 = base64.b64encode(sig_bytes).decode("ascii")
-    return RequestSignature(sig=sig_b64, ts=ts, nonce=nonce_b64, alg=alg)
+    return RequestSignature(sig=sig_b64, ts=ts, nonce=nonce_b64)
 
 
 def verify_request_signature(
@@ -158,15 +117,7 @@ def verify_request_signature(
     *,
     host: Optional[str] = None,
 ) -> bool:
-    """Verify a request signature against a signer's Ed25519 public key.
-
-    The ``signature.nonce`` and ``signature.ts`` are folded into the
-    canonical input exactly as on the signing side; tampered fields fail
-    verification. ``host`` is keyword-only and optional; pass the host
-    reconstructed from the inbound request URL — the verify fails if it
-    does not match what the client signed. Returns ``False`` on any
-    cryptographic or decoding error.
-    """
+    """Verify a request signature against a signer's Ed25519 public key."""
     try:
         canon = request_signing_canonical_input(
             method,
@@ -175,15 +126,10 @@ def verify_request_signature(
             signature.ts,
             signature.nonce,
             host=host,
-            alg=signature.alg,
         )
         sig_bytes = base64.b64decode(signature.sig)
-        return get_suite(signature.alg).verify(
-            sig_bytes, canon.encode("utf-8"), signer_pub_hex
-        )
+        return ed25519_suite.verify(sig_bytes, canon.encode("utf-8"), signer_pub_hex)
     except Exception:
-        # Never raise — any decode/suite error fails closed to False (parity
-        # with the TS bare catch and the CryptoSuite "verify never throws" rule).
         return False
 
 
@@ -192,10 +138,7 @@ def is_within_clock_skew(
     now_ms: int,
     max_skew_ms: int = DEFAULT_MAX_SKEW_MS,
 ) -> bool:
-    """Return ``True`` iff ``|req_ts - now_ms| <= max_skew_ms``.
-
-    Default skew is 5 minutes (``300_000`` ms).
-    """
+    """Return ``True`` iff ``|req_ts - now_ms| <= max_skew_ms``."""
     return abs(req_ts - now_ms) <= max_skew_ms
 
 

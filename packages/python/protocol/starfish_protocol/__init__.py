@@ -13,8 +13,10 @@ from starfish_protocol.cap import (
     assert_cap_cert_well_formed,
     cap_cert_canonical_signing_input,
     is_root_device_cap,
+    path_glob_match,
     recipient_kem,
     sign_cap_cert,
+    user_id_from_pub_hex,
     verify_cap_cert,
     verify_cap_cert_signature,
 )
@@ -49,7 +51,6 @@ from starfish_protocol.constants import (
     HEADER_SIG,
     HEADER_TS,
     HEADER_NONCE,
-    HEADER_ALG,
     HEADER_PUB,
     HEADER_CONTENT_TYPE,
     HEADER_ACCEPT,
@@ -58,14 +59,7 @@ from starfish_protocol.revocation import (
     build_revocation_list,
     revocation_list_canonical_signing_input,
 )
-from starfish_protocol.suites import (
-    Alg,
-    CryptoSuite,
-    DEFAULT_ALG,
-    get_suite,
-    is_alg,
-    suite_has_separate_kem,
-)
+from starfish_protocol.suites import ed25519 as ed25519_suite
 
 __all__ = [
     "AuditEntry",
@@ -90,8 +84,10 @@ __all__ = [
     "assert_cap_cert_well_formed",
     "cap_cert_canonical_signing_input",
     "is_root_device_cap",
+    "path_glob_match",
     "recipient_kem",
     "sign_cap_cert",
+    "user_id_from_pub_hex",
     "verify_cap_cert",
     "verify_cap_cert_signature",
     "RequestSignature",
@@ -120,16 +116,10 @@ __all__ = [
     "HEADER_SIG",
     "HEADER_TS",
     "HEADER_NONCE",
-    "HEADER_ALG",
     "HEADER_PUB",
     "HEADER_CONTENT_TYPE",
     "HEADER_ACCEPT",
     "build_revocation_list",
     "revocation_list_canonical_signing_input",
-    "Alg",
-    "CryptoSuite",
-    "DEFAULT_ALG",
-    "get_suite",
-    "is_alg",
-    "suite_has_separate_kem",
+    "ed25519_suite",
 ]

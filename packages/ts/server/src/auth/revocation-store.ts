@@ -15,8 +15,7 @@
 import {
   revocationListCanonicalSigningInput,
   getBase64,
-  getSuite,
-  type Alg,
+  ed25519Suite,
   type RevocationList as ProtocolRevocationList,
 } from "@drakkar.software/starfish-protocol"
 
@@ -78,9 +77,7 @@ export function revocationRetainUntilSec(
 /** A signed revocation list issued by a root identity. */
 export interface RevocationList {
   v: 1
-  /** Issuer's crypto suite (governs the list signature). Defaults to `ed25519` when absent. */
-  alg?: Alg
-  /** Issuer pubkey, hex (Ed25519 or secp256k1 x-only per `alg`). Signatures verify against this key. */
+  /** Issuer Ed25519 pubkey, hex. Signatures verify against this key. */
   iss: string
   /** `sha256(iss)[0:32]`. */
   issUserId: string
@@ -130,15 +127,11 @@ const DEFAULT_MAX_ISSUERS = 10_000
 
 function verifyListSignature(list: RevocationList): boolean {
   try {
-    // Use the protocol's canonical function (single source of truth) so the
-    // domain-separation tag and sig-stripping stay in lockstep with signing.
-    // The server's `RevocationList.alg` is optional vs the protocol's required;
-    // the canonical fn only stringifies present fields, so the cast is safe.
     const msg = new TextEncoder().encode(
       revocationListCanonicalSigningInput(list as ProtocolRevocationList),
     )
     const sigBytes = getBase64().decode(list.sig)
-    return getSuite(list.alg).verify(sigBytes, msg, list.iss)
+    return ed25519Suite.verify(sigBytes, msg, list.iss)
   } catch {
     return false
   }

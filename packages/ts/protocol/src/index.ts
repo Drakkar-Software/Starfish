@@ -1,7 +1,6 @@
 export { configurePlatform, getCrypto, getBase64 } from "./platform.js"
 export type { CryptoProvider, Base64Provider, PlatformConfig } from "./platform.js"
-export { getSuite, isAlg, suiteHasSeparateKem, DEFAULT_ALG } from "./suites/index.js"
-export type { Alg, CryptoSuite } from "./suites/types.js"
+export * as ed25519Suite from "./suites/ed25519.js"
 export { stableStringify, computeHash } from "./hash.js"
 export { buildRevocationList, revocationListCanonicalSigningInput } from "./revocation.js"
 export type {
@@ -78,7 +77,6 @@ export {
   HEADER_SIG,
   HEADER_TS,
   HEADER_NONCE,
-  HEADER_ALG,
   HEADER_PUB,
   HEADER_CONTENT_TYPE,
   HEADER_ACCEPT,

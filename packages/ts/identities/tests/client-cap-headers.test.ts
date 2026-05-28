@@ -15,7 +15,6 @@ import { describe, it, expect, vi } from "vitest"
 import {
   stableStringify,
   verifyRequestSignature,
-  type Alg,
   type SignableMethod,
 } from "@drakkar.software/starfish-protocol"
 import { StarfishClient } from "@drakkar.software/starfish-client"
@@ -79,7 +78,6 @@ describe("StarfishClient cap-cert request signing", () => {
 
     const ts = parseInt(headers["X-Starfish-Ts"], 10)
     const signature = {
-      alg: headers["X-Starfish-Alg"] as Alg,
       sig: headers["X-Starfish-Sig"],
       ts,
       nonce: headers["X-Starfish-Nonce"],
@@ -121,7 +119,6 @@ describe("StarfishClient cap-cert request signing", () => {
         host: "api.example.com",
       },
       {
-        alg: headers["X-Starfish-Alg"] as Alg,
         sig: headers["X-Starfish-Sig"],
         ts: parseInt(headers["X-Starfish-Ts"], 10),
         nonce: headers["X-Starfish-Nonce"],
@@ -156,7 +153,6 @@ describe("StarfishClient cap-cert request signing", () => {
         host: "api.example.com",
       },
       {
-        alg: headers["X-Starfish-Alg"] as Alg,
         sig: headers["X-Starfish-Sig"],
         ts: parseInt(headers["X-Starfish-Ts"], 10),
         nonce: headers["X-Starfish-Nonce"],

@@ -1,0 +1,44 @@
+{
+  "description": "Cross-language vector for the secp256k1 → Ed25519 bootstrap. The caller signs the fixed 32-byte SECP256K1_BOOTSTRAP_CHALLENGE with deterministic BIP-340 Schnorr (aux_rand=0), then HKDF-expands the 64-byte signature into Ed25519 and X25519 seeds via salt='starfish-v3-bootstrap-secp256k1' and the two info strings. The Ed25519 pubkey hashes to the userId, identical to the passphrase-derived root identity downstream.",
+  "challenge": {
+    "literal": "starfish-v3:bootstrap-secp256k1",
+    "challengeHex": "8274a8cbdbb27348020a12bb511eaf24e2745c3b2420b968546251fd0875f1aa"
+  },
+  "hkdf": {
+    "saltUtf8": "starfish-v3-bootstrap-secp256k1",
+    "signInfoUtf8": "starfish-root-sign:ed25519",
+    "kemInfoUtf8": "starfish-root-kem:x25519"
+  },
+  "cases": [
+    {
+      "label": "fixture-secp-priv-01",
+      "secpPrivHex": "0101010101010101010101010101010101010101010101010101010101010101",
+      "secpPubHex": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+      "signatureHex": "2858fc9770334debde7dbf9cbccf837247697df29dcc4a9ba2faf6b14f6caecb79a149a046f0c9f172ac7b8f59e33ca6adf1614f476ee99aa2759c1196ab985f",
+      "edPrivHex": "4de6a399b60d148491f49f843f4c6587b2482438f96b4765bf89f783bc916979",
+      "edPubHex": "268269d3054a8b046d0743233cfd2e2d2dfd9943856855a29e8add832cdb7190",
+      "kemPrivHex": "afa1eb26150de2e92a721d4c43bad2830beeb5f01b33314be541812e5d639cf5",
+      "kemPubHex": "2cc7e4f5045713f982ae0755e2e0af7c63901946c161785d867ed8f6c796f333",
+      "userId": "13bdb43f11ec6a284d0561a5c795c3c6",
+      "bootstrapOrigin": {
+        "kind": "secp256k1",
+        "pubHex": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f"
+      }
+    },
+    {
+      "label": "fixture-secp-priv-cafe",
+      "secpPrivHex": "cacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacaca",
+      "secpPubHex": "edcf2aea3ad1ffdf404315f023489deed915099c1344f7fd8384b5637dbd4069",
+      "signatureHex": "da15c3ff6af4bce1ff3bd31ccc12f83f6727e437fb995f3ffd501dcff2332a6752a829c24b0a424d03bcf6997acf08844cd578de0ca7eb9901d4545e8032547f",
+      "edPrivHex": "6158e3593e52700b9953120dd06bb5e39b7442fd9d99c18911a005777cadcbd1",
+      "edPubHex": "49ff50bfe19d3f11f80c4104ece7e5b67b4c49f1dc45a9dda70da3b31823613d",
+      "kemPrivHex": "1b2baf7ea72ac8b0998e05d2326f216aa957decf2bc701bd61c3ec60bd130f2a",
+      "kemPubHex": "81ce84fe4a04d728b81dc5d57bfbebaad84f47a0ea2c157e4ecd1bc084511d07",
+      "userId": "b3ecb8b5ccb3557f15492ea4c1cf8ecb",
+      "bootstrapOrigin": {
+        "kind": "secp256k1",
+        "pubHex": "edcf2aea3ad1ffdf404315f023489deed915099c1344f7fd8384b5637dbd4069"
+      }
+    }
+  ]
+}

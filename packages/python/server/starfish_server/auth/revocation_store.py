@@ -16,7 +16,7 @@ except ImportError:  # pragma: no cover - safety net for older runtimes
     from typing_extensions import NotRequired  # type: ignore[assignment]
 
 from starfish_protocol.revocation import revocation_list_canonical_signing_input
-from starfish_protocol.suites import Alg, get_suite
+from starfish_protocol.suites import ed25519 as ed25519_suite
 
 
 class RevocationEntry(TypedDict):
@@ -71,8 +71,6 @@ class RevocationList(TypedDict):
     """A signed revocation list issued by a root identity."""
 
     v: Literal[1]
-    # Issuer's crypto suite (governs the list signature). Optional; absent ⇒ ed25519.
-    alg: NotRequired[Alg]
     iss: str
     issUserId: str
     generation: int
@@ -111,18 +109,10 @@ class RevocationStore(Protocol):
 
 def _verify_list_signature(list_signed: RevocationList) -> bool:
     try:
-        # Use the protocol's canonical function (single source of truth) so the
-        # domain-separation tag and sig-stripping stay in lockstep with signing.
         canonical = revocation_list_canonical_signing_input(dict(list_signed)).encode("utf-8")
         sig_bytes = base64.b64decode(list_signed["sig"])
-        # Dispatch on the issuer's suite (``alg``), defaulting to ed25519 when absent.
-        return get_suite(list_signed.get("alg")).verify(
-            sig_bytes, canonical, list_signed["iss"]
-        )
+        return ed25519_suite.verify(sig_bytes, canonical, list_signed["iss"])
     except Exception:
-        # Fail closed on ANY error, matching the TS bare-catch. The CryptoSuite
-        # `verify` contract is "never raises", so if a future suite violates it
-        # the list is rejected rather than leaking a 500 + traceback.
         return False
 
 

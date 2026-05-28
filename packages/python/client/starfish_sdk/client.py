@@ -19,14 +19,12 @@ from starfish_protocol.constants import (
     HEADER_SIG,
     HEADER_TS,
     HEADER_NONCE,
-    HEADER_ALG,
     HEADER_PUB,
     HEADER_CONTENT_TYPE,
     HEADER_ACCEPT,
 )
 from starfish_protocol.hash import stable_stringify
 from starfish_protocol.request_signing import sign_request
-from starfish_protocol.suites import Alg, DEFAULT_ALG
 from starfish_protocol.types import PullKeyringProjection, PullResult, PushSuccess
 from starfish_sdk.types import (
     BlobPullResult,
@@ -142,31 +140,12 @@ class StarfishClient:
         cap = ctx["cap"]
         dev_ed_priv_hex = ctx["dev_ed_priv_hex"]
         body_bytes = body.encode("utf-8") if isinstance(body, str) else b""
-        # The signing suite is the suite of whoever holds ``dev_ed_priv_hex``:
-        # - device/member: the subject signs, so use the cert's subject suite.
-        #   Tolerant-reader rule (matches the server resolver): an absent
-        #   ``subAlg`` means "same suite as the issuer", so fall back to
-        #   ``cap["issAlg"]``, not the global default.
-        # - audience (public-link): the presenter is an arbitrary redeemer
-        #   signing with their own key, unrelated to the cert's suites, so use
-        #   ``presenter_alg`` (defaulting to ed25519). The server reads it back
-        #   from ``X-Starfish-Alg`` for audience caps.
-        # `is not None`, not `or`: an empty-string suite tag must pass through
-        # unchanged (→ server rejects `X-Starfish-Alg: ""`), matching TS `??`.
-        # `or` would coerce `""` → a default and forge a valid-looking request.
-        if cap.get("kind") == "audience":
-            presenter_alg = ctx.get("presenter_alg")
-            sign_alg = presenter_alg if presenter_alg is not None else DEFAULT_ALG
-        else:
-            sub_alg = cap.get("subAlg")
-            sign_alg = sub_alg if sub_alg is not None else cap.get("issAlg", DEFAULT_ALG)
         sig = sign_request(
             method,
             path_and_query,
             body_bytes,
             dev_ed_priv_hex,
             host=self._signing_host(),
-            alg=sign_alg,
         )
         cap_b64 = base64.b64encode(
             stable_stringify(cap).encode("utf-8")
@@ -176,7 +155,6 @@ class StarfishClient:
             HEADER_SIG: sig.sig,
             HEADER_TS: str(sig.ts),
             HEADER_NONCE: sig.nonce,
-            HEADER_ALG: sig.alg,
         }
         # Audience (public-link) caps bind no single subject, so the server needs
         # the presenter's pubkey to verify the signature and check the allow-list.
@@ -185,27 +163,15 @@ class StarfishClient:
             headers[HEADER_PUB] = pub_hex
         return headers
 
-    def _append_author_key(self, ctx: dict[str, Any]) -> tuple[str, Alg] | None:
-        """Resolve the author public key + suite to sign an append with: the
-        redeemer's ``pub_hex`` for an audience cap, else the cert subject
-        ``cap["sub"]`` for a device/member cap. This is the SAME key that signs
-        the request, so a server enforcing author proof binds the stored element
-        to its writer. Returns ``None`` only for a (malformed) cap with neither —
-        the append then goes unsigned and a server requiring signatures rejects it.
-        """
+    def _append_author_key(self, ctx: dict[str, Any]) -> str | None:
+        """Resolve the author public key to sign an append with."""
         cap = ctx["cap"]
         author_pub_hex = ctx.get("pub_hex")
         if author_pub_hex is None:
             author_pub_hex = cap.get("sub")
         if author_pub_hex is None:
             return None
-        if cap.get("kind") == "audience":
-            presenter_alg = ctx.get("presenter_alg")
-            sign_alg = presenter_alg if presenter_alg is not None else DEFAULT_ALG
-        else:
-            sub_alg = cap.get("subAlg")
-            sign_alg = sub_alg if sub_alg is not None else cap.get("issAlg", DEFAULT_ALG)
-        return (author_pub_hex, sign_alg)
+        return author_pub_hex
 
     async def pull(
         self,
@@ -488,15 +454,11 @@ class StarfishClient:
             else None
         )
         if ctx is not None:
-            author = self._append_author_key(ctx)
-            if author is not None:
-                author_pub_hex, sign_alg = author
-                # The signature binds the author to BOTH the element data AND the
-                # document it is written to (the storage path = ``path`` minus the
-                # ``/push/`` action prefix; the namespace lives only in the URL).
+            author_pub_hex = self._append_author_key(ctx)
+            if author_pub_hex is not None:
                 document_key = path.removeprefix(PUSH_PATH_PREFIX)
                 signed = sign_append_author(
-                    document_key, data, author_pub_hex, ctx["dev_ed_priv_hex"], sign_alg
+                    document_key, data, author_pub_hex, ctx["dev_ed_priv_hex"]
                 )
                 payload[AUTHOR_PUBKEY_FIELD] = signed[AUTHOR_PUBKEY_FIELD]
                 payload[AUTHOR_SIGNATURE_FIELD] = signed[AUTHOR_SIGNATURE_FIELD]

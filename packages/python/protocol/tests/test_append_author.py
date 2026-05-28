@@ -47,7 +47,7 @@ def test_canonical_input_matches_vector(case: dict) -> None:
 @pytest.mark.parametrize("case", _CASES, ids=_IDS)
 def test_sign_reproduces_locked_signature(case: dict) -> None:
     out = sign_append_author(
-        case["documentKey"], case["data"], _SIGNER["edPub"], _SIGNER["edPriv"], case["alg"]
+        case["documentKey"], case["data"], _SIGNER["edPub"], _SIGNER["edPriv"]
     )
     assert out["authorPubkey"] == _SIGNER["edPub"]
     assert out["authorSignature"] == case["authorSignature"]
@@ -57,7 +57,7 @@ def test_sign_reproduces_locked_signature(case: dict) -> None:
 def test_verifies_locked_signature(case: dict) -> None:
     assert (
         verify_append_author(
-            case["documentKey"], case["data"], _SIGNER["edPub"], case["authorSignature"], case["alg"]
+            case["documentKey"], case["data"], _SIGNER["edPub"], case["authorSignature"]
         )
         is case["expectVerify"]
     )
@@ -67,7 +67,7 @@ def test_verifies_locked_signature(case: dict) -> None:
 def test_rejects_wrong_signer(case: dict) -> None:
     assert (
         verify_append_author(
-            case["documentKey"], case["data"], _WRONG_PUB, case["authorSignature"], case["alg"]
+            case["documentKey"], case["data"], _WRONG_PUB, case["authorSignature"]
         )
         is False
     )
@@ -82,7 +82,6 @@ def test_rejects_different_document_key(case: dict) -> None:
             case["data"],
             _SIGNER["edPub"],
             case["authorSignature"],
-            case["alg"],
         )
         is False
     )
@@ -93,7 +92,7 @@ def test_rejects_tampered_data() -> None:
     tampered = {**case["data"], "authorId": "evil"}
     assert (
         verify_append_author(
-            case["documentKey"], tampered, _SIGNER["edPub"], case["authorSignature"], case["alg"]
+            case["documentKey"], tampered, _SIGNER["edPub"], case["authorSignature"]
         )
         is False
     )
@@ -102,8 +101,8 @@ def test_rejects_tampered_data() -> None:
 def test_returns_false_never_raises_on_malformed_inputs() -> None:
     case = _CASES[0]
     dk = case["documentKey"]
-    assert verify_append_author(dk, case["data"], _SIGNER["edPub"], "not base64 !!!", case["alg"]) is False
-    assert verify_append_author(dk, case["data"], "zz", case["authorSignature"], case["alg"]) is False
+    assert verify_append_author(dk, case["data"], _SIGNER["edPub"], "not base64 !!!") is False
+    assert verify_append_author(dk, case["data"], "zz", case["authorSignature"]) is False
 
 
 def test_signature_independent_of_data_key_order() -> None:

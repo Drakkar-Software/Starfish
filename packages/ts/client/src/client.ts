@@ -10,11 +10,9 @@ import {
   HEADER_SIG,
   HEADER_TS,
   HEADER_NONCE,
-  HEADER_ALG,
   HEADER_PUB,
   HEADER_CONTENT_TYPE,
   HEADER_ACCEPT,
-  DEFAULT_ALG,
   signAppendAuthor,
   signRequest,
   stableStringify,
@@ -217,33 +215,19 @@ export class StarfishClient {
     pathAndQuery: string,
     body: string | undefined,
   ): Promise<Record<string, string>> {
-    const { cap, devEdPrivHex, pubHex, presenterAlg } = capCtx
+    const { cap, devEdPrivHex, pubHex } = capCtx
     const req: SignableRequest = {
       method,
       pathAndQuery,
       body,
       host: this.signingHost(),
     }
-    // The signing suite is the suite of whoever holds `devEdPrivHex`:
-    // - device/member: the subject signs, so use the cert's subject suite.
-    //   Tolerant-reader rule (matches the server resolver): an absent
-    //   `subAlg` means "same suite as the issuer", so fall back to
-    //   `cap.issAlg`, not the global default.
-    // - audience (public-link): the presenter is an arbitrary redeemer
-    //   signing with their own key, unrelated to the cert's suites, so use
-    //   `presenterAlg` (defaulting to ed25519). The server reads it back from
-    //   `X-Starfish-Alg` for audience caps.
-    const signAlg =
-      cap.kind === "audience" ? (presenterAlg ?? DEFAULT_ALG) : (cap.subAlg ?? cap.issAlg)
-    const { alg, sig, ts, nonce } = await signRequest(req, devEdPrivHex, {
-      alg: signAlg,
-    })
+    const { sig, ts, nonce } = await signRequest(req, devEdPrivHex)
     const headers: Record<string, string> = {
       [HEADER_AUTHORIZATION]: `Cap ${encodeCapAuth(cap)}`,
       [HEADER_SIG]: sig,
       [HEADER_TS]: String(ts),
       [HEADER_NONCE]: nonce,
-      [HEADER_ALG]: alg,
     }
     // Audience (public-link) caps bind no single subject, so the server needs
     // the presenter's pubkey to verify the signature and check the allow-list.
@@ -261,13 +245,11 @@ export class StarfishClient {
    */
   private appendAuthorKey(
     capCtx: Awaited<ReturnType<StarfishCapProvider["getCap"]>>,
-  ): { authorPubHex: string; signAlg: typeof DEFAULT_ALG } | null {
-    const { cap, pubHex, presenterAlg } = capCtx
+  ): { authorPubHex: string } | null {
+    const { cap, pubHex } = capCtx
     const authorPubHex = pubHex ?? cap.sub
     if (authorPubHex === undefined) return null
-    const signAlg =
-      cap.kind === "audience" ? (presenterAlg ?? DEFAULT_ALG) : (cap.subAlg ?? cap.issAlg)
-    return { authorPubHex, signAlg }
+    return { authorPubHex }
   }
 
   /** Pull synced data from the server. Returns the raw `PullResult`. */
@@ -488,7 +470,6 @@ export class StarfishClient {
           data,
           authorKey.authorPubHex,
           capCtx.devEdPrivHex,
-          authorKey.signAlg,
         )
         bodyObj[AUTHOR_PUBKEY_FIELD] = authorPubkey
         bodyObj[AUTHOR_SIGNATURE_FIELD] = authorSignature

@@ -10,7 +10,6 @@ import {
   type SignableMethod,
   type SignableRequest,
 } from "../src/request-signing.js"
-import type { Alg } from "../src/suites/types.js"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const vectorPath = resolve(
@@ -20,7 +19,6 @@ const vectorPath = resolve(
 
 interface VectorCase {
   label: string
-  alg: Alg
   method: SignableMethod
   pathAndQuery: string
   bodyUtf8: string
@@ -42,12 +40,10 @@ interface Vector {
 
 const vectors = JSON.parse(readFileSync(vectorPath, "utf-8")) as Vector
 
-// ─── Replicate the test-vector generator's device-key chain inline ──────────
 // HKDF(IKM=utf8("alice-root-passphrase::alice-laptop"),
 //      salt=utf8("starfish-device-sign-test-vector"),
 //      info=utf8("ed25519"),
 //      len=32)
-// is alice_dev_1's Ed25519 32-byte seed / private key.
 async function deriveAliceDev1EdPrivHex(): Promise<string> {
   const enc = new TextEncoder()
   const ikm = enc.encode("alice-root-passphrase::alice-laptop")
@@ -87,7 +83,7 @@ describe("requestSigningCanonicalInput", () => {
         body: c.bodyUtf8,
         host: c.host,
       }
-      const canon = requestSigningCanonicalInput(req, c.tsMs, c.nonceBase64, c.alg)
+      const canon = requestSigningCanonicalInput(req, c.tsMs, c.nonceBase64)
       expect(canon).toBe(c.canonicalSigningInput)
     })
   }
@@ -97,7 +93,7 @@ describe("requestSigningCanonicalInput", () => {
       method: "GET",
       pathAndQuery: "/x",
     }
-    const canon = requestSigningCanonicalInput(req, 0, "AA==", "ed25519")
+    const canon = requestSigningCanonicalInput(req, 0, "AA==")
     expect(canon).toContain(
       '"b":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"',
     )
@@ -108,7 +104,7 @@ describe("requestSigningCanonicalInput", () => {
       method: "GET",
       pathAndQuery: "/x",
     }
-    const canon = requestSigningCanonicalInput(req, 0, "AA==", "ed25519")
+    const canon = requestSigningCanonicalInput(req, 0, "AA==")
     expect(canon).toContain('"h":""')
   })
 
@@ -118,7 +114,7 @@ describe("requestSigningCanonicalInput", () => {
       pathAndQuery: "/x",
       host: "api.example.com",
     }
-    const canon = requestSigningCanonicalInput(req, 0, "AA==", "ed25519")
+    const canon = requestSigningCanonicalInput(req, 0, "AA==")
     expect(canon).toContain('"h":"api.example.com"')
   })
 })
@@ -134,7 +130,7 @@ describe("verifyRequestSignature", () => {
     }
     const ok = await verifyRequestSignature(
       req,
-      { alg: c.alg, sig: c.signatureBase64, ts: c.tsMs, nonce: c.nonceBase64 },
+      { sig: c.signatureBase64, ts: c.tsMs, nonce: c.nonceBase64 },
       vectors.signer.edPub,
     )
     expect(ok).toBe(true)
@@ -150,7 +146,7 @@ describe("verifyRequestSignature", () => {
     }
     const ok = await verifyRequestSignature(
       req,
-      { alg: c.alg, sig: c.signatureBase64, ts: c.tsMs, nonce: c.nonceBase64 },
+      { sig: c.signatureBase64, ts: c.tsMs, nonce: c.nonceBase64 },
       vectors.signer.edPub,
     )
     expect(ok).toBe(true)
@@ -166,7 +162,7 @@ describe("verifyRequestSignature", () => {
     }
     const ok = await verifyRequestSignature(
       req,
-      { alg: c.alg, sig: c.signatureBase64, ts: c.tsMs, nonce: c.nonceBase64 },
+      { sig: c.signatureBase64, ts: c.tsMs, nonce: c.nonceBase64 },
       vectors.signer.edPub,
     )
     expect(ok).toBe(false)
@@ -182,7 +178,7 @@ describe("verifyRequestSignature", () => {
     }
     const ok = await verifyRequestSignature(
       req,
-      { alg: c.alg, sig: c.signatureBase64, ts: c.tsMs, nonce: c.nonceBase64 },
+      { sig: c.signatureBase64, ts: c.tsMs, nonce: c.nonceBase64 },
       vectors.signer.edPub,
     )
     expect(ok).toBe(false)
@@ -198,7 +194,7 @@ describe("verifyRequestSignature", () => {
     }
     const ok = await verifyRequestSignature(
       req,
-      { alg: c.alg, sig: c.signatureBase64, ts: c.tsMs, nonce: c.nonceBase64 },
+      { sig: c.signatureBase64, ts: c.tsMs, nonce: c.nonceBase64 },
       vectors.signer.edPub,
     )
     expect(ok).toBe(true)
@@ -244,8 +240,6 @@ describe("signRequest roundtrip", () => {
 
   it("default ts and nonce produce a verifiable signature", async () => {
     const devEdPrivHex = await deriveAliceDev1EdPrivHex()
-    // Need the matching pub key. Derive once via @noble/curves used inside lib;
-    // here just sign and verify with the public key from the vector.
     const req: SignableRequest = {
       method: "POST",
       pathAndQuery: "/x",
@@ -267,7 +261,6 @@ describe("verifyRequestSignature — tampered fields", () => {
     const ts = 1_700_000_000_000
     const nonce = base64DecodeStandard("AAECAwQFBgcICQoLDA0ODw==")
     const sig = await signRequest(req, devEdPrivHex, { ts, nonce })
-    // Re-derive canonical with ts+1 → signature won't match.
     const tampered = { ...sig, ts: ts + 1 }
     const ok = await verifyRequestSignature(req, tampered, vectors.signer.edPub)
     expect(ok).toBe(false)
@@ -279,7 +272,6 @@ describe("verifyRequestSignature — tampered fields", () => {
     const ts = 1_700_000_000_000
     const nonce = base64DecodeStandard("AAECAwQFBgcICQoLDA0ODw==")
     const sig = await signRequest(req, devEdPrivHex, { ts, nonce })
-    // A different nonce, same length.
     const tamperedNonceB64 = "EBESExQVFhcYGRobHB0eHw=="
     const tampered = { ...sig, nonce: tamperedNonceB64 }
     const ok = await verifyRequestSignature(req, tampered, vectors.signer.edPub)
@@ -287,19 +279,13 @@ describe("verifyRequestSignature — tampered fields", () => {
   })
 
   it("rejects a re-encoded but byte-equivalent nonce", async () => {
-    // The nonce is bound as the verbatim base64 STRING, not as decoded bytes: a
-    // padded and an unpadded base64 of the SAME 16 bytes decode identically, but the
-    // canonical input embeds the string verbatim, so swapping encodings fails verify.
-    // This keeps the string-keyed nonce cache safe — re-encoding a captured nonce
-    // onto a different cache key invalidates the signature (the sibling test above
-    // only changes the nonce to *different* bytes).
     const devEdPrivHex = await deriveAliceDev1EdPrivHex()
     const req: SignableRequest = { method: "POST", pathAndQuery: "/x", body: "hello" }
     const ts = 1_700_000_000_000
     const nonce = base64DecodeStandard("AAECAwQFBgcICQoLDA0ODw==")
     const sig = await signRequest(req, devEdPrivHex, { ts, nonce })
     expect(sig.nonce.endsWith("==")).toBe(true)
-    const unpadded = sig.nonce.replace(/=+$/, "") // same bytes, different string
+    const unpadded = sig.nonce.replace(/=+$/, "")
     expect(base64DecodeStandard(unpadded + "==")).toEqual(nonce)
     const tampered = { ...sig, nonce: unpadded }
     const ok = await verifyRequestSignature(req, tampered, vectors.signer.edPub)
@@ -312,7 +298,6 @@ describe("verifyRequestSignature — tampered fields", () => {
     const nonce = base64DecodeStandard("AAECAwQFBgcICQoLDA0ODw==")
     const req: SignableRequest = { method: "POST", pathAndQuery: "/x", body: "hello" }
     const sig = await signRequest(req, devEdPrivHex, { ts, nonce })
-    // Same length, last byte changed.
     const tamperedReq: SignableRequest = {
       method: "POST",
       pathAndQuery: "/x",
@@ -429,9 +414,6 @@ describe("isWithinClockSkew", () => {
     expect(isWithinClockSkew(now + 200, now, 500)).toBe(true)
   })
   it("is inclusive at exactly ±maxSkewMs and excludes one ms beyond (strict <= boundary)", () => {
-    // The gate is `|reqTs - nowMs| <= maxSkewMs`, so a ts exactly maxSkew away is
-    // accepted and one ms further is rejected. Pinned both sides so an off-by-one
-    // (`<` vs `<=`) can't slip in. Mirrors test_request_signing.py.
     expect(isWithinClockSkew(now + 300_000, now)).toBe(true)
     expect(isWithinClockSkew(now - 300_000, now)).toBe(true)
     expect(isWithinClockSkew(now + 300_001, now)).toBe(false)

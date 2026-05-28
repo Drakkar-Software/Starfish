@@ -27,9 +27,7 @@ import {
   getCrypto,
   stableStringify,
   verifyCapCert,
-  recipientKem,
   type CapCert,
-  type Alg,
 } from "@drakkar.software/starfish-protocol"
 import { bytesToHex, concat as concatBytes, hexToBytes, hkdfBytes } from "@drakkar.software/starfish-keyring"
 import { deriveRootIdentity } from "./identity.js"
@@ -58,14 +56,6 @@ export interface PairingQrPayload {
   requestedScope: ScopePreset
   /** Standard base64 (padded) of the 16-byte nonce bytes. */
   qrNonce: string
-  /**
-   * The new device's identity suite. **Absent ⇒ `ed25519`** (the only suite
-   * pairing supports today — the CEK wrap is X25519-only). Present and
-   * non-`ed25519` is rejected by `assemblePairingBundle` until secp256k1 root
-   * pairing ships (bring-your-own-nsec phase). Omitted on the wire for an
-   * `ed25519` device so existing QR encodings stay byte-identical.
-   */
-  alg?: Alg
 }
 
 /** Per-collection wrapped CEK. */
@@ -200,23 +190,6 @@ function assertNonZeroSharedSecret(secret: Uint8Array): void {
   if (acc === 0) throw new Error("Rejected zero X25519 shared secret (small-subgroup attack)")
 }
 
-/**
- * Guard the deferred secp256k1 pairing path. The pairing CEK wrap
- * (`wrapCekBare`/`unwrapCekBare`) is **X25519-only**: a secp256k1 x-only key
- * fed into X25519 ECDH yields a wrong shared secret and would surface as an
- * opaque GCM-tag failure at unwrap. Until secp256k1 root pairing ships, reject
- * any non-`ed25519` suite up front with a clear, actionable error. `undefined`
- * defaults to `ed25519` (the absent-tag convention used across the protocol).
- */
-function assertEd25519PairingSuite(alg: Alg | undefined, what: string): void {
-  if (alg !== undefined && alg !== "ed25519") {
-    throw new Error(
-      `secp256k1 root pairing not yet supported: ${what} is "${alg}", but the pairing ` +
-        `CEK wrap is X25519-only. Deferred to the bring-your-own-nsec phase.`,
-    )
-  }
-}
-
 async function wrapCekBare(
   cek: Uint8Array,
   recipientKemPubHex: string,
@@ -310,7 +283,6 @@ export function buildPairingQr(
   devKemPub: string,
   requestedScope: ScopePreset,
   qrNonce?: Uint8Array,
-  alg?: Alg,
 ): string {
   const nonceBytes = qrNonce ?? randomBytes(16)
   const payload: PairingQrPayload = {
@@ -319,10 +291,6 @@ export function buildPairingQr(
     devKemPub,
     requestedScope,
     qrNonce: getBase64().encode(nonceBytes),
-    // Emitted only for a non-ed25519 device, so an ed25519 QR stays byte-
-    // identical to before this field existed (and assemble rejects it anyway
-    // until secp256k1 pairing ships).
-    ...(alg !== undefined && alg !== "ed25519" ? { alg } : {}),
   }
   const canonical = stableStringify(payload as unknown as Record<string, unknown>)
   return base64UrlEncodeBytes(ENC.encode(canonical))
@@ -374,9 +342,6 @@ export async function assemblePairingBundle(
     )
   }
   const scopeToGrant = opts.grantedScope
-  // The new device's KEM key is wrapped over X25519 below; a secp256k1 device
-  // would silently produce a garbage shared secret. Reject it loudly up front.
-  assertEd25519PairingSuite(parsed.alg, "the pairing device suite")
   // mintDeviceCap runs assertCapCertWellFormed internally before signing.
   const capCert = await mintDeviceCap(
     rootEdKey.edPriv,
@@ -459,12 +424,6 @@ export async function installPairingBundle(
   opts: InstallPairingBundleOpts = {},
 ): Promise<InstalledPairingResult> {
   const now = opts.now ?? Math.floor(Date.now() / 1000)
-  // The wrapped CEKs are unwrapped over X25519 below; reject a non-ed25519 cap
-  // up front (issuer, subject, or recipient KEM) so a secp256k1 bundle fails
-  // with a clear "not yet supported" rather than an opaque GCM-tag error.
-  assertEd25519PairingSuite(bundle.capCert.issAlg, "the bundle cap-cert issuer suite")
-  assertEd25519PairingSuite(bundle.capCert.subAlg, "the bundle cap-cert subject suite")
-  assertEd25519PairingSuite(recipientKem(bundle.capCert).kemAlg, "the bundle cap-cert KEM suite")
   // Full verification: signature + not-before/expiry window + well-formedness.
   // The previous signature-only check accepted expired or not-yet-valid certs.
   const verifyResult = await verifyCapCert(bundle.capCert, { now })

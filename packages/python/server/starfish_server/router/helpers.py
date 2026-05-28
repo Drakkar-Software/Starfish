@@ -21,7 +21,6 @@ from starfish_protocol.constants import (
     DATA_FIELD,
     BASE_HASH_FIELD,
 )
-from starfish_protocol.suites import DEFAULT_ALG
 from starfish_server.storage.base import AbstractObjectStore, StoreContext
 from starfish_server.protocol.pull import pull
 from starfish_server.protocol.push import push, append_seg_prefix, append_chunk_key
@@ -420,9 +419,8 @@ async def handle_sync_push(
             return JSONResponse(
                 {"error": "document author must be the request presenter"}, status_code=403
             )
-        verify_alg = presenter.alg if presenter is not None else DEFAULT_ALG
         if not verify_doc_author(
-            document_key, sanitized, author_pubkey, author_signature, verify_alg
+            document_key, sanitized, author_pubkey, author_signature
         ):
             return JSONResponse(
                 {"error": "invalid document author signature"}, status_code=403

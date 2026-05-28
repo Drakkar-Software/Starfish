@@ -44,44 +44,6 @@ def test_verify_signature_rejects_forged_device_cap() -> None:
     assert verify_cap_cert_signature(cert) is False
 
 
-def test_verify_signature_cross_suite_member_cap() -> None:
-    # The cap `sig` is Ed25519 (issAlg) even though the subject suite is
-    # secp256k1 — the non-default subAlg is folded into the signed bytes.
-    cert = VECTORS["crossSuiteMemberCap"]["cert"]
-    assert verify_cap_cert_signature(cert) is True
-
-
-def test_verify_signature_mixed_kem_member_cap() -> None:
-    cert = VECTORS["mixedKemMemberCap"]["cert"]
-    assert verify_cap_cert_signature(cert) is True
-
-
-def test_verify_signature_rejects_stripped_sub_alg() -> None:
-    # Cross-suite cert's ed25519 signature with the signed subAlg tag stripped →
-    # canonical input differs → verification fails. Cross-language downgrade
-    # canary (mirrors cap-verify.test.ts).
-    case = VECTORS["strippedSubAlgMemberCap"]
-    assert case["expectVerify"] is False
-    assert verify_cap_cert_signature(case["cert"]) is False
-
-
-def test_verify_signature_rejects_swapped_sub_alg() -> None:
-    case = VECTORS["swappedSubAlgMemberCap"]
-    assert case["expectVerify"] is False
-    assert verify_cap_cert_signature(case["cert"]) is False
-
-
-def test_well_formed_accepts_cross_suite_member_cap() -> None:
-    # secp256k1 subject omits subKem (reuses sign key for KEM); the predicate
-    # must accept it. Mirrors cap-verify.test.ts.
-    assert_cap_cert_well_formed(VECTORS["crossSuiteMemberCap"]["cert"])
-
-
-def test_well_formed_accepts_mixed_kem_member_cap() -> None:
-    # subAlg=secp256k1 but subKemAlg=ed25519 → a distinct X25519 subKem present.
-    assert_cap_cert_well_formed(VECTORS["mixedKemMemberCap"]["cert"])
-
-
 def test_verify_cap_cert_ok_for_device_cap_in_window() -> None:
     cert = VECTORS["deviceCap"]["cert"]
     result = verify_cap_cert(cert, now=cert["nbf"] + 100)

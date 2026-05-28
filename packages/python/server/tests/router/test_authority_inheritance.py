@@ -83,7 +83,6 @@ def _mint_device(
     unsigned = {
         "v": 1,
         "kind": "device",
-        "issAlg": "ed25519",
         "iss": iss.ed_pub_hex,
         "issUserId": iss.user_id,
         "sub": sub.ed_pub_hex,

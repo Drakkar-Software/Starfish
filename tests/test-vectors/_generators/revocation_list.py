@@ -31,7 +31,6 @@ _REVOCATION_DOMAIN = "starfish-revlist-v1\n"
 def _build(*, alice, revoked, generation):
     body = {
         "v": 1,
-        "alg": "ed25519",
         "iss": alice.ed_pub.hex(),
         "issUserId": alice.user_id,
         "generation": generation,

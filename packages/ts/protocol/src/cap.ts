@@ -6,13 +6,17 @@
  * (scoped grant). This module exports only the type definitions and the
  * canonical signing-input helper. Minting and signature verification are
  * implemented in higher-level packages.
+ *
+ * Starfish speaks a single signature suite on the wire (Ed25519 signing +
+ * X25519 KEM). External roots (e.g. secp256k1/Nostr) bootstrap into a
+ * Starfish identity via a derivation in `starfish-identities`; the resulting
+ * identity is a normal Ed25519 identity from the wire's perspective.
  */
 
 import { sha256 } from "@noble/hashes/sha2.js"
 import { getBase64 } from "./platform.js"
 import { stableStringify } from "./hash.js"
-import { getSuite, isAlg, suiteHasSeparateKem } from "./suites/index.js"
-import type { Alg } from "./suites/types.js"
+import * as ed25519Suite from "./suites/ed25519.js"
 
 /**
  * Authority binding kind.
@@ -45,8 +49,9 @@ export type CapScope = {
 /**
  * Capability certificate (signed).
  *
- * `kind: "device"` / `"member"` bind a single subject: `sub` and `subKem` are
- * present (`subUserId` mandatory for `member`, optional for `device`).
+ * `kind: "device"` / `"member"` bind a single subject: `sub` (Ed25519 signing
+ * pubkey) and `subKem` (X25519 KEM pubkey) are present. `subUserId` is
+ * mandatory for `member`, optional for `device`.
  *
  * `kind: "audience"` binds **no** subject: `sub`, `subKem`, and `subUserId` are
  * **absent** and the optional `aud` allow-list is present instead. The absence
@@ -57,42 +62,13 @@ export type CapScope = {
 export type CapCert = {
   v: 1
   kind: CapKind
-  /**
-   * Issuer's crypto suite — governs how `sig` is verified against `iss`.
-   * Part of the canonical signing input, so it cannot be downgraded without
-   * invalidating the signature.
-   */
-  issAlg: Alg
-  /**
-   * Subject's **signing** suite — governs the `sub` key type and the scheme the
-   * subject uses for per-request signatures. Present for `device`/`member`,
-   * **absent** for `audience` (which binds no subject). May differ from
-   * `issAlg` (cross-suite delegation: e.g. an `ed25519` root grants a `member`
-   * cap to a `secp256k1-schnorr` subject). Absent ⇒ same as `issAlg`.
-   */
-  subAlg?: Alg
-  /**
-   * Subject's **KEM** (encryption) suite, decoupled from the signing suite so a
-   * subject can sign with one curve and receive encrypted keys under another
-   * (e.g. `secp256k1-schnorr` signing + `ed25519`/X25519 KEM, or a future PQ
-   * KEM). Absent ⇒ same as `subAlg`. Governs `subKem`'s key type. The keyring
-   * wraps under this suite's ECDH — use `recipientKem(cert)` to resolve the
-   * recipient's KEM pubkey + suite.
-   */
-  subKemAlg?: Alg
-  /** Issuer pubkey, hex (32 B) — Ed25519 or secp256k1 x-only per `issAlg`. */
+  /** Issuer Ed25519 pubkey, hex (32 B). */
   iss: string
   /** `sha256(iss)[0:32]`, redundant but lets the server skip a hash. */
   issUserId: string
-  /** Subject signing pubkey, hex (32 B) — type per `subAlg`. Absent for `audience`. */
+  /** Subject Ed25519 signing pubkey, hex (32 B). Absent for `audience`. */
   sub?: string
-  /**
-   * Subject KEM pubkey, hex (32 B). Present when the KEM key differs from the
-   * signing key — `ed25519` → a separate X25519 key, or any mixed sign/KEM pair
-   * (e.g. secp256k1 signing + X25519 KEM). **Absent** when the KEM key *is* the
-   * signing key (same-suite `secp256k1-schnorr`, where `sub` doubles as the KEM
-   * key) and for `audience` caps. See `recipientKem`.
-   */
+  /** Subject X25519 KEM pubkey, hex (32 B). Absent for `audience`. */
   subKem?: string
   /**
    * `sha256(sub)[0:32]`. Required for `kind: "member"`; optional for
@@ -104,12 +80,6 @@ export type CapCert = {
    * Allow-list of subject Ed25519 pubkeys (64-char lowercase hex) for
    * `kind: "audience"`. When present it MUST be non-empty; when absent, any
    * identity may redeem. Forbidden on `device`/`member` caps.
-   *
-   * **Allow-listed audiences are ed25519-only (enforced, not aspirational):**
-   * entries are bare 32-byte hex with no suite tag, so the server pins the
-   * presenter suite to `ed25519` whenever `aud` is present — a presenter
-   * declaring any other suite is rejected 401. An OPEN audience (no `aud`)
-   * still accepts any registered suite.
    */
   aud?: string[]
   /** Not-before, unix seconds. */
@@ -118,42 +88,27 @@ export type CapCert = {
   exp: number
   /** Random nonce, base64-encoded (16 B). Supports revocation by nonce. */
   nonce: string
-  /** Signature over the canonical signing input under `issAlg`, base64-encoded. */
+  /** Ed25519 signature over the canonical signing input, base64-encoded. */
   sig: string
 }
 
 /**
  * Cap-cert without its signature. This is the value whose canonical
- * stable-stringification is the `issAlg` signing input.
+ * stable-stringification is the Ed25519 signing input.
  */
 export type UnsignedCapCert = Omit<CapCert, "sig">
 
 /**
- * Resolve a subject cap-cert's **KEM recipient identity** — the pubkey + suite
- * the keyring seals collection keys to. The single source of truth for "given a
- * member/device cap, what key (and curve) do I wrap to":
- *
- * - `kemAlg = subKemAlg ?? subAlg ?? issAlg` (the KEM suite, defaulting through
- *   the signing suite to the issuer suite).
- * - `kemPubHex = subKem ?? sub` — the dedicated KEM key when present (separate
- *   X25519 for `ed25519`, or a mixed-pair KEM key), else the signing key itself
- *   (same-suite `secp256k1-schnorr`, where `sub` doubles as the KEM key).
- *
- * Throws for a subject-less (`audience`) cap, which has no KEM recipient.
+ * Resolve a subject cap-cert's **KEM recipient identity** — the X25519 pubkey
+ * the keyring seals collection keys to. Throws for a subject-less (`audience`)
+ * cap, which has no KEM recipient.
  */
-export function recipientKem(cert: {
-  sub?: string
-  subKem?: string
-  subAlg?: Alg
-  subKemAlg?: Alg
-  issAlg: Alg
-}): { kemPubHex: string; kemAlg: Alg } {
-  const kemAlg = cert.subKemAlg ?? cert.subAlg ?? cert.issAlg
+export function recipientKem(cert: { sub?: string; subKem?: string }): { kemPubHex: string } {
   const kemPubHex = cert.subKem ?? cert.sub
   if (kemPubHex === undefined) {
     throw new Error("recipientKem: cap binds no subject KEM key (audience cap?)")
   }
-  return { kemPubHex, kemAlg }
+  return { kemPubHex }
 }
 
 /**
@@ -332,7 +287,7 @@ export interface ServerPlugin {
 const CAP_CERT_DOMAIN = "starfish-capcert-v1\n"
 
 /**
- * Canonical UTF-8 string used as the `issAlg` signing input for a cap-cert:
+ * Canonical UTF-8 string used as the Ed25519 signing input for a cap-cert:
  * the domain tag {@link CAP_CERT_DOMAIN} followed by `stableStringify` of the
  * cert with `sig` stripped — identical bytes across TypeScript and Python.
  *
@@ -487,9 +442,6 @@ export function assertCapCertWellFormed(cert: UnsignedCapCert | CapCert): void {
   if (c.kind !== "device" && c.kind !== "member" && c.kind !== "audience") {
     throwCoded("malformed-shape", 'cap-cert kind must be "device", "member", or "audience"')
   }
-  if (!isAlg(c.issAlg)) {
-    throwCoded("malformed-shape", 'cap-cert issAlg must be "ed25519" or "secp256k1-schnorr"')
-  }
   const isAudience = c.kind === "audience"
   if (
     typeof c.iss !== "string" ||
@@ -499,55 +451,20 @@ export function assertCapCertWellFormed(cert: UnsignedCapCert | CapCert): void {
     throwCoded("malformed-shape", "cap-cert iss/issUserId/nonce must be strings")
   }
   // Subject binding is kind-specific. An audience cap binds no subject, so
-  // `subAlg`/`sub`/`subKem`/`subUserId` MUST all be absent (present is rejected
-  // to keep the canonical signing input deterministic and stop cross-kind field
-  // bleed). Device/member caps carry a subject: `subAlg` (a known suite) and
-  // `sub` are required, and `subKem`'s presence is *suite-determined* —
-  // required for a separate-KEM suite (ed25519→X25519), forbidden otherwise
-  // (secp256k1 reuses one key, so a stray `subKem` would be meaningless).
+  // `sub`/`subKem`/`subUserId` MUST all be absent (present is rejected to keep
+  // the canonical signing input deterministic). Device/member caps carry a
+  // subject: `sub` (Ed25519 signing pubkey) and `subKem` (X25519 KEM pubkey)
+  // are both required.
   if (isAudience) {
-    if (
-      c.subAlg !== undefined ||
-      c.subKemAlg !== undefined ||
-      c.sub !== undefined ||
-      c.subKem !== undefined ||
-      c.subUserId !== undefined
-    ) {
-      throwCoded("audience-has-sub", "audience cap must not carry subAlg/subKemAlg/sub/subKem/subUserId")
+    if (c.sub !== undefined || c.subKem !== undefined || c.subUserId !== undefined) {
+      throwCoded("audience-has-sub", "audience cap must not carry sub/subKem/subUserId")
     }
   } else {
-    // `subAlg` (signing suite) and `subKemAlg` (KEM suite) are optional on the
-    // wire (tolerant reader): absent ⇒ `subAlg` falls back to `issAlg`, and
-    // `subKemAlg` falls back to `subAlg`. Mint helpers emit `subAlg` explicitly
-    // (strict writer). Both are part of the signed bytes, so neither can be
-    // forged.
-    if (c.subAlg !== undefined && !isAlg(c.subAlg)) {
-      throwCoded("malformed-shape", "cap-cert subAlg must be a known suite when present")
-    }
-    if (c.subKemAlg !== undefined && !isAlg(c.subKemAlg)) {
-      throwCoded("malformed-shape", "cap-cert subKemAlg must be a known suite when present")
-    }
-    const subAlg: Alg = (c.subAlg as Alg | undefined) ?? (c.issAlg as Alg)
-    const kemAlg: Alg = (c.subKemAlg as Alg | undefined) ?? subAlg
     if (typeof c.sub !== "string") {
       throwCoded("malformed-shape", "cap-cert sub must be a string")
     }
-    // `subKem` (the KEM pubkey) is absent ONLY when the KEM key *is* the signing
-    // key — i.e. the KEM suite equals the signing suite AND that suite reuses one
-    // key for both (secp256k1). Any other combination carries a distinct KEM
-    // pubkey of suite `kemAlg` (e.g. secp256k1 signing + X25519 KEM).
-    const kemKeyIsSignKey = kemAlg === subAlg && !suiteHasSeparateKem(kemAlg)
-    if (kemKeyIsSignKey) {
-      if (c.subKem !== undefined) {
-        throwCoded("malformed-shape", "cap-cert subKem must be absent when the KEM key is the signing key")
-      }
-    } else if (typeof c.subKem !== "string") {
-      throwCoded("malformed-shape", "cap-cert subKem must be a string for this KEM suite")
-    }
-    // A self-signed device cap (iss === sub) is one principal acting as its own
-    // subject, so both suites must match — a split would be nonsensical.
-    if (c.kind === "device" && c.iss === c.sub && c.subAlg !== undefined && c.issAlg !== c.subAlg) {
-      throwCoded("malformed-shape", "self-signed device cap must have issAlg === subAlg")
+    if (typeof c.subKem !== "string") {
+      throwCoded("malformed-shape", "cap-cert subKem must be a string")
     }
   }
   // `Number.isInteger` (not `typeof === "number"`) so `Infinity`/`NaN` are
@@ -650,26 +567,22 @@ function assertAudList(aud: unknown): void {
 }
 
 /**
- * Sign an unsigned cap-cert with the issuer's private key, using the suite
- * named by `cert.issAlg`.
+ * Sign an unsigned cap-cert with the issuer's Ed25519 private key.
  *
- * @param cert Unsigned cap-cert (must carry `issAlg`).
- * @param issPrivHex Issuer 32-byte private key/seed, hex.
+ * @param cert Unsigned cap-cert.
+ * @param issPrivHex Issuer 32-byte Ed25519 seed, hex.
  * @returns The signed cap-cert with `sig` populated (base64 standard, padded).
  */
-export function signCapCert(
-  cert: UnsignedCapCert,
-  issPrivHex: string,
-): CapCert {
+export function signCapCert(cert: UnsignedCapCert, issPrivHex: string): CapCert {
   const message = new TextEncoder().encode(capCertCanonicalSigningInput(cert))
-  const sigBytes = getSuite(cert.issAlg).sign(message, issPrivHex)
+  const sigBytes = ed25519Suite.sign(message, issPrivHex)
   const sig = getBase64().encode(sigBytes)
   return { ...cert, sig }
 }
 
 /**
- * Verify the signature on a cap-cert under its declared `alg`. Returns `true`
- * iff `cert.sig` verifies against `cert.iss` and the canonical signing input.
+ * Verify the Ed25519 signature on a cap-cert. Returns `true` iff `cert.sig`
+ * verifies against `cert.iss` and the canonical signing input.
  *
  * This function checks only the signature; use {@link verifyCapCert} to
  * also check the not-before / expiry window and well-formedness.
@@ -680,7 +593,7 @@ export function verifyCapCertSignature(cert: CapCert): boolean {
     // be passed directly — the signing input is over the unsigned cert.
     const message = new TextEncoder().encode(capCertCanonicalSigningInput(cert))
     const sigBytes = getBase64().decode(cert.sig)
-    return getSuite(cert.issAlg).verify(sigBytes, message, cert.iss)
+    return ed25519Suite.verify(sigBytes, message, cert.iss)
   } catch {
     return false
   }
@@ -720,4 +633,3 @@ export async function verifyCapCert(
   if (!sigOk) return { ok: false, reason: "bad-signature" }
   return { ok: true }
 }
-

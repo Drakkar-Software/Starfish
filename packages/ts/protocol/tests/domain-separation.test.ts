@@ -4,7 +4,7 @@ import { capCertCanonicalSigningInput } from "../src/cap.js"
 import { requestSigningCanonicalInput, type SignableRequest } from "../src/request-signing.js"
 import { revocationListCanonicalSigningInput } from "../src/revocation.js"
 import { appendAuthorCanonicalInput } from "../src/append-author.js"
-import { getSuite } from "../src/suites/index.js"
+import * as ed25519Suite from "../src/suites/ed25519.js"
 
 // Cross-type signature domain separation (mirrors test_domain_separation.py).
 //
@@ -32,7 +32,6 @@ describe("signature domain separation across message types", () => {
   const capCanon = capCertCanonicalSigningInput({
     v: 1,
     kind: "device",
-    issAlg: "ed25519",
     iss: "aa".repeat(32),
     issUserId: "x",
     scope: { ops: ["read"], collections: ["c"] },
@@ -40,10 +39,9 @@ describe("signature domain separation across message types", () => {
     exp: 1,
     nonce: "AAAAAAAAAAAAAAAAAAAAAA==",
   } as never)
-  const reqCanon = requestSigningCanonicalInput(req, 1, "AAAAAAAAAAAAAAAAAAAAAA==", "ed25519")
+  const reqCanon = requestSigningCanonicalInput(req, 1, "AAAAAAAAAAAAAAAAAAAAAA==")
   const revCanon = revocationListCanonicalSigningInput({
     v: 1,
-    alg: "ed25519",
     iss: "aa".repeat(32),
     issUserId: "x",
     generation: 1,
@@ -62,24 +60,19 @@ describe("signature domain separation across message types", () => {
   })
 
   it("a cap-cert signature does not verify as request / revocation / append-author", () => {
-    const suite = getSuite("ed25519")
     const { privHex, pubHex } = edKeypair()
-    const sig = suite.sign(enc(capCanon), privHex)
-    // Sanity: it verifies against its own domain-tagged input.
-    expect(suite.verify(sig, enc(capCanon), pubHex)).toBe(true)
-    // Cross-type: the same signature must NOT verify against the other types'
-    // canonical inputs — the domain tag differs, so the signed bytes differ.
-    expect(suite.verify(sig, enc(reqCanon), pubHex)).toBe(false)
-    expect(suite.verify(sig, enc(revCanon), pubHex)).toBe(false)
-    expect(suite.verify(sig, enc(apdCanon), pubHex)).toBe(false)
+    const sig = ed25519Suite.sign(enc(capCanon), privHex)
+    expect(ed25519Suite.verify(sig, enc(capCanon), pubHex)).toBe(true)
+    expect(ed25519Suite.verify(sig, enc(reqCanon), pubHex)).toBe(false)
+    expect(ed25519Suite.verify(sig, enc(revCanon), pubHex)).toBe(false)
+    expect(ed25519Suite.verify(sig, enc(apdCanon), pubHex)).toBe(false)
   })
 
   it("an append-author signature does not verify as a cap-cert / request signature", () => {
-    const suite = getSuite("ed25519")
     const { privHex, pubHex } = edKeypair()
-    const sig = suite.sign(enc(apdCanon), privHex)
-    expect(suite.verify(sig, enc(apdCanon), pubHex)).toBe(true)
-    expect(suite.verify(sig, enc(capCanon), pubHex)).toBe(false)
-    expect(suite.verify(sig, enc(reqCanon), pubHex)).toBe(false)
+    const sig = ed25519Suite.sign(enc(apdCanon), privHex)
+    expect(ed25519Suite.verify(sig, enc(apdCanon), pubHex)).toBe(true)
+    expect(ed25519Suite.verify(sig, enc(capCanon), pubHex)).toBe(false)
+    expect(ed25519Suite.verify(sig, enc(reqCanon), pubHex)).toBe(false)
   })
 })

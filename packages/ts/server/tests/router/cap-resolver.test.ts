@@ -60,7 +60,7 @@ async function mintDeviceCertForTest(
   const unsigned: UnsignedCapCert = {
     v: 1,
     kind: "device",
-    issAlg: "ed25519",
+
     iss: issuer.edPubHex,
     issUserId: issuer.userId,
     sub: subject.edPubHex,
@@ -86,7 +86,7 @@ async function mintMemberCertForTest(
   const unsigned: UnsignedCapCert = {
     v: 1,
     kind: "member",
-    issAlg: "ed25519",
+
     iss: issuer.edPubHex,
     issUserId: issuer.userId,
     sub: subject.edPubHex,
@@ -1241,7 +1241,7 @@ describe("createCapCertRoleResolver — scope.paths glob", () => {
     const unsigned: UnsignedCapCert = {
       v: 1,
       kind: "device",
-      issAlg: "ed25519",
+
       iss: alice.edPubHex,
       issUserId: alice.userId,
       sub: dev.edPubHex,
@@ -1364,7 +1364,7 @@ describe("createCapCertRoleResolver — scope.paths glob", () => {
     const unsigned: UnsignedCapCert = {
       v: 1,
       kind: "device",
-      issAlg: "ed25519",
+
       iss: alice.edPubHex,
       issUserId: alice.userId,
       sub: dev.edPubHex,
@@ -1413,7 +1413,7 @@ describe("createCapCertRoleResolver — scope.paths glob", () => {
     const unsigned: UnsignedCapCert = {
       v: 1,
       kind: "member",
-      issAlg: "ed25519",
+
       iss: alice.edPubHex,
       issUserId: alice.userId,
       sub: bob.edPubHex,

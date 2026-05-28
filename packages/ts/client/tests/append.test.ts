@@ -198,7 +198,7 @@ describe("client.append author proof", () => {
   const fakeCap = {
     v: 1,
     kind: "audience",
-    issAlg: "ed25519",
+
     iss: "aa".repeat(32),
     issUserId: "x",
     scope: { ops: ["write"], collections: ["c"] },

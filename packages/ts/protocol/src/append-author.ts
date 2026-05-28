@@ -1,11 +1,11 @@
 /**
  * Author proof for stored writes (v3.0).
  *
- * Both append-only elements and merge documents can carry a signature over their
- * payload, binding the stored write to the key that produced it. Unlike a
- * per-request signature (which authorizes ONE HTTP call and is then discarded),
- * the author signature is stored WITH the write, so any later reader can verify
- * who wrote it without trusting a self-declared `authorId` field.
+ * Both append-only elements and merge documents can carry an Ed25519 signature
+ * over their payload, binding the stored write to the key that produced it.
+ * Unlike a per-request signature (which authorizes ONE HTTP call and is then
+ * discarded), the author signature is stored WITH the write, so any later reader
+ * can verify who wrote it without trusting a self-declared `authorId` field.
  *
  * The signed input binds the author to BOTH the payload AND the document it is
  * written to:
@@ -34,8 +34,7 @@
 import { AUTHOR_PUBKEY_FIELD, AUTHOR_SIGNATURE_FIELD } from "./constants.js"
 import { stableStringify } from "./hash.js"
 import { getBase64 } from "./platform.js"
-import { getSuite, DEFAULT_ALG } from "./suites/index.js"
-import type { Alg } from "./suites/types.js"
+import * as ed25519Suite from "./suites/ed25519.js"
 
 /** Domain tag for an append-only ELEMENT's author signature. Byte-identical
  *  across TS, Python and the vector generators; distinct from every other tag. */
@@ -47,11 +46,11 @@ export const APPEND_AUTHOR_DOMAIN = "starfish-append-author-v1\n"
 export const DOC_AUTHOR_DOMAIN = "starfish-doc-author-v1\n"
 
 /** The author-proof fields attached to a write body and stored with it: the
- *  author's public key (hex) and a signature over the canonical input. */
+ *  author's Ed25519 public key (hex) and a signature over the canonical input. */
 export interface AppendAuthor {
-  /** Author's public key (lowercase hex) under the signing `alg`. */
+  /** Author's Ed25519 public key (lowercase hex). */
   authorPubkey: string
-  /** Base64-encoded signature over the canonical author input. */
+  /** Base64-encoded Ed25519 signature over the canonical author input. */
   authorSignature: string
 }
 
@@ -72,10 +71,9 @@ function sign(
   data: Record<string, unknown>,
   authorPubHex: string,
   authorPrivHex: string,
-  alg: Alg,
 ): AppendAuthor {
   const msg = new TextEncoder().encode(authorCanonicalInput(domain, documentKey, data))
-  const sigBytes = getSuite(alg).sign(msg, authorPrivHex)
+  const sigBytes = ed25519Suite.sign(msg, authorPrivHex)
   return {
     [AUTHOR_PUBKEY_FIELD]: authorPubHex,
     [AUTHOR_SIGNATURE_FIELD]: getBase64().encode(sigBytes),
@@ -88,12 +86,11 @@ function verify(
   data: Record<string, unknown>,
   authorPubHex: string,
   authorSignature: string,
-  alg: Alg,
 ): boolean {
   try {
     const msg = new TextEncoder().encode(authorCanonicalInput(domain, documentKey, data))
     const sigBytes = getBase64().decode(authorSignature)
-    return getSuite(alg).verify(sigBytes, msg, authorPubHex)
+    return ed25519Suite.verify(sigBytes, msg, authorPubHex)
   } catch {
     return false
   }
@@ -109,7 +106,7 @@ export function appendAuthorCanonicalInput(
   return authorCanonicalInput(APPEND_AUTHOR_DOMAIN, documentKey, data)
 }
 
-/** Sign an append element's `data` (bound to `documentKey`) under `alg`. Returns
+/** Sign an append element's `data` (bound to `documentKey`) with Ed25519. Returns
  *  the `{authorPubkey, authorSignature}` pair to attach to the append body.
  *  `authorPubHex` MUST be the public key matching `authorPrivHex` (typically the
  *  same key that signs the HTTP request). */
@@ -118,9 +115,8 @@ export function signAppendAuthor(
   data: Record<string, unknown>,
   authorPubHex: string,
   authorPrivHex: string,
-  alg: Alg = DEFAULT_ALG,
 ): AppendAuthor {
-  return sign(APPEND_AUTHOR_DOMAIN, documentKey, data, authorPubHex, authorPrivHex, alg)
+  return sign(APPEND_AUTHOR_DOMAIN, documentKey, data, authorPubHex, authorPrivHex)
 }
 
 /** Verify an append element's author signature. Returns `false` on any
@@ -130,9 +126,8 @@ export function verifyAppendAuthor(
   data: Record<string, unknown>,
   authorPubHex: string,
   authorSignature: string,
-  alg: Alg = DEFAULT_ALG,
 ): boolean {
-  return verify(APPEND_AUTHOR_DOMAIN, documentKey, data, authorPubHex, authorSignature, alg)
+  return verify(APPEND_AUTHOR_DOMAIN, documentKey, data, authorPubHex, authorSignature)
 }
 
 // ─── Merge-document author proof ────────────────────────────────────────────────
@@ -145,15 +140,14 @@ export function docAuthorCanonicalInput(
   return authorCanonicalInput(DOC_AUTHOR_DOMAIN, documentKey, data)
 }
 
-/** Sign a merge document's `data` (bound to `documentKey`) under `alg`. */
+/** Sign a merge document's `data` (bound to `documentKey`) with Ed25519. */
 export function signDocAuthor(
   documentKey: string,
   data: Record<string, unknown>,
   authorPubHex: string,
   authorPrivHex: string,
-  alg: Alg = DEFAULT_ALG,
 ): AppendAuthor {
-  return sign(DOC_AUTHOR_DOMAIN, documentKey, data, authorPubHex, authorPrivHex, alg)
+  return sign(DOC_AUTHOR_DOMAIN, documentKey, data, authorPubHex, authorPrivHex)
 }
 
 /** Verify a merge document's author signature. Returns `false` on any
@@ -163,7 +157,6 @@ export function verifyDocAuthor(
   data: Record<string, unknown>,
   authorPubHex: string,
   authorSignature: string,
-  alg: Alg = DEFAULT_ALG,
 ): boolean {
-  return verify(DOC_AUTHOR_DOMAIN, documentKey, data, authorPubHex, authorSignature, alg)
+  return verify(DOC_AUTHOR_DOMAIN, documentKey, data, authorPubHex, authorSignature)
 }

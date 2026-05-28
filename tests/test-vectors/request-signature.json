@@ -11,47 +11,43 @@
   "cases": [
     {
       "label": "pull-empty-body",
-      "alg": "ed25519",
       "method": "GET",
       "pathAndQuery": "/pull/notes/alice/0?checkpoint=0",
       "bodyUtf8": "",
       "host": "api.example.com",
       "tsMs": 1747000000000,
       "nonceBase64": "AAECAwQFBgcICQoLDA0ODw==",
-      "canonicalSigningInput": "starfish-req-v1\n{\"alg\":\"ed25519\",\"b\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"h\":\"api.example.com\",\"m\":\"GET\",\"nonce\":\"AAECAwQFBgcICQoLDA0ODw==\",\"p\":\"/pull/notes/alice/0?checkpoint=0\",\"ts\":1747000000000}",
-      "signatureBase64": "2ElAkXtqTFKTkhOcX5BKMzDRAokhxbwiqw1MLex3VPUMzl3PP/87e7t+iNXLx3MutOkACBKqQn47SEhCXMogAw==",
+      "canonicalSigningInput": "starfish-req-v1\n{\"b\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"h\":\"api.example.com\",\"m\":\"GET\",\"nonce\":\"AAECAwQFBgcICQoLDA0ODw==\",\"p\":\"/pull/notes/alice/0?checkpoint=0\",\"ts\":1747000000000}",
+      "signatureBase64": "6PI9sfnG7OTaHe4n0zZBSdwTOCOculyK+Am9SsrdTr8jCejxQiQX1aJt1C5Uz0DMHlWAdMMhhpHkKJ5HxfxwDw==",
       "expectVerify": true
     },
     {
       "label": "push-json-body",
-      "alg": "ed25519",
       "method": "POST",
       "pathAndQuery": "/push/notes/alice/0",
       "bodyUtf8": "{\"hello\":\"world\",\"n\":7}",
       "host": "api.example.com",
       "tsMs": 1747000000100,
       "nonceBase64": "EBESExQVFhcYGaq7zN3u/w==",
-      "canonicalSigningInput": "starfish-req-v1\n{\"alg\":\"ed25519\",\"b\":\"950c36b63a1dc1a30ed2126ecf32443ec79f8ca2d9f89b4d9f3043e91fb69e08\",\"h\":\"api.example.com\",\"m\":\"POST\",\"nonce\":\"EBESExQVFhcYGaq7zN3u/w==\",\"p\":\"/push/notes/alice/0\",\"ts\":1747000000100}",
-      "signatureBase64": "4OghjDsXCPvdNIWmJ7EnPOopn1mLBCQ5gHTC1uHnRaBtHUPP6i3PI7ryheON2GLTMwPKUna28YN5jNR9If+JAg==",
+      "canonicalSigningInput": "starfish-req-v1\n{\"b\":\"950c36b63a1dc1a30ed2126ecf32443ec79f8ca2d9f89b4d9f3043e91fb69e08\",\"h\":\"api.example.com\",\"m\":\"POST\",\"nonce\":\"EBESExQVFhcYGaq7zN3u/w==\",\"p\":\"/push/notes/alice/0\",\"ts\":1747000000100}",
+      "signatureBase64": "hzMtb4GKT9WaCC/X1PRlJrR4MXef7OVRRKpIzPuJgjjD4J3/VSHlj1/UNJmhEPhlx854Qz6nwItBmfefpC0dBw==",
       "expectVerify": true
     },
     {
       "label": "wrong-signer",
-      "alg": "ed25519",
       "method": "POST",
       "pathAndQuery": "/push/notes/alice/0",
       "bodyUtf8": "{\"hello\":\"world\",\"n\":7}",
       "host": "api.example.com",
       "tsMs": 1747000000200,
       "nonceBase64": "qrvM3e7/ABEiM0RVZneImQ==",
-      "canonicalSigningInput": "starfish-req-v1\n{\"alg\":\"ed25519\",\"b\":\"950c36b63a1dc1a30ed2126ecf32443ec79f8ca2d9f89b4d9f3043e91fb69e08\",\"h\":\"api.example.com\",\"m\":\"POST\",\"nonce\":\"qrvM3e7/ABEiM0RVZneImQ==\",\"p\":\"/push/notes/alice/0\",\"ts\":1747000000200}",
-      "signatureBase64": "Rug+EgPyUF1IC4cON941YgxSa7XNSBJCNP5A3wE6Wyu+l8xRlMDAdSiLC1UrHtE4tZxNzQOk8RbOP1Ca2hyhDQ==",
+      "canonicalSigningInput": "starfish-req-v1\n{\"b\":\"950c36b63a1dc1a30ed2126ecf32443ec79f8ca2d9f89b4d9f3043e91fb69e08\",\"h\":\"api.example.com\",\"m\":\"POST\",\"nonce\":\"qrvM3e7/ABEiM0RVZneImQ==\",\"p\":\"/push/notes/alice/0\",\"ts\":1747000000200}",
+      "signatureBase64": "UBkBgQ1soC64qm1Xmb5pnjR/aTdL5rA8vCT8fPHcEa5PccahoxBLXzKagE9yDo/6MUUiggUeXN0a0IAM4ZKTAg==",
       "verifyPubkey": "alice_dev_1.edPub",
       "expectVerify": false
     },
     {
       "label": "host-mismatch",
-      "alg": "ed25519",
       "method": "POST",
       "pathAndQuery": "/push/notes/alice/0",
       "bodyUtf8": "{\"hello\":\"world\",\"n\":7}",
@@ -59,8 +55,8 @@
       "verifyHost": "evil.example.com",
       "tsMs": 1747000000300,
       "nonceBase64": "mYh3ZlVEMyIRAP/u3cy7qg==",
-      "canonicalSigningInput": "starfish-req-v1\n{\"alg\":\"ed25519\",\"b\":\"950c36b63a1dc1a30ed2126ecf32443ec79f8ca2d9f89b4d9f3043e91fb69e08\",\"h\":\"api.example.com\",\"m\":\"POST\",\"nonce\":\"mYh3ZlVEMyIRAP/u3cy7qg==\",\"p\":\"/push/notes/alice/0\",\"ts\":1747000000300}",
-      "signatureBase64": "Ba9q2qjTvlj2SRYzJnEA6dNIkedWcnwMIrCkBfTfLgEgbFM/b3D8sPMQt9gLvrwNaBukGaj8jxlItOD8W0xyCw==",
+      "canonicalSigningInput": "starfish-req-v1\n{\"b\":\"950c36b63a1dc1a30ed2126ecf32443ec79f8ca2d9f89b4d9f3043e91fb69e08\",\"h\":\"api.example.com\",\"m\":\"POST\",\"nonce\":\"mYh3ZlVEMyIRAP/u3cy7qg==\",\"p\":\"/push/notes/alice/0\",\"ts\":1747000000300}",
+      "signatureBase64": "kVLgA1fLK+fomcELigtvfLUNKAUC10UVjJIW3Vw52K8bix6g5uSZdAJI6WRFhw0bF27GBzi1qspNERRX4GlODw==",
       "expectVerify": false
     }
   ]

@@ -2,7 +2,7 @@
 
 Starfish 3.0 binds every user to a **root key pair** derived deterministically from a passphrase. The root key signs capability certificates (cap-certs); each device runs under its own per-device key pair authorized by such a cert.
 
-> **Crypto suite:** this page describes the default **`ed25519`** suite (Ed25519 signing + X25519 KEM). Identities are pluggable per user — a `secp256k1-schnorr` ("Nostr") suite also exists. See [Identity Models](26-identity-models.md). Passphrase derivation for `secp256k1-schnorr` (NIP-06) is not yet implemented.
+> **Crypto suite:** Starfish speaks **Ed25519 + X25519** on the wire (Ed25519 signing, X25519 KEM). External secp256k1 roots (e.g. Nostr nsec) can bootstrap a Starfish identity via a derivation, but the resulting identity is a normal Ed25519 identity from every verifier's perspective. See [Identity Models](26-identity-models.md) for the bootstrap entry point.
 
 > **Prerequisites:** [StarfishClient](02-starfish-client.md), [Encryption](04-encryption.md), [Capability Certificates](25-capability-certs.md)
 
@@ -54,7 +54,7 @@ import { deriveRootIdentity } from "@drakkar.software/starfish-client"
 
 const root = await deriveRootIdentity("paragraph-loud-yarn-river-cabin-tundra")
 // root = {
-//   userId: "cc99505e6697f7ac",
+//   userId: "cc99505e6697f7ac4f8b22df5d8a9c7e",   // 32 hex chars = first 16 bytes of sha256(rootEdPub)
 //   keys: { edPriv, edPub, kemPriv, kemPub },   // all 64-char hex
 // }
 ```
@@ -78,6 +78,49 @@ const creds = await bootstrapRootIdentity("paragraph-loud-yarn-river-cabin-tundr
 ```
 
 After bootstrap, plug `creds` into a `StarfishClient` `capProvider` and a `SyncManager` `signer`. See [25. Capability Certificates](25-capability-certs.md) for the cap-cert schema and [03. SyncManager](03-sync-manager.md) for the `signer` interface.
+
+## Bootstrap from an external secp256k1 root
+
+A user with a pre-existing secp256k1 root (a Nostr `nsec`, a Bitcoin wallet, any BIP-340 Schnorr signer) can bootstrap a Starfish identity without exposing the secp256k1 private key to Starfish:
+
+```ts
+import {
+  SECP256K1_BOOTSTRAP_CHALLENGE,
+  deriveRootIdentityFromSecp256k1Signature,
+} from "@drakkar.software/starfish-identities"
+
+// The external signer signs the fixed challenge with deterministic BIP-340
+// Schnorr (aux_rand = 0).
+const signature: Uint8Array = await externalSigner.signSchnorr(
+  SECP256K1_BOOTSTRAP_CHALLENGE,
+  { auxRand: new Uint8Array(32) },
+)
+
+const root = await deriveRootIdentityFromSecp256k1Signature({
+  secpPubHex,   // originating secp256k1 x-only pubkey (BIP-340)
+  signature,    // 64-byte deterministic Schnorr signature
+})
+// root.keys: derived Ed25519 + X25519 keys
+// root.userId: sha256(edPub)[:16].hex — identical shape to passphrase path
+// root.bootstrapOrigin = { kind: "secp256k1", pubHex: secpPubHex }
+```
+
+The signature is verified against `secpPubHex` (catches caller bugs; makes `bootstrapOrigin` a verifiable claim), then HKDF-SHA256 expands the 64-byte signature into the Ed25519 + X25519 seeds under domain-separated info strings:
+
+```
+ed25519 seed = HKDF-SHA256(ikm = signature,
+                           salt = "starfish-v3-bootstrap-secp256k1",
+                           info = "starfish-root-sign:ed25519",
+                           len  = 32)
+x25519 seed  = HKDF-SHA256(ikm = signature,
+                           salt = "starfish-v3-bootstrap-secp256k1",
+                           info = "starfish-root-kem:x25519",
+                           len  = 32)
+```
+
+**Determinism contract:** the signer MUST use BIP-340 deterministic Schnorr. A signer that injects randomness yields a different identity on every call — the derivation is otherwise unreproducible.
+
+Locked cross-language by [`tests/test-vectors/identity-derivation-secp256k1.json`](../../../tests/test-vectors/identity-derivation-secp256k1.json).
 
 ## Per-device identities
 

@@ -1,5 +1,62 @@
 # Changelog
 
+## 3.0.0-alpha.12 — ed25519-only wire; secp256k1 root bootstrap via signature derivation
+
+Starfish now speaks a single signature suite on the wire: Ed25519 signing + X25519 KEM.
+The `secp256k1-schnorr` peer suite is removed from the protocol, keyring, and downstream
+packages. Users with an existing secp256k1 root (Nostr / BIP-340) can still bootstrap a
+Starfish identity via a new signature-based derivation in `starfish-identities`: the
+caller signs a fixed bootstrap challenge with their external Schnorr signer, and the 64-byte
+signature is HKDF-expanded into the Ed25519 + X25519 seeds. The secp256k1 root never
+appears on the wire. Lockstep bump of all twenty packages to 3.0.0-alpha.12 / 3.0.0a12.
+
+### Added
+
+- **`deriveRootIdentityFromSecp256k1Signature` (TS) / `derive_root_identity_from_secp256k1_signature` (Python)**
+  in `starfish-identities`. Takes a BIP-340 Schnorr signature over the fixed 32-byte
+  `SECP256K1_BOOTSTRAP_CHALLENGE` (sha256 of `"starfish-v3:bootstrap-secp256k1"`) plus the
+  originating secp256k1 x-only pubkey; verifies the signature, then HKDF-SHA256-expands the
+  signature into Ed25519 sign + X25519 KEM seeds. Determinism contract: caller must sign with
+  deterministic Schnorr (`aux_rand = 0`).
+- **`bootstrapOrigin` (TS) / `bootstrap_origin` (Python)** optional metadata on `RootIdentity`
+  recording the secp256k1 pubkey when an identity was bootstrapped from one. Non-load-bearing
+  — never appears on the wire; for external systems (Nostr-aware UIs, audit logs) to display
+  the bootstrap source.
+- **`BootstrapOrigin` and `Secp256k1BootstrapInput` types** exported from
+  `starfish-identities` (TS) / `starfish_identities` (Python): `BootstrapOrigin` is the
+  discriminated-union type of the optional `bootstrapOrigin` field on `RootIdentity`
+  (currently `{ kind: "secp256k1", pubHex }`); `Secp256k1BootstrapInput` is the input shape
+  for `deriveRootIdentityFromSecp256k1Signature` (`{ secpPubHex, signature }`).
+- **`tests/test-vectors/identity-derivation-secp256k1.json`** — cross-language lock vector
+  for the bootstrap derivation.
+
+### Changed
+
+- **Wire format**: cap-certs, request signatures, revocation lists, append-author signatures,
+  and keyring entries no longer carry a `alg`/`issAlg`/`subAlg`/`subKemAlg`/`kemAlg`/`addedByAlg`
+  suite discriminator. Cap-certs always carry `subKem` (the X25519 KEM key, separate from the
+  Ed25519 signing key). The `X-Starfish-Alg` HTTP header is removed.
+- `recipientKem` (TS) / `recipient_kem` (Python) now returns the KEM pubkey only.
+
+### Removed
+
+- The `secp256k1-schnorr` crypto suite, the `Alg` type, the suite registry (`getSuite` /
+  `get_suite`, `DEFAULT_ALG`, `is_alg`, `suite_has_separate_kem`).
+- The deferred secp256k1 pairing gate (`assertEd25519PairingSuite`) — pairing was always
+  ed25519, now naturally so.
+- `coincurve` dependency from `starfish-protocol` (moved to `starfish-identities` where it's
+  used only to verify the bootstrap signature).
+- Test vectors `suite-secp256k1.json`, `suite-secp256k1-ecdh.json`,
+  `keyring-wrap-secp256k1.json`, and their generators.
+
+### Breaking
+
+- Cap-certs / request signatures / revocation lists / keyring entries from 3.0.0-alpha.4
+  through 3.0.0-alpha.11 that carried a non-default `alg` field DO NOT verify under
+  alpha.12 — their canonical signed input differs. Pre-stable break, acceptable per the
+  3.0.0-alpha series. Persisted documents in production should be re-signed; no migration
+  path is provided.
+
 ## 3.0.0-alpha.10 — append-log cursor: skip policy, safe concurrency, E2EE-safe persistence
 
 `AppendLogCursor` (TypeScript + Python) gains three opt-in, additive capabilities that let it

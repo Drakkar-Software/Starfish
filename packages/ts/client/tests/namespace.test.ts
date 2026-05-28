@@ -6,12 +6,12 @@ import { describe, it, expect, vi, beforeEach } from "vitest"
 // fail auth against a namespace-mounted server (which reconstructs the canonical
 // from the namespaced URL). Observing the stub's `pathAndQuery` argument captures
 // exactly that, with no real crypto. `...actual` keeps the rest of the protocol
-// module intact (the client also uses `stableStringify`, `DEFAULT_ALG`, …).
+// module intact (the client also uses `stableStringify`, header constants, etc).
 vi.mock("@drakkar.software/starfish-protocol", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@drakkar.software/starfish-protocol")>()
   return {
     ...actual,
-    signRequest: vi.fn(async () => ({ alg: "ed25519", sig: "stub-sig", ts: 1, nonce: "stub-nonce" })),
+    signRequest: vi.fn(async () => ({ sig: "stub-sig", ts: 1, nonce: "stub-nonce" })),
   }
 })
 
@@ -23,7 +23,7 @@ const signRequestMock = vi.mocked(signRequest)
 // The cap provider must supply a private key; its value is irrelevant because
 // `signRequest` is stubbed (no real signing). A syntactically valid 32-byte hex.
 const PRIV = "1".repeat(64)
-const CAP = { kind: "device", iss: "issuer", issAlg: "ed25519", subAlg: "ed25519" }
+const CAP = { kind: "device", iss: "issuer", }
 const capProvider = { getCap: async () => ({ cap: CAP as never, devEdPrivHex: PRIV }) }
 
 function jsonResponse(body: unknown): Response {
