@@ -242,7 +242,7 @@ async def test_namespace_none_leaves_paths_unchanged():
 async def test_namespace_push_url_inserts_namespace_after_v1():
     mock_http = AsyncMock()
     mock_http.post.return_value = make_response(200, {"hash": "h", "timestamp": 1})
-    client = StarfishClient("http://sync.example.com", auth=capture_auth, namespace="octobot", client=mock_http)
+    client = StarfishClient("http://sync.example.com", namespace="octobot", client=mock_http)
 
     await client.push("/v1/push/users/abc/errors/salt", {"x": 1}, None)
 

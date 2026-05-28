@@ -65,30 +65,6 @@ class AppendOnlyConfig(BaseModel):
     meaningless."""
 
 
-class AppendOnlyConfig(BaseModel):
-    """Append-only collection configuration.
-
-    When set on a :class:`CollectionConfig`, every push appends the incoming data
-    object as the last item of a stored array.  ``baseHash`` from the client is
-    ignored (unless ``check_last_item`` is ``True``).
-    """
-
-    model_config = {"populate_by_name": True}
-
-    field: str = Field(default=APPEND_DEFAULT_FIELD)
-    """Array field name in the stored document.  Defaults to ``"items"``."""
-
-    persist: bool = Field(default=True)
-    """``True`` (default) — append item to stored array.
-    ``False`` — compute hash and publish to queue without writing to storage
-    (replaces the old ``queueOnly`` behaviour)."""
-
-    check_last_item: bool = Field(default=False, alias="checkLastItem")
-    """When ``True``, validates the client's ``baseHash`` against ``hash(lastItem)``
-    before appending.  Returns ``409`` if the last item has changed since the client
-    last read."""
-
-
 class CollectionRateLimitConfig(BaseModel):
     """Per-collection rate limit overrides.
 
@@ -240,15 +216,6 @@ class CollectionConfig(BaseModel):
         # rejected by ``validate_config``.
         if isinstance(v, dict) and "type" not in v:
             return {**v, "type": "by_timestamp"}
-        return v
-
-    @field_validator("append_only", mode="before")
-    @classmethod
-    def _coerce_append_only(cls, v: object) -> object:
-        if v is True:
-            return AppendOnlyConfig()
-        if v is False:
-            return None
         return v
 
 

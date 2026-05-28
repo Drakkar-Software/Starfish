@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from starfish_server.config.schema import SyncConfig, CollectionConfig
 from starfish_server.router.route_builder import create_sync_router, SyncRouterOptions, AuthResult
-from starfish_server.audit import AuditLogger, AuditEntry
+from starfish_protocol import AuditLogger, AuditEntry
 from tests.helpers import MemoryObjectStore
 
 

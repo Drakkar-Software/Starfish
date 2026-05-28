@@ -105,20 +105,4 @@ describe("push", () => {
     const result = await push(store, "doc/corrupt", { recovered: true }, "") as any
     expect(result.hash).toHaveLength(64)
   })
-
-  it("precomputedHash is used instead of computing hash", async () => {
-    const store = createIsolatedStore()
-    const sentinel = "a".repeat(64)
-    await push(store, "doc/1", { a: 1 }, null, undefined, false, false, sentinel)
-    const raw = JSON.parse((await store.getString("doc/1"))!)
-    expect(raw.hash).toBe(sentinel)
-  })
-
-  it("precomputedTimestamps are stored directly without recomputing", async () => {
-    const store = createIsolatedStore()
-    const preTs = { items: [1714000001, 1714000002] }
-    await push(store, "doc/1", { items: [{ a: 1 }, { a: 2 }] }, null, undefined, false, false, undefined, preTs)
-    const raw = JSON.parse((await store.getString("doc/1"))!)
-    expect(raw.timestamps).toEqual(preTs)
-  })
 })

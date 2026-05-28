@@ -41,13 +41,6 @@ class AbortError(Exception):
         super().__init__("SyncManager was aborted")
 
 
-class AbortError(Exception):
-    """Raised when a SyncManager operation is cancelled via abort()."""
-
-    def __init__(self) -> None:
-        super().__init__("SyncManager was aborted")
-
-
 class SyncManager:
     """High-level sync manager with pull, push, and automatic conflict resolution.
 

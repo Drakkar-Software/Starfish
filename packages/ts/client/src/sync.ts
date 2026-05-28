@@ -109,14 +109,6 @@ export class SyncManager {
     return this.aborted
   }
 
-  abort(): void {
-    this.aborted = true
-  }
-
-  get isAborted(): boolean {
-    return this.aborted
-  }
-
   getData(): Record<string, unknown> {
     return { ...this.localData }
   }
