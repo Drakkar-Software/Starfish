@@ -113,6 +113,22 @@ export class SyncManager {
     return { ...this.localData }
   }
 
+  /**
+   * Merge a remote snapshot with local (optimistic) data using this manager's
+   * conflict resolver — the same resolver the push-conflict path uses. A plain
+   * {@link pull} overwrites the store's data with the server snapshot, which
+   * would drop un-pushed local writes (they live only in the store, never in
+   * `localData` until a push succeeds). The zustand binding calls this on pull
+   * while the store is dirty so those writes survive. `local` wins by the same
+   * rules as a push conflict.
+   */
+  resolve(
+    local: Record<string, unknown>,
+    remote: Record<string, unknown>,
+  ): Record<string, unknown> {
+    return this.onConflict(local, remote)
+  }
+
   getHash(): string | null {
     return this.lastHash
   }

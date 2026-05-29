@@ -205,6 +205,7 @@ new SyncManager({
 
 - `signer.getSigner()` returns `{ devEdPubHex, sign(payload) }`. When set, every push attaches `authorPubkey = cap.sub` and `authorSignature = base64(Ed25519(payload))` over the encrypted payload (without the author fields).
 - `encryptor` is the only encryption option — the v2 single-secret `encryptionSecret`/`encryptionSalt` shorthand was removed in v3.
+- `onConflict` resolves write conflicts on push *and* reconciles a pull against un-pushed local writes. On a zustand-bound store, a `pull()` while the store is `dirty` merges the fetched snapshot with the local data through this resolver (rather than overwriting it), so an optimistic write isn't lost when a pull races a `set()`. Use a union/CRDT-style resolver (`createUnionMerge`) for append-style collections so both the local and remote writes survive; `SyncManager.resolve(local, remote)` exposes the same merge for callers that need it.
 
 ## `AppendLogCursor`
 

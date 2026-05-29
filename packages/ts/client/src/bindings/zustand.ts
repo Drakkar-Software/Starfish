@@ -106,8 +106,18 @@ export function createStarfishStore(
       set({ syncing: true, error: null }, false, "pull/start")
       try {
         await syncManager.pull()
-        const newData = syncManager.getData()
+        const remote = syncManager.getData()
+        // A plain pull overwrites store.data with the server snapshot, which would
+        // drop optimistic writes that haven't been confirmed by a push yet (a
+        // `set()` only mutates store.data, so an un-pushed write lives nowhere
+        // else). When dirty, merge them back via the same resolver the push-
+        // conflict path uses, so a pull racing a send can't lose the local write.
+        const newData = get().dirty ? syncManager.resolve(get().data, remote) : remote
         set({ data: newData, syncing: false, hash: syncManager.getHash() }, false, "pull/success")
+        // The preserved write still needs to reach the server, and nothing else
+        // will trigger that here. Kick a flush, gated on dirty + online exactly
+        // like setOnline — a successful flush clears dirty, so there's no ping-pong.
+        if (get().online && get().dirty) get().flush().catch(() => {})
         // Fire after state update so domain stores can read the updated Starfish state if needed.
         // Calling set() inside onRemoteUpdate does NOT re-enter pull(), so no feedback loop.
         options.onRemoteUpdate?.(newData)

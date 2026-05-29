@@ -1,5 +1,39 @@
 # Changelog
 
+## 3.0.0-alpha.14 — zustand `pull()` no longer discards un-pushed local writes
+
+Fixes a data-loss bug where an optimistic local write could vanish. A `set()` on a
+zustand-bound store mutates only the store's `data` and marks it `dirty`; the write
+reaches the server (and the `SyncManager`'s local mirror) only once a push succeeds.
+A plain `pull()` overwrote the store's `data` with the freshly fetched server
+snapshot — so if a pull ran while a write was still un-pushed (e.g. a concurrent
+write arrived over a live event stream, a poll fired, or a screen re-pulled on
+focus), the local write was silently dropped. End-to-end-encrypted documents were
+the most exposed because their pull always decrypts a full snapshot. The in-*push*
+conflict path was never affected — it already unions the caller's pending data with
+the remote. **TS-only release** — the affected store binding has no Python
+counterpart, so the TS packages bump to 3.0.0-alpha.14 while the Python packages stay
+at 3.0.0a13 (no Python change).
+
+### Fixed
+
+- **`createStarfishStore.pull` (TS `starfish-client`, `./zustand`)** now preserves
+  un-pushed optimistic writes. When the store is `dirty`, the pulled snapshot is
+  merged with the current store data through the store's configured `onConflict`
+  resolver (the same one the push-conflict path uses) instead of overwriting it, and
+  a flush is kicked (gated on `dirty` + `online`, like `setOnline`) so the preserved
+  write still reaches the server. A clean (non-dirty) pull is unchanged — it takes
+  the server snapshot verbatim. Consumers that use a union/CRDT-style resolver (e.g.
+  `createUnionMerge`) keep both the local and remote writes; consumers on the default
+  `deepMerge` keep prior behavior for arrays.
+
+### Added
+
+- **`SyncManager.resolve(local, remote)`** — applies the manager's conflict resolver
+  to a pair of snapshots. Lets the store binding reuse the configured resolver to
+  reconcile un-pushed local data with a pulled snapshot. The `onConflict` field stays
+  private.
+
 ## 3.0.0-alpha.13 — writer identity on `WriteEvent`; opt-in identity forwarding in the queuing plugin
 
 Plugins can now learn *who* performed a write. The server already authenticates the
