@@ -460,6 +460,7 @@ async function emitWriteEvent(
   col: CollectionConfig,
   response: Response,
   params: Record<string, string>,
+  identity: string | null,
   bodyData?: Record<string, unknown>,
   namespaceName?: string,
 ): Promise<void> {
@@ -478,6 +479,7 @@ async function emitWriteEvent(
     params,
     ...(bodyData !== undefined && { body: bodyData }),
     ...(namespaceName != null && { namespace: namespaceName }),
+    ...(identity != null && identity !== "" && { identity }),
   }
   await dispatchAfterWrite(opts.plugins, event)
 }
@@ -1096,7 +1098,7 @@ function addCollectionRoutes(
 
       if (!isJsonCollection(col.allowedMimeTypes)) {
         const response = await runBinaryPush(c, col, documentKey, identity, rateLimiter, opts, pushCtx)
-        await emitWriteEvent(opts, col, response, params, undefined, namespaceName)
+        await emitWriteEvent(opts, col, response, params, identity, undefined, namespaceName)
         if (opts.auditLogger) {
           await opts.auditLogger.record({ timestamp: Date.now(), action: "push", collection: col.name, identity, documentKey, success: response.status === 200, statusCode: response.status, params })
         }
@@ -1123,7 +1125,7 @@ function addCollectionRoutes(
       }
 
       const response = await runPush(c, col, params, documentKey, identity, rateLimiter, opts, pushCtx, presenter)
-      await emitWriteEvent(opts, col, response, params, bodyData, namespaceName)
+      await emitWriteEvent(opts, col, response, params, identity, bodyData, namespaceName)
       if (opts.auditLogger) {
         await opts.auditLogger.record({ timestamp: Date.now(), action: "push", collection: col.name, identity, documentKey, success: response.status === 200, statusCode: response.status, params })
       }
@@ -1255,7 +1257,7 @@ function addBundledRoutes(
       }
 
       const response = await runPush(c, col, params, documentKey, identity, rateLimiter, opts, bundlePushCtx, presenter)
-      await emitWriteEvent(opts, col, response, params, bundleBodyData, namespaceName)
+      await emitWriteEvent(opts, col, response, params, identity, bundleBodyData, namespaceName)
       return response
     })
   }

@@ -1,5 +1,36 @@
 # Changelog
 
+## 3.0.0-alpha.13 — writer identity on `WriteEvent`; opt-in identity forwarding in the queuing plugin
+
+Plugins can now learn *who* performed a write. The server already authenticates the
+writer (the cap-bound identity used for authorization and the audit log) but never
+surfaced it to `afterWrite` hooks; it does now. The queuing plugin gains an opt-in
+flag to forward that identity into published messages, enabling downstream consumers
+(e.g. a push bridge) to address or exclude a specific user — without the server ever
+exposing message *content*. Lockstep bump of all packages to 3.0.0-alpha.13 / 3.0.0a13.
+
+### Added
+
+- **`WriteEvent.identity`** (TS `starfish-protocol`; Python `starfish_protocol.plugins`):
+  the authenticated writer's cap-bound userId handed to every `afterWrite` hook —
+  `issUserId` for a device cap, `subUserId` for a member cap, the presenter's derived
+  userId for an audience cap; absent for an unauthenticated (public) write. The server
+  threads the already-resolved request identity (the same value the audit logger
+  records) into the event at every push site (JSON, binary, bundle).
+- **`QueueConfig.includeIdentity` (TS) / `QueueConfig.include_identity` (Python)** on the
+  queuing plugin, default **false**. When enabled for a collection, the published
+  `QueueMessage` carries the writer's userId as `identity`. Off by default because it
+  exposes *who* wrote each document to the broker — metadata the server otherwise never
+  emits — so it is strictly per-collection opt-in.
+- **`QueueMessage.identity`** field (TS + Python), present only when `includeIdentity`
+  is set for the collection.
+
+### Changed
+
+- `WriteEvent` / `QueueMessage` gain one optional field each; both are additive and
+  backward-compatible — existing hooks and consumers that ignore the new fields are
+  unaffected, and identity is never published unless a collection opts in.
+
 ## 3.0.0-alpha.12 — ed25519-only wire; secp256k1 root bootstrap via signature derivation
 
 Starfish now speaks a single signature suite on the wire: Ed25519 signing + X25519 KEM.

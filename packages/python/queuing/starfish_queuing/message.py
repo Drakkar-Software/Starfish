@@ -16,6 +16,8 @@ class QueueMessage(TypedDict, total=False):
         body:   Push request data field — present when ``include_body=True``
                 (JSON collections only). Contains the document as sent by the client,
                 before server-side sanitization.
+        identity: Authenticated writer's cap-bound userId — present when
+                ``include_identity=True``. Off by default: exposes *who* wrote.
     """
 
     collection: Required[str]
@@ -23,3 +25,4 @@ class QueueMessage(TypedDict, total=False):
     timestamp: Required[int]
     params: dict[str, str]
     body: dict[str, Any]
+    identity: str

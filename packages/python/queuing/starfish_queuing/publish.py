@@ -42,6 +42,8 @@ async def publish_change_event(
                     "object; body omitted from queue message",
                     event.collection,
                 )
+        if config.include_identity and event.identity:
+            msg["identity"] = event.identity
         await queue.publish(subject, json.dumps(msg).encode())
     except Exception:
         logger.warning(

@@ -26,9 +26,10 @@ returned normally. The collection only publishes if it appears in the plugin's
 
 ```ts
 interface QueueConfig {
-  topic?: string          // Topic / NATS subject. Defaults to the collection name.
-  includeParams: boolean  // Include resolved path params in the payload (default: false)
-  includeBody?: boolean   // Include full document data in the payload (default: false, JSON only)
+  topic?: string            // Topic / NATS subject. Defaults to the collection name.
+  includeParams: boolean    // Include resolved path params in the payload (default: false)
+  includeBody?: boolean     // Include full document data in the payload (default: false, JSON only)
+  includeIdentity?: boolean // Include the writer's authenticated userId (default: false)
 }
 ```
 
@@ -79,7 +80,11 @@ Base shape (always present):
 
 With `includeParams: true`, resolved path parameters are added under `params`;
 with `includeBody: true`, the pushed `data` object is added under `body` (JSON
-collections only — never for binary collections).
+collections only — never for binary collections); with `includeIdentity: true`,
+the authenticated writer's cap-bound userId (`WriteEvent.identity`) is added under
+`identity`. `includeIdentity` is **off by default**: it exposes *who* wrote each
+document to the broker — metadata the server otherwise never emits — so it is
+strictly per-collection opt-in.
 
 > **Note:** `body` is captured from the raw request before server-side
 > sanitization (which removes prototype-pollution keys such as `__proto__`), so

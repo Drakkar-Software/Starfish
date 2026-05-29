@@ -51,6 +51,15 @@ class WriteEvent:
     namespace: str | None = None
     """Namespace name when the write went through a named sub-router."""
 
+    identity: str | None = None
+    """The authenticated writer identity (``auth.identity``): the cap-bound
+    userId of the account that performed the write (``iss_user_id`` for a device
+    cap, ``sub_user_id`` for a member cap, the presenter's derived userId for an
+    audience cap). ``None`` for an unauthenticated (public) write. Hooks that
+    forward this off-box (e.g. queue publishing) MUST gate it behind explicit
+    config, since it exposes *who* wrote — metadata the server otherwise never
+    emits."""
+
 
 AfterWriteHook = Callable[["WriteEvent"], "Awaitable[None] | None"]
 """Hook invoked once per registered plugin after a successful push. Runs in

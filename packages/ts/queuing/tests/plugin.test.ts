@@ -131,6 +131,43 @@ describe("queuing plugin — afterWrite publishes events", () => {
     expect(msg.params).toEqual({ identity: "user-1", docId: "doc-99" })
   })
 
+  it("includes identity when includeIdentity is true", async () => {
+    const { app, queue } = makeRouter({
+      collection: jsonCol({ name: "docs", storagePath: "docs/{docId}" }),
+      queueCollections: { docs: { includeParams: false, includeIdentity: true } },
+    })
+
+    await app.request("/push/docs/doc-1", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ data: { x: 1 }, baseHash: null }),
+    })
+
+    const mem = queue as MemoryQueue
+    expect(mem.messages).toHaveLength(1)
+    const msg = JSON.parse(new TextDecoder().decode(mem.messages[0]![1]))
+    // roleResolver authenticates as "user-1" → WriteEvent.identity flows through.
+    expect(msg.identity).toBe("user-1")
+  })
+
+  it("omits identity by default", async () => {
+    const { app, queue } = makeRouter({
+      collection: jsonCol({ name: "docs", storagePath: "docs/{docId}" }),
+      queueCollections: { docs: { includeParams: false } },
+    })
+
+    await app.request("/push/docs/doc-1", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ data: { x: 1 }, baseHash: null }),
+    })
+
+    const mem = queue as MemoryQueue
+    expect(mem.messages).toHaveLength(1)
+    const msg = JSON.parse(new TextDecoder().decode(mem.messages[0]![1]))
+    expect(msg.identity).toBeUndefined()
+  })
+
   it("default topic is the collection name; custom topic honored", async () => {
     const { app, queue } = makeRouter({
       collection: jsonCol({ name: "docs", storagePath: "docs/{docId}" }),

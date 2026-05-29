@@ -40,8 +40,12 @@ router = create_sync_router(
 
 The plugin publishes only for collections present in its `collections` map.
 `topic` defaults to the collection name — an unset *or empty-string* topic falls
-back to it (an empty broker subject is a footgun). `shutdown()` closes the queue
-when the server's graceful-shutdown handler is given the plugin list.
+back to it (an empty broker subject is a footgun). Per-collection flags select what
+the message carries: `include_params` (route params), `include_body` (the pushed
+`data`, JSON only), and `include_identity` (the authenticated writer's userId). All
+default off; `include_identity` in particular exposes *who* wrote off-box, so it is
+strictly opt-in. `shutdown()` closes the queue when the server's graceful-shutdown
+handler is given the plugin list.
 
 See `docs/ts/queuing/` for the full guide (the TypeScript and Python APIs mirror
 each other).

@@ -22,3 +22,9 @@ class QueueConfig:
 
     include_body: bool = False
     """Include the pushed ``data`` object in the message (JSON collections only)."""
+
+    include_identity: bool = False
+    """Include the authenticated writer's identity (``WriteEvent.identity``) as
+    ``identity`` in the published message. Default ``False`` (off). Forwarding
+    this exposes *who* wrote each document to the queue/broker — metadata the
+    server otherwise never emits — so it is strictly per-collection opt-in."""

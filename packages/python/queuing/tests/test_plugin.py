@@ -124,6 +124,27 @@ async def test_no_include_params_by_default():
 
 
 @pytest.mark.asyncio
+async def test_include_identity():
+    app, store, q = _build_app([_col()], {"posts": QueueConfig(include_identity=True)})
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        await _push(client)
+
+    msg = json.loads(q.messages[0][1])
+    # role_resolver authenticates as "user-1" → WriteEvent.identity flows through.
+    assert msg["identity"] == "user-1"
+
+
+@pytest.mark.asyncio
+async def test_no_include_identity_by_default():
+    app, store, q = _build_app([_col()], {"posts": QueueConfig()})
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        await _push(client)
+
+    msg = json.loads(q.messages[0][1])
+    assert "identity" not in msg
+
+
+@pytest.mark.asyncio
 async def test_no_event_on_conflict():
     """Queue event should NOT be published when push returns 409 (hash mismatch)."""
     app, store, q = _build_app([_col()], {"posts": QueueConfig()})

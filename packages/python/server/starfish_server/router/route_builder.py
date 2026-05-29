@@ -644,6 +644,7 @@ async def _emit_write_event(
     col: CollectionConfig,
     response: JSONResponse | Response,
     params: dict[str, str],
+    identity: str | None = None,
     body_data: dict[str, Any] | None = None,
     namespace_name: str | None = None,
 ) -> None:
@@ -670,6 +671,7 @@ async def _emit_write_event(
         params=dict(params),
         body=body_data,
         namespace=namespace_name,
+        identity=identity or None,
     )
     await dispatch_after_write(opts.plugins, event)
 
@@ -738,7 +740,7 @@ def _make_push_handler(
             response = await _run_binary_push(
                 request, col, document_key, identity, rate_limiter, opts, push_ctx,
             )
-            await _emit_write_event(opts, col, response, params, None, namespace_name)
+            await _emit_write_event(opts, col, response, params, identity, None, namespace_name)
             return response
 
         # Pre-extract the request `data` object so plugins' after_write hooks can
@@ -759,7 +761,7 @@ def _make_push_handler(
                 pass
 
         response = await _run_push(request, col, params, document_key, identity, effective_roles, rate_limiter, opts, push_ctx)
-        await _emit_write_event(opts, col, response, params, body_data, namespace_name)
+        await _emit_write_event(opts, col, response, params, identity, body_data, namespace_name)
         # Emit audit entry for every push (success or conflict).
         if opts.audit_logger is not None:
             await opts.audit_logger.record(_AuditEntry(
@@ -1142,7 +1144,7 @@ def _add_bundled_routes(
                         pass
 
                 response = await _run_push(request, col, params, document_key, identity, effective_roles, rl, opts, bundle_push_ctx)
-                await _emit_write_event(opts, col, response, params, bundle_body_data, ns)
+                await _emit_write_event(opts, col, response, params, identity, bundle_body_data, ns)
                 return response
 
             return bundle_push_handler

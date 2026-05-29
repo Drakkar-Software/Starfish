@@ -56,6 +56,9 @@ export function createQueuingServerPlugin(opts: QueuingPluginOptions): ServerPlu
           )
         }
       }
+      if (cfg.includeIdentity && event.identity !== undefined && event.identity !== "") {
+        msg.identity = event.identity
+      }
       try {
         await queue.publish(subject, new TextEncoder().encode(JSON.stringify(msg)))
       } catch (e) {

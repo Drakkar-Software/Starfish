@@ -162,6 +162,15 @@ export interface WriteEvent {
   body?: Record<string, unknown>
   /** Namespace name when the write went through a named sub-router. */
   namespace?: string
+  /**
+   * The authenticated writer identity (`auth.identity`): the cap-bound userId of
+   * the account that performed the write — `issUserId` for a device cap,
+   * `subUserId` for a member cap, the presenter's derived userId for an audience
+   * cap. Absent for an unauthenticated (public) write. Hooks that forward this
+   * off-box (e.g. queue publishing) MUST gate it behind explicit config, since it
+   * exposes *who* wrote — metadata the server otherwise never emits.
+   */
+  identity?: string
 }
 
 /**
