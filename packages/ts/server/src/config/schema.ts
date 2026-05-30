@@ -75,6 +75,14 @@ export interface CollectionConfig {
    *  under this collection's prefix. The last path parameter in storagePath is the one being
    *  enumerated. Requires at least one path parameter; incompatible with appendOnly and bundle. */
   listable?: boolean
+  /** When true, the list endpoint additionally accepts `?include=values`, returning each
+   *  document's stored `data` and `hash` alongside its key — `{ items: [{ key, data, hash }] }`
+   *  — so a client can enumerate a directory in one round-trip instead of a list followed by a
+   *  per-key batch pull. Read auth, pagination, TTL and `fieldPermissions` read-stripping are
+   *  applied exactly as on a regular pull. Requires `listable`; only meaningful for JSON
+   *  collections (it never returns binary bodies). Off by default — the values include each
+   *  document's content, so a collection must opt in. */
+  listValues?: boolean
   /** When true, only the **root device** (a self-signed device cap, `iss === sub`) may access
    *  this collection; every paired/delegated device cap and member cap is rejected with 403,
    *  in addition to the normal readRoles/writeRoles checks. Incompatible with public

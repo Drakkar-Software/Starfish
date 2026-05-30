@@ -3,26 +3,26 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "starfish-keyring"
+name = "starfish-projection"
 version = "3.0.0a16"
-description = "Starfish multi-recipient encryption layer (keyring documents, recipient management, AES-GCM payload encryption)"
+description = "Starfish materialized-view extension (post-push projection hook: derive a document into a target collection on every write, with delete-on-condition)"
 requires-python = ">=3.11"
 dependencies = [
-  "cryptography>=41.0",
   "starfish-protocol",
-  "starfish-sdk",
+  "starfish-server",
 ]
 
 [project.optional-dependencies]
 dev = [
   "pytest>=7.0",
   "pytest-asyncio>=0.21",
-  "respx>=0.23.1",
+  "httpx>=0.25.0",
+  "fastapi>=0.100",
 ]
 
 [tool.uv.sources]
 starfish-protocol = { path = "../protocol", editable = true }
-starfish-sdk = { path = "../client", editable = true }
+starfish-server = { path = "../server", editable = true }
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

@@ -292,3 +292,109 @@ def test_listable_with_append_only_no_persist_rejected():
     col = _make_col(appendOnly=AppendOnlyConfig(type="by_timestamp", persist=False))
     errors = validate_config(SyncConfig(version=1, collections=[col]))
     assert any("listable cannot be used with appendOnly+persist=false" in e for e in errors)
+
+
+# ── include=values (listValues) tests ─────────────────────────────────────────
+
+def _values_col(**overrides) -> CollectionConfig:
+    return _make_col(listValues=True, **overrides)
+
+
+@pytest.mark.asyncio
+async def test_include_values_returns_data_and_hash():
+    app, _ = _build_app(_values_col())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        await _push(client, "/push/chats/group-1/2026-04-12", {"msg": "older"})
+        await _push(client, "/push/chats/group-1/2026-04-13", {"msg": "newer"})
+        resp = await client.get("/list/chats/group-1?include=values")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["hasMore"] is False
+    assert [i["key"] for i in body["items"]] == ["2026-04-12", "2026-04-13"]
+    assert body["items"][0]["data"] == {"msg": "older"}
+    assert body["items"][1]["data"] == {"msg": "newer"}
+    assert len(body["items"][0]["hash"]) == 64
+
+
+@pytest.mark.asyncio
+async def test_include_values_honors_limit_and_after():
+    app, _ = _build_app(_values_col())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        for i in range(1, 6):
+            await _push(client, f"/push/chats/group-1/day-{i:02d}", {"n": i})
+        page1 = (await client.get("/list/chats/group-1?include=values&limit=2")).json()
+        assert [i["key"] for i in page1["items"]] == ["day-01", "day-02"]
+        assert page1["hasMore"] is True
+        after = page1["items"][-1]["key"]
+        page2 = (
+            await client.get(f"/list/chats/group-1?include=values&limit=2&after={after}")
+        ).json()
+    assert [i["key"] for i in page2["items"]] == ["day-03", "day-04"]
+    assert page2["items"][0]["data"] == {"n": 3}
+
+
+@pytest.mark.asyncio
+async def test_include_values_rejected_when_not_opted_in():
+    app, _ = _build_app(_make_col())  # listable but not listValues
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        await _push(client, "/push/chats/group-1/2026-04-13")
+        resp = await client.get("/list/chats/group-1?include=values")
+    assert resp.status_code == 400
+    assert "include=values is not enabled" in resp.json()["error"]
+
+
+@pytest.mark.asyncio
+async def test_include_other_falls_back_to_keys():
+    app, _ = _build_app(_values_col())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        await _push(client, "/push/chats/group-1/2026-04-13", {"msg": "hi"})
+        resp = await client.get("/list/chats/group-1?include=keys")
+    assert resp.json()["items"] == ["2026-04-13"]
+
+
+@pytest.mark.asyncio
+async def test_include_values_applies_field_permissions():
+    col = _values_col(fieldPermissions={"secret": {"readRoles": ["admin"]}})
+    app, _ = _build_app(col)  # caller role is "member", not "admin"
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        await _push(client, "/push/chats/group-1/2026-04-13", {"msg": "hi", "secret": "x"})
+        resp = await client.get("/list/chats/group-1?include=values")
+    body = resp.json()
+    assert body["items"][0]["data"] == {"msg": "hi"}
+    assert "secret" not in body["items"][0]["data"]
+
+
+@pytest.mark.asyncio
+async def test_include_values_enforces_read_auth():
+    col = _values_col()
+    store = MemoryObjectStore()
+    config = SyncConfig(version=1, collections=[col])
+
+    async def member_resolver(request: Request) -> AuthResult:
+        return AuthResult(identity="u1", roles=["member"])
+
+    writer_router = create_sync_router(
+        SyncRouterOptions(store=store, config=config, role_resolver=member_resolver),
+    )
+    writer_app = FastAPI()
+    writer_app.include_router(writer_router)
+    async with AsyncClient(transport=ASGITransport(app=writer_app), base_url="http://test") as client:
+        await _push(client, "/push/chats/group-1/2026-04-13")
+
+    async def stranger_resolver(request: Request) -> AuthResult:
+        return AuthResult(identity="u2", roles=["stranger"])
+
+    reader_router = create_sync_router(
+        SyncRouterOptions(store=store, config=config, role_resolver=stranger_resolver),
+    )
+    reader_app = FastAPI()
+    reader_app.include_router(reader_router)
+    async with AsyncClient(transport=ASGITransport(app=reader_app), base_url="http://test") as client:
+        resp = await client.get("/list/chats/group-1?include=values")
+    assert resp.status_code == 403
+
+
+def test_validate_list_values_requires_listable():
+    col = _make_col(listable=False, listValues=True)
+    errors = validate_config(SyncConfig(version=1, collections=[col]))
+    assert any("listValues requires listable" in e for e in errors)

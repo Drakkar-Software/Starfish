@@ -1,5 +1,36 @@
 # Changelog
 
+## 3.0.0-alpha.16 — list endpoint can return documents; new projection (materialized-view) extension
+
+Two additive building blocks for directory/index-style features — enumerating a
+collection's documents in one request, and maintaining a denormalized view from a
+source of truth without a bespoke indexer. Both land in TypeScript and Python.
+
+### Added
+
+- **List endpoint `?include=values`** (`starfish-server`, both languages). A
+  collection that sets the new `listValues` flag (`list_values` / alias `listValues`
+  in Python) accepts `GET /list/...?include=values`, returning each document's stored
+  `data` and `hash` alongside its key — `{ items: [{ key, data, hash }], hasMore }` —
+  so a client enumerates a directory in one round-trip instead of a list followed by a
+  per-key batch pull. Read auth, `?limit`/`?after` pagination, TTL expiry and
+  `fieldPermissions` read-stripping are applied per document exactly as on a regular
+  pull. `?include=values` without `listValues` returns `400`; any other `include`
+  value falls back to the unchanged keys-only response. Validation rejects
+  `listValues` without `listable`.
+
+- **`@drakkar.software/starfish-projection` / `starfish-projection`** — a new
+  materialized-view extension. After a successful push, its `afterWrite` hook runs an
+  app-supplied pure `project(event)` for each watched `source` collection and applies
+  the outcome to the store: `{ key, data }` upserts the target document (last-writer-
+  wins by key), `{ key, delete: true }` removes it, `null` ignores the event. The
+  plugin owns all store IO; the app supplies only the mapping. Writes go in-process
+  (never over HTTP), so the target collection can be declared `pullOnly: true` —
+  clients read/enumerate it, only the projection writes it. Pairs with the
+  `listValues` flag so the whole view is fetchable in one
+  `GET /list/<target>?include=values`. Projection failures are logged and never break
+  the originating client write (same contract as `starfish-queuing`).
+
 ## 3.0.0-alpha.15 — offline-first read cache (ciphertext-at-rest)
 
 Adds a generic, opt-in offline-first read path to the client. A `StarfishClient`

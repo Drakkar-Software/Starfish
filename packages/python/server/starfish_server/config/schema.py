@@ -187,6 +187,16 @@ class CollectionConfig(BaseModel):
     enumerated.  Requires at least one path parameter; incompatible with
     ``appendOnly`` (persist=False) and ``bundle``."""
 
+    list_values: bool | None = Field(default=None, alias="listValues")
+    """When ``True``, the list endpoint additionally accepts ``?include=values``,
+    returning each document's stored ``data`` and ``hash`` alongside its key
+    (``{"items": [{"key", "data", "hash"}]}``) so a client can enumerate a
+    directory in one round-trip instead of a list followed by a per-key batch
+    pull.  Read auth, pagination, TTL and ``field_permissions`` read-stripping
+    are applied exactly as on a regular pull.  Requires ``listable``; only
+    meaningful for JSON collections.  Off by default — the values include each
+    document's content, so a collection must opt in."""
+
     root_only: bool | None = Field(default=None, alias="rootOnly")
     """When ``True``, only the **root device** (a self-signed device cap,
     ``iss == sub``) may access this collection; every paired/delegated device

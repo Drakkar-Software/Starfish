@@ -237,6 +237,26 @@ function validateAllParams(params: Record<string, string>): boolean {
  * read permissions are enforced identically everywhere (the bundle and batch
  * paths previously skipped this, leaking restricted fields).
  */
+/**
+ * Read a stored document's write-time (`ts`) for a TTL check, mirroring the
+ * inline reads in the standalone and batch pull paths. Returns 0 (treated as
+ * "no recorded write time") when the document is absent or corrupt, so the
+ * caller's `isExpired` decides based on the collection's `ttlMs`.
+ */
+async function storedTsOf(
+  store: SyncRouterOptions["store"],
+  key: string,
+  ctx: StoreContext,
+): Promise<number> {
+  try {
+    const raw = await store.getString(key, ctx)
+    if (!raw) return 0
+    return (JSON.parse(raw) as { ts?: number }).ts ?? 0
+  } catch {
+    return 0
+  }
+}
+
 function applyFieldReadFilter(
   data: unknown,
   fieldPermissions: CollectionConfig["fieldPermissions"],
@@ -1026,6 +1046,29 @@ function addCollectionRoutes(
       const keys = await opts.store.listKeys(prefix, { startAfter, limit: limit + 1 }, listCtx)
       const hasMore = keys.length > limit
       const page = hasMore ? keys.slice(0, limit) : keys
+
+      // `?include=values` (opt-in via `listValues`) returns each document's stored
+      // `data`+`hash` alongside its key, so a client enumerates a directory in one
+      // round-trip instead of list-then-batch-pull. Read auth was already checked
+      // above against this prefix; TTL and fieldPermissions are applied per doc
+      // exactly as on a regular pull. Anything else falls through to keys-only.
+      const include = c.req.query("include")
+      if (include === "values") {
+        if (!col.listValues) {
+          return c.json({ error: "include=values is not enabled for this collection" }, 400)
+        }
+        const items: { key: string; data: Record<string, unknown>; hash: string }[] = []
+        for (const key of page) {
+          const pullResult = await pull(opts.store, key, listCtx)
+          let data = pullResult.data
+          if (col.ttlMs != null && isExpired(await storedTsOf(opts.store, key, listCtx), col.ttlMs)) {
+            data = {}
+          }
+          applyFieldReadFilter(data, col.fieldPermissions, listRoles)
+          items.push({ key: key.slice(prefix.length), data, hash: pullResult.hash })
+        }
+        return c.json({ items, hasMore })
+      }
 
       // Strip the prefix to return only the last-param values
       const items = page.map((k) => k.slice(prefix.length))

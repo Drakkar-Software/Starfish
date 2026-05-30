@@ -1,15 +1,15 @@
 {
-  "name": "@drakkar.software/starfish-audit",
+  "name": "@drakkar.software/starfish-projection",
   "version": "3.0.0-alpha.16",
   "repository": {
     "type": "git",
     "url": "https://github.com/Drakkar-Software/starfish.git",
-    "directory": "packages/ts/audit"
+    "directory": "packages/ts/projection"
   },
   "publishConfig": {
     "access": "public"
   },
-  "description": "Starfish audit logging extension (console / callback / no-op audit loggers for server pull/push events)",
+  "description": "Starfish materialized-view extension (post-push projection hook: derive a document into a target collection on every write, with delete-on-condition)",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -20,7 +20,8 @@
     }
   },
   "dependencies": {
-    "@drakkar.software/starfish-protocol": "workspace:*"
+    "@drakkar.software/starfish-protocol": "workspace:*",
+    "@drakkar.software/starfish-server": "workspace:*"
   },
   "scripts": {
     "build": "node build.mjs && tsc -p tsconfig.build.json",
@@ -28,8 +29,6 @@
     "test": "vitest run"
   },
   "devDependencies": {
-    "@drakkar.software/starfish-client": "workspace:*",
-    "@drakkar.software/starfish-server": "workspace:*",
     "esbuild": "^0.27.4",
     "typescript": "^5.5.0",
     "vitest": "^3.0.0"

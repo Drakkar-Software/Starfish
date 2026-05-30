@@ -89,6 +89,10 @@ function validateCollections(collections: CollectionConfig[], scopeLabel: string
       }
     }
 
+    if (col.listValues && !col.listable) {
+      errors.push(`${scopeLabel}Collection "${col.name}": listValues requires listable`)
+    }
+
     if (col.rootOnly) {
       if (col.readRoles.includes(ROLE_PUBLIC) || col.writeRoles.includes(ROLE_PUBLIC)) {
         errors.push(
