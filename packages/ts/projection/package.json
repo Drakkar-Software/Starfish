@@ -1,14 +1,15 @@
 {
-  "name": "@drakkar.software/starfish-protocol",
+  "name": "@drakkar.software/starfish-projection",
   "version": "3.0.0-alpha.15",
   "repository": {
     "type": "git",
     "url": "https://github.com/Drakkar-Software/starfish.git",
-    "directory": "packages/ts/protocol"
+    "directory": "packages/ts/projection"
   },
   "publishConfig": {
     "access": "public"
   },
+  "description": "Starfish materialized-view extension (post-push projection hook: derive a document into a target collection on every write, with delete-on-condition)",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -18,17 +19,17 @@
       "import": "./dist/index.js"
     }
   },
+  "dependencies": {
+    "@drakkar.software/starfish-protocol": "workspace:*",
+    "@drakkar.software/starfish-server": "workspace:*"
+  },
   "scripts": {
-    "build": "tsc --build",
+    "build": "node build.mjs && tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
-  "dependencies": {
-    "@noble/curves": "^2.2.0",
-    "@noble/hashes": "^2.2.0",
-    "hash-wasm": "^4.12.0"
-  },
   "devDependencies": {
+    "esbuild": "^0.27.4",
     "typescript": "^5.5.0",
     "vitest": "^3.0.0"
   },

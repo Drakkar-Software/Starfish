@@ -1356,7 +1356,29 @@ CollectionConfig(name="chat", storage_path="chats/{groupId}/{day}", read_roles=[
 
 Response: `{ "items": ["2026-04-13", "2026-04-12"], "hasMore": false }`. Pagination: `?limit=N` (default 100, max 1000) and `?after=<item>`.
 
+Set `listValues: true` (`list_values` / alias `listValues` in Python) as well, and the endpoint accepts `?include=values`, returning each document's stored `data` and `hash` alongside its key — `{ "items": [{ "key", "data", "hash" }], "hasMore": false }` — so a client enumerates a directory in one round-trip instead of a list followed by a per-key batch pull. Read auth, pagination, TTL and `fieldPermissions` read-stripping apply exactly as on a regular pull.
+
 > Full reference: [`docs/ts/server/list-endpoint.md`](docs/ts/server/list-endpoint.md)
+
+### Projection (materialized views)
+
+The `@drakkar.software/starfish-projection` / `starfish-projection` (Py) extension maintains a denormalized view of a source collection, via the additive `ServerPlugin.afterWrite` hook. After each successful push to a watched `source` collection it runs an app-supplied pure `project(event)` and applies the result to the store: `{ key, data }` upserts the target document (last-writer-wins by key), `{ key, delete: true }` removes it, `null` ignores the event. The app supplies only the mapping; the plugin owns all store IO.
+
+Writes go in-process (never over HTTP), so the target collection can be declared `pullOnly: true` — clients read/enumerate it, only the projection writes it. Pair it with `listValues` so the whole view is fetchable in one `GET /list/<target>?include=values`. Projection failures are logged and never break the originating client write.
+
+```ts
+createProjectionServerPlugin({
+  store,
+  projections: [{
+    source: ["pubspace", "spacediscovery"],
+    project: (e) => e.body?.discoverable === true
+      ? { key: `spacedir/${e.params.spaceId}`, data: { name: e.body.name } }
+      : { key: `spacedir/${e.params.spaceId}`, delete: true },
+  }],
+})
+```
+
+> Full reference: [`docs/ts/projection/01-overview.md`](docs/ts/projection/01-overview.md)
 
 ---
 

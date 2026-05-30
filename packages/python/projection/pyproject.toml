@@ -3,12 +3,12 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "starfish-entitlements"
+name = "starfish-projection"
 version = "3.0.0a14"
-description = "Starfish entitlements extension (per-user feature-slug role enrichment for the server, plus a client-side entitlement reader)"
+description = "Starfish materialized-view extension (post-push projection hook: derive a document into a target collection on every write, with delete-on-condition)"
 requires-python = ">=3.11"
 dependencies = [
-  "starfish-sdk",
+  "starfish-protocol",
   "starfish-server",
 ]
 
@@ -16,10 +16,12 @@ dependencies = [
 dev = [
   "pytest>=7.0",
   "pytest-asyncio>=0.21",
+  "httpx>=0.25.0",
+  "fastapi>=0.100",
 ]
 
 [tool.uv.sources]
-starfish-sdk = { path = "../client", editable = true }
+starfish-protocol = { path = "../protocol", editable = true }
 starfish-server = { path = "../server", editable = true }
 
 [tool.pytest.ini_options]

@@ -104,6 +104,11 @@ def _validate_collections(collections: list[CollectionConfig], scope_label: str)
                     f'{prefix}Collection "{col.name}": listable cannot be used with bundle (bundled collections share storage paths)'
                 )
 
+        if col.list_values and not col.listable:
+            errors.append(
+                f'{prefix}Collection "{col.name}": listValues requires listable'
+            )
+
         # rootOnly is incompatible with public access — a root-only collection
         # can never be public.
         if col.root_only and (

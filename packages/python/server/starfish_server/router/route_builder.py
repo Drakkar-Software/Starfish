@@ -1014,6 +1014,33 @@ def _add_collection_routes(
                 has_more = len(keys) > limit
                 page = keys[:limit] if has_more else keys
 
+                # ?include=values (opt-in via list_values) returns each document's
+                # stored data+hash alongside its key, so a client enumerates a
+                # directory in one round-trip instead of list-then-batch-pull. Read
+                # auth was already checked above against this prefix; TTL and
+                # field_permissions are applied per doc exactly as on a regular pull.
+                include = request.query_params.get("include")
+                if include == "values":
+                    if not col.list_values:
+                        return JSONResponse(
+                            {"error": "include=values is not enabled for this collection"},
+                            status_code=400,
+                        )
+                    value_items: list[dict[str, Any]] = []
+                    for key in page:
+                        pull_result = await pull(opts.store, key, context=list_ctx)
+                        data = pull_result.data
+                        if col.ttl_ms is not None:
+                            raw_doc = await opts.store.get_string(key, context=list_ctx)
+                            stored_ts = json.loads(raw_doc).get("ts") or 0 if raw_doc else 0
+                            if _is_expired(stored_ts, col.ttl_ms):
+                                data = {}
+                        _apply_field_read_filter(data, col.field_permissions, frozenset(list_roles))
+                        value_items.append(
+                            {"key": key[len(prefix):], "data": data, "hash": pull_result.hash}
+                        )
+                    return JSONResponse({"items": value_items, "hasMore": has_more})
+
                 items = [k[len(prefix):] for k in page]
                 return JSONResponse({"items": items, "hasMore": has_more})
 
