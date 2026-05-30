@@ -11,7 +11,7 @@ import {
 import type { ConflictResolver } from "./types.js"
 import { ConflictError } from "./types.js"
 import type { Encryptor } from "@drakkar.software/starfish-protocol"
-import { StarfishClient, stripPushPrefix } from "./client.js"
+import { StarfishClient, stripPushPrefix, pullWasFromCache } from "./client.js"
 import type { SyncLogger } from "./logger.js"
 import type { Validator } from "./validate.js"
 import { ValidationError } from "./validate.js"
@@ -87,6 +87,7 @@ export class SyncManager {
   private lastCheckpoint: number = 0
   private localData: Record<string, unknown> = {}
   private aborted: boolean = false
+  private lastFromCache: boolean = false
 
   constructor(options: SyncManagerOptions) {
     this.client = options.client
@@ -138,6 +139,44 @@ export class SyncManager {
     this.lastHash = hash
   }
 
+  /**
+   * Whether the most recent {@link pull} (or {@link seedFromCache}) was served
+   * from the client's offline read-through cache rather than a live server
+   * response. The binding surfaces this as a `stale` flag so the UI can show an
+   * offline indicator without treating a cache hit as "reachable". Reset to
+   * false by the next successful network pull.
+   */
+  getLastPullFromCache(): boolean {
+    return this.lastFromCache
+  }
+
+  /**
+   * Cache-first paint: seed `localData` from the client's read-through cache
+   * WITHOUT touching the network, decrypting in memory for E2E collections.
+   * Returns whether anything was seeded (false on a miss, an expired entry, or
+   * a decrypt failure — e.g. keyring skew). Call once on store creation before
+   * the initial live {@link pull}, which then supersedes the seeded snapshot.
+   * Requires the client to have been built with a `cache`.
+   */
+  async seedFromCache(): Promise<boolean> {
+    if (this.aborted) return false
+    const cached = await this.client.peekCache(this.pullPath)
+    if (!cached) return false
+    let data: Record<string, unknown>
+    try {
+      data = this.encryptor ? await this.encryptor.decrypt(cached.data) : cached.data
+    } catch {
+      return false // undecryptable (keyring skew / foreign epoch) — seed nothing
+    }
+    if (this.aborted) return false
+    this.localData = data
+    this.lastHash = cached.hash
+    // Leave lastCheckpoint at 0 so the first live pull is a full (re)sync, not a
+    // delta against a stale cached checkpoint.
+    this.lastFromCache = true
+    return true
+  }
+
   getCheckpoint(): number {
     return this.lastCheckpoint
   }
@@ -154,6 +193,9 @@ export class SyncManager {
       // for collections that don't use delegated encryption.
       const result = await this.client.pull(this.pullPath, this.lastCheckpoint)
       if (this.aborted) throw new AbortError()
+      // True when the client served this from its offline cache (transport was
+      // unreachable); a live response clears it. Surfaced as `stale` by the binding.
+      this.lastFromCache = pullWasFromCache(result)
 
       if (this.encryptor) {
         const decrypted = await this.encryptor.decrypt(result.data)

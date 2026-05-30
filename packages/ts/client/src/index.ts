@@ -10,7 +10,7 @@ export type {
 } from "@drakkar.software/starfish-protocol"
 export type { PullResult, PushSuccess, PullKeyringProjection } from "@drakkar.software/starfish-protocol"
 
-export { StarfishClient } from "./client.js"
+export { StarfishClient, pullWasFromCache } from "./client.js"
 export type {
   BlobPullResult,
   BlobPushResult,
@@ -33,6 +33,7 @@ export {
 export type {
   StarfishClientOptions,
   StarfishCapProvider,
+  PullCache,
   ConflictResolver,
   ClientPlugin,
 } from "./types.js"

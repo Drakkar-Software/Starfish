@@ -185,12 +185,27 @@ new StarfishClient({
   baseUrl: "https://api.example.com/v1",
   capProvider,            // v3 — signs every request. Replaces v2 `auth`/`authProvider`.
   fetch,                  // optional custom fetch
+  cache,                  // optional offline-first read-through cache — see below
+  cacheMaxAgeMs,          // optional TTL (ms) for cache entries
 })
 ```
 
 `StarfishCapProvider` is a single-method protocol: `getCap(): Promise<{ cap: CapCert, devEdPrivHex: string }>`. Implementations are expected to cache. When a `capProvider` is set, every outgoing request carries `Authorization: Cap <base64(stableStringify(cap))>` plus `X-Starfish-Sig`, `X-Starfish-Ts`, `X-Starfish-Nonce`.
 
 Omit `capProvider` for unauthenticated public reads.
+
+### Offline-first read cache
+
+Pass a `cache` (a `PullCache`: `{ get(k): Promise<string|null>; set(k, v): Promise<void> }`, host-backed by `localStorage`/`AsyncStorage`/etc.) to make every structured `pull()` offline-capable:
+
+- **Write-through:** a successful pull stores the raw `{data, hash, timestamp}` keyed by document path.
+- **Offline fallback:** a pull that fails because the **transport** is unreachable (`fetch` rejects — offline/DNS/timeout) returns the last cached snapshot, tagged so callers can tell it's stale (`pullWasFromCache(result)`).
+- **Real HTTP errors propagate:** 404/403/5xx are genuine server answers — the cache is *not* consulted, so "no document yet" and "access denied" keep their meaning.
+- **`cacheMaxAgeMs`:** an entry older than this is treated as a miss (both cache-first paint and offline fallback); omit for entries that never expire (recommended for offline-first, where any last-synced data beats none).
+- **Ciphertext-at-rest by construction:** the cache stores the raw server payload, which for E2E (`delegated`) collections is the sealed ciphertext the server holds — never the decrypted form. Decryption happens in memory on read (see `SyncManager.seedFromCache`).
+- **`client.peekCache(path)`** reads the cached snapshot *without* a network round-trip — the basis for cache-first paint.
+
+Append collections are not cached here; they own warm-start persistence via `AppendLogCursor` (`persistEncrypted`).
 
 ## `SyncManager`
 
@@ -206,6 +221,7 @@ new SyncManager({
 - `signer.getSigner()` returns `{ devEdPubHex, sign(payload) }`. When set, every push attaches `authorPubkey = cap.sub` and `authorSignature = base64(Ed25519(payload))` over the encrypted payload (without the author fields).
 - `encryptor` is the only encryption option — the v2 single-secret `encryptionSecret`/`encryptionSalt` shorthand was removed in v3.
 - `onConflict` resolves write conflicts on push *and* reconciles a pull against un-pushed local writes. On a zustand-bound store, a `pull()` while the store is `dirty` merges the fetched snapshot with the local data through this resolver (rather than overwriting it), so an optimistic write isn't lost when a pull races a `set()`. Use a union/CRDT-style resolver (`createUnionMerge`) for append-style collections so both the local and remote writes survive; `SyncManager.resolve(local, remote)` exposes the same merge for callers that need it.
+- **Offline-first (with a client `cache`):** `seedFromCache()` populates `localData` from the client's read-through cache without a network round-trip, decrypting in memory for E2E collections — the merge-doc counterpart to `AppendLogCursor.getDecryptedItems()`. `getLastPullFromCache()` reports whether the latest `pull()`/seed came from cache. On a zustand store these power cache-first paint: `useSyncInit` seeds before the initial pull, and the store exposes a `stale` flag (`seed()` action + `state.stale`) so the UI can show an "offline / showing last-synced data" indicator that clears on the next live pull.
 
 ## `AppendLogCursor`
 

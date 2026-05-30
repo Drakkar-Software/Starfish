@@ -1,5 +1,41 @@
 # Changelog
 
+## 3.0.0-alpha.15 — offline-first read cache (ciphertext-at-rest)
+
+Adds a generic, opt-in offline-first read path to the client. A `StarfishClient`
+given a `cache` writes every successful structured `pull()` through to it (keyed by
+document path) and, when a later pull fails because the **transport** is unreachable
+(`fetch` rejects — offline/DNS/timeout), returns the last cached snapshot instead of
+throwing. A real HTTP error (404/403/5xx) is a genuine server answer and still
+propagates — the cache is not consulted — so "no document yet" and "access denied"
+keep their meaning. The cache stores the raw server payload, which for E2E
+(`delegated`) collections is the sealed ciphertext the server holds, never the
+decrypted form, so it is **ciphertext-at-rest by construction**; decryption happens
+in memory on read. On the zustand binding this powers cache-first paint: the store
+seeds from the cache before its initial pull and exposes a `stale` flag so a UI can
+show an "offline / showing last-synced data" indicator that clears on the next live
+pull. **TS-only release** — client-side only; the TS packages bump to
+3.0.0-alpha.15 while the Python packages stay at 3.0.0a13 (no Python change).
+
+### Added
+
+- **`StarfishClientOptions.cache` (TS `starfish-client`)** — an optional `PullCache`
+  (`{ get(k): Promise<string|null>; set(k, v): Promise<void> }`, host-backed). When
+  set, `pull()` writes through on success and falls back to the cached snapshot on a
+  transport failure (tagged via the exported `pullWasFromCache(result)`). Append
+  collections are excluded (they persist via `AppendLogCursor`).
+- **`StarfishClientOptions.cacheMaxAgeMs`** — optional TTL; an entry older than this
+  is treated as a miss on every read. Omit for entries that never expire
+  (recommended for offline-first).
+- **`StarfishClient.peekCache(path)`** — read the cached snapshot without a network
+  round-trip (basis for cache-first paint).
+- **`SyncManager.seedFromCache()` / `getLastPullFromCache()`** — seed `localData`
+  from the client cache, decrypting in memory for E2E collections; report whether the
+  latest pull/seed came from cache.
+- **zustand store: `seed()` action + `state.stale` flag**, and new
+  `SyncInitConfig.cache` / `cacheMaxAgeMs`; `useSyncInit` seeds before the initial
+  pull. Backwards-compatible — without a `cache`, behavior is unchanged.
+
 ## 3.0.0-alpha.14 — zustand `pull()` no longer discards un-pushed local writes
 
 Fixes a data-loss bug where an optimistic local write could vanish. A `set()` on a

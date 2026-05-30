@@ -47,6 +47,27 @@ export interface StarfishCapProvider {
   }>
 }
 
+/**
+ * A minimal async key-value store the client uses as a read-through cache for
+ * {@link StarfishClient.pull} (offline-first reads). Host-provided so the SDK
+ * stays storage-agnostic — back it by `localStorage`, `AsyncStorage`, a file,
+ * etc. Shaped like a subset of zustand's `StateStorage` so an existing adapter
+ * fits.
+ *
+ * IMPORTANT — what gets stored: the client caches the RAW server response only
+ * (`data`/`hash`/`timestamp`). For E2E (`delegated`) collections that payload is
+ * the SEALED ciphertext the server holds — never the decrypted form — so this
+ * cache is ciphertext-at-rest by construction. Decryption always happens in
+ * memory on read (see {@link SyncManager}). Public/plaintext collections cache
+ * their plaintext, exactly as the server stores it.
+ */
+export interface PullCache {
+  /** Return the previously-stored string for `key`, or null if absent. Must not throw. */
+  get(key: string): Promise<string | null>
+  /** Store `value` under `key`. Must not throw (failures are swallowed by the client). */
+  set(key: string, value: string): Promise<void>
+}
+
 /** Options for creating a StarfishClient. */
 export interface StarfishClientOptions {
   /** Base URL of the Starfish server (e.g. "https://api.example.com/v1"). */
@@ -77,6 +98,29 @@ export interface StarfishClientOptions {
   capProvider?: StarfishCapProvider
   /** Optional fetch implementation (defaults to global fetch). */
   fetch?: typeof fetch
+  /**
+   * Optional read-through cache for {@link StarfishClient.pull} — the basis for
+   * offline-first reads. When set, every successful non-append pull is written
+   * through to the cache (keyed by document path), and a pull that fails because
+   * the TRANSPORT is unreachable (offline / DNS / timeout — `fetch` rejects)
+   * falls back to the cached response, tagged so callers can tell it's stale.
+   *
+   * A real HTTP error (404/403/5xx) is a genuine server answer and always
+   * propagates — the cache is NOT consulted — so "no document yet" and
+   * "access denied" keep their meaning. Caches ciphertext for E2E collections
+   * (the server only ever holds sealed payloads); never decrypted data.
+   */
+  cache?: PullCache
+  /**
+   * Optional max age (ms) for {@link cache} entries. An entry older than this is
+   * treated as a cache MISS on every read — both cache-first paint and the
+   * offline fallback — so a stale-beyond-policy snapshot is never served (the
+   * pull then goes to the network, or rethrows the transport error offline).
+   * Each cached snapshot records its write time; expiry is `now - cachedAt >
+   * cacheMaxAgeMs`. Omit (default) for entries that never expire — recommended
+   * for an offline-first app where any last-synced data beats none.
+   */
+  cacheMaxAgeMs?: number
   /**
    * Optional list of client-side plugins. The list is stored on the client
    * instance but does not fire any hooks yet — the contract is plumbed so

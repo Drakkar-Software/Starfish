@@ -23,10 +23,43 @@ import {
 import type {
   StarfishClientOptions,
   StarfishCapProvider,
+  PullCache,
 } from "./types.js"
 import { ConflictError, StarfishHttpError } from "./types.js"
 
 const APPEND_DEFAULT_FIELD = "items"
+
+/**
+ * Shape persisted in a {@link PullCache} for one document: the raw server
+ * `PullResult` fields. For E2E collections `data` is the sealed ciphertext.
+ */
+interface CachedPull {
+  data: Record<string, unknown>
+  hash: string
+  timestamp: number
+  /** Wall-clock ms when this snapshot was written — for {@link StarfishClientOptions.cacheMaxAgeMs} expiry. */
+  cachedAt: number
+}
+
+/**
+ * The cache key for a pull `pathAndQuery`: the path with any query string
+ * dropped, so a checkpoint'd or `withKeyring` pull and a plain pull of the same
+ * document share one stable key (the document identity, not the request shape).
+ */
+function pullCacheKey(pathAndQuery: string): string {
+  const q = pathAndQuery.indexOf("?")
+  return q === -1 ? pathAndQuery : pathAndQuery.slice(0, q)
+}
+
+/**
+ * Whether a {@link PullResult} was served from the offline read-through cache
+ * (the transport was unreachable) rather than a live server response. Used by
+ * {@link SyncManager} to surface a `stale` flag to the UI without treating a
+ * cache hit as proof the server is reachable.
+ */
+export function pullWasFromCache(result: PullResult): boolean {
+  return (result as { fromCache?: boolean }).fromCache === true
+}
 
 /** The storage `documentKey` for a push `path`: the path with the `/push/`
  *  action prefix stripped (the namespace lives only in the URL). The author
@@ -130,6 +163,8 @@ export class StarfishClient {
   private readonly namespace?: string
   private readonly capProvider?: StarfishCapProvider
   private readonly fetch: typeof globalThis.fetch
+  private readonly cache?: PullCache
+  private readonly cacheMaxAgeMs?: number
   /**
    * Installed client-side plugins. Currently stored as inert data; no
    * hooks fire yet. Extensions can inspect this list if needed.
@@ -143,7 +178,19 @@ export class StarfishClient {
     this.namespace = options.namespace || undefined
     this.capProvider = options.capProvider
     this.fetch = options.fetch ?? globalThis.fetch.bind(globalThis)
+    this.cache = options.cache
+    this.cacheMaxAgeMs = options.cacheMaxAgeMs
     this.plugins = options.plugins ? [...options.plugins] : []
+  }
+
+  /**
+   * Mark a `PullResult` as having been served from the offline read-through
+   * cache (transport was unreachable). Non-enumerable so it doesn't leak into
+   * JSON / equality / re-caching; read via {@link pullWasFromCache}.
+   */
+  private tagFromCache(result: PullResult): PullResult {
+    Object.defineProperty(result, "fromCache", { value: true, enumerable: false })
+    return result
   }
 
   /**
@@ -304,10 +351,28 @@ export class StarfishClient {
     const url = `${this.baseUrl}${pathAndQuery}`
     const authHeaders = await this.buildAuthHeaders("GET", pathAndQuery, undefined)
 
-    const res = await this.fetch(url, {
-      method: "GET",
-      headers: { [HEADER_ACCEPT]: "application/json", ...authHeaders },
-    })
+    // Read-through cache: only for structured (non-append) pulls. Append
+    // collections own their own warm-start persistence via AppendLogCursor.
+    const cacheKey =
+      this.cache && appendField === undefined ? pullCacheKey(pathAndQuery) : undefined
+
+    let res: Response
+    try {
+      res = await this.fetch(url, {
+        method: "GET",
+        headers: { [HEADER_ACCEPT]: "application/json", ...authHeaders },
+      })
+    } catch (err) {
+      // The TRANSPORT failed (offline / DNS / timeout) — fall back to the last
+      // cached snapshot for this document if we have one, tagged so callers can
+      // tell it's stale. A real HTTP error (below) is a server answer and never
+      // gets here, so 404/403/5xx keep propagating.
+      if (cacheKey) {
+        const cached = await this.readCache(cacheKey)
+        if (cached) return cached
+      }
+      throw err
+    }
     if (!res.ok) {
       throw new StarfishHttpError(res.status, await res.text())
     }
@@ -317,7 +382,49 @@ export class StarfishClient {
       const list = (result.data as Record<string, unknown> | null)?.[appendField]
       return (Array.isArray(list) ? list : []) as T[]
     }
+    if (cacheKey) {
+      const snapshot: CachedPull = {
+        data: result.data,
+        hash: result.hash,
+        timestamp: result.timestamp,
+        cachedAt: Date.now(),
+      }
+      void this.cache!.set(cacheKey, JSON.stringify(snapshot)).catch(() => {})
+    }
     return result
+  }
+
+  /**
+   * Read the cached snapshot for a document `path` WITHOUT hitting the network —
+   * the basis for cache-first paint (seed the UI from the last-synced snapshot,
+   * then revalidate with a live {@link pull}). Returns the tagged `PullResult`,
+   * or null when no cache is configured / there's no entry. Namespacing matches
+   * {@link pull}, so the key lines up with whatever `pull` wrote.
+   */
+  async peekCache(path: string): Promise<PullResult | null> {
+    if (!this.cache) return null
+    return this.readCache(pullCacheKey(this.applyNamespace(path)))
+  }
+
+  /** Read + parse a cached pull snapshot, tagged {@link tagFromCache}. Returns
+   *  null on a miss or an unparseable blob (never throws — a corrupt cache entry
+   *  must not break a pull, just miss). */
+  private async readCache(cacheKey: string): Promise<PullResult | null> {
+    try {
+      const raw = await this.cache!.get(cacheKey)
+      if (!raw) return null
+      const parsed = JSON.parse(raw) as CachedPull
+      if (!parsed || typeof parsed.hash !== "string") return null
+      // Expiry: a snapshot older than the configured max age is a miss. Entries
+      // written before this field existed (cachedAt missing) count as age 0 ⇒
+      // expired under any TTL, forcing a fresh pull once.
+      if (this.cacheMaxAgeMs != null && Date.now() - (parsed.cachedAt ?? 0) > this.cacheMaxAgeMs) {
+        return null
+      }
+      return this.tagFromCache({ data: parsed.data ?? {}, hash: parsed.hash, timestamp: parsed.timestamp ?? 0 })
+    } catch {
+      return null
+    }
   }
 
   /**

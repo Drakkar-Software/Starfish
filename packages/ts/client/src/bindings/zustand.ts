@@ -13,7 +13,7 @@ import { StarfishClient } from "../client.js"
 import { SyncManager } from "../sync.js"
 import { AppendLogCursor, type AppendElement } from "../append-log.js"
 import { setupCrossTabSync, type BroadcastableStore } from "../broadcast.js"
-import type { StarfishCapProvider, ConflictResolver } from "../types.js"
+import type { StarfishCapProvider, ConflictResolver, PullCache } from "../types.js"
 import type { SyncLogger } from "../logger.js"
 import type { Validator } from "../validate.js"
 
@@ -25,6 +25,14 @@ export interface StarfishState {
   error: string | null
   /** Last-known server hash, persisted alongside `data`/`dirty`. Restored into the bound SyncManager on hydration. */
   hash: string | null
+  /**
+   * True when the currently-shown `data` came from the offline read-through
+   * cache (a cache-first {@link StarfishActions.seed} or a {@link StarfishActions.pull}
+   * the client served from cache because the transport was unreachable) rather
+   * than a live server response. A successful live pull/flush clears it. Use it
+   * to drive an "offline / showing last-synced data" indicator.
+   */
+  stale: boolean
 }
 
 export interface StarfishActions {
@@ -34,6 +42,14 @@ export interface StarfishActions {
   restore: (data: Record<string, unknown>) => void
   flush: () => Promise<void>
   setOnline: (online: boolean) => void
+  /**
+   * Cache-first paint: populate `data` from the client's offline read-through
+   * cache (decrypting in memory for E2E collections) without touching the
+   * network. A no-op when the client has no cache configured or there's no
+   * (unexpired) entry. {@link useSyncInit} calls this once before the initial
+   * pull; the live pull then supersedes the seeded snapshot.
+   */
+  seed: () => Promise<void>
 }
 
 export type StarfishStore = StarfishState & StarfishActions
@@ -101,6 +117,21 @@ export function createStarfishStore(
     dirty: false,
     error: null,
     hash: null,
+    stale: false,
+
+    seed: async () => {
+      try {
+        const seeded = await syncManager.seedFromCache()
+        if (!seeded) return
+        // Don't clobber data a live pull/local set already produced (the seed is
+        // a fast local read, but guard the race anyway): only seed while empty
+        // and not yet dirty.
+        if (get().dirty || Object.keys(get().data).length > 0) return
+        set({ data: syncManager.getData(), hash: syncManager.getHash(), stale: true }, false, "seed")
+      } catch {
+        /* a cache miss / decrypt failure must never block the live pull */
+      }
+    },
 
     pull: async () => {
       set({ syncing: true, error: null }, false, "pull/start")
@@ -113,7 +144,7 @@ export function createStarfishStore(
         // else). When dirty, merge them back via the same resolver the push-
         // conflict path uses, so a pull racing a send can't lose the local write.
         const newData = get().dirty ? syncManager.resolve(get().data, remote) : remote
-        set({ data: newData, syncing: false, hash: syncManager.getHash() }, false, "pull/success")
+        set({ data: newData, syncing: false, hash: syncManager.getHash(), stale: syncManager.getLastPullFromCache() }, false, "pull/success")
         // The preserved write still needs to reach the server, and nothing else
         // will trigger that here. Kick a flush, gated on dirty + online exactly
         // like setOnline — a successful flush clears dirty, so there's no ping-pong.
@@ -147,7 +178,7 @@ export function createStarfishStore(
       set({ syncing: true, error: null }, false, "flush/start")
       try {
         await syncManager.push(get().data)
-        set({ data: syncManager.getData(), syncing: false, dirty: false, hash: syncManager.getHash() }, false, "flush/success")
+        set({ data: syncManager.getData(), syncing: false, dirty: false, hash: syncManager.getHash(), stale: false }, false, "flush/success")
       } catch (err) {
         set({ syncing: false, error: err instanceof Error ? err.message : String(err) }, false, "flush/error")
       }
@@ -345,6 +376,16 @@ export interface SyncInitConfig {
   storeName?: string
   storage?: StateStorage | false
   fetch?: typeof globalThis.fetch
+  /**
+   * Offline-first read-through cache for the underlying {@link StarfishClient}
+   * (see {@link StarfishClientOptions.cache}). When set, the store seeds from the
+   * last-synced ciphertext on creation (cache-first paint, decrypted in memory)
+   * and the live pull falls back to it when the transport is unreachable; the
+   * store's `stale` flag reflects whether the shown data is from cache.
+   */
+  cache?: PullCache
+  /** Max age (ms) for {@link cache} entries; see {@link StarfishClientOptions.cacheMaxAgeMs}. */
+  cacheMaxAgeMs?: number
   logger?: SyncLogger
   validate?: Validator
 }
@@ -374,6 +415,8 @@ export function useSyncInit(config: SyncInitConfig | null): StoreApi<StarfishSto
       namespace: config.namespace,
       capProvider: config.capProvider,
       fetch: config.fetch,
+      cache: config.cache,
+      cacheMaxAgeMs: config.cacheMaxAgeMs,
     })
 
     const syncManager = new SyncManager({
@@ -405,8 +448,13 @@ export function useSyncInit(config: SyncInitConfig | null): StoreApi<StarfishSto
 
     setStore(newStore)
 
-    // Initial pull — errors are stored in state.error by the pull() action
-    newStore.getState().pull().catch(() => {})
+    // Cache-first paint, then revalidate: seed synced data from the offline
+    // cache (a fast local read; no-op without a cache) BEFORE the initial pull,
+    // so the UI shows last-synced data immediately and the live pull supersedes
+    // it. Errors in either are captured into state — never thrown here.
+    newStore.getState().seed().finally(() => {
+      newStore.getState().pull().catch(() => {})
+    })
 
     return () => {
       setStore(null)
