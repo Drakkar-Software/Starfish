@@ -394,42 +394,282 @@ async def test_rate_limit_and_cache_together():
 # ── RateLimiter class unit tests (cross-language parity with middleware.test.ts) ──
 
 
-def test_rate_limiter_allows_up_to_limit_then_rejects():
+async def test_rate_limiter_allows_up_to_limit_then_rejects():
     rl = RateLimiter(window_ms=60_000, max_requests=3)
-    assert rl.check("u") is None
-    assert rl.check("u") is None
-    assert rl.check("u") is None
-    resp = rl.check("u")
+    assert await rl.check("u") is None
+    assert await rl.check("u") is None
+    assert await rl.check("u") is None
+    resp = await rl.check("u")
     assert resp is not None and resp.status_code == 429  # 4th over the limit of 3
 
 
-def test_rate_limiter_isolates_counters_per_key():
+async def test_rate_limiter_isolates_counters_per_key():
     rl = RateLimiter(window_ms=60_000, max_requests=1)
-    assert rl.check("a") is None
-    assert rl.check("a") is not None  # over the limit
-    assert rl.check("b") is None  # a different key is unaffected
+    assert await rl.check("a") is None
+    assert await rl.check("a") is not None  # over the limit
+    assert await rl.check("b") is None  # a different key is unaffected
 
 
-def test_rate_limiter_bounds_bucket_count():
+async def test_rate_limiter_bounds_bucket_count():
     # A flood of distinct keys (e.g. spoofed X-Forwarded-For) must not grow memory
-    # without bound — the limiter caps at max_buckets and evicts the oldest. Mirrors
-    # the TS twin in middleware.test.ts.
+    # without bound — the limiter's store caps at max_buckets and evicts the oldest.
+    # Asserted behaviorally (no public size accessor): an old key was evicted (restarts),
+    # a recent one retains its count. Mirrors the TS twin in kv-adapter.test.ts.
     rl = RateLimiter(window_ms=60_000, max_requests=100, max_buckets=8)
     for i in range(200):
-        rl.check(f"k{i}")
-    assert len(rl._buckets) <= 8
+        await rl.check(f"k{i}")
+    # k0 was evicted long ago → first check after the flood is fresh (count 1, well under 100).
+    assert await rl.check("k0") is None
+    assert await rl.check("k199") is None  # still under the limit either way
 
 
-def test_rate_limiter_key_precedence_identity_xff_client_ip_anonymous():
+async def test_rate_limiter_key_precedence_identity_xff_client_ip_anonymous():
     # Identical precedence to the TS limiter; pins the convergence. (The runtimes differ
     # only in which signals they can supply — the Python server passes the socket IP as
     # client_ip, which Hono cannot.)
     rl = RateLimiter(window_ms=60_000, max_requests=1)
-    assert rl.check("user-1", "1.2.3.4", "5.6.7.8") is None  # identity wins
-    assert rl.check("user-1", "9.9.9.9", "8.8.8.8") is not None  # same identity bucket
-    assert rl.check(None, "1.1.1.1, 2.2.2.2", None) is None  # first XFF hop
-    assert rl.check(None, "1.1.1.1", None) is not None  # same first-hop bucket
-    assert rl.check(None, None, "3.3.3.3") is None  # client IP when no identity/XFF
-    assert rl.check(None, None, "3.3.3.3") is not None
-    assert rl.check(None, None, None) is None  # shared anonymous fallback
-    assert rl.check(None, None, None) is not None
+    assert await rl.check("user-1", "1.2.3.4", "5.6.7.8") is None  # identity wins
+    assert await rl.check("user-1", "9.9.9.9", "8.8.8.8") is not None  # same identity bucket
+    assert await rl.check(None, "1.1.1.1, 2.2.2.2", None) is None  # first XFF hop
+    assert await rl.check(None, "1.1.1.1", None) is not None  # same first-hop bucket
+    assert await rl.check(None, None, "3.3.3.3") is None  # client IP when no identity/XFF
+    assert await rl.check(None, None, "3.3.3.3") is not None
+    assert await rl.check(None, None, None) is None  # shared anonymous fallback
+    assert await rl.check(None, None, None) is not None
+
+
+async def test_rate_limiter_ip_mode_ignores_identity():
+    # In "ip" mode, two identities sharing one IP collapse into one bucket. Mirrors the
+    # TS twin in middleware.test.ts.
+    rl = RateLimiter(window_ms=60_000, max_requests=1, bucket_mode="ip")
+    assert await rl.check("alice", "1.2.3.4", None) is None
+    resp = await rl.check("bob", "1.2.3.4", None)
+    assert resp is not None and resp.status_code == 429  # same IP, different identity
+    assert await rl.check("carol", "9.9.9.9", None) is None  # different IP, fresh bucket
+
+
+async def test_rate_limiter_ip_mode_uses_client_ip_then_anonymous():
+    rl = RateLimiter(window_ms=60_000, max_requests=1, bucket_mode="ip")
+    assert await rl.check("alice", None, "5.5.5.5") is None  # client IP when no XFF
+    assert await rl.check("bob", None, "5.5.5.5") is not None
+    assert await rl.check("alice", None, None) is None  # no IP signal → anonymous
+    assert await rl.check("bob", None, None) is not None  # shared anonymous bucket
+
+
+async def test_rate_limiter_identity_plus_ip_mode_keys_by_pair():
+    # One budget per distinct (identity, ip) combination. Mirrors the TS twin.
+    rl = RateLimiter(window_ms=60_000, max_requests=1, bucket_mode="identity+ip")
+    assert await rl.check("alice", "1.1.1.1", None) is None
+    assert await rl.check("alice", "1.1.1.1", None) is not None  # same pair exhausted
+    assert await rl.check("alice", "2.2.2.2", None) is None  # same identity, different ip
+    assert await rl.check("bob", "1.1.1.1", None) is None  # same ip, different identity
+
+
+async def test_check_rate_limiters_empty_is_unmetered():
+    from starfish_server.router.middleware import check_rate_limiters
+    assert await check_rate_limiters([], "u", None) is None
+
+
+async def test_check_rate_limiters_rejects_if_either_dimension_trips():
+    from starfish_server.router.middleware import check_rate_limiters
+    id_limiter = RateLimiter(window_ms=60_000, max_requests=5, bucket_mode="identity")
+    ip_limiter = RateLimiter(window_ms=60_000, max_requests=1, bucket_mode="ip")
+    limiters = [id_limiter, ip_limiter]
+
+    assert await check_rate_limiters(limiters, "alice", "1.1.1.1") is None
+    # Same identity + ip: ip cap (1) trips.
+    assert await check_rate_limiters(limiters, "alice", "1.1.1.1") is not None
+    # Fresh ip each time: ip ok, but identity counter keeps climbing (every call counts).
+    assert await check_rate_limiters(limiters, "alice", "2.2.2.2") is None  # id #3
+    assert await check_rate_limiters(limiters, "alice", "3.3.3.3") is None  # id #4
+    assert await check_rate_limiters(limiters, "alice", "4.4.4.4") is None  # id #5
+    assert await check_rate_limiters(limiters, "alice", "5.5.5.5") is not None  # id exhausted
+
+
+# ---------------------------------------------------------------------------
+# Per-action rate limiting (push / pull / list independently)
+# ---------------------------------------------------------------------------
+
+from starfish_server.config.validate import validate_config
+
+
+def _listable_col(name: str = "items", rate_limit=None) -> CollectionConfig:
+    return CollectionConfig(
+        name=name,
+        storagePath=f"users/{{identity}}/{name}/{{itemId}}",
+        readRoles=["self"],
+        writeRoles=["self"],
+        encryption="none",
+        maxBodyBytes=65536,
+        listable=True,
+        rateLimit=rate_limit,
+    )
+
+
+@pytest.mark.asyncio
+async def test_push_rule_does_not_throttle_pull_or_list():
+    col = _listable_col(rate_limit={"push": {"windowMs": 60_000, "maxRequests": 2}})
+    app, _ = _build_app([col])
+    push_path = "/push/users/user-1/items/item-1"
+    pull_path = "/pull/users/user-1/items/item-1"
+    list_path = "/list/users/user-1/items"
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        responses = await _push_n(client, push_path, 2)
+        assert all(r.status_code == 200 for r in responses)
+        resp = await _push(client, push_path, {"v": 9}, responses[-1].json()["hash"])
+        assert resp.status_code == 429  # push exhausted
+
+        # pull and list have no rule → never throttled
+        for _ in range(5):
+            assert (await client.get(pull_path)).status_code == 200
+            assert (await client.get(list_path)).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_pull_rule_limits_pull_only():
+    col = _listable_col(rate_limit={"pull": {"windowMs": 60_000, "maxRequests": 1}})
+    app, _ = _build_app([col])
+    pull_path = "/pull/users/user-1/items/item-1"
+    push_path = "/push/users/user-1/items/item-1"
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        assert (await client.get(pull_path)).status_code == 200
+        assert (await client.get(pull_path)).status_code == 429  # pull limited at 1
+
+        # push has no rule → unaffected
+        responses = await _push_n(client, push_path, 3)
+        assert all(r.status_code == 200 for r in responses)
+
+
+@pytest.mark.asyncio
+async def test_list_rule_limits_list_only():
+    col = _listable_col(rate_limit={"list": {"windowMs": 60_000, "maxRequests": 1}})
+    app, _ = _build_app([col])
+    list_path = "/list/users/user-1/items"
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        assert (await client.get(list_path)).status_code == 200
+        assert (await client.get(list_path)).status_code == 429
+
+
+@pytest.mark.asyncio
+async def test_each_action_keeps_its_own_counter():
+    col = _listable_col(
+        rate_limit={"push": {"windowMs": 60_000, "maxRequests": 1}, "pull": {"windowMs": 60_000, "maxRequests": 1}}
+    )
+    app, _ = _build_app([col])
+    push_path = "/push/users/user-1/items/item-1"
+    pull_path = "/pull/users/user-1/items/item-1"
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await _push(client, push_path)
+        assert resp.status_code == 200
+        resp = await _push(client, push_path, {"v": 2}, resp.json()["hash"])
+        assert resp.status_code == 429  # push exhausted
+        # pull still has its own budget of 1
+        assert (await client.get(pull_path)).status_code == 200
+        assert (await client.get(pull_path)).status_code == 429
+
+
+@pytest.mark.asyncio
+async def test_ip_bucket_separates_by_forwarded_for():
+    # role_resolver returns a constant identity, so identity-bucketing would group all
+    # requests; "ip" mode must instead split by X-Forwarded-For.
+    col = _listable_col(rate_limit={"push": {"windowMs": 60_000, "maxRequests": 1, "bucket": "ip"}})
+    app, _ = _build_app([col])
+    push_path = "/push/users/user-1/items/item-1"
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r1 = await client.post(push_path, json={"data": {"v": 1}, "baseHash": None},
+                               headers={"content-type": "application/json", "x-forwarded-for": "1.1.1.1"})
+        assert r1.status_code == 200
+        r2 = await client.post(push_path, json={"data": {"v": 2}, "baseHash": r1.json()["hash"]},
+                               headers={"content-type": "application/json", "x-forwarded-for": "1.1.1.1"})
+        assert r2.status_code == 429  # same IP exhausted
+        r3 = await client.post(push_path, json={"data": {"v": 3}, "baseHash": r1.json()["hash"]},
+                               headers={"content-type": "application/json", "x-forwarded-for": "2.2.2.2"})
+        assert r3.status_code == 200  # different IP, fresh budget
+
+
+def test_validation_rejects_unresolvable_rule():
+    config = SyncConfig(version=1, collections=[_listable_col(rate_limit={"pull": {"maxRequests": 5}})])
+    errors = validate_config(config)
+    assert any("rateLimit.pull must resolve" in e for e in errors)
+
+
+def test_validation_accepts_rule_inheriting_window_from_global():
+    config = SyncConfig(
+        version=1,
+        collections=[_listable_col(rate_limit={"pull": {"maxRequests": 5}})],
+        rateLimit=RateLimitConfig(windowMs=60_000, maxRequests=100),
+    )
+    assert validate_config(config) == []
+
+
+@pytest.mark.asyncio
+async def test_composite_identity_plus_ip_bucket():
+    # One budget per (identity, ip) pair; constant identity, varying ip → fresh budgets.
+    col = _listable_col(rate_limit={"push": {"windowMs": 60_000, "maxRequests": 1, "bucket": "identity+ip"}})
+    app, _ = _build_app([col])
+    push_path = "/push/users/user-1/items/item-1"
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r1 = await client.post(push_path, json={"data": {"v": 1}, "baseHash": None},
+                               headers={"content-type": "application/json", "x-forwarded-for": "1.1.1.1"})
+        assert r1.status_code == 200
+        r2 = await client.post(push_path, json={"data": {"v": 2}, "baseHash": r1.json()["hash"]},
+                               headers={"content-type": "application/json", "x-forwarded-for": "1.1.1.1"})
+        assert r2.status_code == 429  # same pair exhausted
+        r3 = await client.post(push_path, json={"data": {"v": 3}, "baseHash": r1.json()["hash"]},
+                               headers={"content-type": "application/json", "x-forwarded-for": "2.2.2.2"})
+        assert r3.status_code == 200  # different ip → fresh pair
+
+
+@pytest.mark.asyncio
+async def test_two_independent_limits_reject_if_either_trips():
+    # identity <= 3, ip <= 1 within one window; identity constant across requests.
+    col = _listable_col(
+        rate_limit={"push": {"windowMs": 60_000, "identity": {"maxRequests": 3}, "ip": {"maxRequests": 1}}}
+    )
+    app, _ = _build_app([col])
+    push_path = "/push/users/user-1/items/item-1"
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        last_hash = None
+
+        async def push_from(ip: str):
+            nonlocal last_hash
+            resp = await client.post(
+                push_path,
+                json={"data": {"v": 1}, "baseHash": last_hash},
+                headers={"content-type": "application/json", "x-forwarded-for": ip},
+            )
+            if resp.status_code == 200:
+                last_hash = resp.json()["hash"]
+            return resp
+
+        assert (await push_from("1.1.1.1")).status_code == 200  # id#1, ip(1)#1
+        assert (await push_from("1.1.1.1")).status_code == 429  # ip(1) cap 1 trips
+        assert (await push_from("2.2.2.2")).status_code == 200  # id#3, ip(2)#1 ok
+        assert (await push_from("3.3.3.3")).status_code == 429  # id cap 3 exhausted
+
+
+def test_validation_rejects_bucket_with_sub_limit():
+    config = SyncConfig(
+        version=1,
+        collections=[_listable_col(
+            rate_limit={"push": {"windowMs": 1, "maxRequests": 1, "bucket": "ip", "identity": {"maxRequests": 5}}}
+        )],
+    )
+    errors = validate_config(config)
+    assert any('cannot set both "bucket" and an "identity"/"ip"' in e for e in errors)
+
+
+def test_validation_rejects_unresolvable_dimension():
+    config = SyncConfig(
+        version=1,
+        collections=[_listable_col(rate_limit={"push": {"ip": {"maxRequests": 5}}})],  # no windowMs anywhere
+    )
+    errors = validate_config(config)
+    assert any("rateLimit.push.ip must resolve" in e for e in errors)

@@ -16,7 +16,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 
 from starfish_server.storage.base import AbstractObjectStore, StoreContext
-from starfish_server.config.schema import SyncConfig, CollectionConfig, CollectionRateLimitConfig, NamespaceConfig, ConfigEndpointOptions, AppendOnlyConfig
+from starfish_server.config.schema import SyncConfig, CollectionConfig, CollectionRateLimitConfig, RateLimitRule, NamespaceConfig, ConfigEndpointOptions, AppendOnlyConfig
 from starfish_server.protocol.pull import pull
 from starfish_server.router.helpers import (
     handle_sync_pull,
@@ -38,7 +38,8 @@ from starfish_protocol.constants import (
     DATA_FIELD,
     TS_FIELD,
 )
-from starfish_server.router.middleware import check_body_limit, RateLimiter
+from starfish_server.router.middleware import check_body_limit, RateLimiter, check_rate_limiters
+from starfish_server.storage.kv_adapter import KVAdapter
 from starfish_server.router.mime import matches_allowed_mime, is_json_collection
 from starfish_server.router.cap_resolver import match_scope_path
 from starfish_protocol.plugins import (
@@ -120,6 +121,11 @@ class SyncRouterOptions:
     # per-request work (store reads + enricher + scope checks) one signed request
     # can drive, since the rate limiter caps requests, not work-per-request.
     max_collections_per_batch: int = 100
+    # Shared store for rate-limit counters. When None, each rate limiter uses its own
+    # in-memory (process-local) store — the original behavior. Pass a networked KVAdapter
+    # (e.g. Garage K2V) to enforce rate limits across server instances; counters are
+    # namespaced per collection/action/dimension automatically.
+    rate_limit_store: KVAdapter | None = None
 
 
 from pydantic import BaseModel as _BaseModel
@@ -180,18 +186,92 @@ def _validate_object_schema(data: dict, schema: dict) -> JSONResponse | None:
     return None
 
 
-def _build_rate_limiter(
+def _resolve_window_max(dim, rule, col_rl, global_rl) -> tuple[int, int] | None:
+    """Resolve (window_ms, max_requests) for one (sub-)limit: dim → rule → flat → global."""
+    window_ms = (dim.window_ms if dim is not None else None)
+    if window_ms is None:
+        window_ms = rule.window_ms
+    if window_ms is None:
+        window_ms = col_rl.window_ms
+    if window_ms is None and global_rl is not None:
+        window_ms = global_rl.window_ms
+
+    max_requests = (dim.max_requests if dim is not None else None)
+    if max_requests is None:
+        max_requests = rule.max_requests
+    if max_requests is None:
+        max_requests = col_rl.max_requests
+    if max_requests is None and global_rl is not None:
+        max_requests = global_rl.max_requests
+
+    if window_ms is None or max_requests is None:
+        return None
+    return window_ms, max_requests
+
+
+def _build_rule_limiters(rule: RateLimitRule, col_rl, global_rl, kv, key_base) -> list[RateLimiter]:
+    """Build the list of limiters for one rule (single-counter, or two-independent).
+
+    ``kv`` (when not None) is the shared counter store; ``key_base`` namespaces this rule's
+    counters so distinct limiters sharing one store don't collide.
+    """
+    # Two-independent form: a per-identity and/or per-ip dimension, each its own counter.
+    if rule.identity is not None or rule.ip is not None:
+        limiters: list[RateLimiter] = []
+        if rule.identity is not None:
+            r = _resolve_window_max(rule.identity, rule, col_rl, global_rl)
+            if r is not None:
+                limiters.append(RateLimiter(r[0], r[1], bucket_mode="identity", kv=kv, key_prefix=f"{key_base}i:"))
+        if rule.ip is not None:
+            r = _resolve_window_max(rule.ip, rule, col_rl, global_rl)
+            if r is not None:
+                limiters.append(RateLimiter(r[0], r[1], bucket_mode="ip", kv=kv, key_prefix=f"{key_base}p:"))
+        return limiters
+    # Single-counter form.
+    r = _resolve_window_max(None, rule, col_rl, global_rl)
+    if r is None:
+        return []
+    return [RateLimiter(r[0], r[1], bucket_mode=rule.bucket or "identity", kv=kv, key_prefix=f"{key_base}s:")]
+
+
+def _build_action_rate_limiters(
     col_rl: CollectionRateLimitConfig | None,
     opts: SyncRouterOptions,
-) -> RateLimiter | None:
-    """Build a RateLimiter using per-collection overrides falling back to the global config."""
-    if col_rl is None or opts.config.rate_limit is None:
-        return None
+    key_scope: str = "",
+) -> dict[str, list[RateLimiter]]:
+    """Resolve per-action rate limiters for a collection (each action its own counter[s]).
+
+    An explicit ``push``/``pull``/``list`` rule wins; otherwise, for ``push`` only, a
+    non-null ``rate_limit`` is treated as an implicit push rule (preserving the original
+    push-only behavior, gated on a global ``rateLimit`` also being set). Each rule yields a
+    single-counter limiter or a two-independent (identity+ip) pair. Actions whose limit
+    cannot be resolved are omitted (explicit rules that fail to resolve are rejected at
+    config load).
+
+    ``key_scope`` uniquely identifies this collection (incl. namespace) so that, when a
+    shared ``rate_limit_store`` is configured, counters are namespaced per
+    collection/action/dimension.
+    """
+    result: dict[str, list[RateLimiter]] = {}
+    if col_rl is None:
+        return result
     global_rl = opts.config.rate_limit
-    return RateLimiter(
-        window_ms=col_rl.window_ms if col_rl.window_ms is not None else global_rl.window_ms,
-        max_requests=col_rl.max_requests if col_rl.max_requests is not None else global_rl.max_requests,
-    )
+    kv = opts.rate_limit_store
+
+    for action in ("push", "pull", "list"):
+        rule: RateLimitRule | None = getattr(col_rl, action)
+        # Legacy/implicit push rule: any non-null rate_limit opts push into limiting,
+        # but only when a global rateLimit is also configured (the original gate).
+        if action == "push" and rule is None and global_rl is not None:
+            rule = RateLimitRule(
+                window_ms=col_rl.window_ms, max_requests=col_rl.max_requests, bucket=col_rl.bucket
+            )
+        if rule is None:
+            continue
+        limiters = _build_rule_limiters(rule, col_rl, global_rl, kv, f"{key_scope}:{action}:")
+        if limiters:
+            result[action] = limiters
+    return result
 
 
 _LIST_DEFAULT_LIMIT = 100
@@ -437,7 +517,7 @@ async def _run_push(
     document_key: str,
     identity: str | None,
     effective_roles: frozenset[str],
-    rate_limiter: RateLimiter | None,
+    rate_limiters: list[RateLimiter],
     opts: SyncRouterOptions,
     context: StoreContext | None = None,
 ) -> JSONResponse:
@@ -446,8 +526,9 @@ async def _run_push(
     if limit_error:
         return limit_error
 
-    if rate_limiter:
-        rate_error = rate_limiter.check(
+    if rate_limiters:
+        rate_error = await check_rate_limiters(
+            rate_limiters,
             identity,
             request.headers.get("x-forwarded-for"),
             request.client.host if request.client else None,
@@ -602,7 +683,7 @@ async def _run_binary_push(
     col: CollectionConfig,
     document_key: str,
     identity: str | None,
-    rate_limiter: RateLimiter | None,
+    rate_limiters: list[RateLimiter],
     opts: SyncRouterOptions,
     context: StoreContext | None = None,
 ) -> Response:
@@ -613,8 +694,9 @@ async def _run_binary_push(
     if limit_error:
         return limit_error
 
-    if rate_limiter:
-        rate_error = rate_limiter.check(
+    if rate_limiters:
+        rate_error = await check_rate_limiters(
+            rate_limiters,
             identity,
             request.headers.get("x-forwarded-for"),
             request.client.host if request.client else None,
@@ -678,7 +760,7 @@ async def _emit_write_event(
 
 def _make_push_handler(
     col: CollectionConfig,
-    rate_limiter: RateLimiter | None,
+    rate_limiter: list[RateLimiter],
     opts: SyncRouterOptions,
     namespace_name: str | None = None,
 ) -> Callable:
@@ -785,8 +867,14 @@ def _add_collection_routes(
     opts: SyncRouterOptions,
     namespace_name: str | None = None,
 ) -> None:
+    # Per-action rate limiters, built once and shared across this collection's
+    # pull / list / push handlers (each action has its own counter).
+    limiters = _build_action_rate_limiters(col.rate_limit, opts, f"{namespace_name or ''}/{col.name}")
+
     if not col.push_only:
         pull_path = _to_route_path(ACTION_PULL, col.storage_path)
+
+        pull_rls = limiters.get("pull") or []
 
         async def pull_handler(request: Request, col=col) -> JSONResponse:
             params = request.path_params
@@ -796,6 +884,16 @@ def _add_collection_routes(
             identity, effective_roles, error = await _check_auth(col, OP_READ, request, params, opts)
             if error:
                 return error
+
+            if pull_rls:
+                rate_error = await check_rate_limiters(
+                    pull_rls,
+                    identity,
+                    request.headers.get("x-forwarded-for"),
+                    request.client.host if request.client else None,
+                )
+                if rate_error:
+                    return rate_error
 
             pull_ctx = StoreContext(
                 collection=col.name,
@@ -957,15 +1055,14 @@ def _add_collection_routes(
 
     if not col.pull_only:
         push_path = _to_route_path(ACTION_PUSH, col.storage_path)
-        rate_limiter = _build_rate_limiter(col.rate_limit, opts)
         router.add_api_route(
-            push_path, _make_push_handler(col, rate_limiter, opts, namespace_name), methods=["POST"],
+            push_path, _make_push_handler(col, limiters.get("push") or [], opts, namespace_name), methods=["POST"],
         )
 
     if col.listable:
         list_path = _to_list_route_path(col.storage_path)
 
-        def _make_list_handler(col: CollectionConfig, ns: str | None) -> Callable:
+        def _make_list_handler(col: CollectionConfig, ns: str | None, list_rls: list[RateLimiter]) -> Callable:
             async def list_handler(request: Request) -> JSONResponse:
                 # The list route has one fewer path param than storagePath.
                 # Resolve only the prefix portion.
@@ -979,6 +1076,16 @@ def _add_collection_routes(
                 list_identity, list_roles, error = await _check_auth(col, OP_READ, request, params, opts)
                 if error:
                     return error
+
+                if list_rls:
+                    rate_error = await check_rate_limiters(
+                        list_rls,
+                        list_identity,
+                        request.headers.get("x-forwarded-for"),
+                        request.client.host if request.client else None,
+                    )
+                    if rate_error:
+                        return rate_error
 
                 list_ctx = StoreContext(
                     collection=col.name,
@@ -1014,39 +1121,12 @@ def _add_collection_routes(
                 has_more = len(keys) > limit
                 page = keys[:limit] if has_more else keys
 
-                # ?include=values (opt-in via list_values) returns each document's
-                # stored data+hash alongside its key, so a client enumerates a
-                # directory in one round-trip instead of list-then-batch-pull. Read
-                # auth was already checked above against this prefix; TTL and
-                # field_permissions are applied per doc exactly as on a regular pull.
-                include = request.query_params.get("include")
-                if include == "values":
-                    if not col.list_values:
-                        return JSONResponse(
-                            {"error": "include=values is not enabled for this collection"},
-                            status_code=400,
-                        )
-                    value_items: list[dict[str, Any]] = []
-                    for key in page:
-                        pull_result = await pull(opts.store, key, context=list_ctx)
-                        data = pull_result.data
-                        if col.ttl_ms is not None:
-                            raw_doc = await opts.store.get_string(key, context=list_ctx)
-                            stored_ts = json.loads(raw_doc).get("ts") or 0 if raw_doc else 0
-                            if _is_expired(stored_ts, col.ttl_ms):
-                                data = {}
-                        _apply_field_read_filter(data, col.field_permissions, frozenset(list_roles))
-                        value_items.append(
-                            {"key": key[len(prefix):], "data": data, "hash": pull_result.hash}
-                        )
-                    return JSONResponse({"items": value_items, "hasMore": has_more})
-
                 items = [k[len(prefix):] for k in page]
                 return JSONResponse({"items": items, "hasMore": has_more})
 
             return list_handler
 
-        router.add_api_route(list_path, _make_list_handler(col, namespace_name), methods=["GET"])
+        router.add_api_route(list_path, _make_list_handler(col, namespace_name, limiters.get("list") or []), methods=["GET"])
 
 
 def _add_bundled_routes(
@@ -1134,9 +1214,11 @@ def _add_bundled_routes(
             continue
 
         push_path = _to_route_path(ACTION_PUSH, storage_path) + f"/{col.name}"
-        rate_limiter = _build_rate_limiter(col.rate_limit, opts)
+        rate_limiter = _build_action_rate_limiters(
+            col.rate_limit, opts, f"{namespace_name or ''}/{bundle_name}/{col.name}"
+        ).get("push") or []
 
-        def _make_bundle_push(col: CollectionConfig, rl: RateLimiter | None, ns: str | None) -> Callable:
+        def _make_bundle_push(col: CollectionConfig, rl: list[RateLimiter], ns: str | None) -> Callable:
             async def bundle_push_handler(request: Request) -> JSONResponse:
                 params = request.path_params
                 if not _validate_all_params(params):

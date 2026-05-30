@@ -64,49 +64,11 @@ const page2 = await client.fetch(`/list/chats/group-1?limit=50&after=${lastItem}
 // { items: ["2026-04-51", ...], hasMore: false }
 ```
 
-## Returning documents (`?include=values`)
-
-By default the list endpoint returns only the last-parameter values (keys), so a
-client that wants each document's content must follow up with a per-key pull (or a
-`/batch/pull`). For a small directory-style collection that round-trip doubles the
-work. Set `listValues: true` on the collection and the endpoint accepts
-`?include=values`, returning each document's stored `data` and `hash` alongside its
-key:
-
-```ts
-{
-  name: "spacedir",
-  storagePath: "spacedir/{spaceId}",
-  readRoles: ["public"],
-  writeRoles: ["..."],
-  encryption: "none",
-  maxBodyBytes: 65536,
-  listable: true,
-  listValues: true,   // ← opt in to ?include=values
-}
-```
-
-```ts
-const res = await client.fetch("/list/spacedir?include=values")
-// {
-//   items: [
-//     { key: "sp-1", data: { name: "Design", tags: ["ui"] }, hash: "…" },
-//     { key: "sp-2", data: { name: "Eng",   tags: ["be"] }, hash: "…" },
-//   ],
-//   hasMore: false
-// }
-```
-
-- Read auth, `?limit`/`?after` pagination, TTL expiry and `fieldPermissions`
-  read-stripping are applied to each returned document exactly as on a regular pull.
-- `?include=values` against a collection that has not set `listValues: true` returns
-  `400 { error: "include=values is not enabled for this collection" }`.
-- Any other `include` value (or its absence) returns the keys-only shape unchanged.
-- Only meaningful for JSON collections — it never returns binary document bodies.
-
-This pairs naturally with the [projection extension](../projection/01-overview.md):
-a materialized view written into a `pullOnly`, `listable + listValues` collection can
-be enumerated by a client in a single request.
+The list endpoint returns only the last-parameter values (keys); a client that
+wants each document's content follows up with a per-key pull (or a `/batch/pull`).
+When a derived list is small enough to live in one document, prefer the
+[projection extension](../projection/01-overview.md) instead — it maintains a single
+list document the client pulls in one request, with no per-key fan-out.
 
 ## Auth
 
@@ -132,7 +94,6 @@ roleEnricher receives params: { groupId: "abc" }   ← groupId present
 | `listable` when the last segment is not a `{param}` | `listable requires the last storagePath segment to be a path parameter` |
 | `listable: true` + `appendOnly: { type: "by_timestamp", persist: false }` | `listable cannot be used with appendOnly+persist=false` |
 | `listable: true` + `bundle: "..."` | `listable cannot be used with bundle` |
-| `listValues: true` without `listable: true` | `listValues requires listable` |
 
 ## Python
 
@@ -145,12 +106,10 @@ CollectionConfig(
     encryption="none",
     max_body_bytes=65536,
     listable=True,
-    list_values=True,   # accepts ?include=values (alias: listValues)
 )
 ```
 
-The list route and response shape — including `?include=values` — are identical to
-the TypeScript server.
+The list route and response shape are identical to the TypeScript server.
 
 ## Next Steps
 

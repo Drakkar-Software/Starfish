@@ -4,6 +4,8 @@ from starfish_server.config.schema import (
     SyncConfig,
     CollectionConfig,
     CollectionRateLimitConfig,
+    RateLimitRule,
+    RateLimitDimension,
     RateLimitConfig,
     EncryptionMode,
 )
@@ -19,6 +21,8 @@ __all__ = [
     "SyncConfig",
     "CollectionConfig",
     "CollectionRateLimitConfig",
+    "RateLimitRule",
+    "RateLimitDimension",
     "RateLimitConfig",
     "EncryptionMode",
     "validate_config",

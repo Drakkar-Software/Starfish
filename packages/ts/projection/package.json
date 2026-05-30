@@ -9,7 +9,7 @@
   "publishConfig": {
     "access": "public"
   },
-  "description": "Starfish materialized-view extension (post-push projection hook: derive a document into a target collection on every write, with delete-on-condition)",
+  "description": "Starfish incremental-list extension (post-push projection hook: fold each write into a single list document — append, update-in-place, or remove)",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

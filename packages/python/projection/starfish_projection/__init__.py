@@ -1,18 +1,20 @@
-"""``starfish-projection`` — materialized-view extension.
+"""``starfish-projection`` — incremental-list extension.
 
-Public surface: the :class:`Projection` view spec and its outcome types
-(:class:`ProjectionUpsert`, :class:`ProjectionDelete`), and
+Public surface: the :class:`Projection` list spec and its outcome types
+(:class:`ProjectionSet`, :class:`ProjectionRemove`), and
 ``create_projection_server_plugin`` — a ``ServerPlugin`` whose ``after_write``
-hook derives a document into a target collection after each successful push, with
-upsert / delete / ignore semantics. Pair the target collection with
-``pull_only=True`` so only the projection writes it (clients read/list only).
+hook folds each source write into a single target list document (append /
+update-in-place / remove). Clients pull that one document to read the whole list.
+Pair the target collection with ``pull_only=True`` so only the projection writes
+it (clients read it only).
 """
 
 from starfish_projection.config import (
     Projection,
-    ProjectionDelete,
-    ProjectionResult,
-    ProjectionUpsert,
+    ProjectionOp,
+    ProjectionRemove,
+    ProjectionSet,
+    ProjectionTarget,
 )
 
 
@@ -27,8 +29,9 @@ def __getattr__(name: str):
 
 __all__ = [
     "Projection",
-    "ProjectionUpsert",
-    "ProjectionDelete",
-    "ProjectionResult",
+    "ProjectionSet",
+    "ProjectionRemove",
+    "ProjectionOp",
+    "ProjectionTarget",
     "create_projection_server_plugin",
 ]

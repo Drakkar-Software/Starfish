@@ -10,10 +10,12 @@ import {
   TS_FIELD,
 } from "@drakkar.software/starfish-protocol"
 import type { ObjectStore, StoreContext } from "../storage/base.js"
+import type { KVAdapter } from "../storage/kv-adapter.js"
 import type {
   SyncConfig,
   CollectionConfig,
   CollectionRateLimitConfig,
+  RateLimitRule,
   EncryptionMode,
   FieldPermission,
   NamespaceConfig,
@@ -34,6 +36,7 @@ import { appendItem } from "../protocol/push.js"
 import {
   checkBodyLimit,
   RateLimiter,
+  checkRateLimiters,
   corsMiddleware,
   securityHeadersMiddleware,
   requestTimeoutMiddleware,
@@ -166,6 +169,11 @@ export interface SyncRouterOptions {
    *  can drive, since the rate limiter caps requests, not work-per-request.
    *  Defaults to `DEFAULT_MAX_BATCH_COLLECTIONS` (100). */
   maxCollectionsPerBatch?: number
+  /** Shared store for rate-limit counters. When omitted, each rate limiter uses its
+   *  own in-memory (process-local) store — the original behavior. Pass a networked
+   *  {@link KVAdapter} (e.g. Garage K2V) to enforce rate limits across server instances;
+   *  counters are namespaced per collection/action/dimension automatically. */
+  rateLimitStore?: KVAdapter
 }
 
 function toRoutePath(action: string, storagePath: string): string {
@@ -237,26 +245,6 @@ function validateAllParams(params: Record<string, string>): boolean {
  * read permissions are enforced identically everywhere (the bundle and batch
  * paths previously skipped this, leaking restricted fields).
  */
-/**
- * Read a stored document's write-time (`ts`) for a TTL check, mirroring the
- * inline reads in the standalone and batch pull paths. Returns 0 (treated as
- * "no recorded write time") when the document is absent or corrupt, so the
- * caller's `isExpired` decides based on the collection's `ttlMs`.
- */
-async function storedTsOf(
-  store: SyncRouterOptions["store"],
-  key: string,
-  ctx: StoreContext,
-): Promise<number> {
-  try {
-    const raw = await store.getString(key, ctx)
-    if (!raw) return 0
-    return (JSON.parse(raw) as { ts?: number }).ts ?? 0
-  } catch {
-    return 0
-  }
-}
-
 function applyFieldReadFilter(
   data: unknown,
   fieldPermissions: CollectionConfig["fieldPermissions"],
@@ -458,16 +446,94 @@ async function checkAuth(
   return { identity, roles: effectiveRolesArray, error: null, presenter }
 }
 
-function buildRateLimiter(
+/** Per-action rate limiters for one collection. Each action maps to a list of
+ *  `RateLimiter`s — one for a single-counter rule, or up to two for a two-independent
+ *  (per-identity AND per-ip) rule. A request is rejected if any limiter in the list
+ *  trips. Unmetered actions are absent or map to an empty list. */
+interface ActionRateLimiters {
+  push?: RateLimiter[]
+  pull?: RateLimiter[]
+  list?: RateLimiter[]
+}
+
+const RATE_ACTIONS = ["push", "pull", "list"] as const
+
+/** Resolve windowMs/maxRequests for one (sub-)limit: dim → rule → flat → global. */
+function resolveWindowMax(
+  dim: { windowMs?: number; maxRequests?: number } | undefined,
+  rule: RateLimitRule,
+  colRl: CollectionRateLimitConfig,
+  globalRl: { windowMs: number; maxRequests: number } | undefined,
+): { windowMs: number; maxRequests: number } | null {
+  const windowMs = dim?.windowMs ?? rule.windowMs ?? colRl.windowMs ?? globalRl?.windowMs
+  const maxRequests = dim?.maxRequests ?? rule.maxRequests ?? colRl.maxRequests ?? globalRl?.maxRequests
+  if (windowMs == null || maxRequests == null) return null
+  return { windowMs, maxRequests }
+}
+
+/** Build the list of limiters for one rule (single-counter, or two-independent).
+ *  `kv` (when present) is the shared counter store; `keyBase` namespaces this rule's
+ *  counters so distinct limiters sharing one store don't collide. */
+function buildRuleLimiters(
+  rule: RateLimitRule,
+  colRl: CollectionRateLimitConfig,
+  globalRl: { windowMs: number; maxRequests: number } | undefined,
+  kv: KVAdapter | undefined,
+  keyBase: string,
+): RateLimiter[] {
+  // Two-independent form: a per-identity and/or per-ip dimension, each its own counter.
+  if (rule.identity != null || rule.ip != null) {
+    const limiters: RateLimiter[] = []
+    if (rule.identity != null) {
+      const r = resolveWindowMax(rule.identity, rule, colRl, globalRl)
+      if (r) limiters.push(new RateLimiter(r.windowMs, r.maxRequests, undefined, "identity", { kv, keyPrefix: `${keyBase}i:` }))
+    }
+    if (rule.ip != null) {
+      const r = resolveWindowMax(rule.ip, rule, colRl, globalRl)
+      if (r) limiters.push(new RateLimiter(r.windowMs, r.maxRequests, undefined, "ip", { kv, keyPrefix: `${keyBase}p:` }))
+    }
+    return limiters
+  }
+  // Single-counter form.
+  const r = resolveWindowMax(undefined, rule, colRl, globalRl)
+  return r ? [new RateLimiter(r.windowMs, r.maxRequests, undefined, rule.bucket ?? "identity", { kv, keyPrefix: `${keyBase}s:` })] : []
+}
+
+/**
+ * Resolve per-action rate limiters from a collection's `rateLimit` config.
+ *
+ * Resolution per action: an explicit `push`/`pull`/`list` rule wins; otherwise, for
+ * `push` only, a non-null `rateLimit` is treated as an implicit push rule (preserving
+ * the original push-only behavior, which was gated on a global `rateLimit` also being
+ * set). Each rule yields a single-counter limiter or a two-independent (identity+ip)
+ * pair. An action whose limit cannot be fully resolved is left unmetered (explicit rules
+ * that fail to resolve are rejected at config load).
+ *
+ * `keyScope` uniquely identifies this collection (incl. namespace) so that, when a shared
+ * `rateLimitStore` is configured, counters are namespaced per collection/action/dimension.
+ */
+function buildActionRateLimiters(
   colRl: CollectionRateLimitConfig | null | undefined,
   opts: SyncRouterOptions,
-): RateLimiter | null {
-  if (colRl == null || opts.config.rateLimit == null) return null
+  keyScope: string,
+): ActionRateLimiters {
+  const result: ActionRateLimiters = {}
+  if (colRl == null) return result
   const globalRl = opts.config.rateLimit
-  return new RateLimiter(
-    colRl.windowMs ?? globalRl.windowMs,
-    colRl.maxRequests ?? globalRl.maxRequests,
-  )
+  const kv = opts.rateLimitStore
+
+  for (const action of RATE_ACTIONS) {
+    let rule: RateLimitRule | undefined = colRl[action]
+    // Legacy/implicit push rule: any non-null `rateLimit` opts push into limiting,
+    // but only when a global `rateLimit` is also configured (the original gate).
+    if (action === "push" && rule == null && globalRl != null) {
+      rule = { windowMs: colRl.windowMs, maxRequests: colRl.maxRequests, bucket: colRl.bucket }
+    }
+    if (rule == null) continue
+    const limiters = buildRuleLimiters(rule, colRl, globalRl, kv, `${keyScope}:${action}:`)
+    if (limiters.length > 0) result[action] = limiters
+  }
+  return result
 }
 
 /**
@@ -510,7 +576,7 @@ async function runPush(
   params: Record<string, string>,
   documentKey: string,
   identity: string | null,
-  rateLimiter: RateLimiter | null,
+  rateLimiters: readonly RateLimiter[],
   opts: SyncRouterOptions,
   context?: StoreContext,
   presenter?: { pubHex: string },
@@ -519,12 +585,10 @@ async function runPush(
   const limitErr = checkBodyLimit(contentLength ?? null, col.maxBodyBytes)
   if (limitErr) return c.json({ error: limitErr.error }, limitErr.status as any)
 
-  if (rateLimiter) {
-    // Hono has no portable socket IP; pass clientIp=null (direct anonymous traffic
-    // shares one bucket). A proxy MUST set X-Forwarded-For for per-client limiting.
-    const rateErr = rateLimiter.check(identity ?? null, c.req.header("x-forwarded-for") ?? null)
-    if (rateErr) return c.json({ error: rateErr.error }, rateErr.status as any)
-  }
+  // Hono has no portable socket IP; pass clientIp=null (direct anonymous traffic
+  // shares one bucket). A proxy MUST set X-Forwarded-For for per-client limiting.
+  const rateErr = await checkRateLimiters(rateLimiters, identity ?? null, c.req.header("x-forwarded-for") ?? null)
+  if (rateErr) return c.json({ error: rateErr.error }, rateErr.status as any)
 
   const contentType = c.req.header("content-type") ?? ""
   if (!contentType.includes("application/json")) {
@@ -698,7 +762,7 @@ async function runBinaryPush(
   col: CollectionConfig,
   documentKey: string,
   identity: string | null,
-  rateLimiter: RateLimiter | null,
+  rateLimiters: readonly RateLimiter[],
   opts: SyncRouterOptions,
   context?: StoreContext,
 ): Promise<Response> {
@@ -706,12 +770,10 @@ async function runBinaryPush(
   const limitErr = checkBodyLimit(contentLength ?? null, col.maxBodyBytes)
   if (limitErr) return c.json({ error: limitErr.error }, limitErr.status as any)
 
-  if (rateLimiter) {
-    // Hono has no portable socket IP; pass clientIp=null (direct anonymous traffic
-    // shares one bucket). A proxy MUST set X-Forwarded-For for per-client limiting.
-    const rateErr = rateLimiter.check(identity ?? null, c.req.header("x-forwarded-for") ?? null)
-    if (rateErr) return c.json({ error: rateErr.error }, rateErr.status as any)
-  }
+  // Hono has no portable socket IP; pass clientIp=null (direct anonymous traffic
+  // shares one bucket). A proxy MUST set X-Forwarded-For for per-client limiting.
+  const rateErr = await checkRateLimiters(rateLimiters, identity ?? null, c.req.header("x-forwarded-for") ?? null)
+  if (rateErr) return c.json({ error: rateErr.error }, rateErr.status as any)
 
   const contentType = c.req.header("content-type") ?? ""
   if (!matchesAllowedMime(contentType, col.allowedMimeTypes)) {
@@ -815,6 +877,10 @@ function addCollectionRoutes(
   opts: SyncRouterOptions,
   namespaceName?: string,
 ): void {
+  // Per-action rate limiters, built once and shared across this collection's
+  // pull / list / push handler closures (each action has its own counter).
+  const limiters = buildActionRateLimiters(col.rateLimit, opts, `${namespaceName ?? ""}/${col.name}`)
+
   if (!col.pushOnly) {
     const pullPath = toRoutePath(ACTION_PULL, col.storagePath)
 
@@ -827,6 +893,11 @@ function addCollectionRoutes(
 
       const { identity, roles, error } = await checkAuth(col, OP_READ, c, params, opts)
       if (error) return error
+
+      if (limiters.pull) {
+        const rateErr = await checkRateLimiters(limiters.pull, identity ?? null, c.req.header("x-forwarded-for") ?? null)
+        if (rateErr) return c.json({ error: rateErr.error }, rateErr.status as any)
+      }
 
       const pullCtx: StoreContext = {
         collection: col.name,
@@ -1013,6 +1084,11 @@ function addCollectionRoutes(
       const { identity: listIdentity, roles: listRoles, error } = await checkAuth(col, OP_READ, c, params, opts)
       if (error) return error
 
+      if (limiters.list) {
+        const rateErr = await checkRateLimiters(limiters.list, listIdentity ?? null, c.req.header("x-forwarded-for") ?? null)
+        if (rateErr) return c.json({ error: rateErr.error }, rateErr.status as any)
+      }
+
       const listCtx: StoreContext = {
         collection: col.name,
         params,
@@ -1047,29 +1123,6 @@ function addCollectionRoutes(
       const hasMore = keys.length > limit
       const page = hasMore ? keys.slice(0, limit) : keys
 
-      // `?include=values` (opt-in via `listValues`) returns each document's stored
-      // `data`+`hash` alongside its key, so a client enumerates a directory in one
-      // round-trip instead of list-then-batch-pull. Read auth was already checked
-      // above against this prefix; TTL and fieldPermissions are applied per doc
-      // exactly as on a regular pull. Anything else falls through to keys-only.
-      const include = c.req.query("include")
-      if (include === "values") {
-        if (!col.listValues) {
-          return c.json({ error: "include=values is not enabled for this collection" }, 400)
-        }
-        const items: { key: string; data: Record<string, unknown>; hash: string }[] = []
-        for (const key of page) {
-          const pullResult = await pull(opts.store, key, listCtx)
-          let data = pullResult.data
-          if (col.ttlMs != null && isExpired(await storedTsOf(opts.store, key, listCtx), col.ttlMs)) {
-            data = {}
-          }
-          applyFieldReadFilter(data, col.fieldPermissions, listRoles)
-          items.push({ key: key.slice(prefix.length), data, hash: pullResult.hash })
-        }
-        return c.json({ items, hasMore })
-      }
-
       // Strip the prefix to return only the last-param values
       const items = page.map((k) => k.slice(prefix.length))
 
@@ -1079,7 +1132,7 @@ function addCollectionRoutes(
 
   if (!col.pullOnly) {
     const pushPath = toRoutePath(ACTION_PUSH, col.storagePath)
-    const rateLimiter = buildRateLimiter(col.rateLimit, opts)
+    const rateLimiter = limiters.push ?? []
 
     app.post(pushPath, async (c) => {
       const rawParams = c.req.param()
@@ -1262,7 +1315,7 @@ function addBundledRoutes(
     if (col.pullOnly) continue
 
     const pushPath = toRoutePath(ACTION_PUSH, storagePath) + `/${col.name}`
-    const rateLimiter = buildRateLimiter(col.rateLimit, opts)
+    const rateLimiter = buildActionRateLimiters(col.rateLimit, opts, `${namespaceName ?? ""}/${bundleName}/${col.name}`).push ?? []
 
     app.post(pushPath, async (c) => {
       const rawParams = c.req.param()

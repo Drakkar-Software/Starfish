@@ -1,7 +1,73 @@
-import type { SyncConfig, CollectionConfig } from "./schema.js"
+import type { SyncConfig, CollectionConfig, RateLimitConfig, RateLimitRule } from "./schema.js"
 import { ROLE_PUBLIC, ROLE_SELF } from "../constants.js"
 
 const MIME_JSON = "application/json"
+
+const RATE_LIMIT_ACTIONS = ["push", "pull", "list"] as const
+
+/** Validate a collection's `rateLimit` block: positive numeric fields, a valid
+ *  `bucket` mode, and that every explicit per-action rule resolves both a
+ *  `windowMs` and a `maxRequests` from rule → flat collection fields → global. */
+function validateRateLimit(
+  col: CollectionConfig,
+  scopeLabel: string,
+  globalRl: RateLimitConfig | undefined,
+  errors: string[],
+): void {
+  const rl = col.rateLimit
+  if (rl == null) return
+  const isPosInt = (n: number | undefined): boolean => n == null || (Number.isInteger(n) && n > 0)
+  const checkBucket = (b: string | undefined, where: string): void => {
+    if (b != null && b !== "identity" && b !== "ip" && b !== "identity+ip") {
+      errors.push(`${scopeLabel}Collection "${col.name}": rateLimit.${where}bucket must be "identity", "ip", or "identity+ip", got "${b}"`)
+    }
+  }
+
+  if (!isPosInt(rl.windowMs)) errors.push(`${scopeLabel}Collection "${col.name}": rateLimit.windowMs must be a positive integer`)
+  if (!isPosInt(rl.maxRequests)) errors.push(`${scopeLabel}Collection "${col.name}": rateLimit.maxRequests must be a positive integer`)
+  checkBucket(rl.bucket, "")
+
+  for (const action of RATE_LIMIT_ACTIONS) {
+    const rule: RateLimitRule | undefined = rl[action]
+    if (rule == null) continue
+    if (!isPosInt(rule.windowMs)) errors.push(`${scopeLabel}Collection "${col.name}": rateLimit.${action}.windowMs must be a positive integer`)
+    if (!isPosInt(rule.maxRequests)) errors.push(`${scopeLabel}Collection "${col.name}": rateLimit.${action}.maxRequests must be a positive integer`)
+    checkBucket(rule.bucket, `${action}.`)
+
+    const twoIndependent = rule.identity != null || rule.ip != null
+    if (twoIndependent && rule.bucket != null) {
+      errors.push(
+        `${scopeLabel}Collection "${col.name}": rateLimit.${action} cannot set both "bucket" and an "identity"/"ip" sub-limit — use one form or the other`,
+      )
+    }
+
+    if (twoIndependent) {
+      // Two-independent form: each present dimension must resolve windowMs + maxRequests.
+      for (const dimName of ["identity", "ip"] as const) {
+        const dim = rule[dimName]
+        if (dim == null) continue
+        if (!isPosInt(dim.windowMs)) errors.push(`${scopeLabel}Collection "${col.name}": rateLimit.${action}.${dimName}.windowMs must be a positive integer`)
+        if (!isPosInt(dim.maxRequests)) errors.push(`${scopeLabel}Collection "${col.name}": rateLimit.${action}.${dimName}.maxRequests must be a positive integer`)
+        const windowMs = dim.windowMs ?? rule.windowMs ?? rl.windowMs ?? globalRl?.windowMs
+        const maxRequests = dim.maxRequests ?? rule.maxRequests ?? rl.maxRequests ?? globalRl?.maxRequests
+        if (windowMs == null || maxRequests == null) {
+          errors.push(
+            `${scopeLabel}Collection "${col.name}": rateLimit.${action}.${dimName} must resolve both windowMs and maxRequests — set them on the dimension, the rule, the collection's rateLimit, or the global rateLimit`,
+          )
+        }
+      }
+    } else {
+      // Single-counter form.
+      const windowMs = rule.windowMs ?? rl.windowMs ?? globalRl?.windowMs
+      const maxRequests = rule.maxRequests ?? rl.maxRequests ?? globalRl?.maxRequests
+      if (windowMs == null || maxRequests == null) {
+        errors.push(
+          `${scopeLabel}Collection "${col.name}": rateLimit.${action} must resolve both windowMs and maxRequests — set them on the rule, on the collection's rateLimit, or on the global rateLimit`,
+        )
+      }
+    }
+  }
+}
 
 const NAMESPACE_NAME_RE = /^[a-zA-Z0-9_-]+$/
 // `list` joins `pull`/`push` as a reserved action prefix: the batch-pull route
@@ -14,7 +80,11 @@ function isBinaryCollection(allowedMimeTypes: string[]): boolean {
   return !allowedMimeTypes.some((m) => m.toLowerCase() === MIME_JSON)
 }
 
-function validateCollections(collections: CollectionConfig[], scopeLabel: string): string[] {
+function validateCollections(
+  collections: CollectionConfig[],
+  scopeLabel: string,
+  globalRl?: RateLimitConfig,
+): string[] {
   const errors: string[] = []
   const names = new Set<string>()
 
@@ -89,10 +159,6 @@ function validateCollections(collections: CollectionConfig[], scopeLabel: string
       }
     }
 
-    if (col.listValues && !col.listable) {
-      errors.push(`${scopeLabel}Collection "${col.name}": listValues requires listable`)
-    }
-
     if (col.rootOnly) {
       if (col.readRoles.includes(ROLE_PUBLIC) || col.writeRoles.includes(ROLE_PUBLIC)) {
         errors.push(
@@ -119,6 +185,8 @@ function validateCollections(collections: CollectionConfig[], scopeLabel: string
     if (col.allowedMimeTypes.length === 0) {
       errors.push(`${scopeLabel}Collection "${col.name}": allowedMimeTypes must contain at least one pattern`)
     }
+
+    validateRateLimit(col, scopeLabel, globalRl, errors)
   }
 
   // Check bundles: all collections in same bundle must share storagePath
@@ -184,6 +252,22 @@ function collectCollectionWarnings(
         `${scopeLabel}Collection "${col.name}": uses the "${ROLE_SELF}" role but its storagePath has no "{identity}" segment. "${ROLE_SELF}" is granted only when the "{identity}" path param equals the caller, so it can never be granted here — did you mean to use "{identity}" instead of another param name?`,
       )
     }
+
+    // Any IP-dependent bucketing relies on a client IP. In the TypeScript/Hono server
+    // there is no portable socket IP, so without an X-Forwarded-For header the ip part
+    // collapses to the shared "anonymous" bucket — turning a per-IP limit into a global one.
+    const rl = col.rateLimit
+    const ruleUsesIp = (r: { bucket?: string; ip?: unknown } | undefined): boolean =>
+      r != null && (r.bucket === "ip" || r.bucket === "identity+ip" || r.ip != null)
+    const usesIpBucket =
+      rl != null &&
+      (rl.bucket === "ip" || rl.bucket === "identity+ip" ||
+        ruleUsesIp(rl.push) || ruleUsesIp(rl.pull) || ruleUsesIp(rl.list))
+    if (usesIpBucket) {
+      warnings.push(
+        `${scopeLabel}Collection "${col.name}": rateLimit uses IP-based bucketing (bucket "ip"/"identity+ip" or an "ip" sub-limit). The TypeScript server has no portable socket IP — without an X-Forwarded-For header the ip part collapses to a shared "anonymous" bucket (a per-IP limit becomes global). Run behind a proxy that sets X-Forwarded-For.`,
+      )
+    }
   }
   return warnings
 }
@@ -204,7 +288,7 @@ export function collectConfigWarnings(config: SyncConfig): string[] {
 }
 
 export function validateConfig(config: SyncConfig): string[] {
-  const errors = validateCollections(config.collections, "")
+  const errors = validateCollections(config.collections, "", config.rateLimit)
 
   if (config.namespaces) {
     for (const [nsName, nsConfig] of Object.entries(config.namespaces)) {
@@ -221,7 +305,7 @@ export function validateConfig(config: SyncConfig): string[] {
       if (nsConfig.collections.length === 0) {
         errors.push(`Namespace "${nsName}": must contain at least one collection`)
       }
-      errors.push(...validateCollections(nsConfig.collections, `Namespace "${nsName}": `))
+      errors.push(...validateCollections(nsConfig.collections, `Namespace "${nsName}": `, config.rateLimit))
     }
   }
 

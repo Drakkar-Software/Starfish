@@ -605,7 +605,7 @@ def create_cap_cert_role_resolver(
 
         # Replay protection — the nonce must not have been seen yet. Keyed by the
         # verifying pubkey so two audience redeemers never share a nonce namespace.
-        if not nonce_cache.check_and_remember(verifying_pub_hex, nonce_b64, now_ms):
+        if not await nonce_cache.check_and_remember(verifying_pub_hex, nonce_b64, now_ms):
             raise CapAuthError(401, "nonce replay")
 
         # Revocation list lookup. An audience cap has no single subject, so it is

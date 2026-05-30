@@ -1354,26 +1354,25 @@ The route drops the last path parameter from `storagePath` and enumerates its va
 CollectionConfig(name="chat", storage_path="chats/{groupId}/{day}", read_roles=["cap:read:chat"], ..., listable=True)
 ```
 
-Response: `{ "items": ["2026-04-13", "2026-04-12"], "hasMore": false }`. Pagination: `?limit=N` (default 100, max 1000) and `?after=<item>`.
-
-Set `listValues: true` (`list_values` / alias `listValues` in Python) as well, and the endpoint accepts `?include=values`, returning each document's stored `data` and `hash` alongside its key — `{ "items": [{ "key", "data", "hash" }], "hasMore": false }` — so a client enumerates a directory in one round-trip instead of a list followed by a per-key batch pull. Read auth, pagination, TTL and `fieldPermissions` read-stripping apply exactly as on a regular pull.
+Response: `{ "items": ["2026-04-13", "2026-04-12"], "hasMore": false }`. Pagination: `?limit=N` (default 100, max 1000) and `?after=<item>`. The endpoint returns keys only; for a derived list small enough to live in one document, prefer the projection extension below, which a client pulls in a single request.
 
 > Full reference: [`docs/ts/server/list-endpoint.md`](docs/ts/server/list-endpoint.md)
 
-### Projection (materialized views)
+### Projection (incremental lists)
 
-The `@drakkar.software/starfish-projection` / `starfish-projection` (Py) extension maintains a denormalized view of a source collection, via the additive `ServerPlugin.afterWrite` hook. After each successful push to a watched `source` collection it runs an app-supplied pure `project(event)` and applies the result to the store: `{ key, data }` upserts the target document (last-writer-wins by key), `{ key, delete: true }` removes it, `null` ignores the event. The app supplies only the mapping; the plugin owns all store IO.
+The `@drakkar.software/starfish-projection` / `starfish-projection` (Py) extension maintains a single denormalized **list document** derived from a source collection, via the additive `ServerPlugin.afterWrite` hook. After each successful push to a watched `source` collection it runs an app-supplied pure `project(event)` and folds the result into the target list: `{ id, value }` appends a new entry or replaces an existing one in place, `{ id, remove: true }` removes it (a tombstone push — there is no delete route), `null` ignores the event. The list is stored as `{ items: [{ id, value }, …] }` in insertion order; the client pulls that one document to read the whole list. The app supplies only the mapping; the plugin owns all store IO.
 
-Writes go in-process (never over HTTP), so the target collection can be declared `pullOnly: true` — clients read/enumerate it, only the projection writes it. Pair it with `listValues` so the whole view is fetchable in one `GET /list/<target>?include=values`. Projection failures are logged and never break the originating client write.
+Writes go in-process (never over HTTP), so the target collection can be declared `pullOnly: true` — clients read it, only the projection writes it. Concurrent writes to the same list are safe (a compare-and-set retry loop never loses an update). Every write rewrites the whole list document, so keep lists bounded — shard via a `target` function (one list per tenant/bucket) and/or set `maxItems`. Projection failures are logged and never break the originating client write.
 
 ```ts
 createProjectionServerPlugin({
   store,
   projections: [{
-    source: ["pubspace", "spacediscovery"],
-    project: (e) => e.body?.discoverable === true
-      ? { key: `spacedir/${e.params.spaceId}`, data: { name: e.body.name } }
-      : { key: `spacedir/${e.params.spaceId}`, delete: true },
+    source: "products",
+    target: (e) => `catalog/${e.params.tenant}`,   // one bounded list per tenant
+    project: (e) => e.body?.deleted === true
+      ? { id: e.params.id, remove: true }
+      : { id: e.params.id, value: { name: e.body?.name } },
   }],
 })
 ```

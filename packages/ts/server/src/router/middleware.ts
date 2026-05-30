@@ -1,4 +1,5 @@
 import type { Context, MiddlewareHandler } from "hono"
+import { type KVAdapter, createInMemoryKVAdapter } from "../storage/kv-adapter.js"
 
 export function checkBodyLimit(
   contentLength: string | null | undefined,
@@ -15,62 +16,91 @@ export function checkBodyLimit(
   return null
 }
 
-interface BucketEntry {
-  count: number
-  resetAt: number
+export type RateLimitBucketMode = "identity" | "ip" | "identity+ip"
+
+/** Options for {@link RateLimiter}. */
+export interface RateLimiterOptions {
+  /** Counter store. Defaults to a per-limiter in-memory adapter (process-local,
+   *  preserving the original behavior). Pass a shared/networked adapter (e.g. Garage
+   *  K2V) to enforce limits across instances. */
+  kv?: KVAdapter
+  /** Prefix prepended to every bucket key. REQUIRED when several limiters share one
+   *  `kv` (e.g. per collection+action+dimension) so their counters don't collide. */
+  keyPrefix?: string
 }
 
 export class RateLimiter {
   private _windowMs: number
   private _maxRequests: number
-  private _maxBuckets: number
-  private _buckets = new Map<string, BucketEntry>()
+  private _bucketMode: RateLimitBucketMode
+  private _kv: KVAdapter
+  private _keyPrefix: string
 
-  constructor(windowMs: number = 60_000, maxRequests: number = 100, maxBuckets: number = 10_000) {
+  constructor(
+    windowMs: number = 60_000,
+    maxRequests: number = 100,
+    maxBuckets: number = 10_000,
+    bucketMode: RateLimitBucketMode = "identity",
+    opts: RateLimiterOptions = {},
+  ) {
     this._windowMs = windowMs
     this._maxRequests = maxRequests
-    this._maxBuckets = maxBuckets
+    this._bucketMode = bucketMode
+    // `maxBuckets` bounds the default in-memory store; ignored when a shared `kv` is
+    // supplied (that backend owns its own capacity policy / TTL-based bounding).
+    this._kv = opts.kv ?? createInMemoryKVAdapter({ maxKeys: maxBuckets })
+    this._keyPrefix = opts.keyPrefix ?? ""
   }
 
-  check(
+  async check(
     identity: string | null,
     forwardedFor: string | null = null,
     clientIp: string | null = null,
-  ): { error: string; status: number } | null {
-    // Bucket-key precedence: authenticated identity → first X-Forwarded-For hop →
-    // direct client IP → shared "anonymous". Identical to the Python RateLimiter; the
-    // only difference is which signals a runtime can supply (Hono has no portable socket
-    // IP, so TS callers pass clientIp=null and direct anonymous traffic shares a bucket).
-    let bucketKey = identity
-    if (!bucketKey && forwardedFor) bucketKey = forwardedFor.split(",")[0]!.trim()
-    if (!bucketKey && clientIp) bucketKey = clientIp
-    if (!bucketKey) bucketKey = "anonymous"
-
-    const now = Date.now()
-    let entry = this._buckets.get(bucketKey)
-
-    if (!entry || entry.resetAt <= now) {
-      // Clean up expired entries
-      for (const [k, v] of this._buckets) {
-        if (v.resetAt <= now) this._buckets.delete(k)
-      }
-      // Evict oldest if at capacity to prevent unbounded memory growth
-      if (this._buckets.size >= this._maxBuckets) {
-        const firstKey = this._buckets.keys().next().value
-        if (firstKey !== undefined) this._buckets.delete(firstKey)
-      }
-      entry = { count: 0, resetAt: now + this._windowMs }
-      this._buckets.set(bucketKey, entry)
+  ): Promise<{ error: string; status: number } | null> {
+    // Bucket-key precedence: in "identity" mode, authenticated identity → first
+    // X-Forwarded-For hop → direct client IP → shared "anonymous". In "ip" mode the
+    // identity is ignored and bucketing is by IP only. In "identity+ip" mode the key is
+    // the (identity, ip) pair, so one budget is kept per distinct combination. Identical
+    // to the Python RateLimiter; the only difference is which signals a runtime can supply
+    // (Hono has no portable socket IP, so TS callers pass clientIp=null — for "ip"/
+    // "identity+ip", requests with no X-Forwarded-For share the "anonymous" ip part).
+    const ipPart = (forwardedFor ? forwardedFor.split(",")[0]!.trim() : null) ?? clientIp ?? "anonymous"
+    let bucketKey: string
+    if (this._bucketMode === "ip") {
+      bucketKey = ipPart
+    } else if (this._bucketMode === "identity+ip") {
+      bucketKey = `${identity ?? "anonymous"}|${ipPart}`
+    } else {
+      bucketKey = identity ?? ipPart
     }
 
-    entry.count += 1
-
-    if (entry.count > this._maxRequests) {
+    const count = await this._kv.increment(this._keyPrefix + bucketKey, this._windowMs)
+    if (count > this._maxRequests) {
       return { error: "Rate limit exceeded", status: 429 }
     }
-
     return null
   }
+}
+
+/**
+ * Apply a list of rate limiters to one request and return the first 429 error, or
+ * null if all pass. A single-counter rule supplies one limiter; a two-independent
+ * rule (per-identity AND per-ip) supplies two — the request is rejected if either
+ * dimension is over budget. NOTE: every limiter is consulted (each increments its
+ * counter) before returning, so the dimensions stay in lock-step regardless of order.
+ */
+export async function checkRateLimiters(
+  limiters: readonly RateLimiter[],
+  identity: string | null,
+  forwardedFor: string | null = null,
+  clientIp: string | null = null,
+): Promise<{ error: string; status: number } | null> {
+  let firstError: { error: string; status: number } | null = null
+  for (const rl of limiters) {
+    const err = await rl.check(identity, forwardedFor, clientIp)
+    if (err && !firstError) firstError = err
+  }
+  return firstError
 }
 
 // --- CORS ---

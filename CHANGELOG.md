@@ -1,35 +1,56 @@
 # Changelog
 
-## 3.0.0-alpha.16 — list endpoint can return documents; new projection (materialized-view) extension
+## 3.0.0-alpha.16 — new projection (incremental-list) extension
 
-Two additive building blocks for directory/index-style features — enumerating a
-collection's documents in one request, and maintaining a denormalized view from a
-source of truth without a bespoke indexer. Both land in TypeScript and Python.
+A new building block for directory/index-style features: maintaining a single
+denormalized **list document** from a source of truth without a bespoke indexer, so
+a client fetches the whole list in one pull. Lands in TypeScript and Python.
 
 ### Added
 
-- **List endpoint `?include=values`** (`starfish-server`, both languages). A
-  collection that sets the new `listValues` flag (`list_values` / alias `listValues`
-  in Python) accepts `GET /list/...?include=values`, returning each document's stored
-  `data` and `hash` alongside its key — `{ items: [{ key, data, hash }], hasMore }` —
-  so a client enumerates a directory in one round-trip instead of a list followed by a
-  per-key batch pull. Read auth, `?limit`/`?after` pagination, TTL expiry and
-  `fieldPermissions` read-stripping are applied per document exactly as on a regular
-  pull. `?include=values` without `listValues` returns `400`; any other `include`
-  value falls back to the unchanged keys-only response. Validation rejects
-  `listValues` without `listable`.
-
 - **`@drakkar.software/starfish-projection` / `starfish-projection`** — a new
-  materialized-view extension. After a successful push, its `afterWrite` hook runs an
-  app-supplied pure `project(event)` for each watched `source` collection and applies
-  the outcome to the store: `{ key, data }` upserts the target document (last-writer-
-  wins by key), `{ key, delete: true }` removes it, `null` ignores the event. The
-  plugin owns all store IO; the app supplies only the mapping. Writes go in-process
-  (never over HTTP), so the target collection can be declared `pullOnly: true` —
-  clients read/enumerate it, only the projection writes it. Pairs with the
-  `listValues` flag so the whole view is fetchable in one
-  `GET /list/<target>?include=values`. Projection failures are logged and never break
-  the originating client write (same contract as `starfish-queuing`).
+  incremental-list extension. After a successful push, its `afterWrite` hook runs an
+  app-supplied pure `project(event)` for each watched `source` collection and folds
+  the outcome into a single target list document: `{ id, value }` appends a new entry
+  or replaces an existing one in place (keeping its position), `{ id, remove: true }`
+  removes it (a tombstone push — there is no delete route), `null` ignores the event.
+  The list is stored as `{ items: [{ id, value }, …] }` in insertion order; the client
+  pulls that one document to read the whole list. The plugin owns all store IO and the
+  read-modify-write; the app supplies only the mapping. Writes go in-process (never
+  over HTTP), so the target collection can be declared `pullOnly: true` — clients read
+  it, only the projection writes it. Concurrent writes to one list are safe via a
+  compare-and-set retry loop (no update is lost); `target` may be a function for
+  per-tenant/bucket **sharding** and `maxItems` caps a list's size, since every write
+  rewrites the whole document. Projection failures are logged and never break the
+  originating client write (same contract as `starfish-queuing`).
+- **Per-action collection rate limiting** — a collection's `rateLimit` now accepts
+  independent `push` / `pull` / `list` rules, each with its own `windowMs`, `maxRequests`,
+  and `bucket` mode, and each with its own counter (exhausting one action never throttles
+  another). `pull` and `list` are now rate-limitable (previously only `push` was). A rule's
+  `bucket` may be `"identity"` (default; per authenticated caller, falling back to
+  X-Forwarded-For / IP / anonymous), `"ip"` (strictly per IP — e.g. "10 push / hour / ip"),
+  or `"identity+ip"` (one budget per distinct `(identity, ip)` pair). Alternatively a rule
+  can declare **two independent limits** via `identity` and/or `ip` sub-limits — each its own
+  counter, with the request rejected if *either* is over budget ("≤N per identity AND ≤M per
+  ip"); a rule uses `bucket` or the sub-limits, not both. `windowMs` / `maxRequests` inherit
+  from the flat collection fields then the global `rateLimit`. The legacy flat
+  `{ windowMs, maxRequests }` form is unchanged — it still limits `push` only and still
+  requires a global `rateLimit`, so existing configs are unaffected. Enforcement defaults to
+  in-memory per process. Lands in TypeScript and Python; see `docs/ts/server/rate-limiting.md`.
+  (TS/Hono caveat: IP-based bucketing relies on `X-Forwarded-For`; the config loader warns
+  when it is used.)
+- **Pluggable `KVAdapter` for ephemeral server state** — a small async key-value abstraction
+  (`increment` for windowed counters, `recordIfAbsent` for nonces) backing both the
+  rate-limit counters and the replay-protection nonce cache. Defaults to an in-memory
+  (process-local) implementation that preserves the previous behavior; pass a shared adapter
+  as `rateLimitStore` (router option) and/or build a nonce cache with `createKvNonceCache(kv)`
+  to enforce limits and replay protection **across server instances**. Ships a Garage K2V
+  backend (`createK2VAdapter` + `createFetchK2VTransport`): because K2V has no CAS, no atomic
+  increment, and no native TTL, the backend embeds expiry in each value, **sums** concurrent
+  counter siblings (overcount = fail-closed, never undercount), and does best-effort
+  read-then-write for nonces (a narrow concurrent-duplicate replay window remains — use a
+  CAS-capable store to close it). The `RateLimiter.check` / `NonceCache.checkAndRemember`
+  APIs are now **async** to accommodate networked backends. Lands in TypeScript and Python.
 
 ## 3.0.0-alpha.15 — offline-first read cache (ciphertext-at-rest)
 

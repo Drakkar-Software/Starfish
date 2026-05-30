@@ -4,6 +4,8 @@ export type {
   CollectionConfig,
   NamespaceConfig,
   CollectionRateLimitConfig,
+  RateLimitRule,
+  RateLimitDimension,
   RateLimitConfig,
   EncryptionMode,
   FieldPermission,
@@ -14,6 +16,16 @@ export { parseConfigJson, loadConfig, saveConfig } from "./config/loader.js"
 // Storage
 export type { ObjectStore, StoreContext } from "./storage/base.js"
 export { MemoryObjectStore, CustomObjectStore } from "./storage/memory.js"
+export {
+  type KVAdapter,
+  type InMemoryKVAdapterOptions,
+  createInMemoryKVAdapter,
+} from "./storage/kv-adapter.js"
+export {
+  type K2VAdapterOptions,
+  type K2VTransport,
+  createK2VAdapter,
+} from "./storage/k2v-adapter.js"
 
 // Protocol
 export type {
@@ -50,9 +62,12 @@ export {
 export {
   checkBodyLimit,
   RateLimiter,
+  checkRateLimiters,
   corsMiddleware,
   securityHeadersMiddleware,
   requestTimeoutMiddleware,
+  type RateLimitBucketMode,
+  type RateLimiterOptions,
   type CorsConfig,
   type SecurityHeadersConfig,
 } from "./router/middleware.js"
@@ -76,6 +91,7 @@ export { generateOpenApiSpec } from "./openapi.js"
 // Cap-cert auth (v3, opt-in)
 export {
   createInMemoryNonceCache,
+  createKvNonceCache,
   type NonceCache,
   type NonceCacheOptions,
 } from "./auth/nonce-cache.js"

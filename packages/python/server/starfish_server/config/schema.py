@@ -65,12 +65,63 @@ class AppendOnlyConfig(BaseModel):
     meaningless."""
 
 
-class CollectionRateLimitConfig(BaseModel):
-    """Per-collection rate limit overrides.
+RateLimitBucketMode = Literal["identity", "ip", "identity+ip"]
 
-    Fields that are ``None`` fall back to the global ``rateLimit`` config.
-    Passing an empty object (or ``"rateLimit": true`` in JSON) enables rate
-    limiting with the global defaults.
+
+class RateLimitDimension(BaseModel):
+    """One counted dimension of a two-independent rate-limit rule.
+
+    ``window_ms`` / ``max_requests`` inherit from the rule, then the flat collection
+    fields, then the global ``rateLimit`` config, when ``None``.
+    """
+
+    model_config = {"populate_by_name": True}
+
+    window_ms: int | None = Field(default=None, gt=0, alias="windowMs")
+    max_requests: int | None = Field(default=None, gt=0, alias="maxRequests")
+
+
+class RateLimitRule(BaseModel):
+    """A rate-limit rule for one collection action (push / pull / list).
+
+    Two shapes (mutually exclusive):
+
+    - **Single counter** — ``window_ms`` / ``max_requests`` with an optional ``bucket``.
+    - **Two independent limits** — ``identity`` and/or ``ip`` sub-limits, each its own
+      counter; the request is rejected if EITHER dimension is over budget. A rule using
+      ``identity``/``ip`` must NOT also set ``bucket`` (rejected at config load).
+
+    ``window_ms`` / ``max_requests`` inherit from the flat collection fields, then the
+    global ``rateLimit`` config, when ``None``.
+    """
+
+    model_config = {"populate_by_name": True}
+
+    window_ms: int | None = Field(default=None, gt=0, alias="windowMs")
+    max_requests: int | None = Field(default=None, gt=0, alias="maxRequests")
+    bucket: RateLimitBucketMode | None = None
+    """How requests are grouped into a single counter. ``"identity"`` (default) keys by
+    the authenticated caller, falling back to X-Forwarded-For / client IP / a shared
+    "anonymous" bucket. ``"ip"`` keys strictly by IP, ignoring identity. ``"identity+ip"``
+    keys by the (identity, ip) pair — one budget per distinct combination. The Python
+    server can use the socket IP, so IP-based modes are reliable here (unlike the TS
+    server, which has no portable socket IP)."""
+
+    identity: RateLimitDimension | None = None
+    """Two-independent form: per-identity dimension. Present ⇒ enforce a per-identity limit."""
+
+    ip: RateLimitDimension | None = None
+    """Two-independent form: per-ip dimension. Present ⇒ enforce a per-ip limit."""
+
+
+class CollectionRateLimitConfig(BaseModel):
+    """Per-collection rate limit config.
+
+    Legacy flat fields (``window_ms`` / ``max_requests`` / ``bucket``) are treated
+    as an implicit ``push`` rule (preserving the original push-only behavior) and as
+    defaults for any explicit per-action rule that omits them. ``None`` fields fall
+    back to the global ``rateLimit`` config. Passing an empty object (or
+    ``"rateLimit": true`` in JSON) enables push rate limiting with the global defaults.
     """
 
     model_config = {"populate_by_name": True}
@@ -80,6 +131,13 @@ class CollectionRateLimitConfig(BaseModel):
 
     max_requests: int | None = Field(default=None, gt=0, alias="maxRequests")
     """Override the global max requests per window for this collection."""
+
+    bucket: RateLimitBucketMode | None = None
+    """Bucket mode for the legacy/implicit push rule. Default ``"identity"``."""
+
+    push: RateLimitRule | None = None
+    pull: RateLimitRule | None = None
+    list: RateLimitRule | None = None
 
 
 class FieldPermission(BaseModel):
@@ -186,16 +244,6 @@ class CollectionConfig(BaseModel):
     The last path parameter in ``storage_path`` is the value being
     enumerated.  Requires at least one path parameter; incompatible with
     ``appendOnly`` (persist=False) and ``bundle``."""
-
-    list_values: bool | None = Field(default=None, alias="listValues")
-    """When ``True``, the list endpoint additionally accepts ``?include=values``,
-    returning each document's stored ``data`` and ``hash`` alongside its key
-    (``{"items": [{"key", "data", "hash"}]}``) so a client can enumerate a
-    directory in one round-trip instead of a list followed by a per-key batch
-    pull.  Read auth, pagination, TTL and ``field_permissions`` read-stripping
-    are applied exactly as on a regular pull.  Requires ``listable``; only
-    meaningful for JSON collections.  Off by default — the values include each
-    document's content, so a collection must opt in."""
 
     root_only: bool | None = Field(default=None, alias="rootOnly")
     """When ``True``, only the **root device** (a self-signed device cap,

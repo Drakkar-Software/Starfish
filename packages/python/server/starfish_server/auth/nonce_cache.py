@@ -9,6 +9,8 @@ from __future__ import annotations
 from collections import OrderedDict
 from typing import Protocol
 
+from starfish_server.storage.kv_adapter import KVAdapter
+
 
 # Default window is 2× the request clock-skew (5 min) — see
 # ``create_in_memory_nonce_cache`` for why this MUST be ≥ 2× skew.
@@ -20,7 +22,7 @@ _DEFAULT_PER_SIGNER_LIMIT = 4_096
 class NonceCache(Protocol):
     """Pluggable contract for a nonce-cache backend."""
 
-    def check_and_remember(
+    async def check_and_remember(
         self, signer_ed_pub_hex: str, nonce_base64: str, now_ms: int
     ) -> bool:
         """Return ``True`` iff the nonce is fresh; ``False`` on replay.
@@ -58,7 +60,7 @@ class _InMemoryNonceCache:
             if not sub:
                 del self._by_signer[signer]
 
-    def check_and_remember(
+    async def check_and_remember(
         self, signer_ed_pub_hex: str, nonce_base64: str, now_ms: int
     ) -> bool:
         key = f"{signer_ed_pub_hex}|{nonce_base64}"
@@ -129,4 +131,43 @@ def create_in_memory_nonce_cache(
     return _InMemoryNonceCache(window_ms, max_entries, per_signer_limit)
 
 
-__all__ = ["NonceCache", "create_in_memory_nonce_cache"]
+class _KvNonceCache:
+    """Nonce cache backed by a :class:`KVAdapter` — e.g. a shared/networked store so replay
+    protection holds across instances. Best-effort on stores without atomic check-and-set
+    (e.g. Garage K2V): the record is a read-then-write, so two *concurrent* requests with the
+    *same* nonce can both be accepted (a narrow TOCTOU window). Still closes the common replay
+    case and beats per-node caching across instances; use a CAS-capable store to close the
+    concurrent-duplicate window completely.
+    """
+
+    def __init__(self, kv: KVAdapter, window_ms: int, per_signer_limit: int) -> None:
+        self._kv = kv
+        self._window_ms = window_ms
+        self._per_signer_limit = per_signer_limit
+
+    async def check_and_remember(
+        self, signer_ed_pub_hex: str, nonce_base64: str, now_ms: int
+    ) -> bool:
+        # The backend's TTL drives expiry; ``now_ms`` is unused (kept for interface parity).
+        # The per-signer cap is a fail-closed group hint (honored by the in-memory adapter;
+        # networked adapters that can't cheaply count a group may ignore it).
+        return await self._kv.record_if_absent(
+            f"{signer_ed_pub_hex}|{nonce_base64}",
+            self._window_ms,
+            (signer_ed_pub_hex, self._per_signer_limit),
+        )
+
+
+def create_kv_nonce_cache(
+    kv: KVAdapter,
+    *,
+    window_ms: int = _DEFAULT_WINDOW_MS,
+    per_signer_limit: int = _DEFAULT_PER_SIGNER_LIMIT,
+) -> NonceCache:
+    """Build a nonce cache backed by a :class:`KVAdapter` (e.g. a shared/networked store
+    for multi-instance replay protection). See :class:`_KvNonceCache` for the best-effort
+    caveat on stores without atomic check-and-set."""
+    return _KvNonceCache(kv, window_ms, per_signer_limit)
+
+
+__all__ = ["NonceCache", "create_in_memory_nonce_cache", "create_kv_nonce_cache"]

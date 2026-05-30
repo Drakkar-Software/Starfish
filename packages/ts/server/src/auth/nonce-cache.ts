@@ -8,9 +8,11 @@
  * acceptance window.
  *
  * This in-memory implementation is appropriate for single-process servers
- * or short-lived workers. Multi-instance deployments need a shared store
- * (Redis, durable object, etc.).
+ * or short-lived workers. Multi-instance deployments need a shared store —
+ * use {@link createKvNonceCache} with a networked {@link KVAdapter}.
  */
+
+import { type KVAdapter } from "../storage/kv-adapter.js"
 
 /** Pluggable contract for a nonce-cache backend. */
 export interface NonceCache {
@@ -21,7 +23,7 @@ export interface NonceCache {
    *
    * Returns `false` for replays — same signer + same nonce within window.
    */
-  checkAndRemember(signerEdPubHex: string, nonceBase64: string, nowMs: number): boolean
+  checkAndRemember(signerEdPubHex: string, nonceBase64: string, nowMs: number): Promise<boolean>
 }
 
 /** Options for {@link createInMemoryNonceCache}. */
@@ -90,7 +92,7 @@ export function createInMemoryNonceCache(opts: NonceCacheOptions = {}): NonceCac
   }
 
   return {
-    checkAndRemember(signerEdPubHex, nonceBase64, nowMs) {
+    async checkAndRemember(signerEdPubHex, nonceBase64, nowMs) {
       const key = `${signerEdPubHex}|${nonceBase64}`
       const existing = seen.get(key)
       if (existing !== undefined) {
@@ -128,6 +130,34 @@ export function createInMemoryNonceCache(opts: NonceCacheOptions = {}): NonceCac
       }
       sub.set(nonceBase64, expiry)
       return true
+    },
+  }
+}
+
+/**
+ * Build a nonce cache backed by a {@link KVAdapter} — e.g. a shared/networked store so
+ * replay protection holds across multiple server instances. Each nonce is recorded under
+ * `${signer}|${nonce}` with a `windowMs` TTL; the per-signer cap is passed as a
+ * fail-closed group hint (honored by the in-memory adapter; networked adapters that can't
+ * cheaply count a group may ignore it).
+ *
+ * **Best-effort on stores without atomic check-and-set** (e.g. Garage K2V): the record is
+ * a read-then-write, so two *concurrent* requests carrying the *same* nonce can both be
+ * accepted (a narrow TOCTOU window). This still closes the common replay case (a nonce
+ * reused after the first request completes) and is strictly better than per-node caching
+ * across multiple instances. Use a CAS-capable store (e.g. Redis) if you need to close the
+ * concurrent-duplicate window completely.
+ */
+export function createKvNonceCache(kv: KVAdapter, opts: NonceCacheOptions = {}): NonceCache {
+  const windowMs = opts.windowMs ?? DEFAULT_WINDOW_MS
+  const perSignerLimit = opts.perSignerLimit ?? DEFAULT_PER_SIGNER_LIMIT
+  return {
+    async checkAndRemember(signerEdPubHex, nonceBase64, _nowMs) {
+      // The backend's TTL drives expiry; `_nowMs` is unused (kept for interface parity).
+      return kv.recordIfAbsent(`${signerEdPubHex}|${nonceBase64}`, windowMs, {
+        key: signerEdPubHex,
+        limit: perSignerLimit,
+      })
     },
   }
 }

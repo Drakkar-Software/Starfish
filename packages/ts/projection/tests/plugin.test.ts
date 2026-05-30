@@ -4,12 +4,19 @@ import { configurePlatform, type WriteEvent } from "@drakkar.software/starfish-p
 import {
   createSyncRouter,
   MemoryObjectStore,
+  type ObjectStore,
+  type StoreContext,
   type SyncRouterOptions,
   type AuthResult,
   type SyncConfig,
   type CollectionConfig,
 } from "@drakkar.software/starfish-server"
-import { createProjectionServerPlugin, type Projection } from "../src/index.js"
+import {
+  createProjectionServerPlugin,
+  type Projection,
+  type ProjectionItem,
+  type ProjectionPluginOptions,
+} from "../src/index.js"
 
 configurePlatform({
   crypto: webcrypto as any,
@@ -30,17 +37,28 @@ const jsonCol = (overrides: Partial<CollectionConfig> = {}): CollectionConfig =>
   ...overrides,
 })
 
+/** A source collection and a single-document list target. The target has a
+ *  fixed (param-less) storagePath, so the client pulls the whole list in one GET. */
+const sourceAndList = (): CollectionConfig[] => [
+  jsonCol({ name: "products", storagePath: "products/{id}" }),
+  jsonCol({ name: "catalog", storagePath: "catalog", pullOnly: true }),
+]
+
 function makeRouter(args: {
   collections: CollectionConfig[]
   projections: Projection[]
+  store?: ObjectStore
+  pluginOpts?: Partial<Omit<ProjectionPluginOptions, "store" | "projections">>
 }) {
-  const store = new MemoryObjectStore(new Map())
+  const store = args.store ?? new MemoryObjectStore(new Map())
   const config: SyncConfig = { version: 1, collections: args.collections }
   const opts: SyncRouterOptions = {
     store,
     config,
     roleResolver: async (): Promise<AuthResult> => ({ identity: "user-1", roles: ["self"] }),
-    plugins: [createProjectionServerPlugin({ store, projections: args.projections })],
+    plugins: [
+      createProjectionServerPlugin({ store, projections: args.projections, ...args.pluginOpts }),
+    ],
   }
   return { app: createSyncRouter(opts), store }
 }
@@ -62,209 +80,249 @@ async function pushDoc(
   })
 }
 
-describe("projection plugin — afterWrite maintains a materialized view", () => {
-  it("upserts a target document derived from a source write", async () => {
-    const { app } = makeRouter({
-      collections: [
-        jsonCol({ name: "source", storagePath: "src/{id}" }),
-        jsonCol({
-          name: "view",
-          storagePath: "view/{id}",
-          readRoles: ["self"],
-          pullOnly: true,
-          listable: true,
-          listValues: true,
-        }),
-      ],
-      projections: [
-        {
-          source: "source",
-          project: (e: WriteEvent) => ({
-            key: `view/${e.params.id}`,
-            data: { id: e.params.id, name: (e.body?.name as string) ?? "", indexed: true },
-          }),
-        },
-      ],
-    })
+/** Read a target list document straight from the store. */
+async function readList(store: ObjectStore, key: string): Promise<ProjectionItem[]> {
+  const raw = await store.getString(key)
+  if (!raw) return []
+  return (JSON.parse(raw).data as { items: ProjectionItem[] }).items
+}
 
-    await pushDoc(app, "/push/src/a1", { name: "Alpha" })
+const ids = (items: ProjectionItem[]) => items.map((i) => i.id)
 
-    // The view doc is readable via a normal pull.
-    const res = await app.request("/pull/view/a1")
-    expect(res.status).toBe(200)
-    const body = await res.json()
-    expect(body.data).toEqual({ id: "a1", name: "Alpha", indexed: true })
-  })
+// A projection that mirrors each product as a `{ id, value:{ name } }` entry in
+// the `catalog` list, treating `{ deleted: true }` as a removal.
+const catalogProjection: Projection = {
+  source: "products",
+  target: "catalog",
+  project: (e: WriteEvent) =>
+    e.body?.deleted === true
+      ? { id: e.params.id, remove: true }
+      : { id: e.params.id, value: { name: (e.body?.name as string) ?? "" } },
+}
 
-  it("re-projects on update (last-writer-wins by key)", async () => {
-    const { app } = makeRouter({
-      collections: [
-        jsonCol({ name: "source", storagePath: "src/{id}" }),
-        jsonCol({ name: "view", storagePath: "view/{id}", pullOnly: true }),
-      ],
-      projections: [
-        {
-          source: "source",
-          project: (e: WriteEvent) => ({
-            key: `view/${e.params.id}`,
-            data: { name: (e.body?.name as string) ?? "" },
-          }),
-        },
-      ],
-    })
-
-    await pushDoc(app, "/push/src/a1", { name: "First" })
-    await pushDoc(app, "/push/src/a1", { name: "Second" })
-
-    const body = await (await app.request("/pull/view/a1")).json()
-    expect(body.data).toEqual({ name: "Second" })
-  })
-
-  it("deletes the target document when the projection returns delete", async () => {
+describe("projection plugin — afterWrite maintains an incremental list", () => {
+  it("appends entries to the list and serves the whole list from one pull", async () => {
     const { app, store } = makeRouter({
-      collections: [
-        jsonCol({ name: "source", storagePath: "src/{id}" }),
-        jsonCol({ name: "view", storagePath: "view/{id}", pullOnly: true }),
-      ],
-      projections: [
-        {
-          source: "source",
-          project: (e: WriteEvent) =>
-            e.body?.hidden === true
-              ? { key: `view/${e.params.id}`, delete: true }
-              : { key: `view/${e.params.id}`, data: { name: (e.body?.name as string) ?? "" } },
-        },
-      ],
+      collections: sourceAndList(),
+      projections: [catalogProjection],
     })
 
-    await pushDoc(app, "/push/src/a1", { name: "Visible" })
-    expect(await store.getString("view/a1")).not.toBeNull()
+    await pushDoc(app, "/push/products/a", { name: "Alpha" })
+    await pushDoc(app, "/push/products/b", { name: "Beta" })
 
-    await pushDoc(app, "/push/src/a1", { hidden: true })
-    expect(await store.getString("view/a1")).toBeNull()
+    // Insertion-ordered, nested { id, value }.
+    expect(await readList(store, "catalog")).toEqual([
+      { id: "a", value: { name: "Alpha" } },
+      { id: "b", value: { name: "Beta" } },
+    ])
+
+    // The client reads the whole list in a single GET of the one list document.
+    const body = await (await app.request("/pull/catalog")).json()
+    expect(body.data.items).toEqual([
+      { id: "a", value: { name: "Alpha" } },
+      { id: "b", value: { name: "Beta" } },
+    ])
+  })
+
+  it("updates an entry in place on re-projection, keeping its position", async () => {
+    const { app, store } = makeRouter({
+      collections: sourceAndList(),
+      projections: [catalogProjection],
+    })
+
+    await pushDoc(app, "/push/products/a", { name: "Alpha" })
+    await pushDoc(app, "/push/products/b", { name: "Beta" })
+    await pushDoc(app, "/push/products/a", { name: "Alpha v2" })
+
+    const items = await readList(store, "catalog")
+    expect(ids(items)).toEqual(["a", "b"]) // position preserved, not moved to end
+    expect(items[0].value).toEqual({ name: "Alpha v2" }) // value fully replaced
+  })
+
+  it("removes an entry on a tombstone op; the list doc survives when emptied", async () => {
+    const { app, store } = makeRouter({
+      collections: sourceAndList(),
+      projections: [catalogProjection],
+    })
+
+    await pushDoc(app, "/push/products/a", { name: "Alpha" })
+    await pushDoc(app, "/push/products/b", { name: "Beta" })
+    await pushDoc(app, "/push/products/a", { deleted: true })
+    expect(ids(await readList(store, "catalog"))).toEqual(["b"])
+
+    // Removing an id that isn't present is a no-op (no spurious write/error).
+    await pushDoc(app, "/push/products/zzz", { deleted: true })
+    expect(ids(await readList(store, "catalog"))).toEqual(["b"])
+
+    // Emptying the list leaves an empty list document, not a 404.
+    await pushDoc(app, "/push/products/b", { deleted: true })
+    expect(await readList(store, "catalog")).toEqual([])
+    expect((await app.request("/pull/catalog")).status).toBe(200)
   })
 
   it("ignores the event when the projection returns null", async () => {
-    const { store } = makeRouter({ collections: [], projections: [] })
-    void store
-    const { app, store: s2 } = makeRouter({
-      collections: [
-        jsonCol({ name: "source", storagePath: "src/{id}" }),
-        jsonCol({ name: "view", storagePath: "view/{id}", pullOnly: true }),
-      ],
-      projections: [{ source: "source", project: () => null }],
+    const { app, store } = makeRouter({
+      collections: sourceAndList(),
+      projections: [{ source: "products", target: "catalog", project: () => null }],
     })
 
-    await pushDoc(app, "/push/src/a1", { name: "Alpha" })
-    expect(await s2.getString("view/a1")).toBeNull()
+    await pushDoc(app, "/push/products/a", { name: "Alpha" })
+    expect(await store.getString("catalog")).toBeNull()
   })
 
-  it("only fires for collections named in the projection's source", async () => {
+  it("a target function shards entries into per-key lists across multiple sources", async () => {
     const { app, store } = makeRouter({
       collections: [
-        jsonCol({ name: "watched", storagePath: "watched/{id}" }),
-        jsonCol({ name: "other", storagePath: "other/{id}" }),
-        jsonCol({ name: "view", storagePath: "view/{id}", pullOnly: true }),
+        jsonCol({ name: "products", storagePath: "products/{tenant}/{id}" }),
+        jsonCol({ name: "services", storagePath: "services/{tenant}/{id}" }),
       ],
       projections: [
         {
-          source: "watched",
-          project: (e: WriteEvent) => ({ key: `view/${e.params.id}`, data: { ok: true } }),
-        },
-      ],
-    })
-
-    await pushDoc(app, "/push/other/a1", { name: "x" })
-    expect(await store.getString("view/a1")).toBeNull()
-
-    await pushDoc(app, "/push/watched/a1", { name: "x" })
-    expect(await store.getString("view/a1")).not.toBeNull()
-  })
-
-  it("supports multiple source collections in one projection", async () => {
-    const { app, store } = makeRouter({
-      collections: [
-        jsonCol({ name: "a", storagePath: "a/{id}" }),
-        jsonCol({ name: "b", storagePath: "b/{id}" }),
-        jsonCol({ name: "view", storagePath: "view/{id}", pullOnly: true }),
-      ],
-      projections: [
-        {
-          source: ["a", "b"],
+          source: ["products", "services"],
+          // Shard one list per tenant; ignore writes with no tenant.
+          target: (e: WriteEvent) => (e.params.tenant ? `catalog/${e.params.tenant}` : null),
           project: (e: WriteEvent) => ({
-            key: `view/${e.params.id}`,
-            data: { from: e.collection },
+            id: e.params.id,
+            value: { kind: e.collection, name: (e.body?.name as string) ?? "" },
           }),
         },
       ],
     })
 
-    await pushDoc(app, "/push/a/k", { v: 1 })
-    expect((await (await app.request("/pull/view/k")).json()).data).toEqual({ from: "a" })
+    await pushDoc(app, "/push/products/t1/p1", { name: "P1" })
+    await pushDoc(app, "/push/services/t1/s1", { name: "S1" })
+    await pushDoc(app, "/push/products/t2/p2", { name: "P2" })
 
-    await pushDoc(app, "/push/b/k", { v: 2 })
-    expect((await (await app.request("/pull/view/k")).json()).data).toEqual({ from: "b" })
-    void store
+    // t1's list holds both a product and a service; t2 is a separate list.
+    const t1 = await readList(store, "catalog/t1")
+    expect(t1).toEqual([
+      { id: "p1", value: { kind: "products", name: "P1" } },
+      { id: "s1", value: { kind: "services", name: "S1" } },
+    ])
+    expect(ids(await readList(store, "catalog/t2"))).toEqual(["p2"])
   })
 
-  it("the materialized view is enumerable via list?include=values", async () => {
+  it("client enumerates and fetches all shards via the list endpoint", async () => {
+    // Shard a product catalog by category (the documented manual-sharding pattern).
     const { app } = makeRouter({
       collections: [
-        jsonCol({ name: "source", storagePath: "src/{id}" }),
-        jsonCol({
-          name: "view",
-          storagePath: "view/{id}",
-          readRoles: ["self"],
-          pullOnly: true,
-          listable: true,
-          listValues: true,
-        }),
+        jsonCol({ name: "products", storagePath: "products/{id}" }),
+        jsonCol({ name: "catalog", storagePath: "catalog/{category}", pullOnly: true, listable: true }),
       ],
       projections: [
         {
-          source: "source",
-          project: (e: WriteEvent) => ({
-            key: `view/${e.params.id}`,
-            data: { id: e.params.id, name: (e.body?.name as string) ?? "" },
-          }),
+          source: "products",
+          target: (e: WriteEvent) => (e.body?.category ? `catalog/${e.body.category}` : null),
+          project: (e: WriteEvent) => ({ id: e.params.id, value: { name: e.body?.name } }),
         },
       ],
     })
 
-    await pushDoc(app, "/push/src/a1", { name: "Alpha" })
-    await pushDoc(app, "/push/src/a2", { name: "Beta" })
+    await pushDoc(app, "/push/products/p1", { name: "Novel", category: "books" })
+    await pushDoc(app, "/push/products/p2", { name: "Phone", category: "electronics" })
+    await pushDoc(app, "/push/products/p3", { name: "Comic", category: "books" })
 
-    const body = await (await app.request("/list/view?include=values")).json()
-    expect(body.items.map((i: { key: string }) => i.key)).toEqual(["a1", "a2"])
-    expect(body.items.map((i: { data: { name: string } }) => i.data.name)).toEqual(["Alpha", "Beta"])
+    // Discover shards via the list endpoint.
+    const shards: string[] = (await (await app.request("/list/catalog")).json()).items
+    expect([...shards].sort()).toEqual(["books", "electronics"])
+
+    // Pull each shard and concatenate to reconstruct the whole list.
+    const all: ProjectionItem[] = []
+    for (const cat of shards) {
+      const body = await (await app.request(`/pull/catalog/${cat}`)).json()
+      all.push(...(body.data.items as ProjectionItem[]))
+    }
+    expect(all.map((i) => i.id).sort()).toEqual(["p1", "p2", "p3"])
   })
 
-  it("a pullOnly target view rejects direct client writes", async () => {
-    const { app } = makeRouter({
-      collections: [
-        jsonCol({ name: "source", storagePath: "src/{id}" }),
-        jsonCol({ name: "view", storagePath: "view/{id}", pullOnly: true }),
-      ],
-      projections: [
-        { source: "source", project: (e) => ({ key: `view/${e.params.id}`, data: { ok: true } }) },
-      ],
+  it("concurrent writes to one list do not lose updates (CAS retry)", async () => {
+    // Injects a competing write to the list between the plugin's pull and its
+    // push, exactly once, forcing one hash-mismatch retry.
+    class OneShotConflictStore extends MemoryObjectStore {
+      private armedKey: string | null = null
+      private competing: string | null = null
+      private calls = 0
+      arm(key: string, competing: string) {
+        this.armedKey = key
+        this.competing = competing
+        this.calls = 0
+      }
+      override async getString(key: string, ctx?: StoreContext): Promise<string | null> {
+        if (key === this.armedKey) {
+          this.calls++
+          // Call #2 is push's internal read; inject just before it observes state.
+          if (this.calls === 2 && this.competing != null) {
+            await super.put(key, this.competing, undefined, ctx)
+            this.competing = null
+            this.armedKey = null
+          }
+        }
+        return super.getString(key, ctx)
+      }
+    }
+
+    const store = new OneShotConflictStore(new Map())
+    const { app } = makeRouter({ collections: sourceAndList(), projections: [catalogProjection], store })
+
+    // Seed the list with one entry.
+    await pushDoc(app, "/push/products/a", { name: "Alpha" })
+
+    // Arm a competing write that adds entry "c" to the list, then push "b". The
+    // plugin's first push will hash-mismatch, re-pull (now seeing "a" + "c") and
+    // re-apply "b" on top — losing neither.
+    store.arm(
+      "catalog",
+      JSON.stringify({
+        v: 1,
+        data: {
+          items: [
+            { id: "a", value: { name: "Alpha" } },
+            { id: "c", value: { name: "Concurrent" } },
+          ],
+        },
+        ts: 1,
+        hash: "f".repeat(64),
+      }),
+    )
+
+    await pushDoc(app, "/push/products/b", { name: "Beta" })
+
+    // Both the concurrently-injected "c" and the retried "b" survive.
+    expect(ids(await readList(store, "catalog"))).toEqual(["a", "c", "b"])
+  })
+
+  it("caps the list at maxItems, dropping further appends", async () => {
+    const { app, store } = makeRouter({
+      collections: sourceAndList(),
+      projections: [catalogProjection],
+      pluginOpts: { maxItems: 2 },
     })
 
-    // The projection populates it…
-    await pushDoc(app, "/push/src/a1", { name: "x" })
-    expect((await app.request("/pull/view/a1")).status).toBe(200)
+    await pushDoc(app, "/push/products/a", { name: "A" })
+    await pushDoc(app, "/push/products/b", { name: "B" })
+    await pushDoc(app, "/push/products/c", { name: "C" }) // exceeds cap → dropped
+
+    expect(ids(await readList(store, "catalog"))).toEqual(["a", "b"])
+  })
+
+  it("a pullOnly target list rejects direct client writes", async () => {
+    const { app } = makeRouter({ collections: sourceAndList(), projections: [catalogProjection] })
+
+    await pushDoc(app, "/push/products/a", { name: "Alpha" })
+    expect((await app.request("/pull/catalog")).status).toBe(200) // projection populated it
 
     // …but a client cannot push to it directly (pullOnly → no push route).
-    const res = await pushDoc(app, "/push/view/a1", { tampered: true })
+    const res = await pushDoc(app, "/push/catalog", { tampered: true })
     expect(res.status).toBeGreaterThanOrEqual(400)
   })
 
   it("a projection failure does not break the originating client write", async () => {
     const { app } = makeRouter({
-      collections: [jsonCol({ name: "source", storagePath: "src/{id}" })],
+      collections: [jsonCol({ name: "products", storagePath: "products/{id}" })],
       projections: [
         {
-          source: "source",
+          source: "products",
+          target: "catalog",
           project: () => {
             throw new Error("boom")
           },
@@ -272,9 +330,8 @@ describe("projection plugin — afterWrite maintains a materialized view", () =>
       ],
     })
 
-    const res = await pushDoc(app, "/push/src/a1", { name: "x" })
+    const res = await pushDoc(app, "/push/products/a", { name: "x" })
     expect(res.status).toBe(200)
-    const body = await res.json()
-    expect(body.hash).toHaveLength(64)
+    expect((await res.json()).hash).toHaveLength(64)
   })
 })

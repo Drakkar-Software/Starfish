@@ -134,6 +134,20 @@ Scope `paths` entries are globs against `<collection>/<rest>`. `*` matches any r
 
 For `kind: "member"` caps, the resolver verifies (after substitution) that no scope path enters the issuer's `users/<iss_user_id>/*` namespace — a member cap cannot be used to escalate into the issuer's private data.
 
+### Rate limiting
+
+A collection's `rateLimit` supports independent **per-action** rules — `push`, `pull`, and `list` — each with its own `windowMs`, `maxRequests`, and `bucket` mode, and each with its own counter:
+
+```python
+rateLimit={
+    "push": {"windowMs": 3_600_000, "maxRequests": 10, "bucket": "ip"},  # 10 push / hour / ip
+    "pull": {"windowMs": 60_000, "maxRequests": 1000},                   # bucket: "identity" (default)
+    "list": {"maxRequests": 50},                                         # window inherited from global rateLimit
+}
+```
+
+`bucket` is `"identity"` (default — per authenticated caller, falling back to `X-Forwarded-For` / socket IP / anonymous), `"ip"` (strictly per IP), or `"identity+ip"` (one budget per `(identity, ip)` pair). For defense-in-depth, a rule can instead declare `identity` and/or `ip` sub-limits — independent counters, rejected if *either* trips ("≤N per identity AND ≤M per ip"). The legacy flat form `{"windowMs", "maxRequests"}` still limits `push` only. Limiting is in-memory per process by default; pass a shared `KVAdapter` as `rate_limit_store` (e.g. `create_k2v_adapter` over Garage K2V) to enforce limits across instances, and `create_kv_nonce_cache(kv)` for distributed replay protection. The Python server uses the real socket IP, so IP-based modes are reliable. See [docs/ts/server/rate-limiting.md](../../../docs/ts/server/rate-limiting.md).
+
 ## Public surface (selected)
 
 ```python

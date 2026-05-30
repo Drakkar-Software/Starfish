@@ -3,7 +3,7 @@
 
 import re
 
-from starfish_server.config.schema import SyncConfig, CollectionConfig
+from starfish_server.config.schema import SyncConfig, CollectionConfig, RateLimitConfig
 from starfish_server.constants import ROLE_PUBLIC, ROLE_SELF
 
 MIME_JSON = "application/json"
@@ -20,7 +20,11 @@ def _is_binary_collection(allowed_mime_types: list[str]) -> bool:
     return MIME_JSON not in [m.lower() for m in allowed_mime_types]
 
 
-def _validate_collections(collections: list[CollectionConfig], scope_label: str) -> list[str]:
+def _validate_collections(
+    collections: list[CollectionConfig],
+    scope_label: str,
+    global_rl: "RateLimitConfig | None" = None,
+) -> list[str]:
     """Validate a list of collections and return error messages.
 
     *scope_label* is prepended to errors so callers can distinguish root
@@ -104,11 +108,6 @@ def _validate_collections(collections: list[CollectionConfig], scope_label: str)
                     f'{prefix}Collection "{col.name}": listable cannot be used with bundle (bundled collections share storage paths)'
                 )
 
-        if col.list_values and not col.listable:
-            errors.append(
-                f'{prefix}Collection "{col.name}": listValues requires listable'
-            )
-
         # rootOnly is incompatible with public access — a root-only collection
         # can never be public.
         if col.root_only and (
@@ -141,6 +140,59 @@ def _validate_collections(collections: list[CollectionConfig], scope_label: str)
             errors.append(
                 f'{prefix}Collection "{col.name}": allowedMimeTypes must contain at least one pattern'
             )
+
+        # Rate-limit rules: an explicit per-action rule must resolve both windowMs and
+        # maxRequests from rule -> flat collection fields -> global. A rule may not mix
+        # the single-counter "bucket" form with the two-independent "identity"/"ip" form.
+        # (Pydantic already enforces gt=0 and the bucket enum.)
+        rl = col.rate_limit
+        if rl is not None:
+            for action in ("push", "pull", "list"):
+                rule = getattr(rl, action)
+                if rule is None:
+                    continue
+
+                two_independent = rule.identity is not None or rule.ip is not None
+                if two_independent and rule.bucket is not None:
+                    errors.append(
+                        f'{prefix}Collection "{col.name}": rateLimit.{action} cannot set both '
+                        '"bucket" and an "identity"/"ip" sub-limit — use one form or the other'
+                    )
+
+                if two_independent:
+                    for dim_name in ("identity", "ip"):
+                        dim = getattr(rule, dim_name)
+                        if dim is None:
+                            continue
+                        window_ms = dim.window_ms
+                        if window_ms is None:
+                            window_ms = rule.window_ms if rule.window_ms is not None else (
+                                rl.window_ms if rl.window_ms is not None else (global_rl.window_ms if global_rl else None)
+                            )
+                        max_requests = dim.max_requests
+                        if max_requests is None:
+                            max_requests = rule.max_requests if rule.max_requests is not None else (
+                                rl.max_requests if rl.max_requests is not None else (global_rl.max_requests if global_rl else None)
+                            )
+                        if window_ms is None or max_requests is None:
+                            errors.append(
+                                f'{prefix}Collection "{col.name}": rateLimit.{action}.{dim_name} must resolve '
+                                "both windowMs and maxRequests — set them on the dimension, the rule, the "
+                                "collection's rateLimit, or the global rateLimit"
+                            )
+                else:
+                    window_ms = rule.window_ms if rule.window_ms is not None else (
+                        rl.window_ms if rl.window_ms is not None else (global_rl.window_ms if global_rl else None)
+                    )
+                    max_requests = rule.max_requests if rule.max_requests is not None else (
+                        rl.max_requests if rl.max_requests is not None else (global_rl.max_requests if global_rl else None)
+                    )
+                    if window_ms is None or max_requests is None:
+                        errors.append(
+                            f'{prefix}Collection "{col.name}": rateLimit.{action} must resolve both '
+                            "windowMs and maxRequests — set them on the rule, on the collection's "
+                            "rateLimit, or on the global rateLimit"
+                        )
 
     # Check bundles: all collections in same bundle must share storagePath
     bundles: dict[str, str] = {}
@@ -229,7 +281,7 @@ def collect_config_warnings(config: SyncConfig) -> list[str]:
 
 def validate_config(config: SyncConfig) -> list[str]:
     """Validate config semantics. Returns error messages (empty = valid)."""
-    errors = _validate_collections(config.collections, "")
+    errors = _validate_collections(config.collections, "", config.rate_limit)
 
     if config.namespaces:
         for ns_name, ns_config in config.namespaces.items():
@@ -253,6 +305,6 @@ def validate_config(config: SyncConfig) -> list[str]:
                 )
 
             # Validate collections within this namespace scope
-            errors.extend(_validate_collections(ns_config.collections, f'Namespace "{ns_name}"'))
+            errors.extend(_validate_collections(ns_config.collections, f'Namespace "{ns_name}"', config.rate_limit))
 
     return errors

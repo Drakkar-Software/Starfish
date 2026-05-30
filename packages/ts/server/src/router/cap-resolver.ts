@@ -611,7 +611,7 @@ export function createCapCertRoleResolver(opts: CapResolverOptions): RoleResolve
 
     // Replay protection — the nonce must not have been seen yet. Keyed by the
     // verifying pubkey so two audience redeemers never share a nonce namespace.
-    if (!opts.nonceCache.checkAndRemember(verifyingPubHex, nonceB64, nowMs)) {
+    if (!(await opts.nonceCache.checkAndRemember(verifyingPubHex, nonceB64, nowMs))) {
       throw new CapAuthError(401, "nonce replay")
     }
 

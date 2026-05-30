@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "starfish-projection"
 version = "3.0.0a16"
-description = "Starfish materialized-view extension (post-push projection hook: derive a document into a target collection on every write, with delete-on-condition)"
+description = "Starfish incremental-list extension (post-push projection hook: fold each write into a single list document — append, update-in-place, or remove)"
 requires-python = ">=3.11"
 dependencies = [
   "starfish-protocol",

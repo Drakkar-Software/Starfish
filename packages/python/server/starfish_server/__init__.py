@@ -28,6 +28,8 @@ from starfish_server.config.schema import (
     SyncConfig,
     CollectionConfig,
     CollectionRateLimitConfig,
+    RateLimitRule,
+    RateLimitDimension,
     FieldPermission,
     NamespaceConfig,
     RateLimitConfig,
@@ -40,6 +42,8 @@ from starfish_server.config.loader import load_config, save_config, parse_config
 from starfish_server.storage.base import AbstractObjectStore, StoreContext
 from starfish_server.storage.filesystem import FilesystemObjectStore, FilesystemStorageOptions
 from starfish_server.storage.memory import MemoryObjectStore, CustomObjectStore
+from starfish_server.storage.kv_adapter import KVAdapter, create_in_memory_kv_adapter
+from starfish_server.storage.k2v_adapter import K2VTransport, K2VReadResult, create_k2v_adapter
 from starfish_server.lifecycle import GracefulShutdown, GracefulShutdownOptions
 from starfish_server.router.middleware import (
     CorsConfig,
@@ -55,6 +59,7 @@ from starfish_server.enrichers.compose import compose_enrichers
 from starfish_server.auth.nonce_cache import (
     NonceCache,
     create_in_memory_nonce_cache,
+    create_kv_nonce_cache,
 )
 from starfish_server.auth.revocation_store import (
     REVOCATION_RETAIN_SKEW_SEC,
@@ -111,6 +116,8 @@ __all__ = [
     "SyncConfig",
     "CollectionConfig",
     "CollectionRateLimitConfig",
+    "RateLimitRule",
+    "RateLimitDimension",
     "FieldPermission",
     "NamespaceConfig",
     "RateLimitConfig",
@@ -130,6 +137,11 @@ __all__ = [
     "FilesystemStorageOptions",
     "MemoryObjectStore",
     "CustomObjectStore",
+    "KVAdapter",
+    "create_in_memory_kv_adapter",
+    "K2VTransport",
+    "K2VReadResult",
+    "create_k2v_adapter",
     "GracefulShutdown",
     "GracefulShutdownOptions",
     "CorsConfig",
@@ -147,6 +159,7 @@ __all__ = [
     "compose_enrichers",
     "NonceCache",
     "create_in_memory_nonce_cache",
+    "create_kv_nonce_cache",
     "RevocationEntry",
     "RevocationList",
     "RevokedSubject",

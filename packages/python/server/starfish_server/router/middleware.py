@@ -2,7 +2,6 @@
 
 
 import asyncio
-import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Awaitable, Sequence
 
@@ -11,6 +10,8 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
+
+from starfish_server.storage.kv_adapter import KVAdapter, create_in_memory_kv_adapter
 
 
 def check_body_limit(content_length: str | None, max_bytes: int) -> JSONResponse | None:
@@ -28,24 +29,27 @@ def check_body_limit(content_length: str | None, max_bytes: int) -> JSONResponse
     return None
 
 
-@dataclass
-class _BucketEntry:
-    count: int = 0
-    reset_at: float = 0.0
-
-
 class RateLimiter:
-    """In-memory rate limiter keyed by identity or client IP."""
+    """Rate limiter keyed by identity and/or client IP, backed by a :class:`KVAdapter`."""
 
     def __init__(
-        self, window_ms: int = 60_000, max_requests: int = 100, max_buckets: int = 10_000
+        self,
+        window_ms: int = 60_000,
+        max_requests: int = 100,
+        max_buckets: int = 10_000,
+        bucket_mode: str = "identity",
+        kv: KVAdapter | None = None,
+        key_prefix: str = "",
     ) -> None:
         self._window_ms = window_ms
         self._max_requests = max_requests
-        self._max_buckets = max_buckets
-        self._buckets: dict[str, _BucketEntry] = {}
+        self._bucket_mode = bucket_mode
+        # ``max_buckets`` bounds the default in-memory store; ignored when a shared ``kv``
+        # is supplied (that backend owns its own capacity policy / TTL-based bounding).
+        self._kv = kv or create_in_memory_kv_adapter(max_keys=max_buckets)
+        self._key_prefix = key_prefix
 
-    def check(
+    async def check(
         self,
         identity: str | None,
         forwarded_for: str | None = None,
@@ -53,41 +57,53 @@ class RateLimiter:
     ) -> JSONResponse | None:
         """Return an error response if the rate limit is exceeded.
 
-        Bucket-key precedence: authenticated identity → first X-Forwarded-For hop →
-        direct client IP → shared ``"anonymous"``. Identical to the TS RateLimiter; the
-        only difference is which signals a runtime supplies (the Python server can pass
-        the socket ``request.client.host`` as ``client_ip``; Hono cannot).
+        Bucket-key precedence: in ``"identity"`` mode, authenticated identity → first
+        X-Forwarded-For hop → direct client IP → shared ``"anonymous"``. In ``"ip"`` mode
+        the identity is ignored and bucketing is by IP only. In ``"identity+ip"`` mode the
+        key is the (identity, ip) pair. Identical to the TS RateLimiter; the only
+        difference is which signals a runtime supplies (the Python server can pass the
+        socket ``request.client.host`` as ``client_ip``; Hono cannot).
         """
-        bucket_key = identity
-        if not bucket_key and forwarded_for:
-            bucket_key = forwarded_for.split(",")[0].strip()
-        if not bucket_key and client_ip:
-            bucket_key = client_ip
-        if not bucket_key:
-            bucket_key = "anonymous"
+        ip_part = None
+        if forwarded_for:
+            ip_part = forwarded_for.split(",")[0].strip()
+        if not ip_part and client_ip:
+            ip_part = client_ip
+        if not ip_part:
+            ip_part = "anonymous"
 
-        now = time.time() * 1000
-        entry = self._buckets.get(bucket_key)
+        if self._bucket_mode == "ip":
+            bucket_key = ip_part
+        elif self._bucket_mode == "identity+ip":
+            bucket_key = f"{identity or 'anonymous'}|{ip_part}"
+        else:
+            bucket_key = identity or ip_part
 
-        if not entry or entry.reset_at <= now:
-            # Clean up expired entries
-            self._buckets = {
-                k: v for k, v in self._buckets.items() if v.reset_at > now
-            }
-            # Evict the oldest bucket if at capacity, to bound memory under a flood of
-            # distinct keys (e.g. spoofed X-Forwarded-For). dict preserves insertion
-            # order, so the first key is the oldest. Mirrors the TS RateLimiter.
-            if len(self._buckets) >= self._max_buckets:
-                del self._buckets[next(iter(self._buckets))]
-            entry = _BucketEntry(count=0, reset_at=now + self._window_ms)
-            self._buckets[bucket_key] = entry
-
-        entry.count += 1
-
-        if entry.count > self._max_requests:
+        count = await self._kv.increment(self._key_prefix + bucket_key, self._window_ms)
+        if count > self._max_requests:
             return JSONResponse({"error": "Rate limit exceeded"}, status_code=429)
-
         return None
+
+
+async def check_rate_limiters(
+    limiters: Sequence["RateLimiter"],
+    identity: str | None,
+    forwarded_for: str | None = None,
+    client_ip: str | None = None,
+) -> JSONResponse | None:
+    """Apply a list of rate limiters to one request; return the first 429, else None.
+
+    A single-counter rule supplies one limiter; a two-independent rule (per-identity AND
+    per-ip) supplies two — the request is rejected if either dimension is over budget.
+    Every limiter is consulted (each increments its counter) before returning, so the
+    dimensions stay in lock-step regardless of order. Mirrors the TS ``checkRateLimiters``.
+    """
+    first_error: JSONResponse | None = None
+    for rl in limiters:
+        error = await rl.check(identity, forwarded_for, client_ip)
+        if error is not None and first_error is None:
+            first_error = error
+    return first_error
 
 
 # --- CORS Configuration ---

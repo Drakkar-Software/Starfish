@@ -3,6 +3,7 @@
 from starfish_server.auth.nonce_cache import (
     NonceCache,
     create_in_memory_nonce_cache,
+    create_kv_nonce_cache,
 )
 from starfish_server.auth.revocation_store import (
     RevocationEntry,
@@ -14,6 +15,7 @@ from starfish_server.auth.revocation_store import (
 __all__ = [
     "NonceCache",
     "create_in_memory_nonce_cache",
+    "create_kv_nonce_cache",
     "RevocationEntry",
     "RevocationList",
     "RevocationStore",

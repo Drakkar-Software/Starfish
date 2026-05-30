@@ -1,8 +1,54 @@
 export type EncryptionMode = "none" | "delegated"
 
-export interface CollectionRateLimitConfig {
+/** A single counted dimension of a two-independent rate-limit rule. `windowMs` /
+ *  `maxRequests` inherit from the rule, then the flat collection fields, then the
+ *  global `SyncConfig.rateLimit`, when omitted. */
+export interface RateLimitDimension {
   windowMs?: number
   maxRequests?: number
+}
+
+/** A rate-limit rule for one collection action (push / pull / list).
+ *
+ *  Two shapes (mutually exclusive):
+ *  - **Single counter** — `windowMs` / `maxRequests` with an optional `bucket` mode.
+ *  - **Two independent limits** — `identity` and/or `ip` sub-limits, each its own
+ *    counter; the request is rejected if EITHER dimension is over budget. Use this
+ *    for "≤N per identity AND ≤M per ip". A rule using `identity`/`ip` must NOT also
+ *    set `bucket` (rejected at config load).
+ *
+ *  `windowMs` / `maxRequests` inherit from the flat collection fields, then the
+ *  global `SyncConfig.rateLimit`, when omitted. */
+export interface RateLimitRule {
+  windowMs?: number
+  maxRequests?: number
+  /** How requests are grouped into a single counter. `"identity"` (default) keys by
+   *  the authenticated caller, falling back to X-Forwarded-For / client IP / a shared
+   *  "anonymous" bucket. `"ip"` keys strictly by IP, ignoring identity. `"identity+ip"`
+   *  keys by the (identity, ip) pair — one budget per distinct combination.
+   *  CAVEAT (TypeScript/Hono): there is no portable socket IP, so `"ip"`/`"identity+ip"`
+   *  key by the first `X-Forwarded-For` hop only; with no such header the ip part is the
+   *  shared "anonymous" bucket. Put this server behind a proxy that sets `X-Forwarded-For`. */
+  bucket?: "identity" | "ip" | "identity+ip"
+  /** Two-independent form: per-identity dimension. Present ⇒ enforce a per-identity limit. */
+  identity?: RateLimitDimension
+  /** Two-independent form: per-ip dimension. Present ⇒ enforce a per-ip limit. */
+  ip?: RateLimitDimension
+}
+
+export interface CollectionRateLimitConfig {
+  /** Legacy flat fields. Treated as an implicit `push` rule (preserving the
+   *  original push-only behavior) and as default `windowMs`/`maxRequests` for any
+   *  explicit per-action rule that omits them. */
+  windowMs?: number
+  maxRequests?: number
+  /** Bucket mode for the legacy/implicit push rule. Default `"identity"`. */
+  bucket?: "identity" | "ip" | "identity+ip"
+  /** Per-action overrides. Each action gets its own counter. An action with no
+   *  rule (and, for push, no legacy flat fields) is unmetered. */
+  push?: RateLimitRule
+  pull?: RateLimitRule
+  list?: RateLimitRule
 }
 
 export interface FieldPermission {
@@ -75,14 +121,6 @@ export interface CollectionConfig {
    *  under this collection's prefix. The last path parameter in storagePath is the one being
    *  enumerated. Requires at least one path parameter; incompatible with appendOnly and bundle. */
   listable?: boolean
-  /** When true, the list endpoint additionally accepts `?include=values`, returning each
-   *  document's stored `data` and `hash` alongside its key — `{ items: [{ key, data, hash }] }`
-   *  — so a client can enumerate a directory in one round-trip instead of a list followed by a
-   *  per-key batch pull. Read auth, pagination, TTL and `fieldPermissions` read-stripping are
-   *  applied exactly as on a regular pull. Requires `listable`; only meaningful for JSON
-   *  collections (it never returns binary bodies). Off by default — the values include each
-   *  document's content, so a collection must opt in. */
-  listValues?: boolean
   /** When true, only the **root device** (a self-signed device cap, `iss === sub`) may access
    *  this collection; every paired/delegated device cap and member cap is rejected with 403,
    *  in addition to the normal readRoles/writeRoles checks. Incompatible with public
