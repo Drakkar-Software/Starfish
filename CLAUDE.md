@@ -17,6 +17,7 @@ packages/
     sharing/             # @drakkar.software/starfish-sharing (extension)
     entitlements/        # @drakkar.software/starfish-entitlements (extension)
     queuing/             # @drakkar.software/starfish-queuing (extension)
+    projection/          # @drakkar.software/starfish-projection (extension)
     audit/               # @drakkar.software/starfish-audit (extension)
     replica/             # @drakkar.software/starfish-replica (extension)
   python/                # Python packages
@@ -28,10 +29,11 @@ packages/
     sharing/             # starfish-sharing (extension)
     entitlements/        # starfish-entitlements (extension)
     queuing/             # starfish-queuing (extension)
+    projection/          # starfish-projection (extension)
     audit/               # starfish-audit (extension)
     replica/             # starfish-replica (extension)
 docs/                    # Documentation (Markdown)
-  ts/client/             # Client guides (01-25)
+  ts/client/             # Client guides (01-26)
 examples/                # Usage examples (ts/ and python/)
 tests/
   test-vectors/          # Cross-language protocol conformance vectors (JSON)

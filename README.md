@@ -18,19 +18,30 @@ Works with any storage backend (S3, MongoDB, in-memory) and any auth model. The 
 
 ## Packages
 
-### Server
+Starfish ships **22 packages** — a TypeScript and a Python build of each of the 11 families below. All packages use **lockstep versioning** (every release bumps all 22 to the same version).
 
-| Package | Language | Description |
+### Core
+
+| TypeScript | Python | Description |
 |---|---|---|
-| `starfish-server` | Python | Protocol, encryption, config, FastAPI router, S3 storage |
-| `@drakkar.software/starfish-server` | TypeScript | Protocol, encryption, config, Hono router, CF Workers compatible |
+| `@drakkar.software/starfish-protocol` | `starfish-protocol` | Shared protocol primitives — hash, merge, crypto, types |
+| `@drakkar.software/starfish-server` | `starfish-server` | Protocol, encryption, config, router (Hono / FastAPI), storage backends |
+| `@drakkar.software/starfish-client` | `starfish-sdk` | Browser / Node.js / React Native client with sync manager |
 
-### Client SDKs
+### Extensions
 
-| Package | Language | Description |
+Each extension is an additive plugin/helper layered on the core — wire only what you need.
+
+| TypeScript | Python | Description |
 |---|---|---|
-| `@drakkar.software/starfish-client` | TypeScript | Browser, Node.js & React Native client with sync manager |
-| `starfish-sdk` | Python | Async client (httpx) with sync manager |
+| `@drakkar.software/starfish-keyring` | `starfish-keyring` | Multi-recipient delegated-encryption keyring (CEK wrapping, epoch rotation) |
+| `@drakkar.software/starfish-identities` | `starfish-identities` | Root identity, device caps, QR / relay pairing, revocation |
+| `@drakkar.software/starfish-sharing` | `starfish-sharing` | Member cap-certs and public links for cross-user sharing |
+| `@drakkar.software/starfish-entitlements` | `starfish-entitlements` | Feature-slug role enrichment (entitlement-based access control) |
+| `@drakkar.software/starfish-queuing` | `starfish-queuing` | Change events after each push (Memory / Custom / NATS backends) |
+| `@drakkar.software/starfish-projection` | `starfish-projection` | Incremental denormalized list documents from a source collection |
+| `@drakkar.software/starfish-audit` | `starfish-audit` | Structured audit logging of every action |
+| `@drakkar.software/starfish-replica` | `starfish-replica` | Multi-server replication (pull / push-through / bidirectional) |
 
 ## Quick Start
 
@@ -1054,17 +1065,27 @@ See the [CHANGELOG](CHANGELOG.md) for full details.
 ```
 starfish/
 ├── packages/
-│   ├── python/
+│   ├── python/            # protocol · server · client (starfish-sdk) + 8 extensions
 │   │   ├── protocol/      # Shared protocol primitives (hash, merge, crypto, types)
 │   │   ├── server/        # Python server (FastAPI router, S3 storage, encryption, config)
-│   │   └── client/        # Python client SDK (httpx + cryptography)
-│   └── ts/
+│   │   ├── client/        # Python client SDK (httpx + cryptography)
+│   │   ├── keyring/       # Multi-recipient delegated-encryption keyring
+│   │   ├── identities/    # Root identity, device caps, pairing, revocation
+│   │   ├── sharing/       # Member cap-certs + public links
+│   │   ├── entitlements/  # Feature-slug role enrichment
+│   │   ├── queuing/       # Change events (Memory / Custom / NATS)
+│   │   ├── projection/    # Incremental denormalized list documents
+│   │   ├── audit/         # Structured audit logging
+│   │   └── replica/       # Multi-server replication
+│   └── ts/                # same 11 families, mirrored (@drakkar.software/starfish-*)
 │       ├── protocol/      # Shared protocol primitives (hash, merge, crypto, types)
 │       ├── server/        # TypeScript server (Hono router, encryption, config, CF Workers)
-│       └── client/        # TypeScript client SDK + Zustand/Legend bindings
+│       ├── client/        # TypeScript client SDK + Zustand/Legend bindings
+│       ├── keyring/  identities/  sharing/  entitlements/
+│       └── queuing/  projection/  audit/  replica/
 ├── examples/
 │   ├── ts/ · python/      # Single-file examples, one per v3 feature slice
-│   └── app/               # Full-stack chat app (Vite/React + FastAPI) wiring all 6 extensions
+│   └── app/               # Full-stack chat app (Vite/React + FastAPI) wiring 6 extensions
 ├── tests/
 │   └── test-vectors/      # Cross-language hash/crypto/protocol test vectors
 ├── package.json           # pnpm workspace root
@@ -1116,7 +1137,7 @@ uv run pytest -s -m stress tests/protocol/test_append_stress.py
 
 See `docs/ts/server/append-only-collections.md` §Size considerations for what they measure.
 
-The TypeScript client has 259 tests across 23 test files covering sync, crypto, bindings, React hooks, broadcast, retry/circuit breaker, resolvers, migration, validation, polling, history, dedup, export, metrics, Suspense, and more. The TypeScript server has 149 tests across 17 test files covering config, protocol, encryption, router, queue, replica, storage, middleware (CORS, security headers, timeout), ETag, batch pull, field permissions, TTL, OpenAPI, and lifecycle. The Python server has 246 tests.
+The TypeScript client has 437 tests across 36 test files covering sync, crypto, bindings, React hooks, broadcast, retry/circuit breaker, resolvers, migration, validation, polling, history, dedup, export, metrics, Suspense, and more. The TypeScript server has 527 tests across 43 test files covering config, protocol, encryption, router, queue, replica, storage, middleware (CORS, security headers, timeout), ETag, batch pull, field permissions, TTL, OpenAPI, rate limiting, and lifecycle. The Python server has ~590 tests. The extension packages carry their own suites on top of these.
 
 Cross-language test vectors in `tests/test-vectors/` ensure identical behavior across all TypeScript and Python implementations:
 - `crypto.json` / `hash.json` — encryption and hashing parity
@@ -1454,7 +1475,7 @@ Gated collection:
   readRoles: ["entitlement:premium-package-1"], writeRoles: ["admin"] }
 ```
 
-> Full reference: [`docs/ts/server/entitlements.md`](docs/ts/server/entitlements.md)
+> Full reference: [`docs/ts/entitlements/01-overview.md`](docs/ts/entitlements/01-overview.md)
 
 ---
 
