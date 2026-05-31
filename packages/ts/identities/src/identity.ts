@@ -1,7 +1,8 @@
 import { getCrypto } from "@drakkar.software/starfish-protocol"
 import { ed25519, x25519 } from "@noble/curves/ed25519.js"
-import { schnorr } from "@noble/curves/secp256k1.js"
+import { schnorr, secp256k1 } from "@noble/curves/secp256k1.js"
 import { sha256 } from "@noble/hashes/sha2.js"
+import { keccak_256 } from "@noble/hashes/sha3.js"
 import { argon2id } from "hash-wasm"
 
 import { bytesToHex, hexToBytes, hkdfBytes } from "@drakkar.software/starfish-keyring"
@@ -30,11 +31,17 @@ export interface RootKeyPair {
  * exists only for external systems (e.g. Nostr-aware UIs, audit logs) to display
  * the bootstrap source. Absent on passphrase-derived identities.
  */
-export type BootstrapOrigin = {
-  kind: "secp256k1"
-  /** Originating secp256k1 x-only pubkey (64-char lowercase hex). */
-  pubHex: string
-}
+export type BootstrapOrigin =
+  | {
+      kind: "secp256k1"
+      /** Originating secp256k1 x-only pubkey (64-char lowercase hex). */
+      pubHex: string
+    }
+  | {
+      kind: "evm"
+      /** Originating EVM address (0x-prefixed, 40 hex chars). */
+      address: string
+    }
 
 /**
  * A v3 root identity: the deterministic Ed25519 + X25519 key pairs and the short
@@ -100,6 +107,53 @@ const BOOTSTRAP_SECP_KEM_INFO = "starfish-root-kem:x25519"
 export const SECP256K1_BOOTSTRAP_CHALLENGE: Uint8Array = sha256(
   new TextEncoder().encode("starfish-v3:bootstrap-secp256k1"),
 )
+
+// Bootstrap-from-EVM: separate salt, same reasoning as the secp256k1 path.
+const BOOTSTRAP_EVM_HKDF_SALT = "starfish-v3-bootstrap-evm"
+const BOOTSTRAP_EVM_SIGN_INFO = "starfish-root-sign:ed25519"
+const BOOTSTRAP_EVM_KEM_INFO = "starfish-root-kem:x25519"
+
+/**
+ * Default message the caller's EVM wallet signs (EIP-191 `personal_sign`) to
+ * bootstrap an identity. The signed digest is
+ * `keccak256("\x19Ethereum Signed Message:\n" + len + msg)`. Byte-identical
+ * across TS and Python — locked by
+ * `tests/test-vectors/identity-derivation-evm.json`. Sign it with a
+ * deterministic (RFC 6979) ECDSA signer.
+ *
+ * An app may pass its own `challenge` to {@link deriveRootIdentityFromEvmSignature}
+ * (e.g. `"myapp:bootstrap"`) to namespace its identities — distinct challenges
+ * yield distinct identities from the same wallet. Whatever challenge an app
+ * picks, it must stay fixed forever: changing it changes the signature, hence
+ * the derived `userId`.
+ */
+export const EVM_BOOTSTRAP_CHALLENGE = "starfish:bootstrap-evm"
+
+const EVM_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/
+
+/** The 32-byte digest an EVM `personal_sign` actually signs over `message`. */
+function eip191Digest(message: Uint8Array): Uint8Array {
+  const prefix = new TextEncoder().encode(
+    "\x19Ethereum Signed Message:\n" + message.length,
+  )
+  return keccak_256(new Uint8Array([...prefix, ...message]))
+}
+
+/**
+ * Recover the lowercase 0x EVM address that produced `signature` over `digest`.
+ * `signature` is the 65-byte `r‖s‖v` form an EVM wallet returns (`v` is 27/28,
+ * or 0/1). Throws on a malformed/unrecoverable signature.
+ */
+function recoverEvmAddress(digest: Uint8Array, signature: Uint8Array): string {
+  const v = signature[64]
+  const recid = v >= 27 ? v - 27 : v
+  if (recid !== 0 && recid !== 1) throw new Error("signature recovery id out of range")
+  const pt = secp256k1.Signature.fromBytes(signature.slice(0, 64), "compact")
+    .addRecoveryBit(recid)
+    .recoverPublicKey(digest)
+  const uncompressed = pt.toBytes(false) // 0x04 ‖ X(32) ‖ Y(32)
+  return "0x" + bytesToHex(keccak_256(uncompressed.slice(1)).slice(-20))
+}
 
 async function argon2idStretch(passphrase: string): Promise<Uint8Array> {
   const enc = new TextEncoder()
@@ -288,5 +342,119 @@ export async function deriveRootIdentityFromSecp256k1Signature(
       kemPub: bytesToHex(kemPubBytes),
     },
     bootstrapOrigin: { kind: "secp256k1", pubHex: secpPubHex },
+  }
+}
+
+// ── Bootstrap from an EVM wallet signature ───────────────────────────────────
+
+/** Input for {@link deriveRootIdentityFromEvmSignature}. */
+export interface EvmBootstrapInput {
+  /** Originating EVM address (0x-prefixed, 40 hex chars). */
+  address: string
+  /**
+   * 65-byte `r‖s‖v` ECDSA signature an EVM wallet returns for an EIP-191
+   * `personal_sign` over {@link EVM_BOOTSTRAP_CHALLENGE}.
+   *
+   * **TREAT AS PRIVATE KEY MATERIAL.** This signature is the sole HKDF input
+   * that produces the resulting Ed25519 + X25519 seeds; anyone holding it can
+   * reconstruct the full Starfish identity. Do not log, persist, or transmit
+   * it; consume it once and forget it.
+   *
+   * The caller MUST use a **deterministic ECDSA signer** (RFC 6979 — the
+   * default for `eth-account`, ethers, viem). EIP-191 personal-sign carries no
+   * per-call salt, so a standard signer is reproducible. A non-deterministic
+   * signer yields a different identity on each call → permanent loss of access
+   * to any caps already issued by the previous derivation.
+   */
+  signature: Uint8Array
+  /**
+   * The message the wallet signed. Defaults to {@link EVM_BOOTSTRAP_CHALLENGE}.
+   * Pass a custom value (e.g. `"myapp:bootstrap"`) to namespace an app's
+   * identities — a different challenge yields a different identity from the same
+   * wallet. Must equal the string the wallet actually signed, and must stay
+   * fixed for the app forever.
+   */
+  challenge?: string
+}
+
+/**
+ * Derives a v3 root identity from a deterministic EVM-wallet signature.
+ *
+ * Lets a user with an existing EVM key bootstrap a Starfish identity without
+ * ever exposing the EVM private key to Starfish: the caller signs the challenge
+ * (default {@link EVM_BOOTSTRAP_CHALLENGE}, or an app-specific one) via EIP-191
+ * `personal_sign` and hands the 65-byte signature in. The signer is verified by
+ * recovering the address from the EIP-191 digest of that same challenge and
+ * checking it equals `address`, then the signature bytes are piped through
+ * HKDF-SHA256 to produce the Ed25519 + X25519 seeds.
+ * Starfish itself only ever holds the derived Ed25519 identity from this point
+ * on; the EVM private key never appears on the wire.
+ *
+ * The returned identity carries a `bootstrapOrigin: { kind: "evm", address }`
+ * metadata field for external systems to display the origin. It is not signed,
+ * not transmitted with caps or requests, and not load-bearing for any check.
+ *
+ * **The signature is private-key-equivalent** and the **determinism contract**
+ * applies — see {@link EvmBootstrapInput.signature}. Recommended pattern: derive
+ * once at first install, persist the resulting identity (e.g. via
+ * `sealWithPassphrase`), and never call this function again for the same EVM
+ * root unless you intend to start over.
+ */
+export async function deriveRootIdentityFromEvmSignature(
+  input: EvmBootstrapInput,
+): Promise<RootIdentity> {
+  const { address, signature, challenge = EVM_BOOTSTRAP_CHALLENGE } = input
+  if (typeof address !== "string" || !EVM_ADDRESS_RE.test(address)) {
+    throw new Error("address must be a 0x-prefixed 40-hex-character EVM address")
+  }
+  if (!(signature instanceof Uint8Array) || signature.length !== 65) {
+    throw new Error("signature must be a 65-byte Uint8Array (r‖s‖v ECDSA)")
+  }
+  // Verify the signer recovers to `address` over the same challenge. Catches
+  // caller bugs and makes `bootstrapOrigin` a verifiable claim.
+  let recovered: string
+  try {
+    recovered = recoverEvmAddress(
+      eip191Digest(new TextEncoder().encode(challenge)),
+      signature,
+    )
+  } catch {
+    throw new Error(
+      "EVM signature does not recover a valid signer over the Starfish bootstrap challenge",
+    )
+  }
+  if (recovered.toLowerCase() !== address.toLowerCase()) {
+    throw new Error(
+      "EVM signature does not recover to address over the Starfish bootstrap challenge",
+    )
+  }
+
+  const enc = new TextEncoder()
+  const edSeed = await hkdfBytes(
+    signature,
+    enc.encode(BOOTSTRAP_EVM_HKDF_SALT),
+    enc.encode(BOOTSTRAP_EVM_SIGN_INFO),
+    32,
+  )
+  const kemSeed = await hkdfBytes(
+    signature,
+    enc.encode(BOOTSTRAP_EVM_HKDF_SALT),
+    enc.encode(BOOTSTRAP_EVM_KEM_INFO),
+    32,
+  )
+
+  const edPubBytes = ed25519.getPublicKey(edSeed)
+  const kemPubBytes = x25519.getPublicKey(kemSeed)
+  const userId = await userIdFromEdPub(edPubBytes)
+
+  return {
+    userId,
+    keys: {
+      edPriv: bytesToHex(edSeed),
+      edPub: bytesToHex(edPubBytes),
+      kemPriv: bytesToHex(kemSeed),
+      kemPub: bytesToHex(kemPubBytes),
+    },
+    bootstrapOrigin: { kind: "evm", address },
   }
 }

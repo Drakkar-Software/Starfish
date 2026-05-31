@@ -1,0 +1,59 @@
+{
+  "description": "Cross-language vector for the EVM-signature → Ed25519 bootstrap. The caller signs the per-case `challenge` message (default EVM_BOOTSTRAP_CHALLENGE='starfish:bootstrap-evm'; an app may pass its own) with their EVM wallet via EIP-191 personal_sign (deterministic RFC 6979 ECDSA), yielding a 65-byte r‖s‖v signature. The signer is verified by recovering the address from the EIP-191 digest (keccak256('\\x19Ethereum Signed Message:\\n'+len+msg)) of that same challenge and checking it equals the given address, then the 65-byte signature is HKDF-expanded into Ed25519 and X25519 seeds via salt='starfish-v3-bootstrap-evm' and the two info strings. A custom challenge changes the signature, hence the derived userId, from the same wallet (see fixture-evm-custom-challenge: same key as anvil-1, different userId).",
+  "defaultChallenge": "starfish:bootstrap-evm",
+  "hkdf": {
+    "saltUtf8": "starfish-v3-bootstrap-evm",
+    "signInfoUtf8": "starfish-root-sign:ed25519",
+    "kemInfoUtf8": "starfish-root-kem:x25519"
+  },
+  "cases": [
+    {
+      "label": "fixture-evm-anvil-1",
+      "privHex": "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d",
+      "address": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+      "challenge": "starfish:bootstrap-evm",
+      "signatureHex": "0x76e309eee58fce472a4cbd7b85ed69021bf86a8b32d5dfdad97c4ea4d42d9b994631146b05f1f981c08b8cea1b23b76551b47c2a773694fd961ee7c76375da361b",
+      "edPrivHex": "a0d7e7bb07051194fb296fc88c88966f0d5be4e941e7ec690e8d810576174905",
+      "edPubHex": "44f48cb0388d3b048d6a038d280749fe6dd76d31294f040e13b335b5513825f3",
+      "kemPrivHex": "a40ce37749d46fcd0f939f5dc27fe9907b417a3a5e0fb3416cacea8a6069c374",
+      "kemPubHex": "91f7ea1aa65bc939124fa54457c425f80148a9512b5aee179d52c58bc131f776",
+      "userId": "fe792d608ddee7dd0dd09f5a1da59c33",
+      "bootstrapOrigin": {
+        "kind": "evm",
+        "address": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
+      }
+    },
+    {
+      "label": "fixture-evm-anvil-2",
+      "privHex": "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a",
+      "address": "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC",
+      "challenge": "starfish:bootstrap-evm",
+      "signatureHex": "0x09512737385c0ccb0e616e67c4808af44f4b10e1b24b1c6157bd3d20e67591f4091405311b55e701b36014aab40d165a228334dbc9b8a2fe93b5222bcb8d8c781b",
+      "edPrivHex": "1081e58e020dbf923c588bb952dff1da57e7d0f0b5107fb9d5c5005aaa2ac125",
+      "edPubHex": "f6fb2ec521492b74b33deaf9eac723cc8324ca6eaf42deb6e0f1490624cfa9ad",
+      "kemPrivHex": "79d38e2ed933ad64cf683939e2c3339cff3be5519d538d358cabaee93bdbce66",
+      "kemPubHex": "2d864759b608dca3ab1ee688704803eb80199d5d9e9d514e96229c09bc65b470",
+      "userId": "04aef801765b20e6803902565b7684cf",
+      "bootstrapOrigin": {
+        "kind": "evm",
+        "address": "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
+      }
+    },
+    {
+      "label": "fixture-evm-custom-challenge",
+      "privHex": "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d",
+      "address": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+      "challenge": "myapp:bootstrap",
+      "signatureHex": "0xb083672089d522fc49f12970eaf8fa8784bfe2dc88d9d8338a83e6d0339a6f404739569e989c6bc2a6bc31b745f0ab52172b47eee321a3396642913cd3adcf791c",
+      "edPrivHex": "1a5350e36de1a188bf13a60ba9fc8a75671fd3481a2e6527895f72ae0780f14f",
+      "edPubHex": "d2923866f924182ada31ff649cef2d49a52012b9b9b81682f33e16f86e148997",
+      "kemPrivHex": "e98579c28468933bd1578abbbf0b59060dca17790dafbbaed943cccee8eda76a",
+      "kemPubHex": "3ba6d21fea7616b4a2026d624325c218a8f51bb2c89d785abfc1192cf3aaf647",
+      "userId": "1f7dcfc4dfe3a5069a54d36b8996b851",
+      "bootstrapOrigin": {
+        "kind": "evm",
+        "address": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
+      }
+    }
+  ]
+}

@@ -1,5 +1,47 @@
 # Changelog
 
+## 3.0.0-alpha.18 — EVM-signature root-identity bootstrap
+
+Lets a user with an existing EVM wallet (MetaMask, a hardware signer, any
+secp256k1 EOA) bootstrap a Starfish identity without exposing the EVM private
+key — the secp256k1-signature path of a12, applied to ECDSA/EIP-191 instead of
+BIP-340 Schnorr. The EVM key never appears on the wire; Starfish holds only the
+derived Ed25519 identity. Lands in TypeScript and Python.
+
+### Added
+
+- **`deriveRootIdentityFromEvmSignature` (TS) / `derive_root_identity_from_evm_signature` (Python)**
+  in `starfish-identities`. The caller signs a challenge (default
+  `EVM_BOOTSTRAP_CHALLENGE`, or an app-supplied one) with their EVM wallet via
+  EIP-191 `personal_sign`; the 65-byte `r‖s‖v` signature is verified by recovering
+  the signer over that challenge (keccak256 EIP-191 digest → secp256k1 ECDSA
+  recover) and checking it equals the supplied address, then HKDF-SHA256-expanded
+  (salt `starfish-v3-bootstrap-evm`) into the Ed25519 sign + X25519 KEM seeds.
+  Determinism contract: the caller MUST sign with deterministic ECDSA (RFC 6979 —
+  the default for eth-account / ethers / viem); EIP-191 personal-sign carries no
+  per-call salt, so a standard signer is reproducible. The signature is
+  **private-key-equivalent** — derive once, never log/persist/transmit it.
+- **App-customizable challenge** — the optional `challenge` argument (TS
+  `EvmBootstrapInput.challenge`; Python keyword) lets an app namespace its
+  identities (e.g. `"myapp:bootstrap"`): a distinct challenge yields a distinct
+  `user_id` from the same wallet. The challenge passed must equal what the wallet
+  signed, and an app must keep it fixed forever.
+- **`EVM_BOOTSTRAP_CHALLENGE` (TS + Python)** — the default personal-sign message
+  (`"starfish:bootstrap-evm"`). Byte-identical across languages.
+- **`evm` variant of `BootstrapOrigin`** (`{ kind: "evm", address }`) recording the
+  originating EVM address on a bootstrapped `RootIdentity`. Non-load-bearing — never
+  on the wire; for external systems (wallet-aware UIs, audit logs) to display the source.
+- **`EvmBootstrapInput` type** (TS) exported from `starfish-identities`.
+- **`tests/test-vectors/identity-derivation-evm.json`** — cross-language lock vector
+  for the EVM bootstrap derivation.
+
+### Changed
+
+- `starfish-identities` (Python) gains a `pycryptodome` dependency (keccak-256 for the
+  EIP-191 digest + address recovery); `coincurve`, already present for the secp256k1
+  verify, performs the ECDSA recovery.
+- Lockstep version bump of the whole suite a17 → a18.
+
 ## 3.0.0-alpha.17 — publish the projection package
 
 ### Fixed

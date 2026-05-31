@@ -122,6 +122,47 @@ x25519 seed  = HKDF-SHA256(ikm = signature,
 
 Locked cross-language by [`tests/test-vectors/identity-derivation-secp256k1.json`](../../../tests/test-vectors/identity-derivation-secp256k1.json).
 
+## Bootstrap from an EVM wallet
+
+The same idea applies to an EVM key (MetaMask, a hardware signer, any secp256k1 EOA). Instead of a BIP-340 Schnorr signature over a 32-byte challenge, the wallet produces an EIP-191 `personal_sign` signature over a fixed message; the verifier recovers the signer's address and binds it:
+
+```ts
+import {
+  EVM_BOOTSTRAP_CHALLENGE,
+  deriveRootIdentityFromEvmSignature,
+} from "@drakkar.software/starfish-identities"
+
+// The wallet signs the fixed challenge with EIP-191 personal_sign. Standard
+// EVM signers (eth-account, ethers, viem) use deterministic ECDSA (RFC 6979),
+// so this is reproducible — see the determinism contract below.
+const signature: Uint8Array = await wallet.personalSign(EVM_BOOTSTRAP_CHALLENGE)
+
+const root = await deriveRootIdentityFromEvmSignature({
+  address,    // originating EVM address (0x-prefixed, 40 hex)
+  signature,  // 65-byte r‖s‖v ECDSA signature
+})
+// root.bootstrapOrigin = { kind: "evm", address }
+```
+
+The signer is recovered from the EIP-191 digest (`keccak256("\x19Ethereum Signed Message:\n" + len + msg)` → secp256k1 ECDSA recover) and checked against `address` before any derivation runs. The 65-byte signature is then HKDF-expanded exactly like the secp256k1 path, under an EVM-specific salt (`"starfish-v3-bootstrap-evm"`) so an EVM root and a secp256k1 root can never collide.
+
+`EVM_BOOTSTRAP_CHALLENGE` is `"starfish:bootstrap-evm"`. An app can pass its own `challenge` to namespace its identities — a distinct challenge produces a distinct `userId` from the same wallet (so two Starfish-based apps don't derive the same identity from one wallet). Whatever string an app chooses, the wallet must sign that exact string and the app must keep it fixed forever:
+
+```ts
+const signature = await wallet.personalSign("myapp:bootstrap")
+const root = await deriveRootIdentityFromEvmSignature({
+  address,
+  signature,
+  challenge: "myapp:bootstrap",
+})
+```
+
+**Determinism contract:** the wallet MUST sign with deterministic ECDSA (RFC 6979). This is the default for standard EVM signers, and EIP-191 personal-sign carries no per-call salt — but a signer that injects fresh randomness would yield a different identity on every call.
+
+**The signature is private-key-equivalent.** It is the sole input that derives the identity, so anyone holding it can reconstruct the full root. Derive once at first install, persist the resulting identity (e.g. via `sealWithPassphrase`), and never log, transmit, or persist the raw signature.
+
+Locked cross-language by [`tests/test-vectors/identity-derivation-evm.json`](../../../tests/test-vectors/identity-derivation-evm.json).
+
 ## Per-device identities
 
 Every device added after the first one runs under **freshly generated** Ed25519 + X25519 key pairs — they are not derived from the passphrase.

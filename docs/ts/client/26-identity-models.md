@@ -5,15 +5,15 @@ X25519 for the KEM (key encapsulation). Every cap-cert, request signature,
 revocation list, append-author signature, and keyring entry is Ed25519/X25519
 — there is no on-wire suite discriminator.
 
-Users with an **external secp256k1 root** (e.g. a Nostr `nsec`, a Bitcoin
-wallet, any BIP-340 Schnorr signer) can still bootstrap a Starfish identity:
-the caller signs a fixed challenge with their external signer, and Starfish
-HKDF-derives the Ed25519 + X25519 seeds from that signature. The secp256k1
-root never appears on the wire; the resulting identity is a normal Ed25519
-identity from every verifier's perspective.
+Users with an **external secp256k1 root** (a Nostr `nsec` / BIP-340 Schnorr
+signer, or an **EVM wallet** signing EIP-191) can still bootstrap a Starfish
+identity: the caller signs a fixed challenge with their external signer, and
+Starfish HKDF-derives the Ed25519 + X25519 seeds from that signature. The
+external root never appears on the wire; the resulting identity is a normal
+Ed25519 identity from every verifier's perspective.
 
 See [11. Identity & Key Derivation](./11-identity-key-derivation.md) for the
-two entry points (passphrase and secp256k1 bootstrap).
+entry points (passphrase, secp256k1 Schnorr bootstrap, and EVM bootstrap).
 
 ## Why ed25519-only?
 
@@ -60,18 +60,48 @@ different identity on every call. Most Schnorr libraries accept an
 `aux_rand` argument; pass `new Uint8Array(32)` (TS) / `b"\x00" * 32`
 (Python).
 
+## Bringing your own EVM wallet
+
+```ts
+import {
+  EVM_BOOTSTRAP_CHALLENGE,
+  deriveRootIdentityFromEvmSignature,
+} from "@drakkar.software/starfish-identities"
+
+// The wallet signs EVM_BOOTSTRAP_CHALLENGE (a fixed message) with EIP-191
+// personal_sign. Standard EVM signers use deterministic ECDSA (RFC 6979).
+const signature: Uint8Array = await wallet.personalSign(EVM_BOOTSTRAP_CHALLENGE)
+
+const identity = await deriveRootIdentityFromEvmSignature({
+  address,    // the originating EVM address (0x-prefixed, 40 hex)
+  signature,  // 65-byte r‖s‖v ECDSA signature
+})
+
+// `identity.bootstrapOrigin = { kind: "evm", address }`.
+```
+
+The function recovers the signer from the EIP-191 digest and checks it equals
+`address` (catches caller bugs; makes `bootstrapOrigin` a verifiable claim),
+then HKDF-expands the 65-byte signature into the Ed25519 + X25519 seeds under an
+EVM-specific salt. `EVM_BOOTSTRAP_CHALLENGE` defaults to `"starfish:bootstrap-evm"`;
+pass a custom `challenge` to namespace an app's identities (a distinct challenge →
+a distinct `userId` from the same wallet). **Determinism contract:** the wallet
+MUST sign with deterministic ECDSA (RFC 6979) — the default for standard EVM
+signers; EIP-191 carries no per-call salt.
+
 ## What `bootstrapOrigin` is and isn't
 
 - **Is**: a non-load-bearing metadata field on `RootIdentity` recording the
-  originating secp256k1 pubkey. Useful for displaying "this Starfish
-  identity is bootstrapped from npub1…" in a UI, or recording it in an
-  audit log.
+  originating root — `{ kind: "secp256k1", pubHex }` or `{ kind: "evm", address }`.
+  Useful for displaying "this Starfish identity is bootstrapped from npub1…" or
+  "…from 0x…" in a UI, or recording it in an audit log.
 - **Isn't**: signed, transmitted with caps or requests, or load-bearing for
   any verification. The Ed25519 identity stands on its own.
 
 ## Cross-language parity
 
-The bootstrap derivation is byte-identical across TypeScript and Python —
-locked by `tests/test-vectors/identity-derivation-secp256k1.json`. The same
-secp256k1 signature produces the same Ed25519 + X25519 keys (and therefore
-the same `userId`) in both runtimes.
+Both bootstrap derivations are byte-identical across TypeScript and Python —
+locked by `tests/test-vectors/identity-derivation-secp256k1.json` and
+`tests/test-vectors/identity-derivation-evm.json`. The same external signature
+produces the same Ed25519 + X25519 keys (and therefore the same `userId`) in
+both runtimes.

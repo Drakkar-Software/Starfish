@@ -9,13 +9,16 @@
 export {
   deriveRootIdentity,
   deriveRootIdentityFromSecp256k1Signature,
+  deriveRootIdentityFromEvmSignature,
   SECP256K1_BOOTSTRAP_CHALLENGE,
+  EVM_BOOTSTRAP_CHALLENGE,
 } from "./identity.js"
 export type {
   RootIdentity,
   RootKeyPair,
   BootstrapOrigin,
   Secp256k1BootstrapInput,
+  EvmBootstrapInput,
 } from "./identity.js"
 
 export { mintDeviceCap, scopes } from "./cap-mint.js"

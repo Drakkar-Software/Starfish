@@ -7,10 +7,12 @@ server-relay), the per-user device directory, and the server plugin.
 
 from starfish_identities.identity import (
     BootstrapOrigin,
+    EVM_BOOTSTRAP_CHALLENGE,
     RootIdentity,
     RootKeyPair,
     SECP256K1_BOOTSTRAP_CHALLENGE,
     derive_root_identity,
+    derive_root_identity_from_evm_signature,
     derive_root_identity_from_secp256k1_signature,
 )
 from starfish_identities.cap_mint import (
@@ -85,8 +87,10 @@ __all__ = [
     "RootIdentity",
     "RootKeyPair",
     "SECP256K1_BOOTSTRAP_CHALLENGE",
+    "EVM_BOOTSTRAP_CHALLENGE",
     "derive_root_identity",
     "derive_root_identity_from_secp256k1_signature",
+    "derive_root_identity_from_evm_signature",
     "MintOpts",
     "ScopePreset",
     "mint_device_cap",
