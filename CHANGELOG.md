@@ -1,5 +1,20 @@
 # Changelog
 
+## 3.0.0-alpha.17 — publish the projection package
+
+### Fixed
+
+- **`starfish-projection` is now actually published** to npm and PyPI. The package
+  shipped in source in a16 but the release workflows had no job for it, so the
+  `v3.0.0-alpha.16` tag published every package *except* projection — leaving
+  downstreams that pin `starfish-projection==3.0.0a16` unable to install it. Both
+  `publish-typescript.yml` and `publish-python.yml` now build, test and publish
+  `projection` alongside the other packages (`needs: protocol, server`).
+
+### Changed
+
+- Version bump of the whole suite a16 → a17 (no API changes; release-plumbing only).
+
 ## 3.0.0-alpha.16 — new projection (incremental-list) extension
 
 A new building block for directory/index-style features: maintaining a single
