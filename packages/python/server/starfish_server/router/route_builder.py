@@ -68,6 +68,9 @@ from starfish_server.constants import (
     IDENTITY_PARAM,
     IDENTITY_KEY,
     QUERY_CHECKPOINT,
+    QUERY_LIMIT,
+    QUERY_LAST,
+    QUERY_FULL,
     APPEND_DEFAULT_FIELD,
     APPEND_MAX_FUTURE_TS_SKEW_MS,
 )
@@ -951,7 +954,9 @@ def _add_collection_routes(
 
             store = opts.store
             checkpoint_param = request.query_params.get(QUERY_CHECKPOINT)
-            last_param = request.query_params.get("last")
+            last_param = request.query_params.get(QUERY_LAST)
+            limit_param = request.query_params.get(QUERY_LIMIT)
+            full_param = request.query_params.get(QUERY_FULL)
             with_keyring = is_with_keyring_enabled(
                 request.query_params.get("withKeyring")
             )
@@ -978,6 +983,11 @@ def _add_collection_routes(
                     is_public=is_public,
                     last_param=last_param,
                     context=pull_ctx,
+                    limit_param=limit_param,
+                    full_param=full_param,
+                    allow_full=col.append_only.allow_full,
+                    max_pull_limit=col.append_only.max_pull_limit,
+                    max_checkpoint_age_ms=col.append_only.max_checkpoint_age_ms,
                 )
             else:
                 response = await handle_sync_pull(

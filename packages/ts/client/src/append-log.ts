@@ -281,9 +281,11 @@ export class AppendLogCursor {
     const start = performance.now()
     try {
       const since = this.lastCheckpoint
-      // Omit `since` on cold start so the request carries no `?checkpoint=`.
+      // Cold start (`since === 0`) wants the whole log: send an explicit
+      // `?full=true` since the server now rejects an unbounded append-only pull.
+      // Warm resume carries `?checkpoint=since`.
       const opts: AppendPullOptions =
-        since > 0 ? { appendField: this.appendField, since } : { appendField: this.appendField }
+        since > 0 ? { appendField: this.appendField, since } : { appendField: this.appendField, full: true }
       const raw = await this.client.pull<AppendElement>(this.pullPath, opts)
 
       const batch: AppendElement[] = [] // decrypted, returned to the caller

@@ -58,6 +58,9 @@ import {
   IDENTITY_PARAM,
   IDENTITY_KEY,
   QUERY_CHECKPOINT,
+  QUERY_LIMIT,
+  QUERY_LAST,
+  QUERY_FULL,
   APPEND_DEFAULT_FIELD,
   APPEND_MAX_FUTURE_TS_SKEW_MS,
 } from "../constants.js"
@@ -971,7 +974,9 @@ function addCollectionRoutes(
       const checkpointParam = c.req.query(QUERY_CHECKPOINT)
       const isPublic = col.readRoles.includes(ROLE_PUBLIC)
 
-      const lastParam = c.req.query("last")
+      const lastParam = c.req.query(QUERY_LAST)
+      const limitParam = c.req.query(QUERY_LIMIT)
+      const fullParam = c.req.query(QUERY_FULL)
       let withKeyring = isWithKeyringEnabled(c.req.query("withKeyring"))
       // The sibling `<key>/_keyring` read must be authorized like any other
       // path: a cap that denies the keyring (e.g. scopes.writer) must not read
@@ -996,6 +1001,13 @@ function addCollectionRoutes(
             isPublic,
             lastParam,
             pullCtx,
+            limitParam,
+            fullParam,
+            {
+              allowFull: col.appendOnly?.allowFull,
+              maxPullLimit: col.appendOnly?.maxPullLimit,
+              maxCheckpointAgeMs: col.appendOnly?.maxCheckpointAgeMs,
+            },
           )
         : await handleSyncPull(
             documentKey,

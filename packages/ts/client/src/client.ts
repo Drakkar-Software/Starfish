@@ -89,6 +89,13 @@ export interface AppendPullOptions {
   since?: number
   /** Return only the last K items (applied after `since` filter). Sent as `?last=`. */
   last?: number
+  /** Return only the last K items. Alias of `last`; sent as `?limit=`. When both
+   *  are given, `limit` wins. */
+  limit?: number
+  /** Explicitly fetch the whole collection (sent as `?full=true`). Mutually
+   *  exclusive with `since`/`limit`/`last` — the server requires a pull to declare
+   *  exactly one of {checkpoint, limit/last, full}. */
+  full?: boolean
 }
 
 /**
@@ -336,13 +343,24 @@ export class StarfishClient {
         }
       } else {
         appendField = opts.appendField ?? APPEND_DEFAULT_FIELD
+        // `full` means "the whole collection" — it cannot be combined with a bound.
+        if (opts.full && (opts.since != null || opts.limit != null || opts.last != null)) {
+          throw new Error("full cannot be combined with since, limit, or last")
+        }
         if (opts.since != null) {
           if (opts.since < 0) throw new Error("since must be non-negative")
           params.set("checkpoint", String(opts.since))
         }
+        if (opts.limit != null) {
+          if (opts.limit < 0) throw new Error("limit must be non-negative")
+          params.set("limit", String(opts.limit))
+        }
         if (opts.last != null) {
           if (opts.last < 0) throw new Error("last must be non-negative")
           params.set("last", String(opts.last))
+        }
+        if (opts.full) {
+          params.set("full", "true")
         }
       }
       if (params.size > 0) pathAndQuery += `?${params.toString()}`

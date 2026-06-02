@@ -25,6 +25,9 @@ ACTION_LIST = "list"
 IDENTITY_PARAM = "{identity}"
 IDENTITY_KEY = "identity"
 QUERY_CHECKPOINT = "checkpoint"
+QUERY_LIMIT = "limit"
+QUERY_LAST = "last"
+QUERY_FULL = "full"
 
 # HKDF info strings (domain separation)
 HKDF_INFO_DEFAULT = "starfish-data"
@@ -40,6 +43,16 @@ APPEND_DEFAULT_FIELD = "items"
 APPEND_MAX_FUTURE_TS_SKEW_MS = 300_000
 # Append rejected because the collection's ``maxItems`` cap is reached.
 ERROR_APPEND_LIMIT_EXCEEDED = "append_limit_exceeded"
+# Append-only pull rejected: no bound given. A pull MUST declare how much it
+# fetches via one of ``?checkpoint=``, ``?limit=``, ``?last=``, or ``?full=true``.
+ERROR_PULL_BOUND_REQUIRED = "pull_bound_required"
+# Append-only pull rejected: ``?full=true`` combined with a bound
+# (``checkpoint``/``limit``/``last``) — contradictory, ``full`` means "everything".
+ERROR_FULL_WITH_BOUNDS = "full_with_bounds"
+# Append-only pull rejected: ``?full=true`` but the collection has ``allowFull: false``.
+ERROR_FULL_NOT_ALLOWED = "full_not_allowed"
+# Append-only pull rejected: ``?checkpoint=`` is older than ``maxCheckpointAgeMs``.
+ERROR_CHECKPOINT_TOO_OLD = "checkpoint_too_old"
 # Suffix appended to a document key to namespace its segmented-storage chunks,
 # e.g. head ``events/X`` -> chunks under ``events/X__seg/``. A sibling prefix (not
 # a child of the head key) so the head can stay a single file even on the

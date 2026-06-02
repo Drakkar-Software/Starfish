@@ -10,7 +10,13 @@ import type { ObjectStore, StoreContext } from "../storage/base.js"
 import { pull } from "../protocol/pull.js"
 import { push, appendSegPrefix, appendChunkKey, type Author } from "../protocol/push.js"
 import type { PushSuccess, StoredDocument, AppendElement } from "../protocol/types.js"
-import { ERROR_HASH_MISMATCH } from "../constants.js"
+import {
+  ERROR_HASH_MISMATCH,
+  ERROR_PULL_BOUND_REQUIRED,
+  ERROR_FULL_WITH_BOUNDS,
+  ERROR_FULL_NOT_ALLOWED,
+  ERROR_CHECKPOINT_TOO_OLD,
+} from "../constants.js"
 
 const SAFE_PARAM = /^[a-zA-Z0-9._:@-]+$/
 const UNSAFE_KEY = /\.\.|[\x00-\x1f]|\/\//
@@ -280,14 +286,30 @@ async function readAppendChunks(
   return items
 }
 
+/** Per-collection limits applied to an append-only pull. */
+export interface AppendPullBounds {
+  /** When `false`, `?full=true` is rejected. Defaults to `true`. */
+  allowFull?: boolean
+  /** Clamp the requested `?limit=`/`?last=` tail down to this. */
+  maxPullLimit?: number
+  /** Reject a `?checkpoint=` older than `now - maxCheckpointAgeMs`. */
+  maxCheckpointAgeMs?: number
+}
+
 /**
  * Pull handler for appendOnly persist=true collections.
  *
- * Each stored element is a `{ts, data}` envelope. When a checkpoint is requested,
- * returns only elements whose `ts` is strictly greater than the checkpoint, found
- * by binary search (the array is strictly increasing in `ts`). `?last=K` then
- * trims to the last K of those. The full `{ts, data}` envelopes are returned —
- * `data` is plaintext under "none" and an encryptor wrapper under "delegated".
+ * A pull MUST declare how much it fetches: one of `?checkpoint=` (incremental),
+ * `?limit=`/`?last=` (tail of K), or `?full=true` (the whole collection). An
+ * unbounded pull is rejected `400 pull_bound_required`; `?full=true` cannot be
+ * combined with a bound (`400 full_with_bounds`). `limit` is an alias of `last`
+ * (tail of K, newest); when both are given, `limit` wins.
+ *
+ * Each stored element is a `{ts, data}` envelope. With a checkpoint, returns only
+ * elements whose `ts` is strictly greater than it, found by binary search (the
+ * array is strictly increasing in `ts`); the tail bound then trims to the last K.
+ * The full `{ts, data}` envelopes are returned — `data` is plaintext under "none"
+ * and an encryptor wrapper under "delegated".
  */
 export async function handleAppendOnlyPull(
   documentKey: string,
@@ -298,6 +320,9 @@ export async function handleAppendOnlyPull(
   isPublic: boolean = true,
   lastParam?: string | null,
   context?: StoreContext,
+  limitParam?: string | null,
+  fullParam?: string | null,
+  bounds?: AppendPullBounds,
 ): Promise<PullResponse> {
   if (isUnsafeDocumentKey(documentKey)) {
     return { body: { error: "Invalid path parameter" }, status: 400 }
@@ -312,16 +337,47 @@ export async function handleAppendOnlyPull(
     checkpoint = parsed
   }
 
+  // `limit` is an alias of `last`; when both are present, `limit` wins.
   let last: number | null = null
-  if (lastParam != null) {
-    const parsed = parseInt(lastParam, 10)
-    if (isNaN(parsed) || parsed < 0 || String(parsed) !== lastParam) {
-      return { body: { error: "Invalid last" }, status: 400 }
+  for (const [name, raw] of [["limit", limitParam], ["last", lastParam]] as const) {
+    if (raw == null) continue
+    const parsed = parseInt(raw, 10)
+    if (isNaN(parsed) || parsed < 0 || String(parsed) !== raw) {
+      return { body: { error: `Invalid ${name}` }, status: 400 }
     }
+    if (name === "limit") { last = parsed; break }
     last = parsed
   }
 
+  const full = fullParam === "true" || fullParam === "1"
+
+  // A pull must declare its bound. `checkpoint=0` counts as present (explicit
+  // "from the start") — only a fully absent set of params is rejected.
+  if (checkpointParam == null && last === null && !full) {
+    return { body: { error: ERROR_PULL_BOUND_REQUIRED }, status: 400 }
+  }
+  if (full && (checkpointParam != null || last !== null)) {
+    return { body: { error: ERROR_FULL_WITH_BOUNDS }, status: 400 }
+  }
+  if (full && bounds?.allowFull === false) {
+    return { body: { error: ERROR_FULL_NOT_ALLOWED }, status: 400 }
+  }
+
   const now = Date.now()
+
+  if (
+    checkpointParam != null &&
+    bounds?.maxCheckpointAgeMs != null &&
+    checkpoint < now - bounds.maxCheckpointAgeMs
+  ) {
+    return { body: { error: ERROR_CHECKPOINT_TOO_OLD }, status: 400 }
+  }
+
+  // Clamp the requested tail to the collection cap.
+  if (last !== null && bounds?.maxPullLimit != null && last > bounds.maxPullLimit) {
+    last = bounds.maxPullLimit
+  }
+
   const raw = await store.getString(documentKey, context)
 
   if (!raw) {

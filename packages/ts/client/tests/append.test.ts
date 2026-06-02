@@ -100,6 +100,38 @@ describe("client.pull with AppendPullOptions", () => {
     )
   })
 
+  it("sends ?limit=<K> when limit is provided", async () => {
+    const fetchSpy = mockFetch({ items: [] })
+    const c = new StarfishClient({ baseUrl: "https://api.example.com/v1", fetch: fetchSpy })
+
+    await c.pull("/pull/events", { appendField: "items", limit: 5 })
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "https://api.example.com/v1/pull/events?limit=5",
+      expect.any(Object),
+    )
+  })
+
+  it("sends ?full=true when full is provided", async () => {
+    const fetchSpy = mockFetch({ items: [] })
+    const c = new StarfishClient({ baseUrl: "https://api.example.com/v1", fetch: fetchSpy })
+
+    await c.pull("/pull/events", { appendField: "items", full: true })
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "https://api.example.com/v1/pull/events?full=true",
+      expect.any(Object),
+    )
+  })
+
+  it("throws (no request) when full is combined with since/limit/last", async () => {
+    const fetchSpy = mockFetch({ items: [] })
+    const c = new StarfishClient({ baseUrl: "https://api.example.com/v1", fetch: fetchSpy })
+
+    for (const bound of [{ since: 1 }, { limit: 1 }, { last: 1 }]) {
+      await expect(c.pull("/pull/events", { appendField: "items", full: true, ...bound })).rejects.toThrow(/full cannot be combined/)
+    }
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
   it("no query params when since and last are omitted", async () => {
     const fetchSpy = mockFetch({ items: [] })
     const c = new StarfishClient({ baseUrl: "https://api.example.com/v1", fetch: fetchSpy })

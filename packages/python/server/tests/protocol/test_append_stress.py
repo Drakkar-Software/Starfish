@@ -96,7 +96,7 @@ async def test_full_pull_checkpoint_zero(n: int):
     key = f"stress/fullpull/{n}"
     store = await _seed(key, n, PAYLOAD_SMALL)
     t0 = time.perf_counter()
-    resp = await handle_append_only_pull(key, store, None, FIELD)
+    resp = await handle_append_only_pull(key, store, None, FIELD, full_param="true")
     dt = time.perf_counter() - t0
     items = _pulled_items(resp)
     print(f"[full-pull]         N={n:>9,} -> {dt * 1000:.2f} ms (returned {len(items):,})")
@@ -171,7 +171,7 @@ async def test_large_payload_100k():
     dt_append = time.perf_counter() - t_a
 
     t_p = time.perf_counter()
-    resp = await handle_append_only_pull(key, store, None, FIELD)
+    resp = await handle_append_only_pull(key, store, None, FIELD, full_param="true")
     dt_pull = time.perf_counter() - t_p
 
     print(f"[large-100k ~100MB] append {dt_append * 1000:.2f} ms, full-pull {dt_pull * 1000:.2f} ms")
@@ -239,7 +239,7 @@ async def test_chunked_full_pull_grows_with_n(n: int):
     key = f"cperf/full/{n}"
     store = await _seed_chunked(key, n, PAYLOAD_SMALL, _CHUNK)
     t0 = time.perf_counter()
-    resp = await handle_append_only_pull(key, store, None, FIELD)
+    resp = await handle_append_only_pull(key, store, None, FIELD, full_param="true")
     dt = time.perf_counter() - t0
     print(f"[chunk full-pull]   N={n:>11,} -> {dt * 1000:.2f} ms (returned {len(_pulled_items(resp)):,})")
     assert len(_pulled_items(resp)) == n

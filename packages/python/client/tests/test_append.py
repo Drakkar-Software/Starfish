@@ -112,6 +112,33 @@ async def test_pull_since_and_last_combined():
 
 
 @pytest.mark.asyncio
+async def test_pull_limit_sends_limit_param():
+    with respx.mock(base_url="https://api.example.com") as mock:
+        mock.get("/v1/pull/events").mock(return_value=_json_resp({"items": []}))
+        async with StarfishClient(BASE) as client:
+            await client.pull("/pull/events", limit=5)
+        assert "limit=5" in str(mock.calls[0].request.url)
+
+
+@pytest.mark.asyncio
+async def test_pull_full_sends_full_param():
+    with respx.mock(base_url="https://api.example.com") as mock:
+        mock.get("/v1/pull/events").mock(return_value=_json_resp({"items": []}))
+        async with StarfishClient(BASE) as client:
+            await client.pull("/pull/events", append_field="items", full=True)
+        assert "full=true" in str(mock.calls[0].request.url)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bound", [{"since": 1}, {"limit": 1}, {"last": 1}])
+async def test_pull_full_with_bound_raises(bound):
+    # The client raises before sending — no HTTP call is made, so no mock needed.
+    async with StarfishClient(BASE) as client:
+        with pytest.raises(ValueError, match="full cannot be combined"):
+            await client.pull("/pull/events", append_field="items", full=True, **bound)
+
+
+@pytest.mark.asyncio
 async def test_pull_no_append_options_returns_pull_result():
     with respx.mock(base_url="https://api.example.com") as mock:
         mock.get("/v1/pull/settings").mock(return_value=httpx.Response(

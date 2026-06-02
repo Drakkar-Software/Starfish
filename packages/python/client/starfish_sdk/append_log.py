@@ -182,11 +182,14 @@ class AppendLogCursor:
 
     async def _do_pull(self) -> list[dict[str, Any]]:
         since = self._last_checkpoint
-        # Omit ``since`` on cold start so the request carries no ``?checkpoint=``.
+        # Cold start (``since == 0``) wants the whole log: send an explicit
+        # ``?full=true`` since the server now rejects an unbounded append-only pull.
+        # Warm resume carries ``?checkpoint=since``.
         raw = await self._client.pull(
             self._pull_path,
             append_field=self._append_field,
             since=since if since > 0 else None,
+            full=since == 0,
         )
         elements = cast("list[dict[str, Any]]", raw)
 

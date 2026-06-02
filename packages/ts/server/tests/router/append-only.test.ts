@@ -100,7 +100,8 @@ async function push(
 }
 
 async function pull(app: ReturnType<typeof createSyncRouter>, checkpoint?: number) {
-  const url = checkpoint != null ? `/pull/events?checkpoint=${checkpoint}` : "/pull/events"
+  // A pull must declare a bound; no checkpoint → explicit full fetch.
+  const url = checkpoint != null ? `/pull/events?checkpoint=${checkpoint}` : "/pull/events?full=true"
   return app.request(url)
 }
 
@@ -311,6 +312,91 @@ describe("appendOnly ?last=K pull", () => {
     const { app } = makeRouter(makeCol())
     const res = await app.request("/pull/events?last=-1")
     expect(res.status).toBe(400)
+  })
+})
+
+describe("appendOnly pull bounding (limit / full / required bound)", () => {
+  async function seed(app: ReturnType<typeof createSyncRouter>) {
+    for (let n = 1; n <= 5; n++) await push(app, { n }, { ts: n * 10 })
+  }
+
+  it("rejects an unbounded pull (no checkpoint/limit/last/full) with 400 pull_bound_required", async () => {
+    const { app } = makeRouter(makeCol())
+    await seed(app)
+    const res = await app.request("/pull/events")
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toBe("pull_bound_required")
+  })
+
+  it("accepts each bound individually: checkpoint, limit, last, full", async () => {
+    const { app } = makeRouter(makeCol())
+    await seed(app)
+    for (const q of ["checkpoint=0", "limit=2", "last=2", "full=true"]) {
+      expect((await app.request(`/pull/events?${q}`)).status).toBe(200)
+    }
+  })
+
+  it("?limit=K is an alias of ?last=K (identical items)", async () => {
+    const { app } = makeRouter(makeCol())
+    await seed(app)
+    const byLimit = await (await app.request("/pull/events?limit=2")).json()
+    const byLast = await (await app.request("/pull/events?last=2")).json()
+    expect(byLimit.data.items).toEqual(byLast.data.items)
+    expect(payloads(byLimit.data.items)).toEqual([{ n: 4 }, { n: 5 }])
+  })
+
+  it("when both ?limit and ?last are given, limit wins", async () => {
+    const { app } = makeRouter(makeCol())
+    await seed(app)
+    const body = await (await app.request("/pull/events?limit=1&last=4")).json()
+    expect(payloads(body.data.items)).toEqual([{ n: 5 }])
+  })
+
+  it("?limit=0 returns empty; ?limit >= count returns all", async () => {
+    const { app } = makeRouter(makeCol())
+    await seed(app)
+    expect((await (await app.request("/pull/events?limit=0")).json()).data.items).toEqual([])
+    const all = await (await app.request("/pull/events?limit=100")).json()
+    expect(all.data.items).toHaveLength(5)
+  })
+
+  it("?full=true combined with a bound returns 400 full_with_bounds", async () => {
+    const { app } = makeRouter(makeCol())
+    await seed(app)
+    for (const q of ["full=true&checkpoint=0", "full=true&limit=2", "full=true&last=2"]) {
+      const res = await app.request(`/pull/events?${q}`)
+      expect(res.status).toBe(400)
+      expect((await res.json()).error).toBe("full_with_bounds")
+    }
+  })
+
+  it("?full=true is rejected 400 full_not_allowed when allowFull:false", async () => {
+    const { app } = makeRouter(makeCol({ appendOnly: { type: "by_timestamp", allowFull: false } }))
+    await seed(app)
+    const res = await app.request("/pull/events?full=true")
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toBe("full_not_allowed")
+    // a bounded pull still works
+    expect((await app.request("/pull/events?limit=2")).status).toBe(200)
+  })
+
+  it("?limit above maxPullLimit is clamped down", async () => {
+    const { app } = makeRouter(makeCol({ appendOnly: { type: "by_timestamp", maxPullLimit: 2 } }))
+    await seed(app)
+    const body = await (await app.request("/pull/events?limit=100")).json()
+    expect(payloads(body.data.items)).toEqual([{ n: 4 }, { n: 5 }])
+  })
+
+  it("a checkpoint older than maxCheckpointAgeMs returns 400 checkpoint_too_old", async () => {
+    const { app } = makeRouter(makeCol({ appendOnly: { type: "by_timestamp", maxCheckpointAgeMs: 60_000 } }))
+    await seed(app)
+    // ts=10 is epoch-old → far beyond the 60s window
+    const old = await app.request("/pull/events?checkpoint=10")
+    expect(old.status).toBe(400)
+    expect((await old.json()).error).toBe("checkpoint_too_old")
+    // a recent checkpoint (within the window) is accepted
+    const recent = await app.request(`/pull/events?checkpoint=${Date.now() - 1000}`)
+    expect(recent.status).toBe(200)
   })
 })
 

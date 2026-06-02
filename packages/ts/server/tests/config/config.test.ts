@@ -158,6 +158,30 @@ describe("validateConfig", () => {
     )
     expect(errors).toEqual([])
   })
+
+  it("rejects non-positive appendOnly.maxPullLimit / maxCheckpointAgeMs", () => {
+    for (const bad of [{ maxPullLimit: 0 }, { maxPullLimit: -1 }, { maxCheckpointAgeMs: 0 }, { maxCheckpointAgeMs: 1.5 }]) {
+      const errors = validateConfig(
+        makeConfig([makeCol({ name: "ev", storagePath: "ev", appendOnly: { type: "by_timestamp", ...bad } })]),
+      )
+      expect(errors.some((e) => e.includes("positive integer"))).toBe(true)
+    }
+  })
+
+  it("rejects appendOnly.maxPullLimit / maxCheckpointAgeMs with persist=false", () => {
+    const errors = validateConfig(
+      makeConfig([makeCol({ name: "ev", storagePath: "ev", appendOnly: { type: "by_timestamp", persist: false, maxPullLimit: 10, maxCheckpointAgeMs: 1000 } })]),
+    )
+    expect(errors.some((e) => e.includes("maxPullLimit requires persist=true"))).toBe(true)
+    expect(errors.some((e) => e.includes("maxCheckpointAgeMs requires persist=true"))).toBe(true)
+  })
+
+  it("accepts valid appendOnly bound config (allowFull / maxPullLimit / maxCheckpointAgeMs)", () => {
+    const errors = validateConfig(
+      makeConfig([makeCol({ name: "ev", storagePath: "ev", appendOnly: { type: "by_timestamp", allowFull: false, maxPullLimit: 100, maxCheckpointAgeMs: 86_400_000 } })]),
+    )
+    expect(errors).toEqual([])
+  })
 })
 
 describe("validateConfig — namespaces", () => {

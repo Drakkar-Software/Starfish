@@ -1,5 +1,45 @@
 # Changelog
 
+## 3.0.0-alpha.19 — Bounded append-only pulls (`limit` / `full`)
+
+Append-only pulls must now declare how much they fetch. Previously a plain
+`GET <path>` on an append-only collection returned the **entire** log — a footgun
+that grows with the log. A pull must now carry one of `?checkpoint=`
+(incremental), `?limit=`/`?last=` (tail of K), or `?full=true` (explicit "the
+whole collection"); an unbounded pull is rejected `400 pull_bound_required`.
+Server operators get three new knobs to cap what readers may request. Lands in
+TypeScript and Python (server + client).
+
+### Added
+
+- **`?limit=N` append-only pull param** — an alias of the existing `?last=N`
+  (tail of the newest N, applied after the checkpoint filter). When both are
+  given, `limit` wins. Exposed on the client as `pull(path, { limit })` (TS) /
+  `pull(path, limit=...)` (Python).
+- **`?full=true` append-only pull param** — explicitly fetch the whole
+  collection. Mutually exclusive with `checkpoint`/`limit`/`last`: combining them
+  is rejected `400 full_with_bounds` (the client raises before sending). Exposed
+  as `pull(path, { full: true })` (TS) / `pull(path, full=True)` (Python).
+- **`appendOnly.allowFull`** collection config (default `true`) — set `false` to
+  reject `?full=true` (`400 full_not_allowed`), forcing every reader to bound its
+  fetch.
+- **`appendOnly.maxPullLimit`** collection config — caps the `limit`/`last` tail a
+  pull may request; a larger request is silently clamped down.
+- **`appendOnly.maxCheckpointAgeMs`** collection config — rejects a `?checkpoint=`
+  older than `now - maxCheckpointAgeMs` (`400 checkpoint_too_old`), stopping
+  readers from rewinding to ancient history.
+- New error codes `pull_bound_required`, `full_with_bounds`, `full_not_allowed`,
+  `checkpoint_too_old`, and query-param constants `QUERY_LIMIT` / `QUERY_FULL` /
+  `QUERY_LAST` (TS + Python).
+
+### Changed
+
+- **BREAKING:** an append-only pull with none of `checkpoint`/`limit`/`last`/`full`
+  now returns `400 pull_bound_required` instead of the full collection. Callers
+  doing a bare full pull must add `?full=true` (or a bound). `AppendLogCursor`
+  (both languages) now sends `?full=true` automatically on cold start, so cursor
+  users need no change.
+
 ## 3.0.0-alpha.18 — EVM-signature root-identity bootstrap
 
 Lets a user with an existing EVM wallet (MetaMask, a hardware signer, any

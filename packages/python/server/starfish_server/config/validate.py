@@ -76,6 +76,10 @@ def _validate_collections(
                 errors.append(f'{prefix}Collection "{col.name}": appendOnly.maxItems must be a positive integer')
             if not _is_pos_int(col.append_only.chunk_size):
                 errors.append(f'{prefix}Collection "{col.name}": appendOnly.chunkSize must be a positive integer')
+            if not _is_pos_int(col.append_only.max_pull_limit):
+                errors.append(f'{prefix}Collection "{col.name}": appendOnly.maxPullLimit must be a positive integer')
+            if not _is_pos_int(col.append_only.max_checkpoint_age_ms):
+                errors.append(f'{prefix}Collection "{col.name}": appendOnly.maxCheckpointAgeMs must be a positive integer')
             if persist is False:
                 if col.append_only.max_items is not None:
                     errors.append(
@@ -84,6 +88,14 @@ def _validate_collections(
                 if col.append_only.chunk_size is not None:
                     errors.append(
                         f'{prefix}Collection "{col.name}": appendOnly.chunkSize requires persist=true (nothing is stored when persist=false)'
+                    )
+                if col.append_only.max_pull_limit is not None:
+                    errors.append(
+                        f'{prefix}Collection "{col.name}": appendOnly.maxPullLimit requires persist=true (nothing is stored when persist=false)'
+                    )
+                if col.append_only.max_checkpoint_age_ms is not None:
+                    errors.append(
+                        f'{prefix}Collection "{col.name}": appendOnly.maxCheckpointAgeMs requires persist=true (nothing is stored when persist=false)'
                     )
 
         if col.listable:

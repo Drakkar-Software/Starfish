@@ -1481,7 +1481,9 @@ Gated collection:
 
 #### Append-only collections
 
-Set `appendOnly: { type: "by_timestamp" }` on a collection to append every push to a stored array (default field: `items`) as a `{ ts, data }` element. There is no hash/conflict check — an authorized append is always accepted, never 409 (a client may supply a strictly-increasing `ts`, else the server assigns one). Pull with `?checkpoint=<ts>` to get only elements appended after a timestamp. Works under both `encryption: "none"` and `"delegated"` (the client encrypts each element's `data`; the server stores it opaquely). By default each document holds the whole array, so append is O(N) per call (building a log is O(N²)) and a checkpoint pull still parses the full document. Opt into `chunkSize` (segmented storage — bounded-cost append; checkpoint/last pulls read only the chunks they need) and/or `maxItems` (cap appends, returning `409 append_limit_exceeded`), or partition by a path param (see the append-only docs §Bounding & scaling).
+Set `appendOnly: { type: "by_timestamp" }` on a collection to append every push to a stored array (default field: `items`) as a `{ ts, data }` element. There is no hash/conflict check — an authorized append is always accepted, never 409 (a client may supply a strictly-increasing `ts`, else the server assigns one). Works under both `encryption: "none"` and `"delegated"` (the client encrypts each element's `data`; the server stores it opaquely). By default each document holds the whole array, so append is O(N) per call (building a log is O(N²)) and a checkpoint pull still parses the full document. Opt into `chunkSize` (segmented storage — bounded-cost append; checkpoint/last pulls read only the chunks they need) and/or `maxItems` (cap appends, returning `409 append_limit_exceeded`), or partition by a path param (see the append-only docs §Bounding & scaling).
+
+**Bounded pulls (required).** An append-only pull must declare how much it fetches — one of `?checkpoint=<ts>` (incremental), `?limit=<K>`/`?last=<K>` (tail of K; `limit` is an alias of `last`), or `?full=true` (the whole collection). A pull with none of these is rejected `400 pull_bound_required`, so a client can't accidentally download a growing log; `?full=true` cannot be combined with a bound (`400 full_with_bounds`). Operators can disable full pulls per collection with `allowFull: false`, cap the tail with `maxPullLimit`, and bound checkpoint age with `maxCheckpointAgeMs` (note `maxPullLimit` does not bound `?full=true` — pair it with `allowFull: false` to cap every fetch). `AppendLogCursor` sends `?full=true` automatically on cold start.
 
 **Author proof (default on).** Every append carries a cryptographic author signature: `client.append()` signs the element `data` with the same key that authenticates the request, and the server requires `authorPubkey` to be that verified presenter and the signature to verify (`signAppendAuthor` / `verifyAppendAuthor`). The proof is stored on each element, so a reader verifies *who* wrote it instead of trusting a self-declared id. Set `appendOnly: { type: "by_timestamp", requireAuthorSignature: false }` to opt out for an unauthenticated/public-write log. See the append-only docs §Author proof.
 
@@ -1510,25 +1512,28 @@ Client usage:
 // Append an item (baseHash=null means "no conflict check")
 await client.push("/push/events", { type: "click" }, null)
 
-// Full pull → returns T[]
-const items = await client.pull("/pull/events", { appendField: "items" })
+// Full pull → returns T[] (explicit; a bare unbounded pull is rejected 400)
+const items = await client.pull("/pull/events", { appendField: "items", full: true })
 
 // Incremental pull — only items appended since last sync (O(M) payload, not O(N))
 const newItems = await client.pull("/pull/events", { appendField: "items", since: lastSyncTimestamp })
 
-// Custom field name + last K items
-const logs = await client.pull("/pull/audit", { appendField: "logs", last: 50 })
+// Custom field name + last K items (`limit` is an alias of `last`)
+const logs = await client.pull("/pull/audit", { appendField: "logs", limit: 50 })
 ```
 
 ```python
 # Append an item
 await client.push("/push/events", {"type": "click"}, None)
 
+# Full pull (explicit; a bare unbounded pull is rejected 400)
+items = await client.pull("/pull/events", append_field="items", full=True)
+
 # Incremental pull
 new_items = await client.pull("/pull/events", since=last_sync_timestamp)
 
-# Last 50 items, custom field
-logs = await client.pull("/pull/audit", append_field="logs", last=50)
+# Last 50 items, custom field (`limit` is an alias of `last`)
+logs = await client.pull("/pull/audit", append_field="logs", limit=50)
 ```
 
 Push CPU is O(1) — the stored hash covers only the last item and array length, not the full array.

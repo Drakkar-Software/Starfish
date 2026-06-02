@@ -181,6 +181,8 @@ class StarfishClient:
         append_field: str | None = None,
         since: int | None = None,
         last: int | None = None,
+        limit: int | None = None,
+        full: bool = False,
         with_keyring: bool = False,
     ) -> "PullResult | list[Any]":
         """Pull synced data from the server.
@@ -195,6 +197,13 @@ class StarfishClient:
                 ``?checkpoint=``. Ignored when ``append_field`` is not set.
             last: Return only the last K items after the checkpoint filter.
                 Sent as ``?last=``. Ignored when ``append_field`` is not set.
+            limit: Alias of ``last`` (tail of K). Sent as ``?limit=``; when both
+                are given the server lets ``limit`` win. Ignored when
+                ``append_field`` is not set.
+            full: Explicitly fetch the whole collection (sent as ``?full=true``).
+                Mutually exclusive with ``since``/``limit``/``last`` — the server
+                requires a pull to declare exactly one of {checkpoint, limit/last,
+                full}; combining raises ``ValueError`` before sending.
             with_keyring: When True, appends ``?withKeyring=1`` to the request
                 so the server includes the sibling ``<collection>/_keyring``
                 document on the response. Saves a round-trip on cold start for
@@ -207,16 +216,31 @@ class StarfishClient:
         """
         params: dict[str, str] = {}
 
-        if append_field is not None or since is not None or last is not None:
+        if (
+            append_field is not None
+            or since is not None
+            or last is not None
+            or limit is not None
+            or full
+        ):
             field = append_field or APPEND_DEFAULT_FIELD
+            # ``full`` means "the whole collection" — it cannot be combined with a bound.
+            if full and (since is not None or limit is not None or last is not None):
+                raise ValueError("full cannot be combined with since, limit, or last")
             if since is not None:
                 if since < 0:
                     raise ValueError("since must be non-negative")
                 params["checkpoint"] = str(since)
+            if limit is not None:
+                if limit < 0:
+                    raise ValueError("limit must be non-negative")
+                params["limit"] = str(limit)
             if last is not None:
                 if last < 0:
                     raise ValueError("last must be non-negative")
                 params["last"] = str(last)
+            if full:
+                params["full"] = "true"
         else:
             field = None
             if checkpoint is not None and checkpoint > 0:

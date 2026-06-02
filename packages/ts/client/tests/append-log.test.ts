@@ -20,13 +20,13 @@ function makeClient(fetchSpy: ReturnType<typeof vi.fn>) {
 const URL_EVENTS = "https://api.example.com/v1/pull/events"
 
 describe("AppendLogCursor — cold start", () => {
-  it("first pull sends no ?checkpoint= and returns the whole collection", async () => {
+  it("first pull sends ?full=true and returns the whole collection", async () => {
     const fetchSpy = fetchReturning({ items: [{ ts: 1, data: { a: 1 } }, { ts: 2, data: { b: 2 } }] })
     const log = new AppendLogCursor({ client: makeClient(fetchSpy), pullPath: "/pull/events" })
 
     const batch = await log.pull()
 
-    expect(fetchSpy).toHaveBeenCalledWith(URL_EVENTS, expect.any(Object))
+    expect(fetchSpy).toHaveBeenCalledWith(`${URL_EVENTS}?full=true`, expect.any(Object))
     expect(batch).toEqual([{ ts: 1, data: { a: 1 } }, { ts: 2, data: { b: 2 } }])
     expect(log.getItems()).toEqual(batch)
     expect(log.getCheckpoint()).toBe(2)
@@ -129,7 +129,7 @@ describe("AppendLogCursor — checkpoint advances across pulls", () => {
     await log.pull()
     const second = await log.pull()
 
-    expect(fetchSpy).toHaveBeenNthCalledWith(1, URL_EVENTS, expect.any(Object))
+    expect(fetchSpy).toHaveBeenNthCalledWith(1, `${URL_EVENTS}?full=true`, expect.any(Object))
     expect(fetchSpy).toHaveBeenNthCalledWith(2, `${URL_EVENTS}?checkpoint=2`, expect.any(Object))
     expect(second).toEqual([{ ts: 3, data: { c: 3 } }])
     expect(log.getCheckpoint()).toBe(3)

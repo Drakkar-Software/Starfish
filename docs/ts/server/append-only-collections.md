@@ -50,6 +50,9 @@ Shorthand: `appendOnly: true` (JSON / YAML) maps to `{ "type": "by_timestamp" }`
 | `maxItems` | `number` | unset (unlimited) | Reject an append once the stored element count reaches this many — see [Bounding & scaling](#bounding--scaling-maxitems--chunksize). Requires `persist`. |
 | `chunkSize` | `number` | unset (single document) | Store the log as fixed-size sealed chunks instead of one growing blob, bounding append cost — see [Bounding & scaling](#bounding--scaling-maxitems--chunksize). Requires `persist`. |
 | `requireAuthorSignature` | `boolean` | `true` | Require a cryptographic [author proof](#author-proof-requireauthorsignature) on every append. Set `false` only for an unauthenticated/public-write log where author identity is meaningless. |
+| `allowFull` | `boolean` | `true` | Allow `?full=true` pulls. Set `false` to reject them (`400 full_not_allowed`), forcing every reader to bound its fetch with `?checkpoint=`/`?limit=`. See [Bounded pulls](#bounded-pulls-required). Requires `persist`. |
+| `maxPullLimit` | `number` | unset (uncapped) | Cap the `?limit=`/`?last=` tail a pull may request; a larger request is silently clamped down. Does **not** bound `?full=true` — combine with `allowFull: false` to cap *every* fetch. Requires `persist`. |
+| `maxCheckpointAgeMs` | `number` | unset (unbounded) | Reject a `?checkpoint=` older than `now - maxCheckpointAgeMs` (`400 checkpoint_too_old`), stopping readers from rewinding to ancient history. Requires `persist`. |
 
 > The old `checkLastItem` option was **removed**. Appends are now always accepted content-wise (see below); there is no `baseHash` conflict check on an append.
 
@@ -116,24 +119,48 @@ readers can opt into verifying) but does not require or check one.
 > signed element cannot be replayed under a different document key (the signature no longer matches).
 > Merge documents carry the same proof under a distinct domain tag (`starfish-doc-author-v1`).
 
+### Bounded pulls (required)
+
+An append-only pull must **declare how much it fetches** — a bare `GET <path>` with
+no bound is rejected `400 pull_bound_required`. Pass exactly one of:
+
+| Param | Meaning |
+|---|---|
+| `?checkpoint=<ts>` | incremental — elements appended after `<ts>` |
+| `?limit=<K>` / `?last=<K>` | the K most recent elements |
+| `?full=true` | the whole collection (explicit opt-in) |
+
+This stops a client that forgets `?checkpoint=` from silently downloading the
+entire log as it grows. `?full=true` is **mutually exclusive** with a bound:
+combining it with `checkpoint`/`limit`/`last` returns `400 full_with_bounds`.
+Operators can disable `full` per collection with `allowFull: false`, cap the tail
+with `maxPullLimit`, and bound checkpoint age with `maxCheckpointAgeMs` (see
+[options](#appendonlyconfig-options)).
+
+> **Migration (breaking in alpha.19):** a bare full pull must now add `?full=true`.
+> `AppendLogCursor` (both languages) sends it automatically on cold start, so
+> cursor users need no change.
+
 ### Incremental pull (checkpoint)
 
 Each element carries its own `ts`. When a client sends `?checkpoint=<ts>`:
 
 - Only elements with `ts` **strictly greater** than the checkpoint are returned in `data[field]`.
 - Other top-level fields in the document are returned as-is.
-- A full pull (no checkpoint) returns the complete array.
 
 Because the array is strictly increasing in `ts`, the server locates the slice start with a binary search rather than scanning. This only trims what is **returned** — the whole document is still read and JSON-parsed first (O(N)). See [Size considerations](#size-considerations).
 
-### Last-K pull
+### Last-K / limit pull
 
-`?last=K` returns the K most recent elements. Applied after the checkpoint filter, so the two compose:
+`?last=K` (or its alias `?limit=K`) returns the K most recent elements. Applied after the checkpoint filter, so the two compose:
 
 ```
-?last=50                  → last 50 elements of the full array
+?last=50                  → last 50 elements (most recent)
+?limit=50                 → identical to ?last=50 (alias; limit wins if both given)
 ?checkpoint=<ts>&last=10  → elements since ts, then the last 10 of those
 ```
+
+A `maxPullLimit` on the collection silently clamps `K` down to the cap.
 
 Store the largest `ts` you've seen and pass it as `since` on the next pull to receive only new elements.
 
@@ -193,14 +220,16 @@ await client.append("/push/events", { type: "click" })
 // Append with a client-supplied timestamp (must be > the latest stored ts)
 await client.append("/push/events", { type: "click" }, { ts: Date.now() })
 
-// Pull the stored array → { ts, data }[]
-const events = await client.pull("/pull/events", { appendField: "items" })
+// Pull the whole stored array → { ts, data }[] (explicit full fetch)
+const events = await client.pull("/pull/events", { appendField: "items", full: true })
 
 // Incremental pull — only elements since last sync
 const newEvents = await client.pull("/pull/events", { appendField: "items", since: lastSyncTs })
 
-// Last 50 elements
-const recent = await client.pull("/pull/events", { appendField: "items", last: 50 })
+// Last 50 elements (`limit` is an alias of `last`)
+const recent = await client.pull("/pull/events", { appendField: "items", limit: 50 })
+
+// Note: a pull with NO bound (no since/limit/last/full) is rejected 400 pull_bound_required.
 ```
 
 ```python
@@ -210,11 +239,15 @@ await client.append("/push/events", {"type": "click"})
 # Append with a client-supplied timestamp
 await client.append("/push/events", {"type": "click"}, ts=1714000000)
 
-# Pull the stored array → list of {"ts", "data"}
-events = await client.pull("/pull/events", append_field="items")
+# Pull the whole stored array → list of {"ts", "data"} (explicit full fetch)
+events = await client.pull("/pull/events", append_field="items", full=True)
 
 # Incremental pull
 new_events = await client.pull("/pull/events", since=last_sync_ts)
+
+# Last 50 elements (`limit` is an alias of `last`)
+recent = await client.pull("/pull/events", append_field="items", limit=50)
+# A pull with NO bound (no since/limit/last/full) is rejected 400 pull_bound_required.
 ```
 
 ### Incremental cursor (`AppendLogCursor`)

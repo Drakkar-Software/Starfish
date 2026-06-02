@@ -114,7 +114,7 @@ async def test_two_sequential_pushes_array_has_2_items():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         await _push(client, {"msg": "first"})
         await _push(client, {"msg": "second"})
-        resp = await client.get("/pull/events")
+        resp = await client.get("/pull/events?full=true")
     assert resp.status_code == 200
     items = resp.json()["data"]["items"]
     assert _payloads(items) == [{"msg": "first"}, {"msg": "second"}]
@@ -138,7 +138,7 @@ async def test_pull_returns_stored_array():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         for i in range(1, 4):
             await _push(client, {"n": i})
-        resp = await client.get("/pull/events")
+        resp = await client.get("/pull/events?full=true")
     assert resp.status_code == 200
     assert _payloads(resp.json()["data"]["items"]) == [{"n": 1}, {"n": 2}, {"n": 3}]
 
@@ -149,7 +149,7 @@ async def test_custom_append_field():
     app, _ = _build_app(col)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         await _push(client, {"msg": "entry"})
-        resp = await client.get("/pull/events")
+        resp = await client.get("/pull/events?full=true")
     body = resp.json()
     assert _payloads(body["data"]["logs"]) == [{"msg": "entry"}]
     assert "items" not in body["data"]
@@ -163,7 +163,7 @@ async def test_provided_ts_stored_verbatim_and_returned():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await _push(client, {"n": 1}, ts=1000)
         assert resp.json()["timestamp"] == 1000
-        pulled = await client.get("/pull/events")
+        pulled = await client.get("/pull/events?full=true")
     assert pulled.json()["data"]["items"][0]["ts"] == 1000
 
 
@@ -377,6 +377,104 @@ async def test_last_respects_custom_field():
     assert _payloads(resp.json()["data"]["logs"]) == [{"msg": "c"}]
 
 
+# --- pull bounding (limit / full / required bound) ---
+
+async def _seed5(client: AsyncClient):
+    for n in range(1, 6):
+        await _push(client, {"n": n}, ts=n * 10)
+
+
+@pytest.mark.asyncio
+async def test_unbounded_pull_rejected():
+    app, _ = _build_app(_make_col())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        await _seed5(client)
+        resp = await client.get("/pull/events")
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "pull_bound_required"
+
+
+@pytest.mark.asyncio
+async def test_each_bound_accepted_individually():
+    app, _ = _build_app(_make_col())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        await _seed5(client)
+        for q in ("checkpoint=0", "limit=2", "last=2", "full=true"):
+            assert (await client.get(f"/pull/events?{q}")).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_limit_is_alias_of_last():
+    app, _ = _build_app(_make_col())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        await _seed5(client)
+        by_limit = (await client.get("/pull/events?limit=2")).json()
+        by_last = (await client.get("/pull/events?last=2")).json()
+    assert by_limit["data"]["items"] == by_last["data"]["items"]
+    assert _payloads(by_limit["data"]["items"]) == [{"n": 4}, {"n": 5}]
+
+
+@pytest.mark.asyncio
+async def test_limit_wins_over_last_when_both_given():
+    app, _ = _build_app(_make_col())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        await _seed5(client)
+        body = (await client.get("/pull/events?limit=1&last=4")).json()
+    assert _payloads(body["data"]["items"]) == [{"n": 5}]
+
+
+@pytest.mark.asyncio
+async def test_limit_boundaries():
+    app, _ = _build_app(_make_col())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        await _seed5(client)
+        assert (await client.get("/pull/events?limit=0")).json()["data"]["items"] == []
+        assert len((await client.get("/pull/events?limit=100")).json()["data"]["items"]) == 5
+
+
+@pytest.mark.asyncio
+async def test_full_with_bounds_rejected():
+    app, _ = _build_app(_make_col())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        await _seed5(client)
+        for q in ("full=true&checkpoint=0", "full=true&limit=2", "full=true&last=2"):
+            resp = await client.get(f"/pull/events?{q}")
+            assert resp.status_code == 400
+            assert resp.json()["error"] == "full_with_bounds"
+
+
+@pytest.mark.asyncio
+async def test_full_not_allowed_when_allow_full_false():
+    app, _ = _build_app(_make_col(appendOnly=_append_only(allowFull=False)))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        await _seed5(client)
+        resp = await client.get("/pull/events?full=true")
+        assert resp.status_code == 400
+        assert resp.json()["error"] == "full_not_allowed"
+        assert (await client.get("/pull/events?limit=2")).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_limit_clamped_to_max_pull_limit():
+    app, _ = _build_app(_make_col(appendOnly=_append_only(maxPullLimit=2)))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        await _seed5(client)
+        body = (await client.get("/pull/events?limit=100")).json()
+    assert _payloads(body["data"]["items"]) == [{"n": 4}, {"n": 5}]
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_too_old_rejected():
+    app, _ = _build_app(_make_col(appendOnly=_append_only(maxCheckpointAgeMs=60_000)))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        await _seed5(client)
+        old = await client.get("/pull/events?checkpoint=10")
+        assert old.status_code == 400
+        assert old.json()["error"] == "checkpoint_too_old"
+        recent = await client.get(f"/pull/events?checkpoint={int(time.time() * 1000) - 1000}")
+        assert recent.status_code == 200
+
+
 # --- delegated encryption (real keyring round-trip) ---
 
 def _make_encryptor():
@@ -408,7 +506,7 @@ async def test_delegated_real_keyring_round_trip():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await _push(client, sealed)
         assert resp.status_code == 200
-        body = await client.get("/pull/events")
+        body = await client.get("/pull/events?full=true")
     stored_el = body.json()["data"]["items"][0]
     assert isinstance(stored_el["ts"], int)
     # The server stored ciphertext opaquely — the plaintext is NOT visible.
@@ -439,7 +537,7 @@ async def test_concurrent_pushes_both_land():
             _push(client, {"n": 1}),
             _push(client, {"n": 2}),
         )
-        resp = await client.get("/pull/events")
+        resp = await client.get("/pull/events?full=true")
     assert [r1.status_code, r2.status_code] == [200, 200]
     items = resp.json()["data"]["items"]
     assert len(items) == 2
@@ -469,6 +567,30 @@ def test_append_only_with_bundle_rejected():
     col = _make_col(bundle="myBundle", storagePath="events/{identity}", encryption="none")
     errors = validate_config(SyncConfig(version=1, collections=[col]))
     assert any("bundle" in e for e in errors)
+
+
+@pytest.mark.parametrize("bad", [
+    {"maxPullLimit": 0},
+    {"maxPullLimit": -1},
+    {"maxCheckpointAgeMs": 0},
+])
+def test_non_positive_pull_bounds_rejected(bad):
+    col = _make_col(appendOnly=_append_only(**bad))
+    errors = validate_config(SyncConfig(version=1, collections=[col]))
+    assert any("positive integer" in e for e in errors)
+
+
+def test_pull_bounds_require_persist_true():
+    col = _make_col(appendOnly=_append_only(persist=False, maxPullLimit=10, maxCheckpointAgeMs=1000))
+    errors = validate_config(SyncConfig(version=1, collections=[col]))
+    assert any("maxPullLimit requires persist=true" in e for e in errors)
+    assert any("maxCheckpointAgeMs requires persist=true" in e for e in errors)
+
+
+def test_valid_pull_bounds_config_passes():
+    col = _make_col(appendOnly=_append_only(allowFull=False, maxPullLimit=100, maxCheckpointAgeMs=86_400_000))
+    errors = validate_config(SyncConfig(version=1, collections=[col]))
+    assert errors == []
 
 
 # ─── Author proof (requireAuthorSignature, default on) ──────────────────────────
@@ -512,7 +634,7 @@ async def test_accepts_signed_append_and_stores_author(author_client):
     res = await client.post("/push/events", json={"data": item, **signed})
     assert res.status_code == 200
 
-    pulled = (await client.get("/pull/events")).json()
+    pulled = (await client.get("/pull/events?full=true")).json()
     el = pulled["data"]["items"][0]
     assert el["authorPubkey"] == _SIGNER_PUB
     # The stored proof re-verifies against the stored element data.

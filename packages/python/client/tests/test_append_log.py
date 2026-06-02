@@ -30,7 +30,9 @@ async def test_cold_start_no_checkpoint_returns_all():
         async with StarfishClient(BASE) as client:
             log = AppendLogCursor(client, "/pull/events")
             batch = await log.pull()
-        assert "checkpoint" not in str(mock.calls[0].request.url)
+        url = str(mock.calls[0].request.url)
+        assert "checkpoint" not in url
+        assert "full=true" in url
     assert batch == [{"ts": 1, "data": {"a": 1}}, {"ts": 2, "data": {"b": 2}}]
     assert log.items == batch
     assert log.checkpoint == 2

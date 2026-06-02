@@ -128,12 +128,24 @@ function validateCollections(
       if (!isPosInt(col.appendOnly.chunkSize)) {
         errors.push(`${scopeLabel}Collection "${col.name}": appendOnly.chunkSize must be a positive integer`)
       }
+      if (!isPosInt(col.appendOnly.maxPullLimit)) {
+        errors.push(`${scopeLabel}Collection "${col.name}": appendOnly.maxPullLimit must be a positive integer`)
+      }
+      if (!isPosInt(col.appendOnly.maxCheckpointAgeMs)) {
+        errors.push(`${scopeLabel}Collection "${col.name}": appendOnly.maxCheckpointAgeMs must be a positive integer`)
+      }
       if (persist === false) {
         if (col.appendOnly.maxItems != null) {
           errors.push(`${scopeLabel}Collection "${col.name}": appendOnly.maxItems requires persist=true (nothing is stored when persist=false)`)
         }
         if (col.appendOnly.chunkSize != null) {
           errors.push(`${scopeLabel}Collection "${col.name}": appendOnly.chunkSize requires persist=true (nothing is stored when persist=false)`)
+        }
+        if (col.appendOnly.maxPullLimit != null) {
+          errors.push(`${scopeLabel}Collection "${col.name}": appendOnly.maxPullLimit requires persist=true (nothing is stored when persist=false)`)
+        }
+        if (col.appendOnly.maxCheckpointAgeMs != null) {
+          errors.push(`${scopeLabel}Collection "${col.name}": appendOnly.maxCheckpointAgeMs requires persist=true (nothing is stored when persist=false)`)
         }
       }
     }

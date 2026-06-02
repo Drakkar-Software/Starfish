@@ -26,7 +26,16 @@ from starfish_server.protocol.pull import pull
 from starfish_server.protocol.push import push, append_seg_prefix, append_chunk_key
 from starfish_server.protocol.push import Author
 from starfish_server.protocol.types import PushSuccess
-from starfish_server.constants import QUERY_CHECKPOINT, ERROR_HASH_MISMATCH, CONTENT_TYPE_JSON, APPEND_DEFAULT_FIELD
+from starfish_server.constants import (
+    QUERY_CHECKPOINT,
+    ERROR_HASH_MISMATCH,
+    CONTENT_TYPE_JSON,
+    APPEND_DEFAULT_FIELD,
+    ERROR_PULL_BOUND_REQUIRED,
+    ERROR_FULL_WITH_BOUNDS,
+    ERROR_FULL_NOT_ALLOWED,
+    ERROR_CHECKPOINT_TOO_OLD,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -282,15 +291,25 @@ async def handle_append_only_pull(
     is_public: bool = True,
     last_param: str | None = None,
     context: StoreContext | None = None,
+    limit_param: str | None = None,
+    full_param: str | None = None,
+    allow_full: bool = True,
+    max_pull_limit: int | None = None,
+    max_checkpoint_age_ms: int | None = None,
 ) -> JSONResponse:
     """Pull handler for appendOnly persist=true collections.
 
-    Each stored element is a ``{ts, data}`` envelope. When a checkpoint is
-    requested, returns only elements whose ``ts`` is strictly greater than the
-    checkpoint, found by binary search (the array is strictly increasing in
-    ``ts``). ``?last=K`` then trims to the last K. The full ``{ts, data}``
-    envelopes are returned — ``data`` is plaintext under "none" and an encryptor
-    wrapper under "delegated".
+    A pull MUST declare how much it fetches: one of ``?checkpoint=`` (incremental),
+    ``?limit=``/``?last=`` (tail of K), or ``?full=true`` (the whole collection).
+    An unbounded pull is rejected ``400 pull_bound_required``; ``?full=true`` cannot
+    be combined with a bound (``400 full_with_bounds``). ``limit`` is an alias of
+    ``last`` (tail of K, newest); when both are given, ``limit`` wins.
+
+    Each stored element is a ``{ts, data}`` envelope. With a checkpoint, returns
+    only elements whose ``ts`` is strictly greater than it, found by binary search
+    (the array is strictly increasing in ``ts``); the tail bound then trims to the
+    last K. The full ``{ts, data}`` envelopes are returned — ``data`` is plaintext
+    under "none" and an encryptor wrapper under "delegated".
     """
     if is_unsafe_document_key(document_key):
         return JSONResponse({"error": "Invalid path parameter"}, status_code=400)
@@ -305,17 +324,44 @@ async def handle_append_only_pull(
             return JSONResponse({"error": "Invalid checkpoint"}, status_code=400)
         checkpoint = parsed
 
+    # ``limit`` is an alias of ``last``; when both are present, ``limit`` wins.
     last: int | None = None
-    if last_param is not None:
+    for name, raw in (("limit", limit_param), ("last", last_param)):
+        if raw is None:
+            continue
         try:
-            parsed_last = int(last_param)
+            parsed_tail = int(raw)
         except ValueError:
-            return JSONResponse({"error": "Invalid last"}, status_code=400)
-        if parsed_last < 0 or str(parsed_last) != last_param:
-            return JSONResponse({"error": "Invalid last"}, status_code=400)
-        last = parsed_last
+            return JSONResponse({"error": f"Invalid {name}"}, status_code=400)
+        if parsed_tail < 0 or str(parsed_tail) != raw:
+            return JSONResponse({"error": f"Invalid {name}"}, status_code=400)
+        last = parsed_tail
+        if name == "limit":
+            break
+
+    full = full_param in ("true", "1")
+
+    # A pull must declare its bound. ``checkpoint=0`` counts as present (explicit
+    # "from the start") — only a fully absent set of params is rejected.
+    if checkpoint_param is None and last is None and not full:
+        return JSONResponse({"error": ERROR_PULL_BOUND_REQUIRED}, status_code=400)
+    if full and (checkpoint_param is not None or last is not None):
+        return JSONResponse({"error": ERROR_FULL_WITH_BOUNDS}, status_code=400)
+    if full and not allow_full:
+        return JSONResponse({"error": ERROR_FULL_NOT_ALLOWED}, status_code=400)
 
     now = int(time.time() * 1000)
+
+    if (
+        checkpoint_param is not None
+        and max_checkpoint_age_ms is not None
+        and checkpoint < now - max_checkpoint_age_ms
+    ):
+        return JSONResponse({"error": ERROR_CHECKPOINT_TOO_OLD}, status_code=400)
+
+    # Clamp the requested tail to the collection cap.
+    if last is not None and max_pull_limit is not None and last > max_pull_limit:
+        last = max_pull_limit
     raw = await store.get_string(document_key, context=context)
 
     if not raw:

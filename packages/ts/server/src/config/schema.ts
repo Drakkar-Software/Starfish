@@ -90,6 +90,18 @@ export interface AppendOnlyConfig {
    *  readers to re-verify. Set `false` ONLY for an unauthenticated/public-write
    *  log where author identity is meaningless. */
   requireAuthorSignature?: boolean
+  /** Allow `?full=true` pulls (DEFAULT: `true`). When `false`, a pull asking for
+   *  the whole collection is rejected `400 { error: "full_not_allowed" }`,
+   *  forcing every reader to bound its fetch with `?checkpoint=`/`?limit=`. */
+  allowFull?: boolean
+  /** Opt-in cap on the `?limit=`/`?last=` tail a pull may request. A larger value
+   *  is silently clamped down to this. Unset = uncapped. Positive integer. */
+  maxPullLimit?: number
+  /** Opt-in bound (ms) on how far back a `?checkpoint=` may reach: a checkpoint
+   *  older than `now - maxCheckpointAgeMs` is rejected
+   *  `400 { error: "checkpoint_too_old" }`. Stops readers rewinding to ancient
+   *  history. Unset = unbounded. Positive integer. */
+  maxCheckpointAgeMs?: number
 }
 
 export interface CollectionConfig {

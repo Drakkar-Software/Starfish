@@ -64,6 +64,20 @@ class AppendOnlyConfig(BaseModel):
     ``False`` ONLY for an unauthenticated/public-write log where author identity is
     meaningless."""
 
+    allow_full: bool = Field(default=True, alias="allowFull")
+    """Allow ``?full=true`` pulls (DEFAULT: ``True``). When ``False``, a pull asking
+    for the whole collection is rejected ``400 {"error": "full_not_allowed"}``,
+    forcing every reader to bound its fetch with ``?checkpoint=``/``?limit=``."""
+
+    max_pull_limit: int | None = Field(default=None, alias="maxPullLimit")
+    """Opt-in cap on the ``?limit=``/``?last=`` tail a pull may request. A larger
+    value is silently clamped down to this. ``None`` = uncapped. Positive integer."""
+
+    max_checkpoint_age_ms: int | None = Field(default=None, alias="maxCheckpointAgeMs")
+    """Opt-in bound (ms) on how far back a ``?checkpoint=`` may reach: a checkpoint
+    older than ``now - max_checkpoint_age_ms`` is rejected
+    ``400 {"error": "checkpoint_too_old"}``. ``None`` = unbounded. Positive integer."""
+
 
 RateLimitBucketMode = Literal["identity", "ip", "identity+ip"]
 

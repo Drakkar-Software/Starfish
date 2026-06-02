@@ -48,13 +48,17 @@ async def _run_seq(store, key: str, seq: list[tuple[dict, int]], **opts) -> str:
     return last_hash
 
 
-async def _pull(store, key: str, *, checkpoint: int | None = None, last: int | None = None) -> list:
+async def _pull(store, key: str, *, checkpoint: int | None = None, last: int | None = None, limit: int | None = None) -> list:
+    # A pull must declare a bound; default an otherwise-unbounded query to full=true.
+    full = checkpoint is None and last is None and limit is None
     resp = await handle_append_only_pull(
         key,
         store,
         checkpoint_param=str(checkpoint) if checkpoint is not None else None,
         append_field=FIELD,
         last_param=str(last) if last is not None else None,
+        limit_param=str(limit) if limit is not None else None,
+        full_param="true" if full else None,
     )
     return json.loads(resp.body)["data"][FIELD]
 
@@ -146,7 +150,7 @@ async def test_migration_preserves_other_top_level_fields():
         content_type="application/json",
     )
     await append_item(store, "k", {"n": 2}, FIELD, 20, chunk_size=10)
-    resp = await handle_append_only_pull("k", store, append_field=FIELD)
+    resp = await handle_append_only_pull("k", store, append_field=FIELD, full_param="true")
     data = json.loads(resp.body)["data"]
     assert data["meta"] == "keep"
     assert len(data[FIELD]) == 2

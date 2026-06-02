@@ -48,7 +48,9 @@ async function runSeq(store: ObjectStore, key: string, seq: Seq, opts: AppendOpt
   return hash
 }
 
-async function pull(store: ObjectStore, key: string, q: { checkpoint?: number; last?: number } = {}): Promise<unknown[]> {
+async function pull(store: ObjectStore, key: string, q: { checkpoint?: number; last?: number; limit?: number; full?: boolean } = {}): Promise<unknown[]> {
+  // A pull must declare a bound; default an otherwise-unbounded query to ?full=true.
+  const full = q.full ?? (q.checkpoint == null && q.last == null && q.limit == null)
   const res = await handleAppendOnlyPull(
     key,
     store,
@@ -57,6 +59,9 @@ async function pull(store: ObjectStore, key: string, q: { checkpoint?: number; l
     undefined,
     true,
     q.last != null ? String(q.last) : null,
+    undefined,
+    q.limit != null ? String(q.limit) : null,
+    full ? "true" : null,
   )
   return (res.body.data as Record<string, unknown>)[FIELD] as unknown[]
 }
@@ -140,7 +145,7 @@ describe("appendOnly segmented storage — lazy migration & stickiness", () => {
     const store = new MemoryObjectStore(new Map())
     await store.put("k", JSON.stringify({ v: 1, data: { items: [{ ts: 10, data: { n: 1 } }], meta: "keep" }, ts: 10, hash: "x" }))
     await appendItem(store, "k", { n: 2 }, FIELD, 20, { chunkSize: 10 })
-    const res = await handleAppendOnlyPull("k", store, null, FIELD)
+    const res = await handleAppendOnlyPull("k", store, null, FIELD, undefined, true, null, undefined, null, "true")
     const data = res.body.data as Record<string, unknown>
     expect(data["meta"]).toBe("keep")
     expect(data[FIELD]).toHaveLength(2)
