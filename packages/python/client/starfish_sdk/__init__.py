@@ -18,8 +18,12 @@ from starfish_sdk.append_log import (
     checkpoint_of,
 )
 from starfish_sdk.config import fetch_server_config, ConfigResponse, CollectionClientInfo, NamespaceClientConfig, AppendOnlyClientInfo
+from starfish_sdk.mutate import mutate_doc, DocState, DocMutator
 
 __all__ = [
+    "mutate_doc",
+    "DocState",
+    "DocMutator",
     "stable_stringify",
     "compute_hash",
     "PullKeyringProjection",
