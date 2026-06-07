@@ -31,10 +31,24 @@ from starfish_keyring.recipients import (
     list_recipients,
     remove_recipient,
 )
+from starfish_keyring.seal import (
+    SealedBlob,
+    seal,
+    seal_to_self,
+    unseal,
+    unseal_from_self,
+    unseal_to_str,
+)
 from starfish_keyring._crypto_helpers import hkdf_bytes
 
 __all__ = [
     "hkdf_bytes",
+    "SealedBlob",
+    "seal",
+    "seal_to_self",
+    "unseal",
+    "unseal_from_self",
+    "unseal_to_str",
     "KEYRING_IV_BYTES",
     "KEYRING_WRAP_INFO",
     "KEYRING_WRAP_SALT",

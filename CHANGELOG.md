@@ -1,15 +1,15 @@
 # Changelog
 
-## 3.0.0-alpha.20 — Identity action restrictions
+## 3.0.0-alpha.20 — Identity action restrictions + client-side outbox + keyring seal + client mutateDoc
 
-A new way to **deny** access by identity, scoped to the whole server, a
-namespace, a collection, or a single action (`pull` / `push` / `list`). Where
-roles and cap scopes *grant* access, restrictions *remove* it. Identity lists are
-static arrays, runtime callbacks, or static `restrictions` declared in the
-serializable `SyncConfig`. Ships as a new extension package
-(`@drakkar.software/starfish-restrictions` / `starfish-restrictions`) on top of a
-small, generic `authorize` plugin hook added to the server core. Lands in
-TypeScript and Python.
+Two new extensions plus client/keyring helpers. **Identity action restrictions** add a
+way to **deny** access by identity, scoped to the whole server, a namespace, a
+collection, or a single action (`pull` / `push` / `list`). Where roles and cap scopes
+*grant* access, restrictions *remove* it. Ships as a new extension package
+(`@drakkar.software/starfish-restrictions` / `starfish-restrictions`) on top of a small,
+generic `authorize` plugin hook added to the server core. The **outbox** extension is a
+new generic client-side offline-first write queue, alongside a sealed-envelope helper in
+`keyring` and a hash-CAS document mutator in `client`. Lands in TypeScript and Python.
 
 ### Added
 
@@ -30,9 +30,23 @@ TypeScript and Python.
   `CollectionConfig` (the new `IdentityRestriction` type: `mode`, `identities`,
   optional `actions`). Compiled into rules by the restrictions plugin. Not exposed
   via `GET /config`.
+- **`@drakkar.software/starfish-outbox` / `starfish-outbox`** — durable, per-identity
+  offline write-queue (the client-side complement to server `queuing`). Generic over
+  an opaque item; dedup-by-id, single-shot claim (no double-send), auto-retry-then-fail,
+  crash-safe `sending` recovery, write-through persistence. `drainOutbox` is
+  connectivity-agnostic.
+- **`keyring`**: `seal` / `unseal` / `sealToSelf` / `unsealFromSelf` — wrap a secret to a
+  single static X25519 KEM key for carrying inside a plaintext synced doc (sealed
+  credentials, bearer secrets, peer hand-offs).
+- **`client`**: `mutateDoc(client, path, mutator, { maxAttempts })` — generic
+  pull→mutate→push-with-hash→retry-on-`ConflictError` loop; a 404 is surfaced as an
+  absent doc the mutator may create, a `null` return is a no-op.
 
 ### Changed
 
+- All packages bumped to `3.0.0-alpha.20` (lockstep). The lockstep set grows from 22 to
+  26 packages with the new `restrictions` and `outbox` extensions (TS + Python). CI
+  publish workflows gain the matching test steps and per-package publish jobs.
 - A collection whose role check would normally short-circuit anonymously (a
   `public` collection) now resolves the caller's identity when an `authorize` hook
   is installed, so identity restrictions apply to public collections too. Behavior
@@ -40,6 +54,13 @@ TypeScript and Python.
 - `createSyncRouter` / `create_sync_router` now logs a warning when a config
   declares `restrictions` but no plugin provides an `authorize` hook (the
   restrictions would otherwise be silently unenforced).
+
+### Fixed
+
+- `keyring` (Python): `unseal` length guard now references the same IV constant it slices
+  with.
+- `client` (Python): `mutateDoc` keeps an empty-string server hash verbatim instead of
+  coercing it away (matches the TS `?? null`).
 
 ## 3.0.0-alpha.19 — Bounded append-only pulls (`limit` / `full`)
 

@@ -18,7 +18,7 @@ Works with any storage backend (S3, MongoDB, in-memory) and any auth model. The 
 
 ## Packages
 
-Starfish ships **22 packages** — a TypeScript and a Python build of each of the 11 families below. All packages use **lockstep versioning** (every release bumps all 22 to the same version).
+Starfish ships **26 packages** — a TypeScript and a Python build of each of the 13 families below. All packages use **lockstep versioning** (every release bumps all 26 to the same version).
 
 ### Core
 
@@ -43,6 +43,7 @@ Each extension is an additive plugin/helper layered on the core — wire only wh
 | `@drakkar.software/starfish-projection` | `starfish-projection` | Incremental denormalized list documents from a source collection |
 | `@drakkar.software/starfish-audit` | `starfish-audit` | Structured audit logging of every action |
 | `@drakkar.software/starfish-replica` | `starfish-replica` | Multi-server replication (pull / push-through / bidirectional) |
+| `@drakkar.software/starfish-outbox` | `starfish-outbox` | Durable client-side offline write-queue (dedup, claim, retry, reconnect-drain) |
 
 ## Quick Start
 
@@ -1066,7 +1067,7 @@ See the [CHANGELOG](CHANGELOG.md) for full details.
 ```
 starfish/
 ├── packages/
-│   ├── python/            # protocol · server · client (starfish-sdk) + 9 extensions
+│   ├── python/            # protocol · server · client (starfish-sdk) + 10 extensions
 │   │   ├── protocol/      # Shared protocol primitives (hash, merge, crypto, types)
 │   │   ├── server/        # Python server (FastAPI router, S3 storage, encryption, config)
 │   │   ├── client/        # Python client SDK (httpx + cryptography)
@@ -1078,13 +1079,15 @@ starfish/
 │   │   ├── queuing/       # Change events (Memory / Custom / NATS)
 │   │   ├── projection/    # Incremental denormalized list documents
 │   │   ├── audit/         # Structured audit logging
-│   │   └── replica/       # Multi-server replication
-│   └── ts/                # same 12 families, mirrored (@drakkar.software/starfish-*)
+│   │   ├── replica/       # Multi-server replication
+│   │   └── outbox/        # Durable offline write-queue (generic over payload)
+│   └── ts/                # same 13 families, mirrored (@drakkar.software/starfish-*)
 │       ├── protocol/      # Shared protocol primitives (hash, merge, crypto, types)
 │       ├── server/        # TypeScript server (Hono router, encryption, config, CF Workers)
 │       ├── client/        # TypeScript client SDK + Zustand/Legend bindings
 │       ├── keyring/  identities/  sharing/  entitlements/  restrictions/
-│       └── queuing/  projection/  audit/  replica/
+│       ├── queuing/  projection/  audit/  replica/
+│       └── outbox/
 ├── examples/
 │   ├── ts/ · python/      # Single-file examples, one per v3 feature slice
 │   └── app/               # Full-stack chat app (Vite/React + FastAPI) wiring 6 extensions

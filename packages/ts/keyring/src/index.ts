@@ -39,6 +39,17 @@ export type {
   ListedRecipient,
 } from "./recipients.js"
 
+// Sealed envelopes — wrap a secret to a single static KEM key for carrying in a
+// plaintext synced doc (sealed credentials, bearer secrets, peer hand-offs).
+export {
+  seal,
+  sealToSelf,
+  unseal,
+  unsealToString,
+  unsealFromSelf,
+} from "./seal.js"
+export type { SealedBlob, SealerKeys } from "./seal.js"
+
 // Low-level crypto utilities shared with the identities extension (HKDF,
 // hex codec, byte concat). Stable enough to expose for inter-extension use.
 export { hkdfBytes, bytesToHex, hexToBytes, concat } from "./_crypto_helpers.js"
