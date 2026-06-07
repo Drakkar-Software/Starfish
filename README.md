@@ -18,7 +18,7 @@ Works with any storage backend (S3, MongoDB, in-memory) and any auth model. The 
 
 ## Packages
 
-Starfish ships **26 packages** — a TypeScript and a Python build of each of the 13 families below. All packages use **lockstep versioning** (every release bumps all 26 to the same version).
+Starfish ships **28 packages** — a TypeScript and a Python build of each of the 14 families below. All packages use **lockstep versioning** (every release bumps all 28 to the same version).
 
 ### Core
 
@@ -44,6 +44,7 @@ Each extension is an additive plugin/helper layered on the core — wire only wh
 | `@drakkar.software/starfish-audit` | `starfish-audit` | Structured audit logging of every action |
 | `@drakkar.software/starfish-replica` | `starfish-replica` | Multi-server replication (pull / push-through / bidirectional) |
 | `@drakkar.software/starfish-outbox` | `starfish-outbox` | Durable client-side offline write-queue (dedup, claim, retry, reconnect-drain) |
+| `@drakkar.software/starfish-wal` | `starfish-wal` | Append-only CRDT op-log document model (LWW register + RGA list + text) with trusted snapshots |
 
 ## Quick Start
 
@@ -1067,7 +1068,7 @@ See the [CHANGELOG](CHANGELOG.md) for full details.
 ```
 starfish/
 ├── packages/
-│   ├── python/            # protocol · server · client (starfish-sdk) + 10 extensions
+│   ├── python/            # protocol · server · client (starfish-sdk) + 11 extensions
 │   │   ├── protocol/      # Shared protocol primitives (hash, merge, crypto, types)
 │   │   ├── server/        # Python server (FastAPI router, S3 storage, encryption, config)
 │   │   ├── client/        # Python client SDK (httpx + cryptography)
@@ -1080,14 +1081,15 @@ starfish/
 │   │   ├── projection/    # Incremental denormalized list documents
 │   │   ├── audit/         # Structured audit logging
 │   │   ├── replica/       # Multi-server replication
-│   │   └── outbox/        # Durable offline write-queue (generic over payload)
-│   └── ts/                # same 13 families, mirrored (@drakkar.software/starfish-*)
+│   │   ├── outbox/        # Durable offline write-queue (generic over payload)
+│   │   └── wal/           # Append-only CRDT op-log documents (core)
+│   └── ts/                # same 14 families, mirrored (@drakkar.software/starfish-*)
 │       ├── protocol/      # Shared protocol primitives (hash, merge, crypto, types)
 │       ├── server/        # TypeScript server (Hono router, encryption, config, CF Workers)
 │       ├── client/        # TypeScript client SDK + Zustand/Legend bindings
 │       ├── keyring/  identities/  sharing/  entitlements/  restrictions/
-│       ├── queuing/  projection/  audit/  replica/
-│       └── outbox/
+│       ├── queuing/  projection/  audit/  replica/  outbox/
+│       └── wal/
 ├── examples/
 │   ├── ts/ · python/      # Single-file examples, one per v3 feature slice
 │   └── app/               # Full-stack chat app (Vite/React + FastAPI) wiring 6 extensions
@@ -1147,7 +1149,7 @@ The TypeScript client has 437 tests across 36 test files covering sync, crypto, 
 Cross-language test vectors in `tests/test-vectors/` ensure identical behavior across all TypeScript and Python implementations:
 - `crypto.json` / `hash.json` — encryption and hashing parity
 - `protocol-push.json` / `protocol-timestamps.json` — protocol-level push, pull, and timestamp computation parity
-- `http-errors.json` — error response contract (status codes and messages)
+- `wal-crdt.json` — WAL CRDT op-log fold parity (clock order, convergence, idempotence)
 
 ## Advanced Setup
 
@@ -1404,6 +1406,40 @@ createProjectionServerPlugin({
 ```
 
 > Full reference: [`docs/ts/projection/01-overview.md`](docs/ts/projection/01-overview.md)
+
+---
+
+### WAL / CRDT documents (append-only op-log)
+
+The `@drakkar.software/starfish-wal` / `starfish-wal` extension models a logical document as an **append-only log of CRDT operations** instead of a single merged value — unlocking full edit history, small per-edit deltas, and concurrent offline editing that converges. It layers on an existing append-only collection plus a sibling `<name>__snapshot` document, with **no server, wire-format, or storage-backend change**: each element's `data` is the existing sealed envelope, so the same transport serves `encryption: "none"` and `"delegated"`.
+
+The fold is **client-side, commutative, idempotent, and byte-identical across TypeScript and Python** (locked by `tests/test-vectors/wal-crdt.json`). It ships three CRDT shapes — an **LWW typed register** (objects / scalar fields), an **RGA sequence** (ordered lists), and **text** (an RGA of characters) — keyed by a no-ties total order `(Lamport counter, replicaId)` carried inside the (encrypted) op payload, so the server never sees or influences convergence ordering.
+
+```ts
+// TypeScript — declare the value you want; the diff becomes minimal CRDT ops
+import { WalDocument, createEd25519Signer } from "@drakkar.software/starfish-wal"
+
+const doc = new WalDocument({
+  documentKey: "spaces/s/docs/d",
+  transport,                                   // append/pull over the op-log collection
+  signer: createEd25519Signer(edPubHex, edPrivHex),
+  // encryptor: createKeyringEncryptor(...),   // omit for encryption:"none"
+  posture: "trust-retain-tail",                // trust | trust-retain-tail | re-derive
+})
+await doc.open()                               // adopt snapshot (if any) + fold tail
+doc.update({ title: "Hello", tags: ["draft"] }) // reconcile registers + lists
+doc.setText("body", "the quick brown fox")      // character-level text diff
+await doc.commit()                              // seal + author-sign + append only the diffs
+doc.materialize()                               // { body: [...chars], tags: ["draft"], title: "Hello" }
+```
+
+`update` / `setText` / `setList` auto-generate the minimal `set` / `del` / `ins` / `rmv` ops by diffing against current state (low-level `setField` / `insert` / `removeAt` / `insertText` remain available). Reconcile is convergent — kept elements keep their identity, so concurrent edits to untouched parts merge — making it a natural fit behind a UI/state store: render from `materialize()`, feed edits back through `update()`.
+
+Security obligations are enforced in this layer: **every** op-batch and snapshot is author-verified before its decrypted content is trusted (the JSON seal binds no AAD), an optional authorized-writer set and snapshot-role gate back the role model, and a per-writer signed sequence surfaces tail truncation. Snapshots are **client-generated by a trusted role** (the server holds no keys and cannot fold), and readers choose a verification posture: `trust`, `trust-retain-tail` (default), or `re-derive`.
+
+> **Scope:** the TypeScript package ships the CRDT core + the `WalDocument` client log; the Python package ships the cross-language CRDT core (clock + fold) validated against the shared vectors. Python `WalDocument` parity, add-wins observed-remove maps, text tombstone-GC/compaction, and wiring over the live `AppendLogCursor`/`SyncManager` are not yet implemented — see the overview for current limitations.
+>
+> Full reference: [`docs/ts/wal/`](docs/ts/wal/01-overview.md) — overview, [CRDT model](docs/ts/wal/02-crdt-model.md), [document layer](docs/ts/wal/03-document.md), [reconcile API](docs/ts/wal/04-reconcile.md), [snapshots](docs/ts/wal/05-snapshots.md), [security](docs/ts/wal/06-security.md)
 
 ---
 

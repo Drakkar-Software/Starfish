@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "starfish-wal"
+version = "3.0.0a21"
+description = "Starfish WAL extension — append-only CRDT op-log document model (LWW register + RGA list + text) core, cross-language conformant with the TypeScript package"
+requires-python = ">=3.11"
+dependencies = [
+  "starfish-protocol",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.0",
+]
+
+[tool.uv.sources]
+starfish-protocol = { path = "../protocol", editable = true }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
