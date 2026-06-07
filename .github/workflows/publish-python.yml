@@ -123,13 +123,20 @@ jobs:
         working-directory: packages/python/projection
         run: pytest -v
 
-
       - name: Install outbox dependencies
         working-directory: packages/python/outbox
         run: uv pip install --system -e ".[dev]"
 
       - name: Run outbox tests
         working-directory: packages/python/outbox
+        run: pytest -v
+
+      - name: Install wal dependencies
+        working-directory: packages/python/wal
+        run: uv pip install --system -e ".[dev]"
+
+      - name: Run wal tests
+        working-directory: packages/python/wal
         run: pytest -v
 
   setup:
@@ -666,6 +673,46 @@ jobs:
 
       - name: Publish to PyPI
         working-directory: packages/python/outbox
+        run: uv publish
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}
+
+  publish-wal:
+    needs: [setup, publish-protocol]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Set version from tag
+        working-directory: packages/python/wal
+        env:
+          PY_VERSION: ${{ needs.setup.outputs.py_version }}
+        run: |
+          python -c "
+          import re, os
+          version = os.environ['PY_VERSION']
+          path = 'pyproject.toml'
+          content = open(path).read()
+          content = re.sub(r'^version = \"[^\"]*\"', f'version = \"{version}\"', content, count=1, flags=re.MULTILINE)
+          open(path, 'w').write(content)
+          "
+
+      - name: Build package
+        working-directory: packages/python/wal
+        run: uv build
+
+      - name: Publish to PyPI
+        working-directory: packages/python/wal
         run: uv publish
         env:
           UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}

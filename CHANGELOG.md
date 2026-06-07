@@ -1,5 +1,53 @@
 # Changelog
 
+## 3.0.0-alpha.21 — WAL / CRDT op-log collections
+
+A new document model where **diffs are appended to an immutable op-log** instead
+of merging a single document — unlocking full edit history, small per-edit
+deltas, and convergent concurrent/offline editing. The fold is client-side,
+commutative, idempotent, and byte-identical across TypeScript and Python; it
+layers on existing append-only collections with **no server, wire-format, or
+storage-backend change**, and works under `encryption: "none"` and `"delegated"`.
+
+### Added
+
+- **New extension packages `@drakkar.software/starfish-wal` (TS) /
+  `starfish-wal` (Python)** — an append-only **CRDT op-log** document model.
+  Adds a deterministic, op-based **CRDT** with a no-ties total order
+  `(Lamport counter, replicaId)`: an **LWW typed register** (objects/fields), an
+  **RGA sequence** (lists), and **text** (RGA of characters). The fold is
+  commutative, idempotent, and **byte-identical across TypeScript and Python**,
+  locked by the new cross-language vector
+  [`tests/test-vectors/wal-crdt.json`](tests/test-vectors/wal-crdt.json). The TS
+  package also ships a `WalDocument` client log over injected transport/encryptor/
+  signer interfaces — `open` / `commit` / `materialize` / `pull` / `snapshot` —
+  that works under `encryption: "none"` and `"delegated"` with **no server, wire,
+  or storage change**, and enforces: mandatory Ed25519 author verification of
+  every op-batch and snapshot (fail-closed), an optional authorized-writer set and
+  snapshot-role gate, a per-writer signed sequence for truncation detection
+  (optionally fail-closed via `strictSequence`), and `trust` / `trust-retain-tail`
+  / `re-derive` reader postures (the last comparing full canonical state, not just
+  the materialized projection). **Lockstep package count: 26 → 28.** See
+  [`docs/ts/wal/01-overview.md`](docs/ts/wal/01-overview.md) for current
+  limitations (Python `WalDocument` parity, add-wins maps, text
+  tombstone-GC/compaction, and live `AppendLogCursor`/`SyncManager` wiring are not
+  yet implemented).
+- **High-level reconcile API on `WalDocument`** (TS) — `update(next)`,
+  `setText(list, next)`, and `setList(list, next)` auto-generate the minimal CRDT
+  `set`/`del`/`ins`/`rmv` ops by diffing a desired value against current state (an
+  LCS diff for sequences/text), instead of hand-driving `insert`/`removeAt`/
+  `insertText`. Reconcile is convergent (kept elements retain identity) and a
+  no-op when the value is unchanged — the natural way to wire a UI/state store to
+  a WAL document.
+- **Performance characteristics + benchmark harness** — `materialize()` folds
+  **iteratively** (an explicit stack), so a long linear text/list does not
+  overflow the call stack / Python recursion limit; the reconcile diff trims the
+  common prefix/suffix before the LCS, so a localized text edit is ~linear in
+  document length. A committed micro-benchmark (`packages/ts/wal/tests/bench.mjs`,
+  run via `pnpm --filter @drakkar.software/starfish-wal bench`) covers
+  fold / merge / reconcile / cold-replay; measured figures are in
+  [`docs/ts/wal/02-crdt-model.md`](docs/ts/wal/02-crdt-model.md).
+
 ## 3.0.0-alpha.20 — Identity action restrictions + client-side outbox + keyring seal + client mutateDoc + generic sync-server auth/enricher primitives
 
 Two new extensions plus client/keyring helpers. **Identity action restrictions** add a
@@ -166,7 +214,6 @@ TypeScript and Python (server + client).
 - New error codes `pull_bound_required`, `full_with_bounds`, `full_not_allowed`,
   `checkpoint_too_old`, and query-param constants `QUERY_LIMIT` / `QUERY_FULL` /
   `QUERY_LAST` (TS + Python).
-
 ### Changed
 
 - **BREAKING:** an append-only pull with none of `checkpoint`/`limit`/`last`/`full`

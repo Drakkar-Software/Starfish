@@ -1,0 +1,101 @@
+{
+  "_comment": "Cross-language conformance vectors for the starfish-wal CRDT, shared by the TypeScript and Python implementations. 'clockOrder' locks the no-ties total order over (c, replicaId). Each 'fold' case lists CRDT ops and the expected materialized document; conformant implementations must fold to 'expected' regardless of op order (commutativity) and when each op is applied more than once (idempotence). 'expectedText' checks text-CRDT lists joined as strings.",
+  "clockOrder": [
+    { "a": { "c": 1, "r": "a" }, "b": { "c": 2, "r": "a" }, "sign": -1 },
+    { "a": { "c": 5, "r": "a" }, "b": { "c": 2, "r": "z" }, "sign": 1 },
+    { "a": { "c": 2, "r": "a" }, "b": { "c": 2, "r": "b" }, "sign": -1 },
+    { "a": { "c": 2, "r": "b" }, "b": { "c": 2, "r": "a" }, "sign": 1 },
+    { "a": { "c": 2, "r": "abc" }, "b": { "c": 2, "r": "abc" }, "sign": 0 },
+    { "_note": "non-BMP replicaId: code-point order (U+1F600 > U+FB00), not UTF-16 code-unit order — locks TS/Python parity", "a": { "c": 1, "r": "😀" }, "b": { "c": 1, "r": "ﬀ" }, "sign": 1 }
+  ],
+  "fold": [
+    {
+      "name": "lww-register-highest-clock-wins",
+      "ops": [
+        { "t": "set", "reg": "title", "clock": { "c": 1, "r": "a" }, "value": "draft" },
+        { "t": "set", "reg": "title", "clock": { "c": 2, "r": "a" }, "value": "final" },
+        { "t": "set", "reg": "title", "clock": { "c": 2, "r": "b" }, "value": "other" }
+      ],
+      "expected": { "title": "other" }
+    },
+    {
+      "name": "lww-distinct-fields-survive-and-delete-tombstones",
+      "ops": [
+        { "t": "set", "reg": "a", "clock": { "c": 1, "r": "a" }, "value": 1 },
+        { "t": "set", "reg": "b", "clock": { "c": 1, "r": "b" }, "value": 2 },
+        { "t": "del", "reg": "a", "clock": { "c": 2, "r": "a" } }
+      ],
+      "expected": { "b": 2 }
+    },
+    {
+      "name": "lww-delete-then-higher-clock-resurrect",
+      "ops": [
+        { "t": "set", "reg": "x", "clock": { "c": 1, "r": "a" }, "value": "v1" },
+        { "t": "del", "reg": "x", "clock": { "c": 2, "r": "a" } },
+        { "t": "set", "reg": "x", "clock": { "c": 3, "r": "a" }, "value": "v2" }
+      ],
+      "expected": { "x": "v2" }
+    },
+    {
+      "name": "rga-concurrent-head-insert-tiebreak",
+      "ops": [
+        { "t": "ins", "list": "items", "id": "1@a", "after": "", "clock": { "c": 1, "r": "a" }, "value": "A" },
+        { "t": "ins", "list": "items", "id": "1@b", "after": "", "clock": { "c": 1, "r": "b" }, "value": "B" },
+        { "t": "ins", "list": "items", "id": "2@a", "after": "1@a", "clock": { "c": 2, "r": "a" }, "value": "C" }
+      ],
+      "expected": { "items": ["B", "A", "C"] }
+    },
+    {
+      "name": "rga-delete-tombstone-keeps-anchor",
+      "ops": [
+        { "t": "ins", "list": "items", "id": "1@a", "after": "", "clock": { "c": 1, "r": "a" }, "value": "x" },
+        { "t": "ins", "list": "items", "id": "2@a", "after": "1@a", "clock": { "c": 2, "r": "a" }, "value": "y" },
+        { "t": "rmv", "list": "items", "id": "1@a", "clock": { "c": 3, "r": "a" } }
+      ],
+      "expected": { "items": ["y"] }
+    },
+    {
+      "name": "rga-remove-before-insert-with-live-descendant",
+      "_note": "A rmv delivered before its ins, where the removed element has a live descendant. The tombstone must NOT be mis-anchored at the head and drag its subtree — folds to the same order regardless of delivery order.",
+      "ops": [
+        { "t": "ins", "list": "l", "id": "1@a", "after": "", "clock": { "c": 1, "r": "a" }, "value": "A" },
+        { "t": "ins", "list": "l", "id": "2@a", "after": "1@a", "clock": { "c": 2, "r": "a" }, "value": "B" },
+        { "t": "rmv", "list": "l", "id": "2@a", "clock": { "c": 3, "r": "a" } },
+        { "t": "ins", "list": "l", "id": "3@a", "after": "2@a", "clock": { "c": 4, "r": "a" }, "value": "C" }
+      ],
+      "expected": { "l": ["A", "C"] }
+    },
+    {
+      "name": "rga-interior-anchor-concurrent-insert",
+      "_note": "Concurrent inserts after an INTERIOR element (2@a), incl. an exact-clock-counter tie broken by replicaId.",
+      "ops": [
+        { "t": "ins", "list": "l", "id": "1@a", "after": "", "clock": { "c": 1, "r": "a" }, "value": "A" },
+        { "t": "ins", "list": "l", "id": "2@a", "after": "1@a", "clock": { "c": 2, "r": "a" }, "value": "B" },
+        { "t": "ins", "list": "l", "id": "3@a", "after": "2@a", "clock": { "c": 3, "r": "a" }, "value": "C" },
+        { "t": "ins", "list": "l", "id": "4@b", "after": "2@a", "clock": { "c": 4, "r": "b" }, "value": "X" },
+        { "t": "ins", "list": "l", "id": "5@c", "after": "2@a", "clock": { "c": 4, "r": "c" }, "value": "Y" }
+      ],
+      "expected": { "l": ["A", "B", "Y", "X", "C"] }
+    },
+    {
+      "name": "rga-three-replica-head-tiebreak",
+      "_note": "Three replicas insert at the head with the same counter; order is total via replicaId tie-break.",
+      "ops": [
+        { "t": "ins", "list": "l", "id": "1@a", "after": "", "clock": { "c": 1, "r": "a" }, "value": "A" },
+        { "t": "ins", "list": "l", "id": "1@b", "after": "", "clock": { "c": 1, "r": "b" }, "value": "B" },
+        { "t": "ins", "list": "l", "id": "1@c", "after": "", "clock": { "c": 1, "r": "c" }, "value": "C" }
+      ],
+      "expected": { "l": ["C", "B", "A"] }
+    },
+    {
+      "name": "mixed-register-and-text",
+      "ops": [
+        { "t": "set", "reg": "lang", "clock": { "c": 1, "r": "a" }, "value": "en" },
+        { "t": "ins", "list": "body", "id": "1@a", "after": "", "clock": { "c": 2, "r": "a" }, "value": "h" },
+        { "t": "ins", "list": "body", "id": "2@a", "after": "1@a", "clock": { "c": 3, "r": "a" }, "value": "i" }
+      ],
+      "expected": { "body": ["h", "i"], "lang": "en" },
+      "expectedText": { "body": "hi" }
+    }
+  ]
+}

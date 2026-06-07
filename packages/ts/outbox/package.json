@@ -1,6 +1,6 @@
 {
   "name": "@drakkar.software/starfish-outbox",
-  "version": "3.0.0-alpha.20",
+  "version": "3.0.0-alpha.21",
   "repository": {
     "type": "git",
     "url": "https://github.com/Drakkar-Software/starfish.git",
