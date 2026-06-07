@@ -36,6 +36,13 @@ from starfish_sharing.directory import (
     unpublish_member_cap,
 )
 from starfish_sharing.evict import evict_member
+from starfish_sharing.registry_role_enricher import (
+    DEFAULT_SAFE_ID,
+    make_registry_role_enricher,
+)
+from starfish_sharing.issuer_bound_role_enricher import (
+    make_issuer_bound_role_enricher,
+)
 
 
 def __getattr__(name: str):
@@ -73,5 +80,8 @@ __all__ = [
     "fetch_my_member_cap",
     "unpublish_member_cap",
     "evict_member",
+    "make_registry_role_enricher",
+    "make_issuer_bound_role_enricher",
+    "DEFAULT_SAFE_ID",
     "sharing_server_plugin",
 ]

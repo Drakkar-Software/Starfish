@@ -76,6 +76,14 @@ export { matchesAllowedMime, isJsonCollection } from "./router/mime.js"
 
 // Enrichers
 export { composeEnrichers } from "./enrichers/compose.js"
+export { makeIdentityRoleEnricher } from "./enrichers/identity.js"
+
+// Events proxy (authenticated SSE)
+export {
+  createEventsProxyRouter,
+  DEFAULT_SAFE_ID,
+  type EventsProxyOptions,
+} from "./events-proxy.js"
 
 // Lifecycle
 export { createGracefulShutdown, type GracefulShutdownOptions, type ShutdownHandle } from "./lifecycle.js"
@@ -107,8 +115,11 @@ export {
 } from "./auth/revocation-store.js"
 export {
   createCapCertRoleResolver,
+  authenticateMetaRequest,
   CapAuthError,
   type CapResolverOptions,
+  type MetaAuthOptions,
+  type MetaRequestHeaders,
 } from "./router/cap-resolver.js"
 export {
   defaultServerPlugin,

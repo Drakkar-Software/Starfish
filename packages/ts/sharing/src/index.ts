@@ -55,4 +55,10 @@ export type {
   EvictMemberTarget,
 } from "./evict.js"
 
+export { makeRegistryRoleEnricher, DEFAULT_SAFE_ID } from "./registry-role-enricher.js"
+export type { RegistryRoleEnricherOptions } from "./registry-role-enricher.js"
+
+export { makeIssuerBoundRoleEnricher } from "./issuer-bound-role-enricher.js"
+export type { IssuerBoundRoleEnricherOptions } from "./issuer-bound-role-enricher.js"
+
 export { sharingServerPlugin } from "./plugin.js"

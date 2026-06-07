@@ -96,3 +96,38 @@ const handle = createGracefulShutdown({ plugins: [replica] })
 The Python API mirrors this: `create_replica_server_plugin(store=..., sync_config=..., collections={...})`
 returns an object with `.plugin` (pass to `SyncRouterOptions(plugins=[replica.plugin])`)
 and `.manager` (`await replica.manager.start()`).
+
+## Authenticated replicas
+
+A static `headers` map covers bearer-token primaries. When the primary requires
+cap-cert + Ed25519 per-request signing, use the built-in request-signing client
+instead of hand-rolling it:
+
+```ts
+import { createReplicaAuth, ReplicaManager } from "@drakkar.software/starfish-replica"
+
+// Bootstraps a self-signed device cap-cert from the passphrase (or pass a
+// pre-bootstrapped `credentials: DeviceCredentials`).
+const auth = await createReplicaAuth({ passphrase: PLATFORM_PASSPHRASE })
+if (auth.userId !== expectedUserId) throw new Error("identity mismatch")
+
+const manager = new ReplicaManager(store, collections, { fetchFn: auth.fetch })
+```
+
+`auth.fetch` signs every outgoing pull/push: it attaches
+`Authorization: Cap <base64(cap-cert)>` plus `X-Starfish-Sig`/`-Ts`/`-Nonce`
+over the canonical request bytes. The cap-cert (default 30-day TTL) is re-minted
+transparently as it nears expiry (`refreshMarginSec`, default one day) so a
+long-uptime replica never 401-storms; the signing key and `userId` are preserved
+across refreshes. `scope` defaults to `scopes.rootAll()`.
+
+Python mirrors this with `ReplicaAuth`, an `httpx.Auth`:
+
+```python
+import httpx
+from starfish_replica import ReplicaAuth, ReplicaManager
+
+auth = ReplicaAuth(passphrase=PLATFORM_PASSPHRASE)
+client = httpx.AsyncClient(timeout=30.0, auth=auth)
+manager = ReplicaManager(store, collections, client=client)
+```

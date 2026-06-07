@@ -7,6 +7,7 @@ const ENTRIES = {
 const EXTERNAL = [
   "@drakkar.software/starfish-protocol",
   "@drakkar.software/starfish-server",
+  "@drakkar.software/starfish-identities",
 ]
 
 await Promise.all(

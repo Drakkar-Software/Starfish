@@ -497,6 +497,116 @@ function readIdentityParam(c: Context): string | undefined {
 }
 
 /**
+ * A case-insensitive header accessor — Hono's `c.req.header` and a plain
+ * `Headers` both satisfy this, as does a function or `(name) => string | null`.
+ */
+export type MetaRequestHeaders = {
+  get?: (name: string) => string | null | undefined
+} | ((name: string) => string | null | undefined)
+
+/** Options for {@link authenticateMetaRequest}. */
+export interface MetaAuthOptions {
+  method: string
+  pathAndQuery: string
+  host: string
+  /** Case-insensitive header accessor (Hono `c.req.header`, `Headers`, …). */
+  headers: MetaRequestHeaders
+  nonceCache: NonceCache
+  revocationStore: RevocationStore
+  /** Per-kind validators, as produced by {@link composePluginValidators}. */
+  pluginValidators: Map<CapCert["kind"], CapCertValidator[]>
+  /** Accepted cap kinds. Defaults to `["device", "member"]`. */
+  acceptKinds?: readonly CapCert["kind"][]
+}
+
+/**
+ * Authenticate a BODYLESS meta-request (e.g. an SSE `/events` subscribe).
+ *
+ * Reuses the EXACT verify order of {@link createCapCertRoleResolver}:
+ *
+ *   clock-skew → `verifyCapCert` → per-kind plugin validators →
+ *   per-request Ed25519 signature → nonce replay → revocation.
+ *
+ * Differences from the sync resolver, by design:
+ *
+ * - The body hash is over an EMPTY body — meta-requests carry no payload.
+ * - There is NO `scope.paths` enforcement; per-resource authorization is the
+ *   caller's job (e.g. a role enricher gating each subscribed topic).
+ * - Audience caps are rejected up-front. Only kinds in `acceptKinds` (default
+ *   `device`/`member`) are accepted; any other kind, including a missing/unknown
+ *   one, resolves to `null`.
+ *
+ * Returns the bound identity (device → `issUserId`, member → `subUserId`) or
+ * `null` on ANY failure — this primitive never throws for an auth rejection, so
+ * callers map a `null` result to HTTP 401.
+ */
+export async function authenticateMetaRequest(opts: MetaAuthOptions): Promise<string | null> {
+  const acceptKinds = opts.acceptKinds ?? (["device", "member"] as const)
+  const get = typeof opts.headers === "function" ? opts.headers : opts.headers.get?.bind(opts.headers)
+  const header = (name: string): string | null => {
+    if (!get) return null
+    return get(name) ?? get(name.toLowerCase()) ?? null
+  }
+
+  const authHeader = header(HEADER_AUTH)
+  if (!authHeader) return null
+  const cert = parseCapHeader(authHeader)
+  if (!cert) return null
+  // Reject audience (and any non-accepted) kinds up-front: a meta-request binds
+  // a single subject, and the dispatch below indexes `cert.sub` for the key.
+  if (!acceptKinds.includes(cert.kind)) return null
+
+  const sigB64 = header(HEADER_SIG)
+  const tsHeader = header(HEADER_TS)
+  const nonceB64 = header(HEADER_NONCE)
+  if (!sigB64 || !tsHeader || !nonceB64) return null
+  const ts = parseIntegerHeader(tsHeader)
+  if (ts === null) return null
+
+  const nowMs = Date.now()
+  // Cheap O(1) clock-skew gate BEFORE the Ed25519 cap-cert verify.
+  if (!isWithinClockSkew(ts, nowMs)) return null
+
+  const certResult = await verifyCapCert(cert, { now: Math.floor(nowMs / 1000) })
+  if (!certResult.ok) return null
+
+  // Per-kind plugin validators — same dispatch as the sync resolver. Stops a
+  // member cap whose structural shape would be rejected on /pull from sneaking
+  // through here (strict: an accepted kind with no registered validator is
+  // rejected).
+  const validators = opts.pluginValidators.get(cert.kind)
+  if (!validators || validators.length === 0) return null
+  for (const validator of validators) {
+    try {
+      validator(cert)
+    } catch {
+      return null
+    }
+  }
+
+  // Per-request Ed25519 signature over (method, path+query, sha256(""), host).
+  // device/member caps verify against the cap subject `cert.sub`.
+  if (typeof cert.sub !== "string") return null
+  const req: SignableRequest = {
+    method: opts.method as SignableRequest["method"],
+    pathAndQuery: opts.pathAndQuery,
+    body: new Uint8Array(0),
+    host: opts.host,
+  }
+  const sigOk = await verifyRequestSignature(req, { sig: sigB64, ts, nonce: nonceB64 }, cert.sub)
+  if (!sigOk) return null
+
+  // Replay protection — keyed by the verifying pubkey (the cap subject here).
+  if (!(await opts.nonceCache.checkAndRemember(cert.sub, nonceB64, nowMs))) return null
+
+  // Revocation — `cert.nonce` is the CAP-CERT nonce (per-cap revocation key),
+  // NOT the per-request nonce. Matches the sync resolver.
+  if (opts.revocationStore.isRevoked(cert.iss, cert.sub, cert.nonce)) return null
+
+  return bindAuthIdentity(cert, cert.sub)
+}
+
+/**
  * Create a {@link RoleResolver} that authenticates via cap-cert + request
  * signature, with replay protection and revocation lookup.
  */

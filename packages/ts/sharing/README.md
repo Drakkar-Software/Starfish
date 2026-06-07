@@ -254,4 +254,52 @@ const resolver = createCapCertRoleResolver({
 })
 ```
 
+## Role enrichers
+
+Two generic `RoleEnricher` factories for apps that key a collection by a free id
+(`products/{id}/…`, `pubspaces/{ownerId}/…`). Both take the `store`/`auth` as
+arguments and depend on `@drakkar.software/starfish-server` for **types only** (no
+runtime coupling).
+
+### `makeRegistryRoleEnricher` — registry / TOFU owner-member
+
+Reads an owner-written `_registry` doc (`{ owner, members }`) and grants
+`ownerRole` / `memberRole`. With `allowTofu: true` (default) the first writer to a
+new id is granted ownership; pass `allowTofu: false` for the strict SSE/events
+variant. Fails CLOSED on store errors and on owner-less/unparseable docs.
+
+```ts
+import { makeRegistryRoleEnricher } from "@drakkar.software/starfish-sharing"
+
+const enricher = makeRegistryRoleEnricher(store, {
+  idParam: "productId",
+  registryPath: "products/{id}/_registry", // {id} is substituted
+  ownerRole: "product:owner",
+  memberRole: "product:member",
+  // allowTofu: false,                       // strict, for /events
+  // idPattern: DEFAULT_SAFE_ID,             // ^[a-zA-Z0-9_-]+$, full match
+})
+```
+
+### `makeIssuerBoundRoleEnricher` — issuer-bound public share
+
+Decides roles purely from the requester's cap (no store read). Grants the owner's
+own device cap `ownerRole` + `readerRole`; grants `readerRole` to caps the owner
+delegated for one of `collections`; additionally grants `writerRole` when such a
+cap carries `cap:write:<col>` and the request does not target the guard doc.
+
+```ts
+import { makeIssuerBoundRoleEnricher } from "@drakkar.software/starfish-sharing"
+
+const enricher = makeIssuerBoundRoleEnricher({
+  ownerParam: "ownerId",
+  ownerRole: "pubspace:owner",
+  readerRole: "pubspace:reader",
+  writerRole: "pubspace:writer",
+  collections: ["pubspace", "pubstream"],
+  guardParam: "docId",
+  guardValue: "_rooms", // withholds writerRole on the registry doc
+})
+```
+
 See `docs/ts/sharing/` for the full guide.

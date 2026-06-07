@@ -275,6 +275,9 @@ importers:
 
   packages/ts/replica:
     dependencies:
+      '@drakkar.software/starfish-identities':
+        specifier: workspace:*
+        version: link:../identities
       '@drakkar.software/starfish-protocol':
         specifier: workspace:*
         version: link:../protocol
@@ -369,6 +372,9 @@ importers:
       '@drakkar.software/starfish-identities':
         specifier: workspace:*
         version: link:../identities
+      '@drakkar.software/starfish-server':
+        specifier: workspace:*
+        version: link:../server
       '@noble/curves':
         specifier: ^2.2.0
         version: 2.2.0

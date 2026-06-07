@@ -19,6 +19,7 @@ dev = [
   "pytest-asyncio>=0.21",
   "respx>=0.23.1",
   "starfish-identities",
+  "starfish-server",
 ]
 
 [tool.uv.sources]
@@ -26,6 +27,7 @@ starfish-protocol = { path = "../protocol", editable = true }
 starfish-sdk = { path = "../client", editable = true }
 starfish-keyring = { path = "../keyring", editable = true }
 starfish-identities = { path = "../identities", editable = true }
+starfish-server = { path = "../server", editable = true }
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

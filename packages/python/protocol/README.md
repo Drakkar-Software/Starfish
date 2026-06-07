@@ -27,6 +27,7 @@ The v3 protocol is built around two signed envelopes — **capability certificat
 | `CapCert`, `CapKind`, `CapScope` | dataclasses | Cap-cert object model. |
 | `RequestSignature` | dataclass | Per-request signature bundle. |
 | `Timestamps`, `PullResult`, `PushSuccess` | dataclasses | Protocol response shapes shared with client/server. |
+| `CORS_ALLOW_HEADERS` | constant | Canonical list of non-simple request headers (`Authorization`, `Content-Type`, the `X-Starfish-*` auth headers, plus `X-Requested-With`) a server should advertise in `Access-Control-Allow-Headers`. Built from the `HEADER_*` constants so it cannot drift. |
 
 ## Capability certificates
 

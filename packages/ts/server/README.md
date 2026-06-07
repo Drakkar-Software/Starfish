@@ -166,9 +166,13 @@ export {
 // Auth (v3)
 export {
   createCapCertRoleResolver, CapAuthError, type CapResolverOptions,
+  authenticateMetaRequest, type MetaAuthOptions, type MetaRequestHeaders,
   createInMemoryNonceCache, type NonceCache, type NonceCacheOptions,
   createInMemoryRevocationStore, type RevocationStore, type RevocationList, type RevocationEntry,
 }
+
+// Events proxy (authenticated SSE)
+export { createEventsProxyRouter, DEFAULT_SAFE_ID, type EventsProxyOptions }
 
 // Storage
 export {
@@ -181,6 +185,7 @@ export {
 export {
   createEntitlementRoleEnricher, type EntitlementRoleEnricherOptions,
   composeEnrichers,
+  makeIdentityRoleEnricher,  // grant a fixed role to one identity
 }
 
 // Config
@@ -226,6 +231,56 @@ const router = createSyncRouter({
 ```
 
 Full pattern catalog: [docs/ts/server/group-access.md](../../../docs/ts/server/group-access.md), [docs/ts/server/entitlements.md](../../../docs/ts/server/entitlements.md).
+
+`makeIdentityRoleEnricher(identity, role)` is a ready-made enricher for the
+common "elevate one well-known identity" case (e.g. a platform admin): it grants
+`role` iff `auth.identity === identity` and `[]` otherwise.
+
+## Authenticated SSE proxy (`/events`)
+
+`createEventsProxyRouter(...)` builds a Hono router with a single authenticated
+`GET /events` that proxies an upstream Server-Sent-Events firehose, gating each
+subscribed candidate behind per-resource authorization:
+
+```ts
+import {
+  createEventsProxyRouter,
+  authenticateMetaRequest,
+  composePluginValidators,
+  DEFAULT_SAFE_ID,
+} from "@drakkar.software/starfish-server"
+
+const pluginValidators = composePluginValidators([identitiesServerPlugin, sharingServerPlugin])
+
+const events = createEventsProxyRouter({
+  // Bodyless cap-cert auth — same verify order as the sync resolver, with NO
+  // scope.paths enforcement (per-resource authz is `authorize`'s job below).
+  authenticate: (c) =>
+    authenticateMetaRequest({
+      method: "GET",
+      pathAndQuery: new URL(c.req.url).pathname + new URL(c.req.url).search,
+      host: new URL(c.req.url).host,
+      headers: c.req.header.bind(c.req),
+      nonceCache,
+      revocationStore,
+      pluginValidators,
+    }),
+  candidatesParam: "ids",                 // ?ids=a,b,c
+  authorize: (identity, candidate) => isMember(identity, candidate),
+  topicMapper: (c) => [`app-${c}`],        // candidate -> upstream topics
+  upstreamUrl: "http://bridge:8091/events",
+  maxCandidates: 256,                      // 400 over this many candidates
+  maxTopics: 64,                           // silently truncate beyond this
+  // publicPredicate: (c) => PUBLIC.has(c), // optional open-gate
+  // idPattern: DEFAULT_SAFE_ID,            // ^[a-zA-Z0-9_-]+$, full match
+})
+```
+
+The upstream URL always carries at least one `topic=`; when nothing is
+authorized the sentinel `__none__` is substituted (firehose prevention).
+`authenticateMetaRequest` is the reusable bodyless authenticator underneath —
+use it directly for any meta-endpoint that needs cap-cert auth without
+`scope.paths`.
 
 ## Root-only collections
 

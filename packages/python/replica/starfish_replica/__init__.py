@@ -5,9 +5,12 @@ types (:class:`RemoteConfig`/:class:`WriteMode`/:class:`SyncTrigger`/
 :class:`RemoteCollection`), :func:`validate_replica_config`, and
 :func:`create_replica_server_plugin` — a ``ServerPlugin`` whose
 ``before_pull``/``intercept_push`` hooks enforce write modes and proxy
-push-through writes, and whose ``shutdown`` hook stops the sync timers.
+push-through writes, and whose ``shutdown`` hook stops the sync timers. For
+authenticated replicas, :class:`ReplicaAuth` is an ``httpx.Auth`` that signs
+each outgoing pull/push request with a self-signed device cap-cert.
 """
 
+from starfish_replica.auth import ReplicaAuth
 from starfish_replica.config import (
     RemoteCollection,
     RemoteConfig,
@@ -19,6 +22,7 @@ from starfish_replica.plugin import ReplicaServerPlugin, create_replica_server_p
 from starfish_replica.validate import validate_replica_config
 
 __all__ = [
+    "ReplicaAuth",
     "RemoteCollection",
     "RemoteConfig",
     "SyncTrigger",

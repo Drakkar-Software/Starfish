@@ -59,4 +59,38 @@ the plugin in `plugins` to `createGracefulShutdown` handles this automatically.
 
 `push_through` and `bidirectional` require `pushPath`.
 
+## Authenticated replicas (`createReplicaAuth`)
+
+When the primary requires cap-cert + Ed25519 request signing, build a signing
+`fetch` wrapper with `createReplicaAuth` and inject it into the manager via
+`fetchFn`. It signs every outgoing pull/push request and attaches the cap +
+signature headers:
+
+```ts
+import { createReplicaAuth, ReplicaManager } from "@drakkar.software/starfish-replica"
+
+const auth = await createReplicaAuth({ passphrase: PLATFORM_PASSPHRASE })
+// Optional: cross-check the derived identity before trusting it.
+if (auth.userId !== expectedUserId) throw new Error("identity mismatch")
+
+const manager = new ReplicaManager(store, collections, { fetchFn: auth.fetch })
+```
+
+Per request it bootstraps (once) a self-signed device cap-cert from the
+passphrase — or accepts a pre-bootstrapped `credentials: DeviceCredentials` — then
+attaches:
+
+| Header | Value |
+| --- | --- |
+| `Authorization` | `Cap ` + base64(stableStringify(cap-cert)) |
+| `X-Starfish-Sig` | base64 Ed25519 signature over the canonical request bytes |
+| `X-Starfish-Ts` | Unix milliseconds |
+| `X-Starfish-Nonce` | base64 16-byte random nonce |
+
+The cap-cert has a finite TTL (30 days by default). `createReplicaAuth` re-mints
+it transparently when it nears expiry (`refreshMarginSec`, default one day) so a
+long-uptime replica never 401-storms — the signing key and userId are preserved
+across refreshes. `scope` defaults to `scopes.rootAll()`; pass a narrower
+`ScopePreset` to restrict the cap.
+
 See `docs/ts/replica/01-overview.md` for the full guide.

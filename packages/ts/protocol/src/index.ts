@@ -83,4 +83,5 @@ export {
   HEADER_PUB,
   HEADER_CONTENT_TYPE,
   HEADER_ACCEPT,
+  CORS_ALLOW_HEADERS,
 } from "./constants.js"

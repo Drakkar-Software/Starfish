@@ -54,6 +54,7 @@ from starfish_protocol.constants import (
     HEADER_PUB,
     HEADER_CONTENT_TYPE,
     HEADER_ACCEPT,
+    CORS_ALLOW_HEADERS,
 )
 from starfish_protocol.revocation import (
     build_revocation_list,
@@ -119,6 +120,7 @@ __all__ = [
     "HEADER_PUB",
     "HEADER_CONTENT_TYPE",
     "HEADER_ACCEPT",
+    "CORS_ALLOW_HEADERS",
     "build_revocation_list",
     "revocation_list_canonical_signing_input",
     "ed25519_suite",

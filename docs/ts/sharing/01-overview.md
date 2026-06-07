@@ -98,6 +98,80 @@ issEdPrivHex, generation, submitRevocation }, { rotate: false, revoke: true })` 
 keyring params. It revokes the cap and drops the published `_members` entry. See
 `examples/ts/server.ts` for the full collection config.
 
+## Role enrichers
+
+For apps that key a collection by a free id (`products/{id}/…`,
+`pubspaces/{ownerId}/…`), a plain cap role would let any authenticated identity
+read/overwrite any id. Two generic `RoleEnricher` factories synthesize
+domain-specific roles instead. Both take the `store`/`auth` as **arguments**, so
+they depend on the server package for **types only** (TS `import type`; Py
+`TYPE_CHECKING`) — there is no runtime coupling to `starfish-server`. Compose them
+with `composeEnrichers` / `compose_enrichers` and wire via
+`createSyncRouter`'s `roleEnricher`.
+
+### `makeRegistryRoleEnricher` / `make_registry_role_enricher`
+
+Reads an authoritative owner-written `_registry` document (`{ owner, members:
+[...userIds] }`) at a configurable path template and grants `ownerRole` /
+`memberRole`:
+
+- `ownerRole` — the creator. With `allowTofu: true` (default) the FIRST writer to
+  an id is granted ownership (trust-on-first-use), bootstrapping resource
+  creation. Pass `allowTofu: false` for the strict SSE/events variant, where a
+  caller must already have a recorded role in an existing registry doc (so it
+  can't subscribe to a not-yet-existing id and harvest the owner's future events).
+- `memberRole` — owner OR any userId in `members`.
+
+Security properties (preserved from the per-app product/space enrichers it
+generalizes):
+
+- **Fails CLOSED on store errors.** If `getString`/`get_string` raises, the error
+  propagates (the resolver returns 500). A transient outage must not fall through
+  to "no registry yet ⇒ open TOFU", or an attacker who can induce store errors
+  could take over established resources.
+- **Full id match.** The id must fully match `idPattern` (default
+  `^[a-zA-Z0-9_-]+$`), guarding against trailing-newline / partial-match bypasses
+  (Python uses `fullmatch`).
+- **Owner-less / unparseable docs fail CLOSED** (`[]`) rather than re-opening
+  TOFU.
+
+```ts
+const enricher = makeRegistryRoleEnricher(store, {
+  idParam: "productId",
+  registryPath: "products/{id}/_registry",
+  ownerRole: "product:owner",
+  memberRole: "product:member",
+})
+```
+
+### `makeIssuerBoundRoleEnricher` / `make_issuer_bound_role_enricher`
+
+Decides roles purely from the requester's cap (no store read) for a public share
+keyed by a free `{ownerId}`:
+
+- `ownerRole` + `readerRole` — the owner's own DEVICE cap. The reader role is
+  granted too because device caps never carry a `delegated:` role, so without it
+  the owner could write but not read their own data.
+- `readerRole` — a member/audience cap the owner minted; the resolver emits
+  `delegated:<owner>:<col>`, so read is granted only when the issuer is the path's
+  owner (for any of `collections`).
+- `writerRole` — additionally granted when such a delegated cap carries
+  `cap:write:<col>` AND the request does not target the guard doc
+  (`guardParam`/`guardValue`, e.g. the `_rooms` registry) — guests post in rooms
+  but only the owner manages the room list.
+
+```ts
+const enricher = makeIssuerBoundRoleEnricher({
+  ownerParam: "ownerId",
+  ownerRole: "pubspace:owner",
+  readerRole: "pubspace:reader",
+  writerRole: "pubspace:writer",
+  collections: ["pubspace", "pubstream"],
+  guardParam: "docId",
+  guardValue: "_rooms",
+})
+```
+
 ## Deep-dive docs
 
 - [Public links (audience caps)](./02-public-links.md) — `createPublicLink` with optional expiry + server-enforced identity allow-list.
