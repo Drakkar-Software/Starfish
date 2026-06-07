@@ -166,6 +166,38 @@ class FieldPermission(BaseModel):
     """Roles required to write this field.  ``None`` means no restriction."""
 
 
+class IdentityRestriction(BaseModel):
+    """A static identity restriction rule.
+
+    Declared in the JSON-serializable config at the server (:class:`SyncConfig`),
+    namespace (:class:`NamespaceConfig`), or collection (:class:`CollectionConfig`)
+    level; the level it is attached to determines its scope.
+
+    ``mode="deny"`` blocks the listed identities; ``mode="allow"`` permits ONLY
+    the listed identities (everyone else, including anonymous callers, is
+    blocked). When both kinds of rule apply to a request, **deny wins**.
+
+    IMPORTANT: these rules carry NO behavior on their own — they are enforced
+    only when an ``authorize``-hook plugin is installed that ingests them, namely
+    ``create_restrictions_plugin(config=...)`` from ``starfish-restrictions``.
+    ``create_sync_router`` logs a warning if a config declares ``restrictions``
+    but no such plugin is wired. For dynamic identity lists, pass runtime rules
+    to ``create_restrictions_plugin(rules=...)`` instead (callbacks cannot live
+    in serializable config).
+    """
+
+    model_config = {"populate_by_name": True}
+
+    mode: Literal["deny", "allow"]
+    """``"deny"`` blocks listed identities; ``"allow"`` permits only listed ones."""
+
+    identities: list[str] = Field(min_length=1)
+    """The identities this rule applies to."""
+
+    actions: list[Literal["pull", "push", "list"]] | None = Field(default=None)
+    """Restrict the rule to these actions. ``None``/empty = all actions."""
+
+
 class CollectionConfig(BaseModel):
     """Configuration for a single synced collection."""
 
@@ -266,6 +298,11 @@ class CollectionConfig(BaseModel):
     read/write role checks.  Incompatible with public read/write roles
     (rejected at config load)."""
 
+    restrictions: list[IdentityRestriction] | None = Field(default=None)
+    """Static identity restrictions scoped to this collection. Enforced only when
+    ``create_restrictions_plugin(config=...)`` (``starfish-restrictions``) is
+    installed. See :class:`IdentityRestriction`."""
+
     @field_validator("rate_limit", mode="before")
     @classmethod
     def _coerce_rate_limit(cls, v: object) -> object:
@@ -328,6 +365,11 @@ class NamespaceConfig(BaseModel):
 
     collections: list[CollectionConfig]
 
+    restrictions: list[IdentityRestriction] | None = Field(default=None)
+    """Static identity restrictions scoped to every collection in this namespace.
+    Enforced only when ``create_restrictions_plugin(config=...)``
+    (``starfish-restrictions``) is installed. See :class:`IdentityRestriction`."""
+
 
 class SyncConfig(BaseModel):
     """Top-level sync configuration."""
@@ -351,3 +393,9 @@ class SyncConfig(BaseModel):
         }
     """
     rate_limit: RateLimitConfig | None = Field(default=None, alias="rateLimit")
+
+    restrictions: list[IdentityRestriction] | None = Field(default=None)
+    """Static identity restrictions scoped to the entire server (every collection,
+    in every namespace and the root). Enforced only when
+    ``create_restrictions_plugin(config=...)`` (``starfish-restrictions``) is
+    installed. See :class:`IdentityRestriction`."""

@@ -239,6 +239,46 @@ export type InterceptPushHook = (
 ) => PushHookResult | Promise<PushHookResult>
 
 /**
+ * Context handed to a plugin's `authorize` hook. Framework-neutral (no
+ * Hono/FastAPI types). Unlike `beforePull`/`interceptPush`, this fires for
+ * EVERY action (`pull`, `push`, `list`, including batch/bundle members), so an
+ * extension can deny access by identity independent of roles — see
+ * `@drakkar.software/starfish-restrictions`.
+ */
+export interface AuthorizeContext {
+  /** The authenticated caller identity (`auth.identity`), or `undefined` for an
+   *  anonymous (public) request. */
+  identity?: string
+  /** The action being authorized. */
+  action: "pull" | "push" | "list"
+  /** Collection name the action targets. */
+  collection: string
+  /** Namespace name when the request went through a named sub-router. */
+  namespace?: string
+  /** Resolved route path parameters (e.g. `{ userId: "..." }`). */
+  params: Record<string, string>
+  /** The caller's effective roles (post-enrichment), for context-aware policies. */
+  roles: string[]
+}
+
+/**
+ * Directive an `authorize` hook returns. `proceed` allows the action; `reject`
+ * short-circuits with an HTTP error status + message (typically `403`).
+ */
+export type AuthorizeResult =
+  | { action: "proceed" }
+  | { action: "reject"; status: number; error: string }
+
+/**
+ * Hook invoked at the central authorization gate for every action, after roles
+ * are resolved and the role-based check passes. Lets an extension deny access
+ * (e.g. an identity deny/allow list). See {@link AuthorizeContext}.
+ */
+export type AuthorizeHook = (
+  ctx: AuthorizeContext,
+) => AuthorizeResult | Promise<AuthorizeResult>
+
+/**
  * Server plugin: contributes per-kind cap-cert validators to the resolver
  * and/or write-path side-effect hooks. Apps compose the behaviors they want
  * by listing each extension's plugin.
@@ -277,6 +317,15 @@ export interface ServerPlugin {
    * Runs in plugin-list order; the first non-`proceed` result wins. Additive.
    */
   interceptPush?: InterceptPushHook
+  /**
+   * Invoked at the central authorization gate for every action (`pull`,
+   * `push`, `list`, incl. batch/bundle members), after roles are resolved and
+   * the role-based check passes. Lets an extension deny access independent of
+   * roles (e.g. an identity deny/allow list — see
+   * `@drakkar.software/starfish-restrictions`). Runs in plugin-list order; the
+   * first `reject` wins; a throw propagates. Additive.
+   */
+  authorize?: AuthorizeHook
   /**
    * Invoked during graceful shutdown so the plugin can release resources
    * (e.g. close a queue connection). Additive.

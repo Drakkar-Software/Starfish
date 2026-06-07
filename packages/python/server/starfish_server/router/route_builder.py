@@ -43,6 +43,7 @@ from starfish_server.storage.kv_adapter import KVAdapter
 from starfish_server.router.mime import matches_allowed_mime, is_json_collection
 from starfish_server.router.cap_resolver import match_scope_path
 from starfish_protocol.plugins import (
+    AuthorizeContext,
     PullHookContext,
     PushHookContext,
     ServerPlugin,
@@ -50,8 +51,10 @@ from starfish_protocol.plugins import (
 )
 from starfish_server.plugins import (
     dispatch_after_write,
+    dispatch_authorize,
     dispatch_before_pull,
     dispatch_intercept_push,
+    has_authorize_hook,
 )
 from starfish_server.ttl import is_expired as _is_expired
 from starfish_protocol import AuditLogger, AuditEntry as _AuditEntry
@@ -474,13 +477,22 @@ async def _check_auth(
     request: Request,
     params: dict[str, str],
     opts: SyncRouterOptions,
+    action: str,
+    namespace_name: str | None = None,
 ) -> tuple[str | None, frozenset[str], JSONResponse | None]:
     """Check authorization. Returns (identity, effective_roles, error_response)."""
     required_roles = col.read_roles if operation == OP_READ else col.write_roles
 
     # A rootOnly collection is never public (enforced at config load), so it must
     # always resolve the caller's roles rather than short-circuit anonymous here.
-    if not col.root_only and ROLE_PUBLIC in required_roles:
+    # When an authorize hook is installed (e.g. starfish-restrictions), the public
+    # fast-path is also skipped so identity is resolved and an identity-based
+    # restriction can apply even to a public collection.
+    if (
+        not col.root_only
+        and ROLE_PUBLIC in required_roles
+        and not has_authorize_hook(opts.plugins)
+    ):
         return None, frozenset(), None
 
     async def _audit_denial(ident: str | None, err: JSONResponse) -> None:
@@ -507,6 +519,26 @@ async def _check_auth(
 
     if not _is_access_allowed(col, operation, effective_roles):
         error = JSONResponse({"error": "Forbidden"}, status_code=403)
+        await _audit_denial(identity, error)
+        return identity, effective_roles, error
+
+    # Identity restrictions (e.g. starfish-restrictions): deny by identity
+    # independent of roles. Runs for every action after the role check passes.
+    authz = await dispatch_authorize(
+        opts.plugins,
+        AuthorizeContext(
+            # Normalize the anonymous sentinel ("") to None per the documented
+            # AuthorizeContext contract (parity with the batch path).
+            identity=identity or None,
+            action=action,
+            collection=col.name,
+            namespace=namespace_name,
+            params=dict(params),
+            roles=tuple(effective_roles),
+        ),
+    )
+    if authz.action == "reject":
+        error = JSONResponse({"error": authz.error}, status_code=authz.status or 403)
         await _audit_denial(identity, error)
         return identity, effective_roles, error
 
@@ -773,7 +805,7 @@ def _make_push_handler(
         if not _validate_all_params(params):
             return JSONResponse({"error": "Invalid path parameter"}, status_code=400)
 
-        identity, effective_roles, error = await _check_auth(col, OP_WRITE, request, params, opts)
+        identity, effective_roles, error = await _check_auth(col, OP_WRITE, request, params, opts, ACTION_PUSH, namespace_name)
         if error:
             return error
 
@@ -884,7 +916,7 @@ def _add_collection_routes(
             if not _validate_all_params(params):
                 return JSONResponse({"error": "Invalid path parameter"}, status_code=400)
 
-            identity, effective_roles, error = await _check_auth(col, OP_READ, request, params, opts)
+            identity, effective_roles, error = await _check_auth(col, OP_READ, request, params, opts, ACTION_PULL, namespace_name)
             if error:
                 return error
 
@@ -1083,7 +1115,7 @@ def _add_collection_routes(
                 if not _validate_all_params(params):
                     return JSONResponse({"error": "Invalid path parameter"}, status_code=400)
 
-                list_identity, list_roles, error = await _check_auth(col, OP_READ, request, params, opts)
+                list_identity, list_roles, error = await _check_auth(col, OP_READ, request, params, opts, ACTION_LIST, namespace_name)
                 if error:
                     return error
 
@@ -1165,10 +1197,12 @@ def _add_bundled_routes(
         # Resolve the caller's effective roles ONCE (the resolver consumes the
         # request nonce, so it must not run per-collection). Skipped entirely
         # when every member is public, preserving anonymous access to all-public
-        # bundles.
+        # bundles — unless an authorize hook is installed, in which case the
+        # identity must be resolved so identity restrictions apply even to
+        # all-public bundles.
         identity: str | None = None
         effective_roles: frozenset[str] = frozenset()
-        if has_non_public:
+        if has_non_public or has_authorize_hook(opts.plugins):
             identity, effective_roles, error = await _resolve_effective_roles(
                 request, params, opts, storage_path
             )
@@ -1194,6 +1228,22 @@ def _add_bundled_routes(
             # public, and rootOnly). Denied members are omitted so a bundle never
             # leaks a collection the caller can't read.
             if not _is_access_allowed(col, OP_READ, effective_roles):
+                continue
+
+            # Identity restrictions: a restricted member is omitted (not
+            # leaked), matching how a role-denied member is dropped above.
+            member_authz = await dispatch_authorize(
+                opts.plugins,
+                AuthorizeContext(
+                    identity=identity or None,
+                    action=ACTION_PULL,
+                    collection=col.name,
+                    namespace=namespace_name,
+                    params=dict(params),
+                    roles=tuple(effective_roles),
+                ),
+            )
+            if member_authz.action == "reject":
                 continue
 
             document_key = f"{base_key}/{col.name}"
@@ -1234,7 +1284,7 @@ def _add_bundled_routes(
                 if not _validate_all_params(params):
                     return JSONResponse({"error": "Invalid path parameter"}, status_code=400)
 
-                identity, effective_roles, error = await _check_auth(col, OP_WRITE, request, params, opts)
+                identity, effective_roles, error = await _check_auth(col, OP_WRITE, request, params, opts, ACTION_PUSH, namespace_name)
                 if error:
                     return error
 
@@ -1476,6 +1526,25 @@ def _make_batch_pull_handler(
                 await _record_audit(col.name, "", False, 403, effective_params)
                 return {"error": "Forbidden"}
 
+            # Identity restrictions: deny by identity independent of roles
+            # (parity with the standalone pull path).
+            batch_authz = await dispatch_authorize(
+                opts.plugins,
+                AuthorizeContext(
+                    identity=identity if identity else None,
+                    action=ACTION_PULL,
+                    collection=col.name,
+                    namespace=namespace_name,
+                    params=dict(effective_params),
+                    roles=tuple(effective_roles),
+                ),
+            )
+            if batch_authz.action == "reject":
+                await _record_audit(
+                    col.name, "", False, batch_authz.status or 403, effective_params
+                )
+                return {"error": batch_authz.error}
+
             try:
                 key = _resolve_document_key(col.storage_path, effective_params)
                 # Guard the resolved key: validate_path_segment admits `..`, so a
@@ -1594,6 +1663,23 @@ def create_sync_router(opts: SyncRouterOptions) -> APIRouter:
                 "after_write hook is registered; pushes will be neither stored nor "
                 "published.",
                 ", ".join(repr(c.name) for c in queue_only),
+            )
+
+    # Identity restrictions declared in config are inert unless an authorize-hook
+    # plugin (e.g. create_restrictions_plugin from starfish-restrictions) ingests
+    # them. Silently-ignored security policy is dangerous, so warn loudly.
+    if not has_authorize_hook(opts.plugins):
+        declares_restrictions = bool(config.restrictions) or any(
+            c.restrictions for c in config.collections
+        ) or any(
+            ns.restrictions or any(c.restrictions for c in ns.collections)
+            for ns in (config.namespaces or {}).values()
+        )
+        if declares_restrictions:
+            logging.getLogger(__name__).warning(
+                "config declares `restrictions` but no plugin provides an authorize "
+                "hook; restrictions are NOT enforced. Install "
+                "create_restrictions_plugin(config=...) from starfish-restrictions.",
             )
 
     @router.get("/health")

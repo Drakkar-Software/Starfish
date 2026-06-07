@@ -56,6 +56,33 @@ export interface FieldPermission {
   writeRoles?: string[]
 }
 
+/**
+ * A static identity restriction rule. Declared in the JSON-serializable config
+ * at the server (`SyncConfig`), namespace (`NamespaceConfig`), or collection
+ * (`CollectionConfig`) level; the level it is attached to determines its scope.
+ *
+ * `mode: "deny"` blocks the listed identities; `mode: "allow"` permits ONLY the
+ * listed identities (everyone else, including anonymous callers, is blocked).
+ * When both kinds of rule apply to a request, **deny wins**.
+ *
+ * IMPORTANT: these rules carry NO behavior on their own — they are enforced
+ * only when an `authorize`-hook plugin is installed that ingests them, namely
+ * `createRestrictionsPlugin({ config })` from
+ * `@drakkar.software/starfish-restrictions`. `createSyncRouter` logs a warning
+ * if a config declares `restrictions` but no such plugin is wired.
+ *
+ * Callbacks cannot live in serializable config; for dynamic identity lists,
+ * pass runtime rules to `createRestrictionsPlugin({ rules })` instead.
+ */
+export interface IdentityRestriction {
+  /** `"deny"` blocks listed identities; `"allow"` permits only listed identities. */
+  mode: "deny" | "allow"
+  /** The identities this rule applies to. */
+  identities: string[]
+  /** Restrict the rule to these actions. Omit (or empty) = all actions. */
+  actions?: ("pull" | "push" | "list")[]
+}
+
 /** Append-only strategy. Tagged by `type` so new strategies can be added later;
  *  only `"by_timestamp"` is supported today (each element is stored as `{ts, data}`
  *  and pulls filter by `ts` via `?checkpoint=`). */
@@ -138,6 +165,10 @@ export interface CollectionConfig {
    *  in addition to the normal readRoles/writeRoles checks. Incompatible with public
    *  read/write roles (rejected at config load). */
   rootOnly?: boolean
+  /** Static identity restrictions scoped to this collection. Enforced only when
+   *  `createRestrictionsPlugin({ config })` (`@drakkar.software/starfish-restrictions`)
+   *  is installed. See {@link IdentityRestriction}. */
+  restrictions?: IdentityRestriction[]
 }
 
 export interface RateLimitConfig {
@@ -147,6 +178,11 @@ export interface RateLimitConfig {
 
 export interface NamespaceConfig {
   collections: CollectionConfig[]
+  /** Static identity restrictions scoped to every collection in this namespace.
+   *  Enforced only when `createRestrictionsPlugin({ config })`
+   *  (`@drakkar.software/starfish-restrictions`) is installed. See
+   *  {@link IdentityRestriction}. */
+  restrictions?: IdentityRestriction[]
 }
 
 export interface SyncConfig {
@@ -159,4 +195,10 @@ export interface SyncConfig {
    */
   namespaces?: Record<string, NamespaceConfig>
   rateLimit?: RateLimitConfig
+  /** Static identity restrictions scoped to the entire server (every collection,
+   *  in every namespace and the root). Enforced only when
+   *  `createRestrictionsPlugin({ config })`
+   *  (`@drakkar.software/starfish-restrictions`) is installed. See
+   *  {@link IdentityRestriction}. */
+  restrictions?: IdentityRestriction[]
 }

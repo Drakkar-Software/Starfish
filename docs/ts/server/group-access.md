@@ -218,5 +218,6 @@ A custom enricher is the place to re-implement list-based membership if your app
 - [Pairing](../client/24-pairing.md) — bootstrap, QR, and relay flows
 - [Sharing](../sharing/01-overview.md) — `mintMemberCap`, scope presets, the `_members` directory
 - [Entitlements](../entitlements/01-overview.md) — feature-slug roles composed alongside custom RBAC
+- [Identity Action Restrictions](identity-restrictions.md) — deny access by identity (server / namespace / collection / action)
 - [List Endpoint](list-endpoint.md) — discover documents under a collection prefix
 - [Queuing](../queuing/01-overview.md) — react to pushes server-side
