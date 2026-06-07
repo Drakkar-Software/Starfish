@@ -672,4 +672,125 @@ def create_cap_cert_role_resolver(
     return resolver  # type: ignore[return-value]
 
 
-__all__ = ["CapAuthError", "create_cap_cert_role_resolver"]
+async def authenticate_meta_request(
+    *,
+    method: str,
+    path_and_query: str,
+    host: str,
+    headers: Any,
+    nonce_cache: NonceCache,
+    revocation_store: RevocationStore,
+    plugin_validators: dict[str, list[CapCertValidator]],
+    accept_kinds: tuple[str, ...] = ("device", "member"),
+) -> str | None:
+    """Authenticate a BODYLESS meta-request (e.g. an SSE ``/events`` subscribe).
+
+    Reuses the EXACT verify order of the sync resolver
+    (:func:`create_cap_cert_role_resolver`):
+
+      clock-skew → ``verify_cap_cert`` → per-kind plugin validators →
+      per-request Ed25519 signature → nonce replay → revocation.
+
+    Differences from the sync resolver, by design:
+
+    - The body hash is over an EMPTY body — meta-requests carry no payload.
+    - There is NO ``scope.paths`` enforcement; per-resource authorization is the
+      caller's job (e.g. a role enricher gating each subscribed topic).
+    - Audience caps are rejected up-front. Only kinds in ``accept_kinds``
+      (default ``device``/``member``) are accepted; any other kind, including a
+      missing/unknown one, returns ``None``.
+
+    ``headers`` may be any mapping exposing ``.get(name)`` (case-insensitive
+    lookup is attempted via lowercased / title-cased fallbacks, matching the
+    sync resolver's ``_get_header``).
+
+    Returns the bound identity (device → ``issUserId``, member → ``subUserId``)
+    or ``None`` on ANY failure — this primitive never raises for an auth
+    rejection, so callers map a ``None`` result to HTTP 401.
+    """
+
+    def _header(name: str) -> str | None:
+        get = getattr(headers, "get", None)
+        if get is None:
+            return None
+        v = get(name)
+        if v is None:
+            v = get(name.lower())
+        if v is None:
+            v = get(name.title())
+        return v
+
+    cert = _parse_cap_header(_header(_HEADER_AUTH) or "")
+    if cert is None:
+        return None
+    # Reject audience (and any non-accepted) kinds up-front: a meta-request
+    # binds a single subject, and the per-kind dispatch below would otherwise
+    # index ``cert["sub"]`` for the signature key.
+    kind = cert.get("kind")
+    if kind not in accept_kinds:
+        return None
+
+    sig_b64 = _header(_HEADER_SIG)
+    ts_header = _header(_HEADER_TS)
+    nonce_b64 = _header(_HEADER_NONCE)
+    if not sig_b64 or not ts_header or not nonce_b64:
+        return None
+    ts = _parse_integer_header(ts_header)
+    if ts is None:
+        return None
+
+    now_ms = int(time.time() * 1000)
+    # Cheap O(1) clock-skew gate BEFORE the Ed25519 cap-cert verify.
+    if not is_within_clock_skew(ts, now_ms):
+        return None
+
+    cert_result = verify_cap_cert(cert, now=now_ms // 1000)
+    if not cert_result.get("ok"):
+        return None
+
+    # Per-kind plugin validators — same dispatch as the sync resolver. Stops a
+    # member cap whose structural shape would be rejected on /pull from sneaking
+    # through here (strict: an accepted kind with no registered validator is
+    # rejected).
+    validators = plugin_validators.get(kind)
+    if not validators:
+        return None
+    for validator in validators:
+        try:
+            validator(cert)
+        except Exception:  # noqa: BLE001 — plugin contract: any raise → reject
+            return None
+
+    # Per-request Ed25519 signature over (method, path+query, sha256(""), host).
+    # device/member caps verify against the cap subject ``cert["sub"]``.
+    sub = cert.get("sub")
+    if not isinstance(sub, str):
+        return None
+    sig_ok = verify_request_signature(
+        method,
+        path_and_query,
+        b"",
+        RequestSignature(sig=sig_b64, ts=ts, nonce=nonce_b64),
+        sub,
+        host=host,
+    )
+    if not sig_ok:
+        return None
+
+    # Replay protection — keyed by the verifying pubkey (the cap subject here).
+    if not await nonce_cache.check_and_remember(sub, nonce_b64, now_ms):
+        return None
+
+    # Revocation — ``cert["nonce"]`` is the CAP-CERT nonce (per-cap revocation
+    # key), NOT the per-request nonce. Matches the sync resolver.
+    if revocation_store.is_revoked(cert["iss"], sub, cert["nonce"]):
+        return None
+
+    return _bind_auth_identity(cert, sub)
+
+
+__all__ = [
+    "CapAuthError",
+    "authenticate_meta_request",
+    "create_cap_cert_role_resolver",
+]

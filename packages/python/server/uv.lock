@@ -1410,6 +1410,7 @@ requires-dist = [
     { name = "starfish-keyring", editable = "../keyring" },
     { name = "starfish-protocol", editable = "../protocol" },
     { name = "starfish-sdk", editable = "../client" },
+    { name = "starfish-server", marker = "extra == 'dev'", editable = "." },
 ]
 provides-extras = ["dev"]
 

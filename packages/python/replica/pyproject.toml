@@ -10,6 +10,7 @@ requires-python = ">=3.11"
 dependencies = [
   "starfish-protocol",
   "starfish-server",
+  "starfish-identities",
   "httpx>=0.27",
 ]
 
@@ -23,6 +24,7 @@ dev = [
 [tool.uv.sources]
 starfish-protocol = { path = "../protocol", editable = true }
 starfish-server = { path = "../server", editable = true }
+starfish-identities = { path = "../identities", editable = true }
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

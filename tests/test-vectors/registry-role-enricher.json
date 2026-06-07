@@ -1,0 +1,21 @@
+{
+  "_comment": "Cross-language decision table for makeRegistryRoleEnricher / make_registry_role_enricher (starfish-sharing). Each case seeds a memory store at registryPath (with {id} -> id) using `registryRaw` verbatim if present, else JSON-encoded `registry` if non-null, else nothing; builds the enricher with the given allowTofu; calls it with auth.identity=authIdentity and params={idParam: id}; and asserts the returned roles equal `expected` (order-significant). The store-raises (fail-closed) and trailing-newline cases live in the per-language unit tests, since they cannot be expressed as static data.",
+  "idParam": "productId",
+  "registryPath": "products/{id}/_registry",
+  "ownerRole": "product:owner",
+  "memberRole": "product:member",
+  "cases": [
+    { "name": "missing doc, tofu grants owner+member", "registry": null, "allowTofu": true, "authIdentity": "alice", "id": "p1", "expected": ["product:owner", "product:member"] },
+    { "name": "missing doc, strict grants nothing", "registry": null, "allowTofu": false, "authIdentity": "alice", "id": "p1", "expected": [] },
+    { "name": "owner-less doc denies", "registry": { "data": { "members": ["alice"] } }, "allowTofu": true, "authIdentity": "alice", "id": "p1", "expected": [] },
+    { "name": "owner match grants owner+member", "registry": { "data": { "owner": "alice", "members": [] } }, "allowTofu": true, "authIdentity": "alice", "id": "p1", "expected": ["product:owner", "product:member"] },
+    { "name": "member match grants member only", "registry": { "data": { "owner": "alice", "members": ["bob"] } }, "allowTofu": true, "authIdentity": "bob", "id": "p1", "expected": ["product:member"] },
+    { "name": "stranger gets nothing", "registry": { "data": { "owner": "alice", "members": ["bob"] } }, "allowTofu": true, "authIdentity": "carol", "id": "p1", "expected": [] },
+    { "name": "owner match even with strict (no tofu)", "registry": { "data": { "owner": "alice", "members": [] } }, "allowTofu": false, "authIdentity": "alice", "id": "p1", "expected": ["product:owner", "product:member"] },
+    { "name": "bare-object owner parsed", "registry": { "owner": "alice", "members": ["bob"] }, "allowTofu": true, "authIdentity": "alice", "id": "p1", "expected": ["product:owner", "product:member"] },
+    { "name": "bare-object member parsed", "registry": { "owner": "alice", "members": ["bob"] }, "allowTofu": true, "authIdentity": "bob", "id": "p1", "expected": ["product:member"] },
+    { "name": "bad id charset denied (no lookup)", "registry": null, "allowTofu": true, "authIdentity": "alice", "id": "bad id!", "expected": [] },
+    { "name": "empty identity denied", "registry": { "data": { "owner": "alice" } }, "allowTofu": true, "authIdentity": "", "id": "p1", "expected": [] },
+    { "name": "unparseable doc denies", "registryRaw": "not json{{", "allowTofu": true, "authIdentity": "alice", "id": "p1", "expected": [] }
+  ]
+}

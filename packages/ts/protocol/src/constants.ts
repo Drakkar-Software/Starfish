@@ -53,3 +53,20 @@ export const HEADER_PUB = "X-Starfish-Pub"
 export const HEADER_CONTENT_TYPE = "Content-Type"
 /** `Accept` header name. */
 export const HEADER_ACCEPT = "Accept"
+
+/**
+ * The non-simple request headers a browser must see listed in the
+ * `Access-Control-Allow-Headers` CORS response so a cross-origin authenticated
+ * request is not blocked by the preflight. `X-Requested-With` is included because
+ * clients may send it. Built from the `HEADER_*` constants above so the CORS
+ * allow-list and the actual header names can never drift apart.
+ */
+export const CORS_ALLOW_HEADERS = [
+  HEADER_AUTHORIZATION,
+  HEADER_CONTENT_TYPE,
+  HEADER_SIG,
+  HEADER_TS,
+  HEADER_NONCE,
+  HEADER_PUB,
+  "X-Requested-With",
+] as const

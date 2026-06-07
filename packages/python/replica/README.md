@@ -56,3 +56,44 @@ await replica.manager.start()  # begin scheduled / initial syncs
 | `push_only` | rejected (405) | stored locally | — |
 
 `push_through` and `bidirectional` require `push_path`.
+
+## Authenticated replicas (`ReplicaAuth`)
+
+When the primary requires cap-cert + Ed25519 request signing, wrap the replica's
+HTTP client in `ReplicaAuth` — an `httpx.Auth` that signs every outgoing pull/push
+request and attaches the cap + signature headers. The replica manager accepts an
+injectable `client`, so pass an `AsyncClient` configured with the auth:
+
+```python
+import httpx
+from starfish_replica import ReplicaAuth, ReplicaManager, create_replica_server_plugin
+
+auth = ReplicaAuth(passphrase=PLATFORM_PASSPHRASE)
+# Optional: cross-check the derived identity before trusting it.
+assert auth.user_id == expected_user_id
+
+client = httpx.AsyncClient(timeout=30.0, auth=auth)
+replica = create_replica_server_plugin(
+    store=store,
+    sync_config=config,
+    collections=collections,
+    client=client,
+)
+```
+
+Per request it bootstraps (once) a self-signed device cap-cert from the
+passphrase — or accepts a pre-bootstrapped `credentials=DeviceCredentials` — then
+attaches:
+
+| Header | Value |
+| --- | --- |
+| `Authorization` | `Cap ` + base64(stable_stringify(cap-cert)) |
+| `X-Starfish-Sig` | base64 Ed25519 signature over the canonical request bytes |
+| `X-Starfish-Ts` | Unix milliseconds |
+| `X-Starfish-Nonce` | base64 16-byte random nonce |
+
+The cap-cert has a finite TTL (30 days by default). `ReplicaAuth` re-mints it
+transparently when it nears expiry (`refresh_margin_sec`, default one day) so a
+long-uptime replica never 401-storms — the signing key and userId are preserved
+across refreshes. `scope` defaults to `scopes.root_all()`; pass a narrower
+`ScopePreset` to restrict the cap.

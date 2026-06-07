@@ -154,9 +154,13 @@ rateLimit={
 # Auth (v3)
 from starfish_server import (
     create_cap_cert_role_resolver, CapAuthError,
+    authenticate_meta_request,  # bodyless meta-request authenticator
     create_in_memory_nonce_cache, NonceCache,
     create_in_memory_revocation_store, RevocationStore, RevocationList, RevocationEntry,
 )
+
+# Events proxy (authenticated SSE)
+from starfish_server import create_events_proxy_router, DEFAULT_SAFE_ID
 
 # Storage
 from starfish_server import (
@@ -170,6 +174,7 @@ from starfish_server import (
 from starfish_server import (
     create_entitlement_role_enricher, EntitlementRoleEnricherOptions,
     compose_enrichers,
+    make_identity_role_enricher,  # grant a fixed role to one identity
 )
 
 # Config
@@ -219,6 +224,56 @@ router = create_sync_router(SyncRouterOptions(
 ```
 
 Full pattern catalog: [docs/ts/server/group-access.md](../../../docs/ts/server/group-access.md), [docs/ts/server/entitlements.md](../../../docs/ts/server/entitlements.md).
+
+`make_identity_role_enricher(identity, role)` is a ready-made enricher for the
+common "elevate one well-known identity" case (e.g. a platform admin): it grants
+`role` iff `auth.identity == identity` and `[]` otherwise.
+
+## Authenticated SSE proxy (`/events`)
+
+`create_events_proxy_router(...)` builds a FastAPI router with a single
+authenticated `GET /events` that proxies an upstream Server-Sent-Events firehose,
+gating each subscribed candidate behind per-resource authorization:
+
+```python
+from starfish_server import (
+    create_events_proxy_router, authenticate_meta_request, DEFAULT_SAFE_ID,
+)
+
+async def authenticate(request):
+    # Bodyless cap-cert auth — same verify order as the sync resolver, no
+    # scope.paths enforcement (per-resource authz is `authorize`'s job below).
+    return await authenticate_meta_request(
+        method="GET",
+        path_and_query=str(request.url).split(str(request.base_url).rstrip("/"))[-1],
+        host=request.url.netloc,
+        headers=request.headers,
+        nonce_cache=nonce_cache,
+        revocation_store=revocation_store,
+        plugin_validators=plugin_validators,  # compose_plugin_validators([...])
+    )
+
+async def authorize(identity, candidate):
+    return await is_member(identity, candidate)
+
+router = create_events_proxy_router(
+    authenticate=authenticate,
+    candidates_param="ids",                 # ?ids=a,b,c
+    authorize=authorize,
+    topic_mapper=lambda c: [f"app-{c}"],     # candidate -> upstream topics
+    upstream_url="http://bridge:8091/events",
+    max_candidates=256,                      # 400 over this many candidates
+    max_topics=64,                           # silently truncate beyond this
+    # public_predicate=lambda c: c in PUBLIC,  # optional open-gate
+    # id_pattern=DEFAULT_SAFE_ID,              # ^[a-zA-Z0-9_-]+$, fullmatch
+)
+```
+
+The upstream URL always carries at least one `topic=`; when nothing is
+authorized the sentinel `__none__` is substituted (firehose prevention).
+`authenticate_meta_request` is the reusable bodyless authenticator underneath —
+use it directly for any meta-endpoint that needs cap-cert auth without
+`scope.paths`.
 
 ## Root-only collections
 

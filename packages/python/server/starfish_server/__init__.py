@@ -73,7 +73,13 @@ from starfish_server.auth.revocation_store import (
 )
 from starfish_server.router.cap_resolver import (
     CapAuthError,
+    authenticate_meta_request,
     create_cap_cert_role_resolver,
+)
+from starfish_server.enrichers.identity import make_identity_role_enricher
+from starfish_server.events_proxy import (
+    DEFAULT_SAFE_ID,
+    create_events_proxy_router,
 )
 from starfish_server.plugins import (
     CapCertValidator,
@@ -165,6 +171,9 @@ __all__ = [
     "is_expired",
     "generate_openapi_spec",
     "compose_enrichers",
+    "make_identity_role_enricher",
+    "DEFAULT_SAFE_ID",
+    "create_events_proxy_router",
     "NonceCache",
     "create_in_memory_nonce_cache",
     "create_kv_nonce_cache",
@@ -176,6 +185,7 @@ __all__ = [
     "create_in_memory_revocation_store",
     "revocation_retain_until_sec",
     "CapAuthError",
+    "authenticate_meta_request",
     "create_cap_cert_role_resolver",
     "CapCertValidator",
     "ServerPlugin",

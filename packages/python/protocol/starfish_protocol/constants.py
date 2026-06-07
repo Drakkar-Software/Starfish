@@ -40,6 +40,21 @@ HEADER_PUB = "X-Starfish-Pub"
 HEADER_CONTENT_TYPE = "Content-Type"
 HEADER_ACCEPT = "Accept"
 
+# The non-simple request headers a browser must see listed in the
+# ``Access-Control-Allow-Headers`` CORS response so a cross-origin authenticated
+# request is not blocked by the preflight. ``X-Requested-With`` is included
+# because clients may send it. Built from the ``HEADER_*`` constants above so the
+# CORS allow-list and the actual header names can never drift apart.
+CORS_ALLOW_HEADERS = [
+    HEADER_AUTHORIZATION,
+    HEADER_CONTENT_TYPE,
+    HEADER_SIG,
+    HEADER_TS,
+    HEADER_NONCE,
+    HEADER_PUB,
+    "X-Requested-With",
+]
+
 __all__ = [
     "AUTHOR_PUBKEY_FIELD",
     "AUTHOR_SIGNATURE_FIELD",
@@ -54,4 +69,5 @@ __all__ = [
     "HEADER_PUB",
     "HEADER_CONTENT_TYPE",
     "HEADER_ACCEPT",
+    "CORS_ALLOW_HEADERS",
 ]

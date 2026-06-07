@@ -1,6 +1,6 @@
 # Changelog
 
-## 3.0.0-alpha.20 — Identity action restrictions + client-side outbox + keyring seal + client mutateDoc
+## 3.0.0-alpha.20 — Identity action restrictions + client-side outbox + keyring seal + client mutateDoc + generic sync-server auth/enricher primitives
 
 Two new extensions plus client/keyring helpers. **Identity action restrictions** add a
 way to **deny** access by identity, scoped to the whole server, a namespace, a
@@ -10,6 +10,14 @@ collection, or a single action (`pull` / `push` / `list`). Where roles and cap s
 generic `authorize` plugin hook added to the server core. The **outbox** extension is a
 new generic client-side offline-first write queue, alongside a sealed-envelope helper in
 `keyring` and a hash-CAS document mutator in `client`. Lands in TypeScript and Python.
+
+This release also lands a set of **generic sync-server primitives** extracted from
+downstream apps (full TS + Python parity): registry/TOFU and issuer-bound role
+enrichers (`starfish-sharing`); an identity-match role enricher, a bodyless cap-cert
+meta-request authenticator, and an authenticated SSE-proxy router (`starfish-server`);
+a request-signing client for authenticated replicas (`starfish-replica`); and a
+`CORS_ALLOW_HEADERS` protocol constant. They move auth/enricher mechanism that apps
+were hand-rolling into the library.
 
 ### Added
 
@@ -41,6 +49,71 @@ new generic client-side offline-first write queue, alongside a sealed-envelope h
 - **`client`**: `mutateDoc(client, path, mutator, { maxAttempts })` — generic
   pull→mutate→push-with-hash→retry-on-`ConflictError` loop; a 404 is surfaced as an
   absent doc the mutator may create, a `null` return is a no-op.
+- **`makeIdentityRoleEnricher` (TS) / `make_identity_role_enricher` (Python)** in
+  `starfish-server` — a generic `RoleEnricher` granting a fixed `role` when
+  `auth.identity` exactly equals a configured `identity` (empty otherwise; an
+  anonymous/empty identity is never elevated). Generalizes the per-app
+  "platform admin" enricher. Exported next to `composeEnrichers` /
+  `compose_enrichers`.
+- **`authenticateMetaRequest` (TS) / `authenticate_meta_request` (Python)** in
+  `starfish-server` (`router/cap-resolver`) — a reusable primitive that
+  authenticates a BODYLESS meta-request (e.g. an SSE subscribe) over the SAME
+  verify pipeline as the sync cap-cert resolver (clock-skew → `verifyCapCert` →
+  per-kind plugin validators → per-request Ed25519 signature → nonce replay →
+  revocation), but with an empty body hash and NO `scope.paths` enforcement
+  (per-resource authorization is the caller's job). Rejects audience caps
+  up-front (configurable `acceptKinds`, default `device`/`member`); returns the
+  bound identity (device → `issUserId`, member → `subUserId`) or `null` on any
+  failure. Lets apps stop hand-reimplementing the cap-cert auth pipeline.
+- **`createEventsProxyRouter` (TS) / `create_events_proxy_router` (Python)** and a
+  shared **`DEFAULT_SAFE_ID`** (`^[a-zA-Z0-9_-]+$`, matched in full) in
+  `starfish-server` — a framework router factory for an authenticated SSE proxy
+  exposing a single `GET /events`. Generic over an `authenticate` callback (uses
+  the meta-request authenticator), a bounded `?<candidatesParam>=a,b,c` list
+  (400 over `maxCandidates`), an `authorize(identity, candidate)` policy, an
+  optional `publicPredicate` open-gate, an `idPattern` charset gate applied on
+  both branches, a `topicMapper` upstream-topic transform, a `maxTopics` cap
+  (silent truncation beyond), and a firehose-prevention invariant that always
+  sends at least one `topic=` (substituting the sentinel `__none__` when nothing
+  is authorized). Proxies the upstream SSE stream, propagating client disconnect,
+  and returns `502` when the upstream is not OK.
+- **`makeRegistryRoleEnricher` (TS) / `make_registry_role_enricher` (Python)** in
+  `starfish-sharing` — a generic registry / trust-on-first-use (TOFU) owner-member
+  role enricher. Reads an owner-written `_registry` document (`{ owner, members }`)
+  at a configurable path template and grants a configurable `ownerRole` /
+  `memberRole`. Generalizes the per-app product/space enrichers: configurable
+  `idParam`, `registryPath` (with `{id}` placeholder), roles, an `allowTofu` flag
+  (default `true`; pass `false` for the strict SSE/events variant), and an
+  `idPattern` (default `DEFAULT_SAFE_ID` = `^[a-zA-Z0-9_-]+$`, matched in full to
+  guard trailing-newline bypasses). Fails CLOSED on store errors (the error
+  propagates → 500) and on owner-less/unparseable docs (never re-opens TOFU).
+  Receives the store as an argument and depends on `starfish-server` for TYPES only
+  (no runtime coupling).
+- **`makeIssuerBoundRoleEnricher` (TS) / `make_issuer_bound_role_enricher` (Python)**
+  in `starfish-sharing` — a generic issuer-bound public-share role enricher that
+  decides roles purely from the requester's cap (no store access). Grants
+  `ownerRole` + `readerRole` to the owner's own device cap, `readerRole` to caps
+  the owner delegated for one of `collections` (resolver-synthesized
+  `delegated:<owner>:<col>`), and additionally `writerRole` when such a cap carries
+  `cap:write:<col>` AND the request does not target the guard doc
+  (`guardParam`/`guardValue`, e.g. the `_rooms` registry). Generalizes the
+  per-app public-space enricher.
+- **`ReplicaAuth` (Python) / `createReplicaAuth` (TS)** in `starfish-replica` — a
+  request-signing client for authenticated replicas. Bootstraps (or accepts a
+  pre-bootstrapped) device cap-cert from a passphrase, signs every outgoing
+  pull/push with `sign_request`/`signRequest`, and attaches the `Authorization:
+  Cap …` + `X-Starfish-Sig`/`-Ts`/`-Nonce` headers. Re-mints the cap
+  transparently as it nears expiry (configurable margin) so long-uptime replicas
+  never 401-storm. Python ships an `httpx.Auth` (inject via
+  `AsyncClient(auth=…)`); TS ships a signing `fetch` wrapper (inject via
+  `ReplicaManager`'s `fetchFn`). Generalizes plumbing previously hand-rolled by
+  apps. `starfish-replica` now depends on `starfish-identities`.
+- **`CORS_ALLOW_HEADERS`** protocol constant — a canonical list of the non-simple
+  request headers (`Authorization`, `Content-Type`, the `X-Starfish-*` auth
+  headers, plus `X-Requested-With`) a server should advertise in
+  `Access-Control-Allow-Headers`. Built from the existing `HEADER_*` constants so
+  downstream apps import it instead of re-hardcoding the header names (TS +
+  Python).
 
 ### Changed
 

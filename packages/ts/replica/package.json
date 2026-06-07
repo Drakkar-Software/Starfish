@@ -21,7 +21,8 @@
   },
   "dependencies": {
     "@drakkar.software/starfish-protocol": "workspace:*",
-    "@drakkar.software/starfish-server": "workspace:*"
+    "@drakkar.software/starfish-server": "workspace:*",
+    "@drakkar.software/starfish-identities": "workspace:*"
   },
   "scripts": {
     "build": "node build.mjs && tsc -p tsconfig.build.json",

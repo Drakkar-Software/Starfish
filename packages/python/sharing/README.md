@@ -221,4 +221,54 @@ resolver = create_cap_cert_role_resolver(
 )
 ```
 
+## Role enrichers
+
+Two generic `RoleEnricher` factories for apps that key a collection by a free id
+(`products/{id}/…`, `pubspaces/{ownerId}/…`). Both take the `store`/`auth` as
+arguments and depend on `starfish-server` for **types only** (under
+`TYPE_CHECKING`; no runtime coupling).
+
+### `make_registry_role_enricher` — registry / TOFU owner-member
+
+Reads an owner-written `_registry` doc (`{owner, members}`) and grants
+`owner_role` / `member_role`. With `allow_tofu=True` (default) the first writer to
+a new id is granted ownership; pass `allow_tofu=False` for the strict SSE/events
+variant. Fails CLOSED on store errors and on owner-less/unparseable docs.
+
+```python
+from starfish_sharing import make_registry_role_enricher
+
+enricher = make_registry_role_enricher(
+    store,
+    id_param="productId",
+    registry_path="products/{id}/_registry",  # {id} is substituted
+    owner_role="product:owner",
+    member_role="product:member",
+    # allow_tofu=False,                          # strict, for /events
+    # id_pattern=DEFAULT_SAFE_ID,                # ^[a-zA-Z0-9_-]+$, fullmatch
+)
+```
+
+### `make_issuer_bound_role_enricher` — issuer-bound public share
+
+Decides roles purely from the requester's cap (no store read). Grants the owner's
+own device cap `owner_role` + `reader_role`; grants `reader_role` to caps the
+owner delegated for one of `collections`; additionally grants `writer_role` when
+such a cap carries `cap:write:<col>` and the request does not target the guard
+doc.
+
+```python
+from starfish_sharing import make_issuer_bound_role_enricher
+
+enricher = make_issuer_bound_role_enricher(
+    owner_param="ownerId",
+    owner_role="pubspace:owner",
+    reader_role="pubspace:reader",
+    writer_role="pubspace:writer",
+    collections=["pubspace", "pubstream"],
+    guard_param="docId",
+    guard_value="_rooms",  # withholds writer_role on the registry doc
+)
+```
+
 See `docs/python/sharing/` (and the TypeScript counterpart in `docs/ts/sharing/`) for the full guide.
