@@ -409,3 +409,35 @@ jobs:
       - name: Publish starfish-projection
         working-directory: packages/ts/projection
         run: npx npm@latest publish --provenance --access public --tag ${{ needs.setup.outputs.npm_tag }}
+
+  publish-restrictions:
+    needs: [setup, publish-server]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v5
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: pnpm
+          registry-url: "https://registry.npmjs.org"
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm build
+
+      - name: Set version from tag
+        run: |
+          VERSION="${{ needs.setup.outputs.version }}"
+          cd packages/ts/restrictions
+          npm pkg set "version=$VERSION"
+          npm pkg set "dependencies.@drakkar.software/starfish-server=$VERSION"
+
+      - name: Publish starfish-restrictions
+        working-directory: packages/ts/restrictions
+        run: npx npm@latest publish --provenance --access public --tag ${{ needs.setup.outputs.npm_tag }}

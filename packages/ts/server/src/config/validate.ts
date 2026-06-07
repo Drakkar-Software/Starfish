@@ -1,5 +1,34 @@
-import type { SyncConfig, CollectionConfig, RateLimitConfig, RateLimitRule } from "./schema.js"
+import type { SyncConfig, CollectionConfig, RateLimitConfig, RateLimitRule, IdentityRestriction } from "./schema.js"
 import { ROLE_PUBLIC, ROLE_SELF } from "../constants.js"
+
+const RESTRICTION_ACTIONS = new Set(["pull", "push", "list"])
+
+/** Validate a list of static identity restrictions: a valid `mode`, a non-empty
+ *  `identities` array of strings, and (when present) only known `actions`. */
+function validateRestrictions(
+  restrictions: IdentityRestriction[] | undefined,
+  label: string,
+  errors: string[],
+): void {
+  if (restrictions == null) return
+  restrictions.forEach((r, i) => {
+    if (r.mode !== "deny" && r.mode !== "allow") {
+      errors.push(`${label}restrictions[${i}]: mode must be "deny" or "allow", got "${String(r.mode)}"`)
+    }
+    if (!Array.isArray(r.identities) || r.identities.length === 0) {
+      errors.push(`${label}restrictions[${i}]: identities must be a non-empty array`)
+    } else if (!r.identities.every((id) => typeof id === "string")) {
+      errors.push(`${label}restrictions[${i}]: identities must contain only strings`)
+    }
+    if (r.actions != null) {
+      for (const a of r.actions) {
+        if (!RESTRICTION_ACTIONS.has(a)) {
+          errors.push(`${label}restrictions[${i}]: unknown action "${String(a)}" (expected "pull", "push", or "list")`)
+        }
+      }
+    }
+  })
+}
 
 const MIME_JSON = "application/json"
 
@@ -199,6 +228,7 @@ function validateCollections(
     }
 
     validateRateLimit(col, scopeLabel, globalRl, errors)
+    validateRestrictions(col.restrictions, `${scopeLabel}Collection "${col.name}": `, errors)
   }
 
   // Check bundles: all collections in same bundle must share storagePath
@@ -301,9 +331,11 @@ export function collectConfigWarnings(config: SyncConfig): string[] {
 
 export function validateConfig(config: SyncConfig): string[] {
   const errors = validateCollections(config.collections, "", config.rateLimit)
+  validateRestrictions(config.restrictions, "", errors)
 
   if (config.namespaces) {
     for (const [nsName, nsConfig] of Object.entries(config.namespaces)) {
+      validateRestrictions(nsConfig.restrictions, `Namespace "${nsName}": `, errors)
       if (!NAMESPACE_NAME_RE.test(nsName)) {
         errors.push(
           `Namespace "${nsName}": name must only contain letters, digits, hyphens, and underscores`,

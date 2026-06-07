@@ -33,6 +33,8 @@ import logging
 from typing import Any, Iterable
 
 from starfish_protocol.plugins import (
+    AuthorizeContext,
+    AuthorizeResult,
     CapCertValidator,
     PullHookContext,
     PullHookResult,
@@ -168,6 +170,42 @@ async def dispatch_intercept_push(
     return PushHookResult(action="proceed")
 
 
+def has_authorize_hook(plugins: Iterable[ServerPlugin] | None) -> bool:
+    """True when any plugin contributes an ``authorize`` hook.
+
+    Lets the router skip the anonymous fast-path only when a restriction policy
+    is actually wired, preserving current behavior for servers that don't use
+    restrictions.
+    """
+    return bool(plugins) and any(p.authorize is not None for p in plugins)
+
+
+async def dispatch_authorize(
+    plugins: Iterable[ServerPlugin] | None,
+    ctx: AuthorizeContext,
+) -> AuthorizeResult:
+    """Run every plugin's ``authorize`` hook (in plugin-list order) and return
+    the first ``reject`` directive, or ``proceed`` if all proceed.
+
+    Fired at the central authorization gate for every action (pull/push/list,
+    incl. batch/bundle members), after roles are resolved. A raise propagates —
+    like ``before_pull``, an ``authorize`` failure must surface (it gates
+    access).
+    """
+    if not plugins:
+        return AuthorizeResult(action="proceed")
+    for plugin in plugins:
+        hook = plugin.authorize
+        if hook is None:
+            continue
+        result = hook(ctx)
+        if inspect.isawaitable(result):
+            result = await result
+        if result.action != "proceed":
+            return result
+    return AuthorizeResult(action="proceed")
+
+
 __all__ = [
     "CapCertValidator",
     "ServerPlugin",
@@ -177,4 +215,6 @@ __all__ = [
     "dispatch_after_write",
     "dispatch_before_pull",
     "dispatch_intercept_push",
+    "has_authorize_hook",
+    "dispatch_authorize",
 ]

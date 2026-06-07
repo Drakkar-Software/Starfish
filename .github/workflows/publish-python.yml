@@ -83,6 +83,14 @@ jobs:
         working-directory: packages/python/entitlements
         run: pytest -v
 
+      - name: Install restrictions dependencies
+        working-directory: packages/python/restrictions
+        run: uv pip install --system -e ".[dev]"
+
+      - name: Run restrictions tests
+        working-directory: packages/python/restrictions
+        run: pytest -v
+
       - name: Install audit dependencies
         working-directory: packages/python/audit
         run: uv pip install --system -e ".[dev]"
@@ -569,6 +577,46 @@ jobs:
 
       - name: Publish to PyPI
         working-directory: packages/python/projection
+        run: uv publish
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}
+
+  publish-restrictions:
+    needs: [setup, publish-server]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Set version from tag
+        working-directory: packages/python/restrictions
+        env:
+          PY_VERSION: ${{ needs.setup.outputs.py_version }}
+        run: |
+          python -c "
+          import re, os
+          version = os.environ['PY_VERSION']
+          path = 'pyproject.toml'
+          content = open(path).read()
+          content = re.sub(r'^version = \"[^\"]*\"', f'version = \"{version}\"', content, count=1, flags=re.MULTILINE)
+          open(path, 'w').write(content)
+          "
+
+      - name: Build package
+        working-directory: packages/python/restrictions
+        run: uv build
+
+      - name: Publish to PyPI
+        working-directory: packages/python/restrictions
         run: uv publish
         env:
           UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}

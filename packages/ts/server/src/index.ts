@@ -9,6 +9,7 @@ export type {
   RateLimitConfig,
   EncryptionMode,
   FieldPermission,
+  IdentityRestriction,
 } from "./config/schema.js"
 export { validateConfig, collectConfigWarnings } from "./config/validate.js"
 export { parseConfigJson, loadConfig, saveConfig } from "./config/loader.js"
@@ -113,10 +114,15 @@ export {
   defaultServerPlugin,
   composePluginValidators,
   dispatchAfterWrite,
+  dispatchAuthorize,
+  hasAuthorizeHook,
   type ServerPlugin,
   type CapCertValidator,
   type WriteEvent,
   type AfterWriteHook,
+  type AuthorizeContext,
+  type AuthorizeResult,
+  type AuthorizeHook,
 } from "./plugins.js"
 
 // Errors

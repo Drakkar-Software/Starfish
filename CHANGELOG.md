@@ -1,5 +1,46 @@
 # Changelog
 
+## 3.0.0-alpha.20 — Identity action restrictions
+
+A new way to **deny** access by identity, scoped to the whole server, a
+namespace, a collection, or a single action (`pull` / `push` / `list`). Where
+roles and cap scopes *grant* access, restrictions *remove* it. Identity lists are
+static arrays, runtime callbacks, or static `restrictions` declared in the
+serializable `SyncConfig`. Ships as a new extension package
+(`@drakkar.software/starfish-restrictions` / `starfish-restrictions`) on top of a
+small, generic `authorize` plugin hook added to the server core. Lands in
+TypeScript and Python.
+
+### Added
+
+- **`starfish-restrictions` extension package** (TS + Python) exposing
+  `createRestrictionsPlugin({ rules, config })` / `create_restrictions_plugin(...)`
+  and `restrictionsFromConfig` / `restrictions_from_config`. Each rule has a
+  `mode` (`"deny"` blocks listed identities; `"allow"` permits only listed
+  identities), an `identities` source (static array **or** callback, sync/async),
+  and an optional `scope` (`namespace` / `collection` / `action`). **Deny beats
+  allow**; the caller must satisfy every applicable `allow` rule; anonymous
+  callers never satisfy an `allow` rule.
+- **`authorize` plugin hook** on `ServerPlugin` (protocol) with `AuthorizeContext`
+  / `AuthorizeResult` types, plus `dispatchAuthorize` / `hasAuthorizeHook`
+  (`dispatch_authorize` / `has_authorize_hook`) on the server. Fires at the
+  central authorization gate for every action — pull, push, list, and each
+  batch-pull / bundle-pull member — after roles resolve and the role check passes.
+- **Static `restrictions` config** on `SyncConfig`, `NamespaceConfig`, and
+  `CollectionConfig` (the new `IdentityRestriction` type: `mode`, `identities`,
+  optional `actions`). Compiled into rules by the restrictions plugin. Not exposed
+  via `GET /config`.
+
+### Changed
+
+- A collection whose role check would normally short-circuit anonymously (a
+  `public` collection) now resolves the caller's identity when an `authorize` hook
+  is installed, so identity restrictions apply to public collections too. Behavior
+  is unchanged when no `authorize` hook is wired.
+- `createSyncRouter` / `create_sync_router` now logs a warning when a config
+  declares `restrictions` but no plugin provides an `authorize` hook (the
+  restrictions would otherwise be silently unenforced).
+
 ## 3.0.0-alpha.19 — Bounded append-only pulls (`limit` / `full`)
 
 Append-only pulls must now declare how much they fetch. Previously a plain

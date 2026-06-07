@@ -31,6 +31,7 @@ from starfish_server.config.schema import (
     RateLimitRule,
     RateLimitDimension,
     FieldPermission,
+    IdentityRestriction,
     NamespaceConfig,
     RateLimitConfig,
     EncryptionMode,
@@ -81,6 +82,12 @@ from starfish_server.plugins import (
     compose_plugin_validators,
     default_server_plugin,
     dispatch_after_write,
+    dispatch_authorize,
+    has_authorize_hook,
+)
+from starfish_protocol.plugins import (
+    AuthorizeContext,
+    AuthorizeResult,
 )
 
 __all__ = [
@@ -119,6 +126,7 @@ __all__ = [
     "RateLimitRule",
     "RateLimitDimension",
     "FieldPermission",
+    "IdentityRestriction",
     "NamespaceConfig",
     "RateLimitConfig",
     "EncryptionMode",
@@ -175,4 +183,8 @@ __all__ = [
     "compose_plugin_validators",
     "default_server_plugin",
     "dispatch_after_write",
+    "dispatch_authorize",
+    "has_authorize_hook",
+    "AuthorizeContext",
+    "AuthorizeResult",
 ]

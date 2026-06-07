@@ -35,6 +35,8 @@ import type {
   PullHookResult,
   PushHookContext,
   PushHookResult,
+  AuthorizeContext,
+  AuthorizeResult,
 } from "@drakkar.software/starfish-protocol"
 
 export type {
@@ -42,6 +44,9 @@ export type {
   ServerPlugin,
   WriteEvent,
   AfterWriteHook,
+  AuthorizeContext,
+  AuthorizeResult,
+  AuthorizeHook,
 } from "@drakkar.software/starfish-protocol"
 
 /**
@@ -156,6 +161,33 @@ export async function dispatchInterceptPush(
   for (const p of plugins) {
     if (!p.interceptPush) continue
     const result = await p.interceptPush(ctx)
+    if (result.action !== "proceed") return result
+  }
+  return { action: "proceed" }
+}
+
+/** True when any plugin contributes an `authorize` hook. Lets the router skip
+ *  the anonymous fast-path only when a restriction policy is actually wired,
+ *  preserving current behavior for servers that don't use restrictions. */
+export function hasAuthorizeHook(plugins: ServerPlugin[] | undefined): boolean {
+  return !!plugins?.some((p) => p.authorize)
+}
+
+/**
+ * Run every plugin's `authorize` hook (in plugin-list order) and return the
+ * first `reject` directive, or `{ action: "proceed" }` if all proceed. Fired at
+ * the central authorization gate for every action (pull/push/list, incl.
+ * batch/bundle members), after roles are resolved. A throw propagates — like
+ * `beforePull`, an `authorize` failure must surface (it gates access).
+ */
+export async function dispatchAuthorize(
+  plugins: ServerPlugin[] | undefined,
+  ctx: AuthorizeContext,
+): Promise<AuthorizeResult> {
+  if (!plugins) return { action: "proceed" }
+  for (const p of plugins) {
+    if (!p.authorize) continue
+    const result = await p.authorize(ctx)
     if (result.action !== "proceed") return result
   }
   return { action: "proceed" }

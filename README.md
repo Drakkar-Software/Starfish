@@ -38,6 +38,7 @@ Each extension is an additive plugin/helper layered on the core — wire only wh
 | `@drakkar.software/starfish-identities` | `starfish-identities` | Root identity, device caps, QR / relay pairing, revocation |
 | `@drakkar.software/starfish-sharing` | `starfish-sharing` | Member cap-certs and public links for cross-user sharing |
 | `@drakkar.software/starfish-entitlements` | `starfish-entitlements` | Feature-slug role enrichment (entitlement-based access control) |
+| `@drakkar.software/starfish-restrictions` | `starfish-restrictions` | Deny access by identity (server / namespace / collection / action) |
 | `@drakkar.software/starfish-queuing` | `starfish-queuing` | Change events after each push (Memory / Custom / NATS backends) |
 | `@drakkar.software/starfish-projection` | `starfish-projection` | Incremental denormalized list documents from a source collection |
 | `@drakkar.software/starfish-audit` | `starfish-audit` | Structured audit logging of every action |
@@ -1065,7 +1066,7 @@ See the [CHANGELOG](CHANGELOG.md) for full details.
 ```
 starfish/
 ├── packages/
-│   ├── python/            # protocol · server · client (starfish-sdk) + 8 extensions
+│   ├── python/            # protocol · server · client (starfish-sdk) + 9 extensions
 │   │   ├── protocol/      # Shared protocol primitives (hash, merge, crypto, types)
 │   │   ├── server/        # Python server (FastAPI router, S3 storage, encryption, config)
 │   │   ├── client/        # Python client SDK (httpx + cryptography)
@@ -1073,15 +1074,16 @@ starfish/
 │   │   ├── identities/    # Root identity, device caps, pairing, revocation
 │   │   ├── sharing/       # Member cap-certs + public links
 │   │   ├── entitlements/  # Feature-slug role enrichment
+│   │   ├── restrictions/  # Deny access by identity (server / namespace / collection / action)
 │   │   ├── queuing/       # Change events (Memory / Custom / NATS)
 │   │   ├── projection/    # Incremental denormalized list documents
 │   │   ├── audit/         # Structured audit logging
 │   │   └── replica/       # Multi-server replication
-│   └── ts/                # same 11 families, mirrored (@drakkar.software/starfish-*)
+│   └── ts/                # same 12 families, mirrored (@drakkar.software/starfish-*)
 │       ├── protocol/      # Shared protocol primitives (hash, merge, crypto, types)
 │       ├── server/        # TypeScript server (Hono router, encryption, config, CF Workers)
 │       ├── client/        # TypeScript client SDK + Zustand/Legend bindings
-│       ├── keyring/  identities/  sharing/  entitlements/
+│       ├── keyring/  identities/  sharing/  entitlements/  restrictions/
 │       └── queuing/  projection/  audit/  replica/
 ├── examples/
 │   ├── ts/ · python/      # Single-file examples, one per v3 feature slice

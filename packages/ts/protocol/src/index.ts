@@ -42,6 +42,9 @@ export type {
   PushHookResult,
   BeforePullHook,
   InterceptPushHook,
+  AuthorizeContext,
+  AuthorizeResult,
+  AuthorizeHook,
 } from "./cap.js"
 export type { AuditEntry, AuditLogger } from "./audit.js"
 export {

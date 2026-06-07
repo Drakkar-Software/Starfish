@@ -65,7 +65,7 @@ import {
   APPEND_MAX_FUTURE_TS_SKEW_MS,
 } from "../constants.js"
 import type { ServerPlugin, WriteEvent } from "@drakkar.software/starfish-protocol"
-import { dispatchAfterWrite, dispatchBeforePull, dispatchInterceptPush } from "../plugins.js"
+import { dispatchAfterWrite, dispatchBeforePull, dispatchInterceptPush, dispatchAuthorize, hasAuthorizeHook } from "../plugins.js"
 import type { ServerLogger } from "../logger.js"
 import type { AuditLogger, AuditEntry } from "@drakkar.software/starfish-protocol"
 import { isExpired } from "../ttl.js"
@@ -402,6 +402,8 @@ async function checkAuth(
   c: Context,
   params: Record<string, string>,
   opts: SyncRouterOptions,
+  action: "pull" | "push" | "list",
+  namespaceName?: string,
 ): Promise<{
   identity: string | null
   roles: string[]
@@ -412,7 +414,10 @@ async function checkAuth(
 
   // A rootOnly collection is never public (enforced at config load), so it must
   // always resolve the caller's roles rather than short-circuit anonymous here.
-  if (!col.rootOnly && requiredRoles.includes(ROLE_PUBLIC)) {
+  // When an authorize hook is installed (e.g. starfish-restrictions), the public
+  // fast-path is also skipped so identity is resolved and an identity-based
+  // restriction can apply even to a public collection.
+  if (!col.rootOnly && requiredRoles.includes(ROLE_PUBLIC) && !hasAuthorizeHook(opts.plugins)) {
     return { identity: null, roles: [], error: null }
   }
 
@@ -442,6 +447,22 @@ async function checkAuth(
   const effectiveRolesArray = [...roles]
   if (!isAccessAllowed(col, operation, roles)) {
     const err = c.json({ error: "Forbidden" }, 403)
+    await auditDenial(identity, err)
+    return { identity, roles: effectiveRolesArray, error: err, presenter }
+  }
+
+  // Identity restrictions (e.g. starfish-restrictions): deny by identity
+  // independent of roles. Runs for every action after the role check passes.
+  const authz = await dispatchAuthorize(opts.plugins, {
+    ...(identity != null && identity !== "" && { identity }),
+    action,
+    collection: col.name,
+    ...(namespaceName != null && { namespace: namespaceName }),
+    params,
+    roles: effectiveRolesArray,
+  })
+  if (authz.action === "reject") {
+    const err = c.json({ error: authz.error }, authz.status as any)
     await auditDenial(identity, err)
     return { identity, roles: effectiveRolesArray, error: err, presenter }
   }
@@ -894,7 +915,7 @@ function addCollectionRoutes(
         return c.json({ error: "Invalid path parameter" }, 400)
       }
 
-      const { identity, roles, error } = await checkAuth(col, OP_READ, c, params, opts)
+      const { identity, roles, error } = await checkAuth(col, OP_READ, c, params, opts, ACTION_PULL, namespaceName)
       if (error) return error
 
       if (limiters.pull) {
@@ -1093,7 +1114,7 @@ function addCollectionRoutes(
         return c.json({ error: "Invalid path parameter" }, 400)
       }
 
-      const { identity: listIdentity, roles: listRoles, error } = await checkAuth(col, OP_READ, c, params, opts)
+      const { identity: listIdentity, roles: listRoles, error } = await checkAuth(col, OP_READ, c, params, opts, ACTION_LIST, namespaceName)
       if (error) return error
 
       if (limiters.list) {
@@ -1153,7 +1174,7 @@ function addCollectionRoutes(
         return c.json({ error: "Invalid path parameter" }, 400)
       }
 
-      const { identity, roles, error, presenter } = await checkAuth(col, OP_WRITE, c, params, opts)
+      const { identity, roles, error, presenter } = await checkAuth(col, OP_WRITE, c, params, opts, ACTION_PUSH, namespaceName)
       if (error) return error
 
       // Push-intercepting plugins (e.g. starfish-replica): reject read-only
@@ -1268,10 +1289,12 @@ function addBundledRoutes(
 
     // Resolve the caller's effective roles ONCE (the resolver consumes the
     // request nonce, so it must not run per-collection). Skipped entirely when
-    // every member is public, preserving anonymous access to all-public bundles.
+    // every member is public, preserving anonymous access to all-public bundles
+    // — unless an authorize hook is installed, in which case the identity must
+    // be resolved so identity restrictions apply even to all-public bundles.
     let identity: string | null = null
     let effectiveRoles = new Set<string>()
-    if (hasNonPublic) {
+    if (hasNonPublic || hasAuthorizeHook(opts.plugins)) {
       const authResult = await resolveEffectiveRoles(c, params, opts, storagePath)
       if (authResult.error) return authResult.error
       identity = authResult.identity
@@ -1298,6 +1321,18 @@ function addBundledRoutes(
       // rootOnly). Denied members are omitted so a bundle never leaks a
       // collection the caller can't read.
       if (!isAccessAllowed(col, OP_READ, effectiveRoles)) continue
+
+      // Identity restrictions: a restricted member is omitted (not leaked),
+      // matching how a role-denied member is dropped above.
+      const memberAuthz = await dispatchAuthorize(opts.plugins, {
+        ...(identity != null && identity !== "" && { identity }),
+        action: ACTION_PULL,
+        collection: col.name,
+        ...(namespaceName != null && { namespace: namespaceName }),
+        params,
+        roles: [...effectiveRoles],
+      })
+      if (memberAuthz.action === "reject") continue
 
       const documentKey = `${baseKey}/${col.name}`
       const bundlePullCtx: StoreContext = {
@@ -1336,7 +1371,7 @@ function addBundledRoutes(
         return c.json({ error: "Invalid path parameter" }, 400)
       }
 
-      const { identity, roles, error, presenter } = await checkAuth(col, OP_WRITE, c, params, opts)
+      const { identity, roles, error, presenter } = await checkAuth(col, OP_WRITE, c, params, opts, ACTION_PUSH, namespaceName)
       if (error) return error
 
       const documentKey = `${resolveDocumentKey(storagePath, params)}/${col.name}`
@@ -1595,6 +1630,21 @@ function createBatchPullHandler(
         return { error: "Forbidden" }
       }
 
+      // Identity restrictions: deny by identity independent of roles (parity
+      // with the standalone pull path).
+      const batchAuthz = await dispatchAuthorize(opts.plugins, {
+        ...(identity != null && identity !== "" && { identity }),
+        action: ACTION_PULL,
+        collection: col.name,
+        ...(namespaceName != null && { namespace: namespaceName }),
+        params: effectiveParams,
+        roles: [...roles],
+      })
+      if (batchAuthz.action === "reject") {
+        await recordAudit(col.name, "", false, batchAuthz.status, effectiveParams)
+        return { error: batchAuthz.error }
+      }
+
       try {
         const key = resolveDocumentKey(col.storagePath, effectiveParams)
         // Guard the resolved key: `validatePathSegment` admits `..`, so a supplied
@@ -1714,6 +1764,28 @@ export function createSyncRouter(opts: SyncRouterOptions): Hono {
           .map((c) => `"${c.name}"`)
           .join(", ")} but no plugin with an afterWrite hook is registered; ` +
           `pushes will be neither stored nor published.`,
+      )
+    }
+  }
+
+  // Identity restrictions declared in config are inert unless an authorize-hook
+  // plugin (e.g. createRestrictionsPlugin from starfish-restrictions) ingests
+  // them. Silently-ignored security policy is dangerous, so warn loudly.
+  if (!hasAuthorizeHook(opts.plugins)) {
+    const declaresRestrictions =
+      (config.restrictions?.length ?? 0) > 0 ||
+      config.collections.some((c) => (c.restrictions?.length ?? 0) > 0) ||
+      Object.values(config.namespaces ?? {}).some(
+        (n) =>
+          (n.restrictions?.length ?? 0) > 0 ||
+          n.collections.some((c) => (c.restrictions?.length ?? 0) > 0),
+      )
+    if (declaresRestrictions) {
+      console.warn(
+        "[Starfish] config declares `restrictions` but no plugin provides an " +
+          "authorize hook; restrictions are NOT enforced. Install " +
+          "createRestrictionsPlugin({ config }) from " +
+          "@drakkar.software/starfish-restrictions.",
       )
     }
   }

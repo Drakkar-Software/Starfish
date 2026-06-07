@@ -16,6 +16,7 @@ packages/
     identities/          # @drakkar.software/starfish-identities (extension)
     sharing/             # @drakkar.software/starfish-sharing (extension)
     entitlements/        # @drakkar.software/starfish-entitlements (extension)
+    restrictions/        # @drakkar.software/starfish-restrictions (extension)
     queuing/             # @drakkar.software/starfish-queuing (extension)
     projection/          # @drakkar.software/starfish-projection (extension)
     audit/               # @drakkar.software/starfish-audit (extension)
@@ -28,6 +29,7 @@ packages/
     identities/          # starfish-identities (extension)
     sharing/             # starfish-sharing (extension)
     entitlements/        # starfish-entitlements (extension)
+    restrictions/        # starfish-restrictions (extension)
     queuing/             # starfish-queuing (extension)
     projection/          # starfish-projection (extension)
     audit/               # starfish-audit (extension)
@@ -65,7 +67,7 @@ uv run pytest -v         # Run tests
 - **Python**: async/await, FastAPI, Pydantic v2, asyncio_mode = "auto" for tests
 - **Encryption modes**: `"none"` (plaintext) and `"delegated"` (client-side AES-256-GCM, N-recipient via per-collection keyring). Server holds no keys. Legacy `"identity"` / `"server"` / `"group"` modes were removed in v3.0.
 - **Identity**: Ed25519 (sign) + X25519 (KEM) keypairs. Root identity is derived from a passphrase via Argon2id → HKDF-SHA256; per-device keypairs are generated locally and never leave the device. Authorization is carried by signed capability certificates (cap-certs) issued by the root identity. Cap-certs have a `kind`: `"device"` (proxy for issuer) or `"member"` (subject keeps own identity, scoped grant).
-- **Versioning**: semver, tag-triggered releases (v*). **All twenty-two packages use lockstep versioning** — every release bumps all packages to the same version number, even if a package has no changes. Packages: `packages/ts/protocol`, `packages/ts/server`, `packages/ts/client`, `packages/ts/keyring`, `packages/ts/identities`, `packages/ts/sharing`, `packages/ts/entitlements`, `packages/ts/queuing`, `packages/ts/projection`, `packages/ts/audit`, `packages/ts/replica`, `packages/python/protocol`, `packages/python/server`, `packages/python/client`, `packages/python/keyring`, `packages/python/identities`, `packages/python/sharing`, `packages/python/entitlements`, `packages/python/queuing`, `packages/python/projection`, `packages/python/audit`, `packages/python/replica`.
+- **Versioning**: semver, tag-triggered releases (v*). **All twenty-four packages use lockstep versioning** — every release bumps all packages to the same version number, even if a package has no changes. Packages: `packages/ts/protocol`, `packages/ts/server`, `packages/ts/client`, `packages/ts/keyring`, `packages/ts/identities`, `packages/ts/sharing`, `packages/ts/entitlements`, `packages/ts/restrictions`, `packages/ts/queuing`, `packages/ts/projection`, `packages/ts/audit`, `packages/ts/replica`, `packages/python/protocol`, `packages/python/server`, `packages/python/client`, `packages/python/keyring`, `packages/python/identities`, `packages/python/sharing`, `packages/python/entitlements`, `packages/python/restrictions`, `packages/python/queuing`, `packages/python/projection`, `packages/python/audit`, `packages/python/replica`.
 - **CHANGELOG**: `## X.Y.Z` headers with `### Added`, `### Changed`, `### Fixed` sections
 
 ## Mandatory Post-Change Checklist

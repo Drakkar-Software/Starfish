@@ -137,6 +137,52 @@ order; the first non-``proceed`` result wins."""
 
 
 @dataclass
+class AuthorizeContext:
+    """Context handed to a plugin's ``authorize`` hook. Framework-neutral (no
+    FastAPI types). Unlike ``before_pull``/``intercept_push``, this fires for
+    EVERY action (``pull``, ``push``, ``list``, including batch/bundle members),
+    so an extension can deny access by identity independent of roles — see
+    ``starfish-restrictions``."""
+
+    action: Literal["pull", "push", "list"]
+    """The action being authorized."""
+
+    collection: str
+    """Collection name the action targets."""
+
+    params: Mapping[str, str]
+    """Resolved route path parameters."""
+
+    identity: str | None = None
+    """The authenticated caller identity (``auth.identity``), or ``None`` for an
+    anonymous (public) request."""
+
+    namespace: str | None = None
+    """Namespace name when the request went through a named sub-router."""
+
+    roles: tuple[str, ...] = ()
+    """The caller's effective roles (post-enrichment), for context-aware
+    policies."""
+
+
+@dataclass
+class AuthorizeResult:
+    """Directive an ``authorize`` hook returns. ``proceed`` allows the action;
+    ``reject`` short-circuits with an HTTP error (typically ``403``)."""
+
+    action: Literal["proceed", "reject"]
+    status: int | None = None
+    error: str | None = None
+
+
+AuthorizeHook = Callable[["AuthorizeContext"], "AuthorizeResult | Awaitable[AuthorizeResult]"]
+"""Hook invoked at the central authorization gate for every action, after roles
+are resolved and the role-based check passes. Lets an extension deny access
+(e.g. an identity deny/allow list). Runs in plugin-list order; the first
+``reject`` wins."""
+
+
+@dataclass
 class ServerPlugin:
     """Plugin contributing per-kind cap-cert validators and/or write-path
     side-effect hooks to the server.
@@ -167,6 +213,14 @@ class ServerPlugin:
     push or respond on its behalf (e.g. proxy the write to a primary).
     Additive. See :class:`PushHookContext`."""
 
+    authorize: "AuthorizeHook | None" = None
+    """Invoked at the central authorization gate for every action (``pull``,
+    ``push``, ``list``, incl. batch/bundle members), after roles are resolved
+    and the role-based check passes. Lets an extension deny access independent
+    of roles (e.g. an identity deny/allow list — see ``starfish-restrictions``).
+    Runs in plugin-list order; the first ``reject`` wins. Additive. See
+    :class:`AuthorizeContext`."""
+
     shutdown: Callable[[], "Awaitable[None] | None"] | None = None
     """Invoked during graceful shutdown so the plugin can release resources
     (e.g. close a queue connection). Additive."""
@@ -183,4 +237,7 @@ __all__ = [
     "PushHookResult",
     "BeforePullHook",
     "InterceptPushHook",
+    "AuthorizeContext",
+    "AuthorizeResult",
+    "AuthorizeHook",
 ]

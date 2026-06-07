@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "starfish-restrictions"
+version = "3.0.0a20"
+description = "Starfish identity action restrictions extension (deny/allow access by identity, scoped to the server, a namespace, a collection, or an action)"
+requires-python = ">=3.11"
+dependencies = [
+  "starfish-server",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.0",
+  "pytest-asyncio>=0.21",
+  "httpx>=0.27",
+]
+
+[tool.uv.sources]
+starfish-server = { path = "../server", editable = true }
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
