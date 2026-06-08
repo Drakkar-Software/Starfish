@@ -73,6 +73,14 @@ export interface EventsProxyOptions {
    */
   publicPredicate?: (candidate: string) => boolean
   /**
+   * Optional cap applied ONLY to `publicPredicate` matches. When set, public
+   * candidates beyond it are silently skipped — without truncating the loop, so
+   * private candidates later in the list still authorize — while `maxTopics`
+   * still bounds the total. Omit to keep a single `maxTopics` cap. Lets a host
+   * cap a cheap-to-spoof public fan-out tighter than its private subscriptions.
+   */
+  maxPublicTopics?: number
+  /**
    * Regex; every candidate id must match it on BOTH the public and the
    * authorized branch. Defaults to {@link DEFAULT_SAFE_ID}.
    */
@@ -107,6 +115,7 @@ export function createEventsProxyRouter(opts: EventsProxyOptions): Hono {
     //    through authorize(). Every id is charset-validated on BOTH branches (a
     //    bad id is silently dropped, never proxied).
     const authorized: string[] = []
+    let publicCount = 0
     let truncated = false
     for (const candidate of candidates) {
       if (authorized.length >= opts.maxTopics) {
@@ -115,7 +124,16 @@ export function createEventsProxyRouter(opts: EventsProxyOptions): Hono {
       }
       if (opts.publicPredicate && opts.publicPredicate(candidate)) {
         if (!idPattern.test(candidate)) continue
+        // Optional public-only cap: bound the (cheap-to-spoof) public fan-out
+        // WITHOUT truncating the loop — skip this public candidate but keep
+        // processing, so private candidates later in the list still authorize.
+        // `maxTopics` still bounds the total.
+        if (opts.maxPublicTopics !== undefined && publicCount >= opts.maxPublicTopics) {
+          truncated = true
+          continue
+        }
         authorized.push(candidate)
+        publicCount++
         continue
       }
       if (!idPattern.test(candidate)) continue

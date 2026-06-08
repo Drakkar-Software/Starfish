@@ -22,6 +22,7 @@ def _build_app(
     public: set[str] | None = None,
     max_candidates: int = 16,
     max_topics: int = 4,
+    max_public_topics: int | None = None,
 ):
     async def authenticate(request: Request) -> str | None:
         return identity
@@ -43,6 +44,7 @@ def _build_app(
         max_candidates=max_candidates,
         max_topics=max_topics,
         public_predicate=public_pred,
+        max_public_topics=max_public_topics,
     )
     app = FastAPI()
     app.include_router(router)
@@ -156,3 +158,58 @@ async def test_public_predicate_open_gates() -> None:
         resp = await client.get("/events?ids=pub,priv")
     assert resp.status_code == 200
     assert _captured_topics(route) == ["topic-pub"]
+
+
+# ── max_public_topics: cap the public fan-out only ───────────────────────────
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_public_only_cap_truncates_public_not_private() -> None:
+    # The octochat scenario: cap the cheap-to-spoof PUBLIC fan-out, but private
+    # candidates that follow the capped publics in the list must STILL authorize.
+    route = respx.get(url__startswith=_UPSTREAM).mock(return_value=httpx.Response(200, text=""))
+    app = _build_app(
+        identity="alice",
+        authorized={"priv1"},
+        public={"pub1", "pub2", "pub3"},
+        max_topics=10,
+        max_public_topics=2,
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/events?ids=pub1,pub2,pub3,priv1")
+    assert resp.status_code == 200
+    # pub1,pub2 fill the public cap; pub3 is skipped; priv1 still authorizes.
+    assert _captured_topics(route) == ["topic-pub1", "topic-pub2", "topic-priv1"]
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_max_public_topics_none_leaves_public_uncapped() -> None:
+    # Default (None) preserves the single-cap behaviour: all public pass, bounded
+    # only by max_topics.
+    route = respx.get(url__startswith=_UPSTREAM).mock(return_value=httpx.Response(200, text=""))
+    app = _build_app(identity="alice", authorized=set(), public={"a", "b", "c"}, max_topics=10)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/events?ids=a,b,c")
+    assert resp.status_code == 200
+    assert sorted(_captured_topics(route)) == ["topic-a", "topic-b", "topic-c"]
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_total_max_topics_still_bounds_public_plus_private() -> None:
+    # max_public_topics is generous, but max_topics caps the TOTAL (public+private).
+    route = respx.get(url__startswith=_UPSTREAM).mock(return_value=httpx.Response(200, text=""))
+    app = _build_app(
+        identity="alice",
+        authorized={"priv1", "priv2"},
+        public={"pub1"},
+        max_topics=2,
+        max_public_topics=10,
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/events?ids=pub1,priv1,priv2")
+    assert resp.status_code == 200
+    # pub1 + priv1 fill max_topics=2; priv2 truncated.
+    assert _captured_topics(route) == ["topic-pub1", "topic-priv1"]

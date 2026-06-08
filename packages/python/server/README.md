@@ -265,6 +265,7 @@ router = create_events_proxy_router(
     max_candidates=256,                      # 400 over this many candidates
     max_topics=64,                           # silently truncate beyond this
     # public_predicate=lambda c: c in PUBLIC,  # optional open-gate
+    # max_public_topics=64,                    # optional: cap public-only fan-out
     # id_pattern=DEFAULT_SAFE_ID,              # ^[a-zA-Z0-9_-]+$, fullmatch
 )
 ```

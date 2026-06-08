@@ -272,6 +272,7 @@ const events = createEventsProxyRouter({
   maxCandidates: 256,                      // 400 over this many candidates
   maxTopics: 64,                           // silently truncate beyond this
   // publicPredicate: (c) => PUBLIC.has(c), // optional open-gate
+  // maxPublicTopics: 64,                   // optional: cap public-only fan-out
   // idPattern: DEFAULT_SAFE_ID,            // ^[a-zA-Z0-9_-]+$, full match
 })
 ```

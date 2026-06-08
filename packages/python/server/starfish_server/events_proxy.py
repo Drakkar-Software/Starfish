@@ -61,6 +61,7 @@ def create_events_proxy_router(
     max_candidates: int,
     max_topics: int,
     public_predicate: Callable[[str], bool] | None = None,
+    max_public_topics: int | None = None,
     id_pattern: "Pattern[str]" = DEFAULT_SAFE_ID,
 ) -> APIRouter:
     """Build a :class:`fastapi.APIRouter` exposing a single authenticated SSE
@@ -87,6 +88,12 @@ def create_events_proxy_router(
     :param public_predicate: Optional ``candidate -> bool`` — when true the
         candidate is open-gated (no ``authorize`` call), still id-validated and
         still counted against ``max_topics``.
+    :param max_public_topics: Optional cap applied ONLY to ``public_predicate``
+        matches. When set, public candidates beyond it are silently skipped —
+        without truncating the loop, so private candidates later in the list still
+        authorize — while ``max_topics`` still bounds the total. ``None`` (default)
+        keeps a single ``max_topics`` cap. Lets a host cap a cheap-to-spoof public
+        fan-out tighter than its private subscriptions.
     :param id_pattern: Compiled regex; every candidate id must ``fullmatch`` it
         on BOTH the public and the authorized branch. Defaults to
         :data:`DEFAULT_SAFE_ID`.
@@ -114,6 +121,7 @@ def create_events_proxy_router(
         #    through authorize(). Every id is charset-validated on BOTH branches
         #    (a bad id is silently dropped, never proxied).
         authorized: list[str] = []
+        public_count = 0
         truncated = False
         for candidate in candidates:
             if len(authorized) >= max_topics:
@@ -122,7 +130,15 @@ def create_events_proxy_router(
             if public_predicate is not None and public_predicate(candidate):
                 if id_pattern.fullmatch(candidate) is None:
                     continue
+                # Optional public-only cap: bound the (cheap-to-spoof) public
+                # fan-out WITHOUT truncating the loop — skip this public candidate
+                # but keep processing, so private candidates later in the list
+                # still authorize. ``max_topics`` still bounds the total.
+                if max_public_topics is not None and public_count >= max_public_topics:
+                    truncated = True
+                    continue
                 authorized.append(candidate)
+                public_count += 1
                 continue
             if id_pattern.fullmatch(candidate) is None:
                 continue

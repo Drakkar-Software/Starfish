@@ -118,4 +118,40 @@ describe("createEventsProxyRouter", () => {
     expect(authorize).toHaveBeenCalledTimes(1)
     expect(authorize).toHaveBeenCalledWith("alice", "priv")
   })
+
+  it("caps public-only fan-out but keeps private candidates that follow", async () => {
+    const fetchMock = makeFetchMock()
+    // The octochat scenario: cap the cheap-to-spoof public fan-out, but a private
+    // candidate after the capped publics must still authorize.
+    const app = buildApp({
+      publicPredicate: (c) => c.startsWith("pub"),
+      authorize: async (_id, c) => c === "priv1",
+      maxTopics: 10,
+      maxPublicTopics: 2,
+    })
+    const res = await app.request("/events?ids=pub1,pub2,pub3,priv1")
+    expect(res.status).toBe(200)
+    expect(fetchMock.topics()).toEqual(["topic-pub1", "topic-pub2", "topic-priv1"])
+  })
+
+  it("leaves public uncapped when maxPublicTopics is omitted", async () => {
+    const fetchMock = makeFetchMock()
+    const app = buildApp({ publicPredicate: () => true, maxTopics: 10 })
+    const res = await app.request("/events?ids=a,b,c")
+    expect(res.status).toBe(200)
+    expect(fetchMock.topics().sort()).toEqual(["topic-a", "topic-b", "topic-c"])
+  })
+
+  it("maxTopics still bounds the total (public + private)", async () => {
+    const fetchMock = makeFetchMock()
+    const app = buildApp({
+      publicPredicate: (c) => c === "pub1",
+      authorize: async (_id, c) => c === "priv1" || c === "priv2",
+      maxTopics: 2,
+      maxPublicTopics: 10,
+    })
+    const res = await app.request("/events?ids=pub1,priv1,priv2")
+    expect(res.status).toBe(200)
+    expect(fetchMock.topics()).toEqual(["topic-pub1", "topic-priv1"])
+  })
 })
