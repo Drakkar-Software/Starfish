@@ -1,5 +1,25 @@
 # Changelog
 
+## 3.0.0-alpha.23 — Public-topic cap for the SSE proxy
+
+The authenticated SSE events proxy can now bound `publicPredicate`-matched
+candidates independently of its overall `maxTopics` cap, letting a host throttle a
+cheap-to-spoof public fan-out tighter than a member's private subscriptions.
+Lockstep version bump across all twenty-eight packages.
+
+### Added
+
+- **`createEventsProxyRouter` / `create_events_proxy_router` — `maxPublicTopics` /
+  `max_public_topics`** (`starfish-server`, TS + Python). An optional cap applied
+  ONLY to `publicPredicate`-matched candidates in the authenticated SSE proxy: when
+  set, public candidates beyond it are silently skipped **without truncating the
+  loop**, so private candidates later in the list still authorize, while `maxTopics`
+  still bounds the total. `undefined`/`None` (default) keeps the single `maxTopics`
+  cap unchanged. Lets a host bound a cheap-to-spoof public fan-out tighter than its
+  private subscriptions — e.g. a downstream chat `/events` proxy capping public
+  spaces while leaving a member's private spaces uncapped, which a single
+  `maxTopics` cannot express.
+
 ## 3.0.0-alpha.22 — Per-resource queue subjects
 
 A queued collection can now derive a **per-resource publish subject** from a
@@ -20,16 +40,6 @@ message body. Lockstep version bump across all twenty-eight packages.
   to the base subject, so the broker never sees a `.`/`*`/`>` token from upstream
   gate drift. Generalizes the per-app `CustomQueue` `on_publish` subject-suffix
   wrappers (downstream OctoBot signals / OctoChat chat) into one config flag.
-- **`createEventsProxyRouter` / `create_events_proxy_router` — `maxPublicTopics` /
-  `max_public_topics`** (`starfish-server`, TS + Python). An optional cap applied
-  ONLY to `publicPredicate`-matched candidates in the authenticated SSE proxy: when
-  set, public candidates beyond it are silently skipped **without truncating the
-  loop**, so private candidates later in the list still authorize, while `maxTopics`
-  still bounds the total. `undefined`/`None` (default) keeps the single `maxTopics`
-  cap unchanged. Lets a host bound a cheap-to-spoof public fan-out tighter than its
-  private subscriptions — e.g. a downstream chat `/events` proxy capping public
-  spaces while leaving a member's private spaces uncapped, which a single
-  `maxTopics` cannot express.
 
 ## 3.0.0-alpha.21 — WAL / CRDT op-log collections
 
