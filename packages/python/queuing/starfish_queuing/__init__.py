@@ -13,7 +13,7 @@ successful push.
 from starfish_queuing.base import AbstractQueue
 from starfish_queuing.memory import MemoryQueue, CustomQueue
 from starfish_queuing.message import QueueMessage
-from starfish_queuing.config import QueueConfig
+from starfish_queuing.config import QueueConfig, DEFAULT_SAFE_ID
 
 
 def __getattr__(name: str):
@@ -36,6 +36,7 @@ __all__ = [
     "CustomQueue",
     "QueueMessage",
     "QueueConfig",
+    "DEFAULT_SAFE_ID",
     "create_queuing_server_plugin",
     "NatsQueue",
     "NatsQueueOptions",

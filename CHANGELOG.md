@@ -1,5 +1,26 @@
 # Changelog
 
+## 3.0.0-alpha.22 — Per-resource queue subjects
+
+A queued collection can now derive a **per-resource publish subject** from a
+route path-param, so a broker/consumer can filter by resource without parsing the
+message body. Lockstep version bump across all twenty-eight packages.
+
+### Added
+
+- **`QueueConfig.subjectParam` / `subject_param` — per-resource subject derivation**
+  (`starfish-queuing`, TS + Python). A queued collection can append a route
+  path-param to the publish subject, yielding a per-resource subject
+  `<topic>.<value>` (e.g. `posts.changed.<postId>`) so a broker/consumer can filter
+  by resource (NATS `<topic>.>`) **without parsing the message body**. The value is
+  read straight from `WriteEvent.params` — so it works **independently of
+  `includeParams` / `include_params`** — and is re-validated against
+  `subjectIdPattern` / `subject_id_pattern` (default `DEFAULT_SAFE_ID`,
+  `^[a-zA-Z0-9_-]+$`): a missing, non-string, or metacharacter-bearing id falls back
+  to the base subject, so the broker never sees a `.`/`*`/`>` token from upstream
+  gate drift. Generalizes the per-app `CustomQueue` `on_publish` subject-suffix
+  wrappers (downstream OctoBot signals / OctoChat chat) into one config flag.
+
 ## 3.0.0-alpha.21 — WAL / CRDT op-log collections
 
 A new document model where **diffs are appended to an immutable op-log** instead

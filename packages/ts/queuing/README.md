@@ -43,4 +43,16 @@ default off; `includeIdentity` in particular exposes *who* wrote off-box, so it 
 strictly opt-in. `shutdown()` closes the queue when the server's graceful-shutdown
 handler is given the plugin list.
 
+`subjectParam` appends a route path-param to the subject — a per-resource subject
+`<topic>.<value>` (e.g. `posts.changed.<postId>`) so a broker/consumer can filter by
+resource (NATS `<topic>.>`) without parsing the body. The value is read from the
+write event's params (independent of `includeParams`) and re-validated against
+`subjectIdPattern` (default `DEFAULT_SAFE_ID` = `^[a-zA-Z0-9_-]+$`); a missing,
+non-string, or metacharacter-bearing id falls back to the base subject, so the broker
+never sees a `.`/`*`/`>` token:
+
+```ts
+{ topic: "posts.changed", subjectParam: "postId" } // → posts.changed.<postId>
+```
+
 See `docs/ts/queuing/` for the full guide.

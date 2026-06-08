@@ -682,7 +682,7 @@ wheels = [
 
 [[package]]
 name = "starfish-protocol"
-version = "3.0.0a13"
+version = "3.0.0a21"
 source = { editable = "../protocol" }
 dependencies = [
     { name = "argon2-cffi" },
@@ -700,7 +700,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "starfish-queuing"
-version = "3.0.0a13"
+version = "3.0.0a21"
 source = { editable = "." }
 dependencies = [
     { name = "starfish-protocol" },
@@ -732,7 +732,7 @@ provides-extras = ["nats", "dev"]
 
 [[package]]
 name = "starfish-server"
-version = "3.0.0a13"
+version = "3.0.0a21"
 source = { editable = "../server" }
 dependencies = [
     { name = "aiofiles" },

@@ -26,6 +26,14 @@ async def publish_change_event(
     """
     try:
         subject = config.topic or event.collection
+        if config.subject_param:
+            # Per-resource subject: append ``.<id>`` read straight from the route
+            # params (independent of include_params). Re-validate the id against
+            # the configured charset — NEVER emit a subject carrying a broker
+            # metacharacter from an id that slipped through an upstream gate drift.
+            raw_id = (event.params or {}).get(config.subject_param)
+            if isinstance(raw_id, str) and config.subject_id_pattern.fullmatch(raw_id):
+                subject = f"{subject}.{raw_id}"
         msg: QueueMessage = {
             "collection": event.collection,
             "hash": event.hash,

@@ -16,6 +16,7 @@ import type { ServerPlugin, WriteEvent } from "@drakkar.software/starfish-protoc
 import type { Queue } from "./base.js"
 import type { QueueMessage } from "./message.js"
 import type { QueueConfig } from "./config.js"
+import { DEFAULT_SAFE_ID } from "./config.js"
 
 export interface QueuingPluginOptions {
   /** Transport the messages are published to (MemoryQueue, CustomQueue, …). */
@@ -38,7 +39,18 @@ export function createQueuingServerPlugin(opts: QueuingPluginOptions): ServerPlu
       // Coalesce an empty-string topic to the collection name (an empty broker
       // subject is a footgun). `||` rather than `??` so "" falls back too —
       // matches the Python plugin's `config.topic or event.collection`.
-      const subject = cfg.topic || event.collection
+      let subject = cfg.topic || event.collection
+      if (cfg.subjectParam) {
+        // Per-resource subject: append `.<id>` read straight from the route params
+        // (independent of includeParams). Re-validate against the charset — NEVER
+        // emit a subject carrying a broker metacharacter (`.`/`*`/`>`) from an id
+        // that slipped through upstream gate drift.
+        const rawId = event.params[cfg.subjectParam]
+        const pattern = cfg.subjectIdPattern ?? DEFAULT_SAFE_ID
+        if (typeof rawId === "string" && pattern.test(rawId)) {
+          subject = `${subject}.${rawId}`
+        }
+      }
       const msg: QueueMessage = {
         collection: event.collection,
         hash: event.hash,

@@ -27,6 +27,8 @@ returned normally. The collection only publishes if it appears in the plugin's
 ```ts
 interface QueueConfig {
   topic?: string            // Topic / NATS subject. Defaults to the collection name.
+  subjectParam?: string     // Append `.<params[subjectParam]>` → per-resource subject
+  subjectIdPattern?: RegExp // Charset the appended value must fullmatch (default ^[a-zA-Z0-9_-]+$)
   includeParams: boolean    // Include resolved path params in the payload (default: false)
   includeBody?: boolean     // Include full document data in the payload (default: false, JSON only)
   includeIdentity?: boolean // Include the writer's authenticated userId (default: false)
@@ -85,6 +87,16 @@ the authenticated writer's cap-bound userId (`WriteEvent.identity`) is added und
 `identity`. `includeIdentity` is **off by default**: it exposes *who* wrote each
 document to the broker — metadata the server otherwise never emits — so it is
 strictly per-collection opt-in.
+
+With `subjectParam` set, the value of that route path-param is appended to the
+subject as a trailing token — a per-resource subject `<topic>.<value>` (e.g.
+`posts.changed.<postId>`) so a consumer can subscribe `<topic>.>` and filter by
+resource **without parsing the payload**. The value is read from `WriteEvent.params`
+(so it is independent of `includeParams`) and must fullmatch `subjectIdPattern`
+(default `DEFAULT_SAFE_ID` = `^[a-zA-Z0-9_-]+$`); a missing, non-string, or
+metacharacter-bearing value falls back to the base subject so the broker never sees
+a `.`/`*`/`>` token. For example: `{ topic: "posts.changed", subjectParam: "postId" }`
+publishes to `posts.changed.<postId>`.
 
 > **Note:** `body` is captured from the raw request before server-side
 > sanitization (which removes prototype-pollution keys such as `__proto__`), so
