@@ -30,12 +30,18 @@ import { createWebhookHandler } from "@drakkar.software/starfish-webhook"
 
 const syncRouter = createSyncRouter({ store, config, roleResolver /* … */ })
 
+// `secret` is REQUIRED — it's the HMAC credential the external caller signs each
+// request with. Read it explicitly so a missing env var fails loudly at boot rather
+// than producing a route that rejects every call.
+const ALERTS_SECRET = process.env.ALERTS_WEBHOOK_SECRET
+if (!ALERTS_SECRET) throw new Error("ALERTS_WEBHOOK_SECRET must be set")
+
 const webhook = createWebhookHandler({
   dispatch: (req) => syncRouter.fetch(req),
   routes: {
     // POST /webhook/alerts  →  appends to an append-only `events` collection
     alerts: {
-      secret: process.env.ALERTS_WEBHOOK_SECRET!,
+      secret: ALERTS_SECRET,
       // optional replay window: sign `${ts}.${rawBody}` and bound the age
       timestampHeader: "x-webhook-timestamp",
       transform: ({ body }) => {
@@ -58,9 +64,16 @@ app.route("/", syncRouter)
 ### Authentication
 
 `verifyHmac` computes HMAC-SHA256 over the raw body (or `${timestamp}.${rawBody}`
-when `timestampHeader` is set), hex-encoded, compared in constant time. Configure
-per route: `secret`, `signatureHeader` (default `x-webhook-signature`),
-`timestampHeader`, `toleranceSeconds` (default 300).
+when `timestampHeader` is set), hex-encoded, compared in constant time. `secret` is
+**required** — it is the credential the external caller signs requests with (there is
+no unauthenticated mode; an empty/missing secret fails closed). Also configure per
+route: `signatureHeader` (default `x-webhook-signature`), `timestampHeader`,
+`toleranceSeconds` (default 300).
+
+> This is the generic, operator-configured HMAC model. A consumer that wants
+> *self-service*, per-tenant credentials (each caller its own token, no shared
+> operator secret) layers that on top — e.g. look the secret up per request from a
+> store keyed by the route id — rather than hard-coding one `secret` here.
 
 ### Forwarding to a role-gated collection
 
