@@ -41,6 +41,14 @@ export function generateKemKeypair(): { privHex: string; pubHex: string } {
   return { privHex: bytesToHex(priv), pubHex: bytesToHex(x25519.getPublicKey(priv)) }
 }
 
+/** Generate a fresh Ed25519 signing keypair (hex) — the signing counterpart to
+ *  {@link generateKemKeypair}. Useful for minting a long-lived author/sealer
+ *  identity (e.g. a webhook bot) that is not derived from a passphrase. */
+export function generateSignerKeypair(): { privHex: string; pubHex: string } {
+  const priv = ed25519.utils.randomSecretKey()
+  return { privHex: bytesToHex(priv), pubHex: bytesToHex(ed25519.getPublicKey(priv)) }
+}
+
 /** Derive the X25519 public key (hex) from a private key (hex). */
 export function kemPublic(privHex: string): string {
   return bytesToHex(x25519.getPublicKey(hexToBytes(privHex)))

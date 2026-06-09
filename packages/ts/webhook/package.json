@@ -1,0 +1,40 @@
+{
+  "name": "@drakkar.software/starfish-webhook",
+  "version": "3.0.0-alpha.23",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Drakkar-Software/starfish.git",
+    "directory": "packages/ts/webhook"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "description": "Starfish inbound-webhook ingestion extension (framework-neutral handler, generic HMAC auth, payload transform, append-author signing, optional sealed-write E2EE)",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@drakkar.software/starfish-protocol": "workspace:*",
+    "@drakkar.software/starfish-keyring": "workspace:*"
+  },
+  "scripts": {
+    "build": "node build.mjs && tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@drakkar.software/starfish-server": "workspace:*",
+    "esbuild": "^0.27.4",
+    "typescript": "^5.5.0",
+    "vitest": "^3.0.0"
+  },
+  "files": [
+    "dist"
+  ]
+}
