@@ -45,6 +45,7 @@ Each extension is an additive plugin/helper layered on the core — wire only wh
 | `@drakkar.software/starfish-replica` | `starfish-replica` | Multi-server replication (pull / push-through / bidirectional) |
 | `@drakkar.software/starfish-outbox` | `starfish-outbox` | Durable client-side offline write-queue (dedup, claim, retry, reconnect-drain) |
 | `@drakkar.software/starfish-wal` | `starfish-wal` | Append-only CRDT op-log document model (LWW register + RGA list + text) with trusted snapshots |
+| `@drakkar.software/starfish-webhook` | _(TS only — Python parity pending)_ | Inbound-webhook ingestion: framework-neutral handler, generic HMAC auth, payload transform, forwards into the real push pipeline; optional sealed-write E2EE for a keyless writer |
 
 ## Quick Start
 

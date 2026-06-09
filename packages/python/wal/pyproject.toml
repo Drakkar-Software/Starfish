@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "starfish-wal"
-version = "3.0.0a24"
+version = "3.0.0a25"
 description = "Starfish WAL extension — append-only CRDT op-log document model (LWW register + RGA list + text) core, cross-language conformant with the TypeScript package"
 requires-python = ">=3.11"
 dependencies = [
