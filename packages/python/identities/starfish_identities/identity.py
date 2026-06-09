@@ -26,12 +26,12 @@ from typing import Optional
 
 from argon2.low_level import Type as Argon2Type, hash_secret_raw
 from Crypto.Hash import keccak as _keccak
-from coincurve import PublicKey
-from coincurve.keys import PublicKeyXOnly
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 
 from starfish_keyring import hkdf_bytes
+
+from . import _secp256k1
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -215,11 +215,9 @@ def derive_root_identity_from_secp256k1_signature(
         raise ValueError("signature must be 64 bytes (BIP-340 Schnorr)")
     signature_bytes = bytes(signature)
 
-    try:
-        pub = PublicKeyXOnly(bytes.fromhex(secp_pub_hex))
-        sig_ok = pub.verify(signature_bytes, SECP256K1_BOOTSTRAP_CHALLENGE)
-    except Exception:
-        sig_ok = False
+    sig_ok = _secp256k1.schnorr_verify(
+        bytes.fromhex(secp_pub_hex), SECP256K1_BOOTSTRAP_CHALLENGE, signature_bytes
+    )
     if not sig_ok:
         raise ValueError(
             "BIP-340 Schnorr signature does not verify against secp_pub_hex over the Starfish bootstrap challenge"
@@ -273,11 +271,9 @@ def _recover_evm_address(digest: bytes, signature: bytes) -> str:
     recid = v - 27 if v >= 27 else v
     if recid not in (0, 1):
         raise ValueError("signature recovery id out of range")
-    # coincurve wants compact r‖s followed by a recovery-id byte in [0,3].
-    pub = PublicKey.from_signature_and_message(
-        signature[:64] + bytes([recid]), digest, hasher=None
-    )
-    uncompressed = pub.format(compressed=False)  # 0x04 ‖ X(32) ‖ Y(32)
+    r = int.from_bytes(signature[:32], "big")
+    s = int.from_bytes(signature[32:64], "big")
+    uncompressed = _secp256k1.ecdsa_recover_pubkey(digest, r, s, recid)  # 0x04 ‖ X(32) ‖ Y(32)
     return "0x" + _keccak256(uncompressed[1:])[-20:].hex()
 
 

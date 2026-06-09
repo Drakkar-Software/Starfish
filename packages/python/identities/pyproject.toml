@@ -4,13 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "starfish-identities"
-version = "3.0.0a23"
+version = "3.0.0a24"
 description = "Starfish root + device identity extension (passphrase derivation, device cap-cert minting, pairing flows, device directory)"
 requires-python = ">=3.11"
 dependencies = [
   "cryptography>=41.0",
   "argon2-cffi>=25.1.0",
-  "coincurve>=19.0",
   "pycryptodome>=3.20",
   "starfish-protocol",
   "starfish-sdk",
@@ -23,6 +22,7 @@ dev = [
   "pytest-asyncio>=0.21",
   "respx>=0.23.1",
   "eth-account>=0.11",
+  "coincurve>=19.0",
   "starfish-server",
 ]
 

@@ -1,5 +1,37 @@
 # Changelog
 
+## 3.0.0-alpha.24 — Drop native `coincurve` build dep from Python SDK
+
+`starfish-identities` no longer requires `coincurve` (a C/libsecp256k1 native
+extension) at runtime.  The two secp256k1 operations it provided — BIP-340 Schnorr
+signature verification and ECDSA public-key recovery — are now served by a
+self-contained pure-Python module (`_secp256k1.py`), bringing the Python SDK into
+full parity with the TypeScript side which uses pure-JS `@noble/curves`.  No
+API-level changes; all cross-language test vectors continue to pass byte-for-byte.
+`coincurve` is moved to optional dev-dependencies so the differential parity test
+suite can still run in environments where it is available.
+
+### Changed
+
+- **`starfish-identities` (Python) — removed native build dependency.** Replaced
+  `coincurve>=19.0` runtime dependency with a zero-dependency pure-Python secp256k1
+  module.  The package now builds and imports on any Python 3.11+ environment,
+  including Python 3.14 where no `coincurve` wheel was available.
+
+### Added
+
+- **`starfish_identities._secp256k1`** — internal pure-Python secp256k1 module
+  providing `schnorr_verify` (BIP-340) and `ecdsa_recover_pubkey` (recoverable ECDSA
+  with `hasher=None` convention), backed by the BIP-340 reference arithmetic.
+- **`tests/test-vectors/bip340-schnorr.json`** — all 19 official BIP-340 Schnorr
+  test vectors (including the 10 adversarial negative cases and the 2022 variable-
+  length message cases), vendored from the BIP-340 reference CSV.
+- **`test_secp256k1_bip340.py`** — parametric test over all BIP-340 vectors.
+- **`test_secp256k1_parity.py`** — differential parity test: runs a seeded corpus
+  of valid signatures plus adversarial corruptions through both `coincurve` and
+  `_secp256k1` and asserts byte-identical results (skipped when `coincurve` is
+  absent).
+
 ## 3.0.0-alpha.23 — Public-topic cap for the SSE proxy
 
 The authenticated SSE events proxy can now bound `publicPredicate`-matched

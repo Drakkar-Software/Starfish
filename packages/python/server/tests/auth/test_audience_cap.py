@@ -5,7 +5,6 @@ Mirror of TS ``tests/router/audience-cap.test.ts``.
 
 import base64
 import hashlib
-import importlib.util
 import json
 import pathlib
 import time
@@ -15,8 +14,6 @@ from urllib.parse import urlsplit
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-
-_COINCURVE = importlib.util.find_spec("coincurve") is not None
 
 from starfish_protocol.cap import user_id_from_pub_hex
 from starfish_protocol.request_signing import sign_request

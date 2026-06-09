@@ -1255,11 +1255,10 @@ wheels = [
 
 [[package]]
 name = "starfish-identities"
-version = "3.0.0a18"
+version = "3.0.0a23"
 source = { editable = "." }
 dependencies = [
     { name = "argon2-cffi" },
-    { name = "coincurve" },
     { name = "cryptography" },
     { name = "pycryptodome" },
     { name = "starfish-keyring" },
@@ -1269,6 +1268,7 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
+    { name = "coincurve" },
     { name = "eth-account" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -1279,7 +1279,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "argon2-cffi", specifier = ">=25.1.0" },
-    { name = "coincurve", specifier = ">=19.0" },
+    { name = "coincurve", marker = "extra == 'dev'", specifier = ">=19.0" },
     { name = "cryptography", specifier = ">=41.0" },
     { name = "eth-account", marker = "extra == 'dev'", specifier = ">=0.11" },
     { name = "pycryptodome", specifier = ">=3.20" },
@@ -1295,7 +1295,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "starfish-keyring"
-version = "3.0.0a18"
+version = "3.0.0a23"
 source = { editable = "../keyring" }
 dependencies = [
     { name = "cryptography" },
@@ -1316,7 +1316,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "starfish-protocol"
-version = "3.0.0a18"
+version = "3.0.0a23"
 source = { editable = "../protocol" }
 dependencies = [
     { name = "argon2-cffi" },
@@ -1334,7 +1334,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "starfish-sdk"
-version = "3.0.0a18"
+version = "3.0.0a23"
 source = { editable = "../client" }
 dependencies = [
     { name = "cryptography" },
@@ -1355,7 +1355,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "starfish-server"
-version = "3.0.0a18"
+version = "3.0.0a23"
 source = { editable = "../server" }
 dependencies = [
     { name = "aiofiles" },
