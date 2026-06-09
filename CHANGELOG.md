@@ -1,5 +1,31 @@
 # Changelog
 
+## 3.0.0-alpha.24 — Inbound webhook ingestion
+
+A new `starfish-webhook` extension adds a generic, format-agnostic inbound-webhook
+ingress (with optional sealed-write E2EE for a keyless writer), plus an Ed25519
+keypair generator in `starfish-protocol`. Lockstep version bump across all packages.
+
+### Added
+
+- **`@drakkar.software/starfish-webhook` — inbound-webhook ingestion extension**
+  (TypeScript; Python parity pending). A framework-neutral handler
+  (`createWebhookHandler`) that authenticates an external caller with generic
+  HMAC-SHA256 (`verifyHmac`, constant-time, optional timestamp/replay window,
+  fail-closed on an empty secret), maps the payload via an operator-supplied
+  transform (no provider-specific adapters — the extension ships none), and forwards
+  a normal push via an injected `dispatch` (typically `syncRouter.fetch`), so the
+  target collection's RBAC, append-only handling and `afterWrite` hooks all still
+  run. Optional **sealed-write (E2EE)**: `generateSpaceWriteKey` / `sealDocument` /
+  `openSealedDocument` let a keyless webhook encrypt a message into an
+  end-to-end-encrypted space using only a published X25519 "space write key" — a
+  write-only party that can inject but never read — built on the keyring's
+  `seal`/`unseal` primitive.
+- **`ed25519Suite.generateSignerKeypair()`** (`starfish-protocol`, TS). The Ed25519
+  signing-key counterpart to the existing `generateKemKeypair()` (X25519), for
+  minting a long-lived author/sealer identity (e.g. a webhook bot) not derived from
+  a passphrase.
+
 ## 3.0.0-alpha.23 — Public-topic cap for the SSE proxy
 
 The authenticated SSE events proxy can now bound `publicPredicate`-matched
@@ -9,22 +35,6 @@ Lockstep version bump across all twenty-eight packages.
 
 ### Added
 
-- **`@drakkar.software/starfish-webhook` — inbound-webhook ingestion extension**
-  (TypeScript; Python parity pending). A framework-neutral handler
-  (`createWebhookHandler`) that authenticates an external caller with generic
-  HMAC-SHA256 (`verifyHmac`, constant-time, optional timestamp/replay window),
-  maps the payload via an operator-supplied transform (no provider-specific
-  adapters — the extension ships none), and forwards a normal push via an injected
-  `dispatch` (typically `syncRouter.fetch`), so the target collection's RBAC,
-  append-only handling and `afterWrite` hooks all still run. Optional **sealed-write
-  (E2EE)**: `generateSpaceWriteKey` / `sealDocument` / `openSealedDocument` let a
-  keyless webhook encrypt a message into an end-to-end-encrypted space using only a
-  published X25519 "space write key" — a write-only party that can inject but never
-  read — built on the keyring's `seal`/`unseal` primitive.
-- **`ed25519Suite.generateSignerKeypair()`** (`starfish-protocol`, TS). The Ed25519
-  signing-key counterpart to the existing `generateKemKeypair()` (X25519), for
-  minting a long-lived author/sealer identity (e.g. a webhook bot) not derived from
-  a passphrase.
 - **`createEventsProxyRouter` / `create_events_proxy_router` — `maxPublicTopics` /
   `max_public_topics`** (`starfish-server`, TS + Python). An optional cap applied
   ONLY to `publicPredicate`-matched candidates in the authenticated SSE proxy: when
