@@ -28,6 +28,8 @@ export type { SpaceWriteKey, SealedBlob, SealerKeys } from "./sealed-write.js"
 export type {
   HmacAuthConfig,
   WebhookInput,
+  WebhookAuthContext,
+  WebhookAuthenticator,
   WebhookTransform,
   WebhookSealConfig,
   WebhookRoute,

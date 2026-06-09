@@ -34,9 +34,11 @@ pipeline.
 ## The flow, step by step
 
 1. **Look up the route** by the `webhookId` in the path. Unknown → `404`.
-2. **Authenticate** the caller with `verifyHmac` (HMAC-SHA256 over the raw body, or
-   `${timestamp}.${rawBody}` when a timestamp header is configured). Bad/missing →
-   `401`. The reason strings never echo the secret or the computed signature.
+2. **Authenticate** the caller. Pluggable: either the built-in HMAC `secret`
+   (`verifyHmac` over the raw body, or `${timestamp}.${rawBody}` when a timestamp
+   header is set) OR a custom `authenticate` callback (no static secret — e.g. a
+   per-tenant token lookup). Bad/missing → `401`; a route with neither → `500`.
+   Reason strings never echo the secret or the computed signature.
 3. **Transform** the parsed payload into the document `data`. Returning `null`
    rejects the request (`400`) — use it to drop payloads you don't accept.
 4. **Seal** (optional, Option B): encrypt the document to a published space write
@@ -48,12 +50,18 @@ pipeline.
 
 ## Configuration
 
+Provide exactly one auth mechanism — `secret` (built-in HMAC) **or** `authenticate`
+(custom, no static secret):
+
 ```ts
 interface WebhookRoute {
-  secret: string                  // HMAC shared secret (constant-time compared)
+  // --- auth: pick ONE ---
+  secret?: string                 // built-in HMAC shared secret (constant-time compared)
   signatureHeader?: string        // default "x-webhook-signature"
   timestampHeader?: string        // optional; enables a replay window
   toleranceSeconds?: number       // default 300
+  authenticate?: (ctx: { raw; headers; webhookId }) => boolean | Promise<boolean>  // custom, no static secret
+  // ----------------------
   transform: WebhookTransform     // (input) => document data | null
   target: string                  // e.g. "/push/events/inbox"
   author?: { edPubHex; edPrivHex } // append-author proof
@@ -65,12 +73,16 @@ interface WebhookRoute {
 
 ## Security notes
 
-- **Authenticate the caller AND the write separately.** HMAC authenticates the
-  external sender; the forwarded push is authorized by the target collection's roles
-  (use `forwardHeaders` to attach a cap for a non-public-write target).
-- **Prefer a timestamp header** (`timestampHeader`) so a captured request cannot be
-  replayed indefinitely; tune `toleranceSeconds` to your clock skew.
-- **Rotate secrets per route.** Each webhook has its own secret; compromise of one
-  never affects another.
+- **Authenticate the caller AND the write separately.** The route auth (HMAC `secret`
+  or your custom `authenticate`) verifies the external sender; the forwarded push is
+  authorized by the target collection's roles (use `forwardHeaders` to attach a cap for
+  a non-public-write target).
+- **For HMAC, prefer a timestamp header** (`timestampHeader`) so a captured request
+  cannot be replayed indefinitely; tune `toleranceSeconds` to your clock skew.
+- **No static operator secret needed.** Use `authenticate` to verify a per-tenant
+  credential (e.g. a hashed bearer token from your store) so every caller crafts its
+  own secret — no shared platform secret.
+- **Rotate credentials per route.** Each webhook has its own; compromise of one never
+  affects another.
 - **Rate-limit** the mounted route as you would any public endpoint (the target
   collection's own `rateLimit` still applies to the forwarded push).

@@ -63,17 +63,38 @@ app.route("/", syncRouter)
 
 ### Authentication
 
-`verifyHmac` computes HMAC-SHA256 over the raw body (or `${timestamp}.${rawBody}`
-when `timestampHeader` is set), hex-encoded, compared in constant time. `secret` is
-**required** — it is the credential the external caller signs requests with (there is
-no unauthenticated mode; an empty/missing secret fails closed). Also configure per
-route: `signatureHeader` (default `x-webhook-signature`), `timestampHeader`,
-`toleranceSeconds` (default 300).
+Authentication is **required but pluggable** — give each route exactly one of:
 
-> This is the generic, operator-configured HMAC model. A consumer that wants
-> *self-service*, per-tenant credentials (each caller its own token, no shared
-> operator secret) layers that on top — e.g. look the secret up per request from a
-> store keyed by the route id — rather than hard-coding one `secret` here.
+- **`secret`** (built-in HMAC): `verifyHmac` checks HMAC-SHA256 over the raw body (or
+  `${timestamp}.${rawBody}` when `timestampHeader` is set), hex-encoded, constant-time.
+  Also configurable: `signatureHeader` (default `x-webhook-signature`),
+  `timestampHeader`, `toleranceSeconds` (default 300). An empty/missing secret fails
+  closed.
+- **`authenticate`** (custom, **no static secret**): a callback
+  `({ raw, headers, webhookId }) => boolean | Promise<boolean>`. Return `false` → `401`.
+  Use it for **self-service / per-tenant** credentials — there is no operator secret to
+  hard-code; you verify a per-request credential however you like.
+
+A route with neither is rejected (`500`) — there is no unauthenticated mode.
+
+```ts
+// Self-service: no operator secret. Hash a presented bearer token and look the
+// expected hash up in your own store, keyed by the route id.
+routes: {
+  tenantHook: {
+    authenticate: async ({ headers, webhookId }) => {
+      const presented = headers["x-webhook-token"]
+      const expectedHash = await tokenStore.hashFor(webhookId) // your store
+      return !!presented && timingSafeEqual(await sha256hex(presented), expectedHash)
+    },
+    transform,
+    target: "/push/...",
+  },
+}
+```
+
+(This is exactly how a consumer builds the "any user crafts their own token, no
+platform secret" model on top of the generic handler.)
 
 ### Forwarding to a role-gated collection
 

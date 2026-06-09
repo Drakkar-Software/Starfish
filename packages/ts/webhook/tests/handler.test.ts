@@ -198,3 +198,55 @@ describe("createWebhookHandler — rejections never reach the pipeline", () => {
     expect(res.status).toBe(405)
   })
 })
+
+describe("createWebhookHandler — pluggable auth (no static secret)", () => {
+  function bodyReq(token: string | null, payload: unknown): Request {
+    const headers: Record<string, string> = { "content-type": "application/json" }
+    if (token !== null) headers["x-token"] = token
+    return new Request("http://host/webhook/x", { method: "POST", headers, body: JSON.stringify(payload) })
+  }
+
+  it("authenticates via a custom callback with no `secret`", async () => {
+    const { app, events } = makeRouter()
+    const seen: string[] = []
+    const handler = createWebhookHandler({
+      routes: {
+        hookA: {
+          // No `secret` — a custom authenticator (e.g. a per-tenant token lookup).
+          authenticate: ({ headers, webhookId }) => {
+            seen.push(webhookId)
+            return headers["x-token"] === "let-me-in"
+          },
+          transform,
+          target: `/push/${PUBSTREAM}`,
+          author: authorKeys,
+        },
+      },
+      dispatch: (req) => app.fetch(req),
+    })
+
+    expect((await handler(bodyReq("let-me-in", { text: "hi", author: "a" }), "hookA")).status).toBe(200)
+    expect(events).toHaveLength(1)
+    expect(seen).toEqual(["hookA"])
+  })
+
+  it("returns 401 when the custom authenticator rejects, and does not forward", async () => {
+    let dispatched = 0
+    const handler = createWebhookHandler({
+      routes: { hookA: { authenticate: () => false, transform, target: `/push/${PUBSTREAM}` } },
+      dispatch: async () => { dispatched++; return new Response("{}") },
+    })
+    expect((await handler(bodyReq("anything", { text: "x" }), "hookA")).status).toBe(401)
+    expect(dispatched).toBe(0)
+  })
+
+  it("returns 500 for a route configured with neither secret nor authenticate", async () => {
+    let dispatched = 0
+    const handler = createWebhookHandler({
+      routes: { broken: { transform, target: `/push/${PUBSTREAM}` } },
+      dispatch: async () => { dispatched++; return new Response("{}") },
+    })
+    expect((await handler(bodyReq(null, { text: "x" }), "broken")).status).toBe(500)
+    expect(dispatched).toBe(0)
+  })
+})

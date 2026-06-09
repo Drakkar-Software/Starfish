@@ -83,8 +83,33 @@ export function createWebhookHandler(opts: WebhookHandlerOptions) {
     const raw = await request.text()
     const headers = lowerHeaders(request.headers)
 
-    const auth = await verifyHmac(route, raw, headers)
-    if (!auth.ok) return json(auth.status, { error: auth.error })
+    // Authentication is pluggable: a custom `authenticate` callback (no static secret),
+    // or the built-in HMAC `secret`. A route with neither is a misconfiguration.
+    if (route.authenticate) {
+      let ok: boolean
+      try {
+        ok = await route.authenticate({ raw, headers, webhookId })
+      } catch (e) {
+        console.warn(`[starfish-webhook] authenticate threw for "${webhookId}":`, e)
+        return json(500, { error: "auth_failed" })
+      }
+      if (!ok) return json(401, { error: "unauthorized" })
+    } else if (route.secret) {
+      const auth = await verifyHmac(
+        {
+          secret: route.secret,
+          signatureHeader: route.signatureHeader,
+          timestampHeader: route.timestampHeader,
+          toleranceSeconds: route.toleranceSeconds,
+        },
+        raw,
+        headers,
+      )
+      if (!auth.ok) return json(auth.status, { error: auth.error })
+    } else {
+      console.warn(`[starfish-webhook] route "${webhookId}" has neither secret nor authenticate`)
+      return json(500, { error: "no_auth_configured" })
+    }
 
     let parsedBody: unknown
     if (raw.length > 0) {

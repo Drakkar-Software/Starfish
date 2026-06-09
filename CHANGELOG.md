@@ -10,9 +10,12 @@ keypair generator in `starfish-protocol`. Lockstep version bump across all packa
 
 - **`@drakkar.software/starfish-webhook` — inbound-webhook ingestion extension**
   (TypeScript; Python parity pending). A framework-neutral handler
-  (`createWebhookHandler`) that authenticates an external caller with generic
-  HMAC-SHA256 (`verifyHmac`, constant-time, optional timestamp/replay window,
-  fail-closed on an empty secret), maps the payload via an operator-supplied
+  (`createWebhookHandler`) with **pluggable authentication** — each route provides
+  either the built-in HMAC `secret` (`verifyHmac`, constant-time, optional
+  timestamp/replay window, fail-closed on an empty secret) **or** a custom
+  `authenticate(ctx)` callback (no static secret — for self-service/per-tenant
+  credentials, e.g. a hashed bearer token looked up by `webhookId`); a route with
+  neither is rejected (`500`). maps the payload via an operator-supplied
   transform (no provider-specific adapters — the extension ships none), and forwards
   a normal push via an injected `dispatch` (typically `syncRouter.fetch`), so the
   target collection's RBAC, append-only handling and `afterWrite` hooks all still

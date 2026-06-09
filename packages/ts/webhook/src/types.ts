@@ -56,8 +56,34 @@ export interface WebhookSealConfig {
   recipientKemPubHex: string
 }
 
-/** One configured webhook endpoint, keyed by id in {@link WebhookHandlerOptions}. */
-export interface WebhookRoute extends HmacAuthConfig {
+/** Context handed to a {@link WebhookAuthenticator}: the raw body, lowercased headers,
+ *  and the route id — enough to verify a per-request credential (e.g. hash a bearer
+ *  token from a header and look it up by `webhookId`). */
+export interface WebhookAuthContext {
+  raw: string
+  headers: Record<string, string>
+  webhookId: string
+}
+
+/** A custom authenticator, used INSTEAD of the built-in HMAC `secret`. Return `false`
+ *  to reject (`401`). Lets a consumer authenticate per request with NO static secret —
+ *  the self-service / per-tenant pattern (hash a presented token, look it up in a store
+ *  by `webhookId`). */
+export type WebhookAuthenticator = (ctx: WebhookAuthContext) => boolean | Promise<boolean>
+
+/** One configured webhook endpoint, keyed by id in {@link WebhookHandlerOptions}.
+ *
+ * Authentication is REQUIRED but pluggable — provide exactly one of:
+ *  - `secret` (+ optional `signatureHeader`/`timestampHeader`/`toleranceSeconds`): the
+ *    built-in HMAC model, where the caller signs each request with a shared secret.
+ *  - `authenticate`: a custom callback (no static secret), e.g. self-service per-tenant
+ *    bearer tokens looked up from a store.
+ * A route with neither is rejected at request time (`500`) — there is no
+ * unauthenticated mode. The HMAC fields are inherited (all optional) from
+ * {@link HmacAuthConfig}. */
+export interface WebhookRoute extends Partial<HmacAuthConfig> {
+  /** Custom authenticator, used instead of `secret`. See {@link WebhookAuthenticator}. */
+  authenticate?: WebhookAuthenticator
   /** Maps the inbound payload to the document `data`. */
   transform: WebhookTransform
   /** Target Starfish push path, e.g. `/push/events/inbox` or
