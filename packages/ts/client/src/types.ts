@@ -1,4 +1,4 @@
-import type { CapCert } from "@drakkar.software/starfish-protocol"
+import type { CapCert, PullResult } from "@drakkar.software/starfish-protocol"
 
 /** Push conflict error (HTTP 409). */
 export class ConflictError extends Error {
@@ -121,6 +121,38 @@ export interface StarfishClientOptions {
    * for an offline-first app where any last-synced data beats none.
    */
   cacheMaxAgeMs?: number
+  /**
+   * HTTP status codes for which a structured `pull()` falls back to the
+   * last-synced cached snapshot rather than throwing `StarfishHttpError` —
+   * a **stale-while-revalidate** strategy for transient server failures.
+   *
+   * When a pull returns one of these statuses AND a {@link cache} is configured
+   * AND a cached snapshot exists for the document, `pull()` returns the cached
+   * result immediately (tagged stale via `pullWasFromCache`) and spawns a
+   * background revalidation loop that retries until it gets a live response.
+   * On success the fresh snapshot is written through and {@link onRevalidated}
+   * fires. When no cached snapshot exists the error propagates as usual.
+   *
+   * Applies only to structured (non-append) pulls. Do NOT include `403` or `404`
+   * — they are genuine server answers (access denied / no document yet).
+   *
+   * Default `undefined` — every non-2xx status throws as before.
+   *
+   * Recommended set for offline-first apps: `[429, 500, 502, 503, 504]`.
+   */
+  cacheFallbackStatuses?: number[]
+  /**
+   * Called after a background revalidation succeeds following a
+   * {@link cacheFallbackStatuses} hit: the server returned a live response and
+   * the fresh snapshot has been written through to the cache.
+   *
+   * Use this to signal to the host app that the server is reachable again (e.g.
+   * call `reportReachability(true)`) so any stale views can re-pull and recover.
+   *
+   * `path` is the namespaced document path sent to the server (namespace prefix
+   * + path + query string, matching the key under which the snapshot was cached).
+   */
+  onRevalidated?: (path: string, result: PullResult) => void
   /**
    * Optional list of client-side plugins. The list is stored on the client
    * instance but does not fire any hooks yet — the contract is plumbed so

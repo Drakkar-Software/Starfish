@@ -135,6 +135,222 @@ describe("StarfishClient read-through pull cache", () => {
   })
 })
 
+describe("stale-while-revalidate (cacheFallbackStatuses)", () => {
+  function jsonResponse(body: unknown, status = 200, headers: Record<string, string> = {}): Response {
+    return new Response(JSON.stringify(body), {
+      status,
+      headers: { "content-type": "application/json", ...headers },
+    })
+  }
+
+  it("serves cache on 429 and does not throw when a snapshot exists", async () => {
+    vi.useFakeTimers()
+    const cache = memCache()
+    const liveData = { data: { k: "v" }, hash: "h1", timestamp: 5 }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(liveData))             // initial pull → caches
+      .mockResolvedValue(jsonResponse("rate limited", 429))      // all subsequent → 429
+    const client = new StarfishClient({
+      baseUrl: "https://h",
+      fetch: fetchMock as unknown as typeof fetch,
+      cache,
+      cacheFallbackStatuses: [429, 500, 502, 503, 504],
+    })
+    await client.pull("/pull/doc") // primes the cache
+
+    const result = await client.pull("/pull/doc")
+    expect(pullWasFromCache(result as never)).toBe(true)
+    expect((result as { data: unknown }).data).toEqual({ k: "v" })
+    vi.useRealTimers()
+  })
+
+  it("serves cache on 503 (5xx falls back the same way)", async () => {
+    vi.useFakeTimers()
+    const cache = memCache()
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ data: { x: 1 }, hash: "h", timestamp: 1 }))
+      .mockResolvedValue(jsonResponse("unavailable", 503))
+    const client = new StarfishClient({
+      baseUrl: "https://h",
+      fetch: fetchMock as unknown as typeof fetch,
+      cache,
+      cacheFallbackStatuses: [429, 500, 502, 503, 504],
+    })
+    await client.pull("/pull/doc")
+    const result = await client.pull("/pull/doc")
+    expect(pullWasFromCache(result as never)).toBe(true)
+    vi.useRealTimers()
+  })
+
+  it("still throws on 404 even when it is not in cacheFallbackStatuses", async () => {
+    const cache = memCache()
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ data: { k: "v" }, hash: "h1", timestamp: 5 }))
+      .mockResolvedValue(jsonResponse("not found", 404))
+    const client = new StarfishClient({
+      baseUrl: "https://h",
+      fetch: fetchMock as unknown as typeof fetch,
+      cache,
+      cacheFallbackStatuses: [429, 500, 502, 503, 504],
+    })
+    await client.pull("/pull/doc") // primes the cache
+    await expect(client.pull("/pull/doc")).rejects.toBeInstanceOf(StarfishHttpError)
+  })
+
+  it("throws on 429 when no snapshot is cached (nothing to serve)", async () => {
+    const cache = memCache()
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse("rate limited", 429))
+    const client = new StarfishClient({
+      baseUrl: "https://h",
+      fetch: fetchMock as unknown as typeof fetch,
+      cache,
+      cacheFallbackStatuses: [429, 500, 502, 503, 504],
+    })
+    await expect(client.pull("/pull/doc")).rejects.toBeInstanceOf(StarfishHttpError)
+  })
+
+  it("background revalidation succeeds: updates cache and calls onRevalidated", async () => {
+    vi.useFakeTimers()
+    const cache = memCache()
+    const freshData = { data: { updated: true }, hash: "h2", timestamp: 10 }
+    const onRevalidated = vi.fn()
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ data: { stale: true }, hash: "h1", timestamp: 5 }))
+      .mockResolvedValueOnce(jsonResponse("rate limited", 429))   // triggers SWR
+      .mockResolvedValueOnce(jsonResponse(freshData))              // background success
+
+    const client = new StarfishClient({
+      baseUrl: "https://h",
+      fetch: fetchMock as unknown as typeof fetch,
+      cache,
+      cacheFallbackStatuses: [429, 500, 502, 503, 504],
+      onRevalidated,
+    })
+
+    await client.pull("/pull/doc")                        // prime cache
+    await client.pull("/pull/doc")                        // 429 → stale, schedules revalidation
+    await vi.advanceTimersByTimeAsync(1100)               // initial delay = 1s
+
+    expect(onRevalidated).toHaveBeenCalledTimes(1)
+    expect(onRevalidated).toHaveBeenCalledWith(
+      expect.stringContaining("/pull/doc"),
+      expect.objectContaining({ hash: "h2" }),
+    )
+    // Cache should hold the fresh snapshot now
+    const peek = await client.peekCache("/pull/doc")
+    expect((peek as { hash: string }).hash).toBe("h2")
+    vi.useRealTimers()
+  })
+
+  it("background revalidation honors Retry-After header", async () => {
+    vi.useFakeTimers()
+    const cache = memCache()
+    const onRevalidated = vi.fn()
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ data: { v: 1 }, hash: "h1", timestamp: 1 }))
+      .mockResolvedValueOnce(
+        jsonResponse("limited", 429, { "Retry-After": "5" }),     // wait 5s
+      )
+      .mockResolvedValueOnce(jsonResponse({ data: { v: 2 }, hash: "h2", timestamp: 2 }))
+
+    const client = new StarfishClient({
+      baseUrl: "https://h",
+      fetch: fetchMock as unknown as typeof fetch,
+      cache,
+      cacheFallbackStatuses: [429],
+      onRevalidated,
+    })
+
+    await client.pull("/pull/doc")
+    await client.pull("/pull/doc")              // 429 → schedules revalidation with delay=5s
+
+    await vi.advanceTimersByTimeAsync(4900)
+    expect(onRevalidated).not.toHaveBeenCalled() // not yet
+
+    await vi.advanceTimersByTimeAsync(200)
+    expect(onRevalidated).toHaveBeenCalledTimes(1)
+    vi.useRealTimers()
+  })
+
+  it("concurrent 429 pulls on the same doc spawn only one revalidation loop", async () => {
+    vi.useFakeTimers()
+    const cache = memCache()
+    const onRevalidated = vi.fn()
+    const freshData = { data: { v: 2 }, hash: "h2", timestamp: 2 }
+
+    // prime → 429 × 2 (concurrent SWR pulls) → success (background revalidation)
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ data: { v: 1 }, hash: "h1", timestamp: 1 }))
+      .mockResolvedValueOnce(jsonResponse("rate limited", 429))
+      .mockResolvedValueOnce(jsonResponse("rate limited", 429))
+      .mockResolvedValue(jsonResponse(freshData))  // first background attempt succeeds
+
+    const client = new StarfishClient({
+      baseUrl: "https://h",
+      fetch: fetchMock as unknown as typeof fetch,
+      cache,
+      cacheFallbackStatuses: [429],
+      onRevalidated,
+    })
+
+    await client.pull("/pull/doc")  // prime cache
+    // Two concurrent 429s — both serve from cache, but only ONE loop should start
+    await Promise.all([client.pull("/pull/doc"), client.pull("/pull/doc")])
+
+    // Advance past the 1s initial revalidation delay
+    await vi.advanceTimersByTimeAsync(1100)
+
+    // onRevalidated fires exactly once (one loop, one success)
+    expect(onRevalidated).toHaveBeenCalledTimes(1)
+    // Total fetches: 1 prime + 2 SWR + 1 background = 4, not 5 (which would mean 2 loops)
+    expect(fetchMock.mock.calls.length).toBe(4)
+    vi.useRealTimers()
+  })
+
+  it("revalidation stops early when the server returns a non-fallback status (e.g. 403)", async () => {
+    vi.useFakeTimers()
+    const cache = memCache()
+    const onRevalidated = vi.fn()
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ data: { v: 1 }, hash: "h1", timestamp: 1 }))
+      .mockResolvedValueOnce(jsonResponse("limited", 429))  // triggers SWR
+      .mockResolvedValueOnce(jsonResponse("forbidden", 403)) // background: genuine answer → stop
+
+    const client = new StarfishClient({
+      baseUrl: "https://h",
+      fetch: fetchMock as unknown as typeof fetch,
+      cache,
+      cacheFallbackStatuses: [429, 500],
+      onRevalidated,
+    })
+
+    await client.pull("/pull/doc")
+    await client.pull("/pull/doc")
+    await vi.advanceTimersByTimeAsync(2000)
+
+    // onRevalidated never fires (server said 403 = genuine denial)
+    expect(onRevalidated).not.toHaveBeenCalled()
+    // Only 3 fetch calls: prime + 429 + one background attempt that got 403
+    expect(fetchMock.mock.calls.length).toBe(3)
+    vi.useRealTimers()
+  })
+
+  it("does not affect 404 behavior when cacheFallbackStatuses is not set", async () => {
+    const cache = memCache()
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ data: { k: "v" }, hash: "h1", timestamp: 5 }))
+      .mockResolvedValue(jsonResponse("not found", 404))
+    const client = new StarfishClient({
+      baseUrl: "https://h",
+      fetch: fetchMock as unknown as typeof fetch,
+      cache,
+      // no cacheFallbackStatuses — default behavior
+    })
+    await client.pull("/pull/doc")
+    await expect(client.pull("/pull/doc")).rejects.toBeInstanceOf(StarfishHttpError)
+  })
+})
+
 describe("SyncManager cache-first seeding", () => {
   it("seedFromCache decrypts the cached ciphertext in memory and flags fromCache", async () => {
     const enc = stubEncryptor()

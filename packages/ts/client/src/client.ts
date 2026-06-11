@@ -26,8 +26,16 @@ import type {
   PullCache,
 } from "./types.js"
 import { ConflictError, StarfishHttpError } from "./types.js"
+import { parseRetryAfterMs } from "./fetch.js"
 
 const APPEND_DEFAULT_FIELD = "items"
+const MAX_REVALIDATE_ATTEMPTS = 5
+const REVALIDATE_INITIAL_DELAY_MS = 1_000
+const REVALIDATE_MAX_DELAY_MS = 30_000
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
 
 /**
  * Shape persisted in a {@link PullCache} for one document: the raw server
@@ -172,6 +180,9 @@ export class StarfishClient {
   private readonly fetch: typeof globalThis.fetch
   private readonly cache?: PullCache
   private readonly cacheMaxAgeMs?: number
+  private readonly cacheFallbackStatuses?: ReadonlyArray<number>
+  private readonly onRevalidated?: (path: string, result: PullResult) => void
+  private readonly revalidating = new Set<string>()
   /**
    * Installed client-side plugins. Currently stored as inert data; no
    * hooks fire yet. Extensions can inspect this list if needed.
@@ -187,6 +198,8 @@ export class StarfishClient {
     this.fetch = options.fetch ?? globalThis.fetch.bind(globalThis)
     this.cache = options.cache
     this.cacheMaxAgeMs = options.cacheMaxAgeMs
+    this.cacheFallbackStatuses = options.cacheFallbackStatuses
+    this.onRevalidated = options.onRevalidated
     this.plugins = options.plugins ? [...options.plugins] : []
   }
 
@@ -383,8 +396,10 @@ export class StarfishClient {
     } catch (err) {
       // The TRANSPORT failed (offline / DNS / timeout) — fall back to the last
       // cached snapshot for this document if we have one, tagged so callers can
-      // tell it's stale. A real HTTP error (below) is a server answer and never
-      // gets here, so 404/403/5xx keep propagating.
+      // tell it's stale. A real HTTP error (below) is a genuine server answer
+      // and never gets here; 403 and 404 always propagate. 429 and 5xx
+      // propagate by default too, but can fall back to cache when
+      // `cacheFallbackStatuses` is set — see the stale-while-revalidate branch.
       if (cacheKey) {
         const cached = await this.readCache(cacheKey)
         if (cached) return cached
@@ -392,7 +407,21 @@ export class StarfishClient {
       throw err
     }
     if (!res.ok) {
-      throw new StarfishHttpError(res.status, await res.text())
+      const status = res.status
+      if (cacheKey && this.cacheFallbackStatuses?.includes(status)) {
+        // Stale-while-revalidate: serve the last-synced snapshot immediately and
+        // retry in the background. 403/404 are not in the configured set so they
+        // still propagate as genuine answers.
+        const retryAfterHeader = res.headers.get("Retry-After")
+        this.scheduleRevalidate(cacheKey, pathAndQuery, retryAfterHeader)
+        const cached = await this.readCache(cacheKey)
+        if (cached) {
+          // Discard the response body so the underlying connection can be reused.
+          void res.body?.cancel()
+          return cached
+        }
+      }
+      throw new StarfishHttpError(status, await res.text())
     }
 
     const result = await res.json() as PullResult
@@ -410,6 +439,78 @@ export class StarfishClient {
       void this.cache!.set(cacheKey, JSON.stringify(snapshot)).catch(() => {})
     }
     return result
+  }
+
+  /** Deduplicated fire-and-forget: starts one revalidation loop per cacheKey. */
+  private scheduleRevalidate(
+    cacheKey: string,
+    pathAndQuery: string,
+    retryAfterHeader: string | null,
+  ): void {
+    if (this.revalidating.has(cacheKey)) return
+    this.revalidating.add(cacheKey)
+    void this.revalidateLoop(cacheKey, pathAndQuery, retryAfterHeader).finally(() => {
+      this.revalidating.delete(cacheKey)
+    })
+  }
+
+  /**
+   * Background revalidation loop for a {@link cacheFallbackStatuses} hit.
+   * Retries the pull (honoring `Retry-After`) up to {@link MAX_REVALIDATE_ATTEMPTS}
+   * times. On a live 2xx response the fresh snapshot is written through to the
+   * cache and {@link onRevalidated} fires. Stops early on a non-fallback HTTP
+   * status (e.g. 404/403 — the server gave a genuine answer).
+   */
+  private async revalidateLoop(
+    cacheKey: string,
+    pathAndQuery: string,
+    firstRetryAfter: string | null,
+  ): Promise<void> {
+    let retryAfterHeader = firstRetryAfter
+    for (let attempt = 0; attempt < MAX_REVALIDATE_ATTEMPTS; attempt++) {
+      const delay = parseRetryAfterMs(retryAfterHeader, {
+        fallbackMs: Math.min(
+          REVALIDATE_INITIAL_DELAY_MS * Math.pow(2, attempt),
+          REVALIDATE_MAX_DELAY_MS,
+        ),
+        maxMs: REVALIDATE_MAX_DELAY_MS,
+      })
+      await sleep(delay)
+
+      try {
+        const url = `${this.baseUrl}${pathAndQuery}`
+        const authHeaders = await this.buildAuthHeaders("GET", pathAndQuery, undefined)
+        const res = await this.fetch(url, {
+          method: "GET",
+          headers: { [HEADER_ACCEPT]: "application/json", ...authHeaders },
+        })
+
+        if (res.ok) {
+          const result = (await res.json()) as PullResult
+          if (this.cache) {
+            const snapshot: CachedPull = {
+              data: result.data,
+              hash: result.hash,
+              timestamp: result.timestamp,
+              cachedAt: Date.now(),
+            }
+            void this.cache.set(cacheKey, JSON.stringify(snapshot)).catch(() => {})
+          }
+          this.onRevalidated?.(pathAndQuery, result)
+          return
+        }
+
+        if (!this.cacheFallbackStatuses?.includes(res.status)) {
+          // Genuine server answer (e.g. 403 or 404) — stop retrying.
+          return
+        }
+
+        retryAfterHeader = res.headers.get("Retry-After")
+      } catch {
+        // Transport failure — keep retrying with exponential backoff.
+        retryAfterHeader = null
+      }
+    }
   }
 
   /**

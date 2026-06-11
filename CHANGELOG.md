@@ -1,5 +1,35 @@
 # Changelog
 
+## 3.0.0-alpha.26 — Stale-while-revalidate cache fallback for 429/5xx
+
+Structured `pull()` calls can now serve a last-synced cached snapshot immediately
+on a 429 (rate limit) or 5xx (server error) response — a stale-while-revalidate
+strategy — rather than throwing `StarfishHttpError`. A background revalidation loop
+retries (honoring any `Retry-After` header) and writes the fresh snapshot through
+when the server recovers. 403 and 404 continue to propagate as genuine server
+answers.
+
+**TS-only release** — the Python client does not have a read-through pull cache;
+Python packages remain at `3.0.0a25`.
+
+### Added
+
+- **`StarfishClientOptions.cacheFallbackStatuses` (TS `starfish-client`)** — array
+  of HTTP status codes (e.g. `[429, 500, 502, 503, 504]`) that trigger
+  stale-while-revalidate on structured pulls. Default `undefined` — every non-2xx
+  still throws as before. Requires a `cache` to be configured; when no snapshot
+  exists for a document the error propagates unchanged.
+- **`StarfishClientOptions.onRevalidated` (TS `starfish-client`)** — callback fired
+  after a background revalidation succeeds (server returned a 2xx and the fresh
+  snapshot has been written through). Provides the document `path` and the live
+  `PullResult`. Use it to signal host reachability (e.g. `reportReachability(true)`)
+  so stale views re-pull and recover.
+- **`parseRetryAfterMs(header, opts)` (TS `starfish-client`, `./fetch` subpath)** —
+  exported helper that parses a `Retry-After` header to milliseconds: numeric
+  seconds, HTTP-date delta, or `fallbackMs` on null/empty/invalid. Clamped to
+  `opts.maxMs`. Used internally by `createRetryFetch` and the SWR revalidation
+  loop.
+
 ## 3.0.0-alpha.25 — Inbound webhook ingestion
 
 A new `starfish-webhook` extension adds a generic, format-agnostic inbound-webhook

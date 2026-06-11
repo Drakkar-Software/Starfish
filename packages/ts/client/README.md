@@ -187,6 +187,8 @@ new StarfishClient({
   fetch,                  // optional custom fetch
   cache,                  // optional offline-first read-through cache — see below
   cacheMaxAgeMs,          // optional TTL (ms) for cache entries
+  cacheFallbackStatuses,  // optional — serve cache on 429/5xx (stale-while-revalidate)
+  onRevalidated,          // optional — called after a background revalidation succeeds
 })
 ```
 
@@ -200,7 +202,8 @@ Pass a `cache` (a `PullCache`: `{ get(k): Promise<string|null>; set(k, v): Promi
 
 - **Write-through:** a successful pull stores the raw `{data, hash, timestamp}` keyed by document path.
 - **Offline fallback:** a pull that fails because the **transport** is unreachable (`fetch` rejects — offline/DNS/timeout) returns the last cached snapshot, tagged so callers can tell it's stale (`pullWasFromCache(result)`).
-- **Real HTTP errors propagate:** 404/403/5xx are genuine server answers — the cache is *not* consulted, so "no document yet" and "access denied" keep their meaning.
+- **Real HTTP errors propagate:** 404/403 are genuine server answers — the cache is *not* consulted, so "no document yet" and "access denied" keep their meaning. 429 and 5xx can optionally be caught via `cacheFallbackStatuses` (see below).
+- **Stale-while-revalidate:** set `cacheFallbackStatuses: [429, 500, 502, 503, 504]` to make transient server failures serve the last-synced snapshot immediately and retry in the background (honoring `Retry-After`). When the live response arrives, the cache is updated and `onRevalidated` fires. No snapshot → the error propagates as usual. Do NOT include 403/404 — they are genuine answers, not transient failures.
 - **`cacheMaxAgeMs`:** an entry older than this is treated as a miss (both cache-first paint and offline fallback); omit for entries that never expire (recommended for offline-first, where any last-synced data beats none).
 - **Ciphertext-at-rest by construction:** the cache stores the raw server payload, which for E2E (`delegated`) collections is the sealed ciphertext the server holds — never the decrypted form. Decryption happens in memory on read (see `SyncManager.seedFromCache`).
 - **`client.peekCache(path)`** reads the cached snapshot *without* a network round-trip — the basis for cache-first paint.

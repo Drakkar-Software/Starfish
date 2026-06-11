@@ -4,7 +4,58 @@ import {
   createRetryFetch,
   CircuitBreaker,
   createResilientFetch,
+  parseRetryAfterMs,
 } from "../src/fetch.js"
+
+describe("parseRetryAfterMs", () => {
+  it("converts numeric seconds to ms", () => {
+    expect(parseRetryAfterMs("30", { fallbackMs: 500, maxMs: 60_000 })).toBe(30_000)
+  })
+
+  it("converts fractional seconds (1.5 → 1500ms)", () => {
+    expect(parseRetryAfterMs("1.5", { fallbackMs: 500, maxMs: 60_000 })).toBe(1500)
+  })
+
+  it("clamps numeric seconds to maxMs", () => {
+    expect(parseRetryAfterMs("3600", { fallbackMs: 500, maxMs: 30_000 })).toBe(30_000)
+  })
+
+  it("parses an HTTP-date header to delta-from-now", () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+    const future = new Date(10_000).toUTCString()
+    expect(parseRetryAfterMs(future, { fallbackMs: 500, maxMs: 60_000 })).toBe(10_000)
+    vi.useRealTimers()
+  })
+
+  it("floors a past HTTP-date to 0", () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(20_000)
+    const past = new Date(5_000).toUTCString()
+    expect(parseRetryAfterMs(past, { fallbackMs: 500, maxMs: 60_000 })).toBe(0)
+    vi.useRealTimers()
+  })
+
+  it("returns fallbackMs for null header", () => {
+    expect(parseRetryAfterMs(null, { fallbackMs: 1234, maxMs: 60_000 })).toBe(1234)
+  })
+
+  it("returns fallbackMs for empty string header", () => {
+    expect(parseRetryAfterMs("", { fallbackMs: 1234, maxMs: 60_000 })).toBe(1234)
+  })
+
+  it("returns fallbackMs for whitespace-only header", () => {
+    expect(parseRetryAfterMs("   ", { fallbackMs: 1234, maxMs: 60_000 })).toBe(1234)
+  })
+
+  it("returns fallbackMs for unparseable string", () => {
+    expect(parseRetryAfterMs("garbage-value", { fallbackMs: 999, maxMs: 60_000 })).toBe(999)
+  })
+
+  it("clamps fallbackMs to maxMs", () => {
+    expect(parseRetryAfterMs(null, { fallbackMs: 100_000, maxMs: 30_000 })).toBe(30_000)
+  })
+})
 
 describe("classifyError", () => {
   it("classifies 401 as auth", () => {

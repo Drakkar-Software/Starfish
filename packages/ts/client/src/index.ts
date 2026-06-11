@@ -43,7 +43,7 @@ export { createMigrator } from "./migrate.js"
 export type { MigrationFn, MigrationConfig } from "./migrate.js"
 export { ValidationError, createSchemaValidator } from "./validate.js"
 export type { Validator, ValidationResult } from "./validate.js"
-export { classifyError } from "./fetch.js"
+export { classifyError, parseRetryAfterMs } from "./fetch.js"
 export type { ErrorCategory } from "./fetch.js"
 export {
   createUnionMerge,

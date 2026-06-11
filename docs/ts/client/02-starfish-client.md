@@ -39,6 +39,21 @@ interface StarfishClientOptions {
   capProvider?: StarfishCapProvider
   /** Custom fetch implementation (defaults to global fetch) */
   fetch?: typeof fetch
+  /** Optional offline-first read-through cache. See [Offline & Connectivity](08-offline-connectivity.md). */
+  cache?: PullCache
+  /** Optional TTL for cache entries in ms. Omit for entries that never expire. */
+  cacheMaxAgeMs?: number
+  /**
+   * HTTP statuses that fall back to the cached snapshot instead of throwing
+   * (stale-while-revalidate). Recommended: `[429, 500, 502, 503, 504]`.
+   * See [Error Classification & Retry](15-error-retry.md#stale-while-revalidate).
+   */
+  cacheFallbackStatuses?: number[]
+  /**
+   * Called after a background revalidation succeeds following a
+   * `cacheFallbackStatuses` hit. Use to signal reachability to the host app.
+   */
+  onRevalidated?: (path: string, result: PullResult) => void
 }
 ```
 

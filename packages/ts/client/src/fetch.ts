@@ -1,3 +1,27 @@
+/**
+ * Parse a `Retry-After` header value into milliseconds.
+ *
+ * - Numeric string (`"30"`) — treated as seconds × 1000.
+ * - HTTP-date string — delta from now in ms (floored to 0).
+ * - `null`, empty, or unparseable — returns `opts.fallbackMs`.
+ *
+ * All results are clamped to `[0, opts.maxMs]`.
+ */
+export function parseRetryAfterMs(
+  header: string | null | undefined,
+  opts: { fallbackMs: number; maxMs: number },
+): number {
+  const { fallbackMs, maxMs } = opts
+  const trimmed = header?.trim()
+  if (trimmed) {
+    const seconds = Number(trimmed)
+    if (!isNaN(seconds)) return Math.min(seconds * 1000, maxMs)
+    const date = Date.parse(trimmed)
+    if (!isNaN(date)) return Math.min(Math.max(date - Date.now(), 0), maxMs)
+  }
+  return Math.min(fallbackMs, maxMs)
+}
+
 /** Error category returned by classifyError. */
 export type ErrorCategory =
   | "network"
@@ -52,19 +76,14 @@ export function createRetryFetch(options?: RetryOptions): typeof globalThis.fetc
         const category = classifyError(res)
         if (category !== "rate-limited" && category !== "server") return res
 
-        const retryAfter = res.headers.get("Retry-After")?.trim()
-        let delay: number
-        if (retryAfter) {
-          const seconds = Number(retryAfter)
-          if (retryAfter !== "" && !isNaN(seconds)) {
-            delay = Math.min(seconds * 1000, maxDelay)
-          } else {
-            const date = Date.parse(retryAfter)
-            delay = isNaN(date) ? initialDelay : Math.min(Math.max(date - Date.now(), 0), maxDelay)
-          }
-        } else {
-          delay = Math.min(initialDelay * Math.pow(2, attempt), maxDelay)
-        }
+        const retryAfterHeader = res.headers.get("Retry-After")
+        const exponentialDelay = Math.min(initialDelay * Math.pow(2, attempt), maxDelay)
+        // When the header is present but unparseable, original falls back to
+        // initialDelay (not exponential). Preserve that by checking presence first.
+        const delay = parseRetryAfterMs(retryAfterHeader, {
+          fallbackMs: retryAfterHeader?.trim() ? initialDelay : exponentialDelay,
+          maxMs: maxDelay,
+        })
 
         await new Promise<void>((r) => setTimeout(r, delay))
         attempt++

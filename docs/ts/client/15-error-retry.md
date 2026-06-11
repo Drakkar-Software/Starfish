@@ -13,8 +13,8 @@ Every error from a sync operation falls into one of these categories:
 | Network | `fetch` throws (`TypeError`, `AbortError`) | Yes | None — client throws |
 | 401 Unauthorized | Expired or invalid auth token | Once (after refresh) | None — throws `StarfishHttpError` |
 | 409 Conflict | Hash mismatch on push | Yes | `SyncManager` retries automatically |
-| 429 Rate Limited | Too many requests | Yes (with backoff) | None — throws `StarfishHttpError` |
-| 5xx Server Error | Server bug or overload | Yes (with backoff) | None — throws `StarfishHttpError` |
+| 429 Rate Limited | Too many requests | Yes (with backoff) | Opt-in: cache fallback + background retry (see [below](#stale-while-revalidate)) |
+| 5xx Server Error | Server bug or overload | Yes (with backoff) | Opt-in: cache fallback + background retry (see [below](#stale-while-revalidate)) |
 | Other 4xx | Bad request, forbidden, etc. | No | None — throws `StarfishHttpError` |
 
 ### Classifier function
@@ -35,6 +35,60 @@ function classifyError(err: unknown): ErrorCategory {
   if (err instanceof TypeError) return "network"
   return "unknown"
 }
+```
+
+## Stale-While-Revalidate
+
+For offline-first apps with a pull cache, you can make transient server failures (429, 5xx) serve the last-synced snapshot immediately instead of throwing, and retry silently in the background.
+
+Configure `cacheFallbackStatuses` on the client:
+
+```ts
+import { StarfishClient } from "@drakkar.software/starfish-client"
+
+const client = new StarfishClient({
+  baseUrl: "https://api.example.com/v1",
+  capProvider,
+  cache: myPullCache,           // required — no cache means nothing to serve
+  cacheFallbackStatuses: [429, 500, 502, 503, 504],
+  onRevalidated: (path, result) => {
+    // Fresh snapshot available — signal the app to re-pull
+    reportReachability(true)
+  },
+})
+```
+
+**How it works:**
+
+1. A structured `pull()` receives a 429 or 5xx response.
+2. If a cached snapshot exists for that document, `pull()` returns it immediately tagged stale (`pullWasFromCache(result) === true`).
+3. A background revalidation loop starts — honoring any `Retry-After` header — and retries up to 5 times.
+4. When the server returns a 2xx response, the fresh snapshot is written through to the cache and `onRevalidated` fires.
+
+**Important constraints:**
+
+- `cache` must be configured — when no snapshot exists, the error propagates as before (nothing to serve).
+- Do **not** include `403` or `404` in `cacheFallbackStatuses` — they are genuine server answers (access denied / no document yet), not transient failures. Serving a stale snapshot for those would mask deletions and auth failures.
+- Applies to structured (non-append) pulls only. Append-log pulls own their own warm-start persistence.
+- The background loop is deduplicated per document: many concurrent 429 pulls on the same path spawn exactly one loop.
+
+### `parseRetryAfterMs`
+
+A helper exported from `@drakkar.software/starfish-client/fetch` that parses a
+`Retry-After` header value into milliseconds. Used internally by both
+`createRetryFetch` and the stale-while-revalidate background loop:
+
+```ts
+import { parseRetryAfterMs } from "@drakkar.software/starfish-client/fetch"
+
+const delay = parseRetryAfterMs(
+  response.headers.get("Retry-After"),
+  { fallbackMs: 1_000, maxMs: 30_000 },
+)
+// "30"          → 30_000 ms
+// "Thu, 01 ..." → delta from now in ms (floored to 0)
+// null / ""     → fallbackMs (1_000)
+// "garbage"     → fallbackMs (1_000)
 ```
 
 ## Retry Fetch Wrapper
