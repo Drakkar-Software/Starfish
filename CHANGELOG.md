@@ -1,5 +1,27 @@
 # Changelog
 
+## 3.0.0-alpha.27 — Push write-through to pull cache
+
+`StarfishClient.push()` now writes the pushed data through to the pull cache
+immediately after a successful push response, so an offline restart reads the
+just-written state rather than the stale pre-push snapshot. This fixes a class of
+bugs where synced user preferences (e.g. archived DMs, mutes, read marks) appeared
+reset after an offline restart — the write reached the server, but the kv-backed
+pull cache still held the document as it existed before the write.
+
+**TS-only release** — the Python client does not have a pull cache; Python packages
+remain at `3.0.0a26`.
+
+### Fixed
+
+- **Stale pull cache after push (TS `starfish-client`)** — `push()` now writes a
+  `CachedPull` snapshot (`{ data, hash, timestamp, cachedAt }`) to the pull cache
+  keyed to the corresponding `/pull/…` path after every successful push. The cache
+  is only written when one is configured; push() behavior is unchanged when no cache
+  is set.
+
+---
+
 ## 3.0.0-alpha.26 — Stale-while-revalidate cache fallback for 429/5xx
 
 Structured `pull()` calls can now serve a last-synced cached snapshot immediately

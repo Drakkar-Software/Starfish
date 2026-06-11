@@ -645,7 +645,22 @@ export class StarfishClient {
     if (!res.ok) {
       throw new StarfishHttpError(res.status, await res.text())
     }
-    return res.json() as Promise<PushSuccess>
+    const result = (await res.json()) as PushSuccess
+    // Write-through: update the pull cache with the pushed data so an offline
+    // restart reads the just-written state rather than the pre-push snapshot.
+    // The push path is /push/X; the corresponding pull cache key is /pull/X.
+    if (this.cache) {
+      const pullPath = sendPath.replace("/push/", "/pull/")
+      const cacheKey = pullCacheKey(pullPath)
+      const snapshot: CachedPull = {
+        data,
+        hash: result.hash,
+        timestamp: result.timestamp,
+        cachedAt: Date.now(),
+      }
+      void this.cache.set(cacheKey, JSON.stringify(snapshot)).catch(() => {})
+    }
+    return result
   }
 
   /**

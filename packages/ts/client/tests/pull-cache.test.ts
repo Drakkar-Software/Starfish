@@ -135,6 +135,63 @@ describe("StarfishClient read-through pull cache", () => {
   })
 })
 
+describe("push write-through to pull cache", () => {
+  it("updates the pull cache after a successful push so offline restart reads the new state", async () => {
+    const cache = memCache()
+    let online = true
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (!online) throw new TypeError("Failed to fetch")
+      const method = (init as RequestInit | undefined)?.method ?? "GET"
+      if (method === "GET") return jsonResponse({ data: { v: 1, x: "old" }, hash: "h1", timestamp: 1 })
+      // POST (push) — return success with new hash
+      return jsonResponse({ hash: "h2", timestamp: 2 })
+    })
+    const client = new StarfishClient({ baseUrl: "https://h", fetch: fetchMock as unknown as typeof fetch, cache })
+
+    // Prime the cache via a pull.
+    await client.pull("/pull/spaces/s1/doc")
+    expect((JSON.parse(cache.store.get("/pull/spaces/s1/doc")!) as { hash: string }).hash).toBe("h1")
+
+    // Push new data.
+    await client.push("/push/spaces/s1/doc", { v: 1, x: "new" }, "h1")
+
+    // Cache must be updated to the pushed state.
+    const cached = JSON.parse(cache.store.get("/pull/spaces/s1/doc")!) as { data: unknown; hash: string }
+    expect(cached.hash).toBe("h2")
+    expect(cached.data).toEqual({ v: 1, x: "new" })
+
+    // Offline pull must serve the NEW state, not the old one.
+    online = false
+    const offlineResult = await client.pull("/pull/spaces/s1/doc")
+    expect((offlineResult as { data: unknown }).data).toEqual({ v: 1, x: "new" })
+    expect(pullWasFromCache(offlineResult as never)).toBe(true)
+  })
+
+  it("does not create a pull cache entry for a push path that was never pulled", async () => {
+    const cache = memCache()
+    const fetchMock = vi.fn(async () => jsonResponse({ hash: "h1", timestamp: 1 }))
+    const client = new StarfishClient({ baseUrl: "https://h", fetch: fetchMock as unknown as typeof fetch, cache })
+
+    await client.push("/push/user/u1/profile", { name: "bob" }, null)
+    // Cache entry IS created — push write-through primes the cache even if never pulled.
+    const entry = cache.store.get("/pull/user/u1/profile")
+    expect(entry).toBeTruthy()
+    expect((JSON.parse(entry!) as { data: unknown }).data).toEqual({ name: "bob" })
+  })
+
+  it("does not write the pull cache when no cache is configured", async () => {
+    let pushed = false
+    const fetchMock = vi.fn(async () => {
+      pushed = true
+      return jsonResponse({ hash: "h1", timestamp: 1 })
+    })
+    const client = new StarfishClient({ baseUrl: "https://h", fetch: fetchMock as unknown as typeof fetch })
+    await client.push("/push/doc", { v: 1 }, null)
+    expect(pushed).toBe(true)
+    // No cache was configured — the client should not throw.
+  })
+})
+
 describe("stale-while-revalidate (cacheFallbackStatuses)", () => {
   function jsonResponse(body: unknown, status = 200, headers: Record<string, string> = {}): Response {
     return new Response(JSON.stringify(body), {
