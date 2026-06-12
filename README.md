@@ -2,17 +2,23 @@
   <img src="logo.png" alt="Starfish" width="400" />
 </p>
 
-# Starfish
+<p align="center">
+  <strong>Document sync infrastructure — E2EE, CRDT, zero-trust, any backend.</strong>
+</p>
 
-A generic document sync library. Pull/push documents with hash-based conflict detection, incremental sync via timestamps, and role-based access control.
+<p align="center">
+  <a href="#quick-start">Quick start</a> · <a href="#packages">Packages</a> · <a href="docs/migration/v2-to-v3.md">Migrate from v2</a>
+</p>
 
-Works with any storage backend (S3, MongoDB, in-memory) and any auth model. The server determines roles; the library enforces permissions.
+---
 
-**Encryption:** two modes only — `"none"` (server stores plaintext) and `"delegated"` (end-to-end AES-256-GCM, N-recipient). In `"delegated"` mode the server stores opaque ciphertext plus a plaintext per-collection **keyring document** that wraps the current Content Encryption Key (CEK) for each recipient via X25519 ECDH + HKDF + AES-GCM. The server never sees a CEK.
+Starfish is a document sync library you drop in front of any storage backend. Push and pull documents with hash-based conflict detection and incremental sync. The server enforces roles — it never sees your keys.
 
-**Authorization:** every authenticated request carries a signed **capability certificate** (cap-cert). The cap-cert is issued by the user's root identity (derived from a passphrase) and grants a subset of `{ops, collections, paths}` to a specific device or member subject for a bounded lifetime. Each request is itself signed under the subject key, with nonce-replay protection and ±5 min clock skew.
+**Encryption** — `"none"` for plaintext or `"delegated"` for end-to-end AES-256-GCM. In delegated mode the server stores opaque ciphertext and a plaintext keyring that wraps the Content Encryption Key for each recipient via X25519 + HKDF + AES-GCM. The server holds no CEK, ever.
 
-**Identity model:** Starfish speaks **Ed25519 (sign) + X25519 (KEM)** on the wire — a single suite, no algorithm discriminator. Root identities derive from a passphrase via Argon2id → HKDF-SHA256. Users with an existing **external secp256k1 root** (e.g. a Nostr `nsec`, a Bitcoin/BIP-340 signer) can bootstrap a Starfish identity via `deriveRootIdentityFromSecp256k1Signature`: the caller signs a fixed 32-byte challenge with their external signer, and the 64-byte signature is HKDF-expanded into the Ed25519 + X25519 seeds. The secp256k1 root never appears on the wire; the resulting identity is a normal Ed25519 identity from every verifier's perspective. See [docs/ts/client/26-identity-models.md](docs/ts/client/26-identity-models.md).
+**Authorization** — every request carries a signed **capability certificate** issued by the user's root identity. Cap-certs scope `{ops, collections, paths}` to a device or member for a bounded lifetime. Requests are signed under the subject key with nonce-replay protection and ±5 min clock skew.
+
+**Identity** — Ed25519 (sign) + X25519 (KEM), single suite, no algorithm negotiation. Root identities derive from a passphrase via Argon2id → HKDF-SHA256. Users with an existing secp256k1 root (Nostr `nsec`, Bitcoin / BIP-340) can bootstrap via `deriveRootIdentityFromSecp256k1Signature` — the external key never appears on the wire. See [identity models →](docs/ts/client/26-identity-models.md)
 
 > **Upgrading from 2.x?** v3 is a clean break. See [docs/migration/v2-to-v3.md](docs/migration/v2-to-v3.md).
 
