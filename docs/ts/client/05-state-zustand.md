@@ -71,14 +71,31 @@ interface StarfishState {
   syncing: boolean               // operation in flight?
   online: boolean                // network connectivity
   dirty: boolean                 // local changes pending push?
-  error: string | null           // last sync error
+  error: string | null           // last sync error (null when offline — see stale)
+  hash: string | null            // last-known server hash; persisted for baseHash restore
+  /**
+   * True when the currently-shown `data` is a stale (not yet confirmed-live) snapshot:
+   * either seeded from the client's offline cache via `seed()`, or kept from persisted
+   * storage when a `pull()` failed because the transport was unreachable (offline /
+   * DNS / timeout). A successful live pull clears it. Use it to drive an
+   * "offline / showing last-synced data" indicator without surfacing an error.
+   */
+  stale: boolean
 }
 
 interface StarfishActions {
   pull(): Promise<void>
   set(modifier: (current: Record<string, unknown>) => Record<string, unknown>): void
+  restore(data: Record<string, unknown>): void
   flush(): Promise<void>
   setOnline(online: boolean): void
+  /**
+   * Cache-first paint: populate `data` from the client's offline read-through cache
+   * (if one is configured) without touching the network. A no-op without a cache or
+   * on a cache miss. Call before the initial `pull()` to show last-synced data
+   * immediately; the live pull then supersedes the seeded snapshot.
+   */
+  seed(): Promise<void>
 }
 
 type StarfishStore = StarfishState & StarfishActions
@@ -151,6 +168,16 @@ Fetches remote data and updates the store.
 ```ts
 await settingsStore.getState().pull()
 ```
+
+**Offline behavior** — when the transport is unreachable (offline / DNS / timeout), `pull()` does
+NOT set `error`. Instead it keeps the currently-shown `data` (which was already rehydrated from
+persisted storage on cold start) and sets `stale: true` so the UI can show an "offline / showing
+last-synced data" indicator without treating the situation as an error. HTTP errors (4xx / 5xx),
+abort signals, and decrypt failures always set `error` as before.
+
+This means **persist-backed stores are offline-first for reads** without needing a separate client
+`cache`. On cold start, the persisted `starfish-{name}` entry rehydrates `data` immediately; the
+first `pull()` then refreshes it from the server, or sets `stale: true` if the network is down.
 
 ### `flush()`
 

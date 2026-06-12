@@ -11,6 +11,7 @@ import { useEffect, useRef, useState, useCallback } from "react"
 import type { Encryptor } from "@drakkar.software/starfish-protocol"
 import { StarfishClient } from "../client.js"
 import { SyncManager } from "../sync.js"
+import { classifyError } from "../fetch.js"
 import { AppendLogCursor, type AppendElement } from "../append-log.js"
 import { setupCrossTabSync, type BroadcastableStore } from "../broadcast.js"
 import type { StarfishCapProvider, ConflictResolver, PullCache } from "../types.js"
@@ -196,6 +197,14 @@ export function createStarfishStore(
         // Calling set() inside onRemoteUpdate does NOT re-enter pull(), so no feedback loop.
         options.onRemoteUpdate?.(newData)
       } catch (err) {
+        // Transport unreachable (offline / DNS / timeout): the persisted `data` is still
+        // the last-synced snapshot, so keep it on screen and flag it stale rather than
+        // surfacing an error. This replaces the client pull-cache's offline fallback —
+        // a persist-backed store is offline-first on its own, no client `cache` needed.
+        if (classifyError(err) === "network") {
+          set({ syncing: false, stale: true }, false, "pull/offline")
+          return
+        }
         set({ syncing: false, error: err instanceof Error ? err.message : String(err) }, false, "pull/error")
       }
     },

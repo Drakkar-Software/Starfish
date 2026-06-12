@@ -39,7 +39,16 @@ interface StarfishClientOptions {
   capProvider?: StarfishCapProvider
   /** Custom fetch implementation (defaults to global fetch) */
   fetch?: typeof fetch
-  /** Optional offline-first read-through cache. See [Offline & Connectivity](08-offline-connectivity.md). */
+  /**
+   * Optional offline-first read-through ciphertext cache.
+   * See [Offline & Connectivity](08-offline-connectivity.md).
+   *
+   * **Note:** persist-backed Zustand stores (`createStarfishStore` with a `storage`)
+   * are already offline-first for reads — a transport failure during `pull()` preserves
+   * the persisted data and sets `stale: true` without surfacing an error. You only need
+   * a client `cache` when you want ciphertext-at-rest storage between restarts or
+   * stale-while-revalidate on specific HTTP status codes (`cacheFallbackStatuses`).
+   */
   cache?: PullCache
   /** Optional TTL for cache entries in ms. Omit for entries that never expire. */
   cacheMaxAgeMs?: number

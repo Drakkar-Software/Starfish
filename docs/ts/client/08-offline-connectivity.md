@@ -30,7 +30,8 @@ User writes data
 | `dirty` | `boolean` | Local changes exist that haven't been pushed |
 | `online` | `boolean` | Whether the app believes it has network connectivity |
 | `syncing` | `boolean` | A push or pull operation is in flight |
-| `error` | `string \| null` | Last sync error message |
+| `error` | `string \| null` | Last sync error message (null for offline pulls — see `stale`) |
+| `stale` | `boolean` | Shown `data` is from persisted storage or an offline cache, not a live server response |
 
 ## Managing Connectivity
 
@@ -111,7 +112,10 @@ AppState.addEventListener("change", (state) => {
 
 ## Persistence Across Restarts
 
-The Zustand binding persists `data` and `dirty` to storage (localStorage by default). On app restart:
+The Zustand binding persists `data`, `dirty`, and `hash` to storage (localStorage by default) under
+the key `starfish-{name}`. On cold start the store is already populated — no network round-trip
+needed to show the last-synced data. The first `pull()` then refreshes from the server, or sets
+`stale: true` if the device is offline.
 
 - If `dirty: true` is restored from storage, you have un-pushed local changes
 - Call `flush()` after initialization to push them, or call `pull()` first to reconcile
@@ -123,6 +127,30 @@ if (state.dirty) {
   await state.flush()
 }
 ```
+
+### Offline cold start
+
+```
+Cold start (device offline)
+       │
+       ▼
+  zustand persist rehydrates starfish-{name}
+  → data = last-synced snapshot (instantly, no network)
+  → hash = last-known server hash (for safe push on reconnect)
+       │
+       ▼
+  pull() → transport fails → stale = true, error = null
+  (data is preserved; UI shows last-synced state + stale indicator)
+       │
+       ▼
+  setOnline(true) + reconnect
+  → pull() succeeds → stale = false
+  → if dirty: flush() → push pending writes
+```
+
+No client `cache` is required for this behavior — the persisted store entry is the offline-first
+source of truth for reads. The client `cache` option remains available when you need ciphertext-at-rest
+offline storage or stale-while-revalidate on specific HTTP status codes.
 
 ## Race Condition Safety
 

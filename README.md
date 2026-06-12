@@ -766,7 +766,7 @@ settingsStore.subscribe(
 
 This gives you:
 - **One store per collection** — each collection syncs, persists, and re-renders independently
-- **Offline-first** — writes apply instantly to local state and persist to disk; background sync pushes to server when online
+- **Offline-first** — writes apply instantly to local state and persist to disk; reads survive offline too: a transport failure during `pull()` preserves the persisted data and sets `stale: true` (no error, no empty screen); background sync pushes to server when online
 - **Automatic retry** — pending writes (`dirty: true`) flush when connectivity returns or on next app launch
 - **Selectors** — subscribe to specific fields to avoid unnecessary re-renders
 - **DevTools** — opt-in Redux DevTools integration with labeled actions

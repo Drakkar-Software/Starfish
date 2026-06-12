@@ -198,10 +198,18 @@ Omit `capProvider` for unauthenticated public reads.
 
 ### Offline-first read cache
 
-Pass a `cache` (a `PullCache`: `{ get(k): Promise<string|null>; set(k, v): Promise<void> }`, host-backed by `localStorage`/`AsyncStorage`/etc.) to make every structured `pull()` offline-capable:
+**Persist-backed Zustand stores are offline-first for reads without a client `cache`.** When
+`createStarfishStore` is used with a `storage`, the persisted `starfish-{name}` entry rehydrates
+`data` on cold start. If the first `pull()` then fails because the transport is unreachable (offline /
+DNS / timeout), `pull()` preserves the already-shown data and sets `stale: true` — no error, no empty
+screen. HTTP errors (4xx/5xx), aborts, and decrypt failures still set `error` as usual.
+
+The client `cache` (`PullCache`) remains available for additional capabilities:
+
+Pass a `cache` (a `PullCache`: `{ get(k): Promise<string|null>; set(k, v): Promise<void> }`, host-backed by `localStorage`/`AsyncStorage`/etc.) to the client for:
 
 - **Write-through:** a successful pull stores the raw `{data, hash, timestamp}` keyed by document path.
-- **Offline fallback:** a pull that fails because the **transport** is unreachable (`fetch` rejects — offline/DNS/timeout) returns the last cached snapshot, tagged so callers can tell it's stale (`pullWasFromCache(result)`).
+- **Offline fallback (without a persist-backed store):** a pull that fails because the **transport** is unreachable returns the last cached snapshot, tagged so callers can tell it's stale (`pullWasFromCache(result)`).
 - **Real HTTP errors propagate:** 404/403 are genuine server answers — the cache is *not* consulted, so "no document yet" and "access denied" keep their meaning. 429 and 5xx can optionally be caught via `cacheFallbackStatuses` (see below).
 - **Stale-while-revalidate:** set `cacheFallbackStatuses: [429, 500, 502, 503, 504]` to make transient server failures serve the last-synced snapshot immediately and retry in the background (honoring `Retry-After`). When the live response arrives, the cache is updated and `onRevalidated` fires. No snapshot → the error propagates as usual. Do NOT include 403/404 — they are genuine answers, not transient failures.
 - **`cacheMaxAgeMs`:** an entry older than this is treated as a miss (both cache-first paint and offline fallback); omit for entries that never expire (recommended for offline-first, where any last-synced data beats none).
@@ -224,7 +232,7 @@ new SyncManager({
 - `signer.getSigner()` returns `{ devEdPubHex, sign(payload) }`. When set, every push attaches `authorPubkey = cap.sub` and `authorSignature = base64(Ed25519(payload))` over the encrypted payload (without the author fields).
 - `encryptor` is the only encryption option — the v2 single-secret `encryptionSecret`/`encryptionSalt` shorthand was removed in v3.
 - `onConflict` resolves write conflicts on push *and* reconciles a pull against un-pushed local writes. On a zustand-bound store, a `pull()` while the store is `dirty` merges the fetched snapshot with the local data through this resolver (rather than overwriting it), so an optimistic write isn't lost when a pull races a `set()`. Use a union/CRDT-style resolver (`createUnionMerge`) for append-style collections so both the local and remote writes survive; `SyncManager.resolve(local, remote)` exposes the same merge for callers that need it.
-- **Offline-first (with a client `cache`):** `seedFromCache()` populates `localData` from the client's read-through cache without a network round-trip, decrypting in memory for E2E collections — the merge-doc counterpart to `AppendLogCursor.getDecryptedItems()`. `getLastPullFromCache()` reports whether the latest `pull()`/seed came from cache. On a zustand store these power cache-first paint: `useSyncInit` seeds before the initial pull, and the store exposes a `stale` flag (`seed()` action + `state.stale`) so the UI can show an "offline / showing last-synced data" indicator that clears on the next live pull.
+- **Offline-first:** Zustand stores backed by `storage` are offline-first without any client `cache` — a transport failure during `pull()` preserves the persisted data and sets `stale: true` on the store. When a client `cache` is also configured, `seedFromCache()` additionally populates `localData` from the ciphertext cache without a network round-trip (decrypting in memory for E2E collections); `getLastPullFromCache()` reports whether the latest `pull()`/seed came from that cache. On a zustand store, the `stale` flag tracks both sources: it is set by an offline `pull()` (no cache needed) and by `seed()` (cache-first paint before the initial live pull).
 
 ## `AppendLogCursor`
 

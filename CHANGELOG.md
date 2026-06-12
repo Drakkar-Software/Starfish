@@ -1,5 +1,30 @@
 # Changelog
 
+## 3.0.0-alpha.29 — Persist-backed stores are offline-first for reads
+
+`createStarfishStore` now classifies network transport failures in its `pull()` error path. When the
+transport is unreachable (offline / DNS / timeout), the store preserves the already-shown data (the
+last-synced snapshot rehydrated from persisted storage) and sets `stale: true` instead of surfacing
+an error. HTTP errors (4xx/5xx), aborts, and decrypt failures still set `error` as before.
+
+This means that Zustand stores backed by `storage` are offline-first for reads **without** a separate
+client `cache`. The persisted `starfish-{name}` entry rehydrates data on cold start; if the first
+`pull()` finds the network down, the UI stays populated (stale flag set) rather than showing an error
+state or an empty screen. The client `PullCache` option is unchanged and remains useful for
+ciphertext-at-rest storage and stale-while-revalidate on specific HTTP status codes.
+
+**TS-only release** — Python packages remain at `3.0.0a27`.
+
+### Changed
+
+- **Offline pull preserves data and sets `stale` instead of `error` (TS `starfish-client`)** —
+  `pull()` in `createStarfishStore` now calls `classifyError(err)` on failure. A `"network"` result
+  (transport unreachable) sets `{ syncing: false, stale: true }` and returns, leaving `data` intact
+  and `error` null. All other failure kinds (HTTP errors, aborts, decrypt failures) keep the previous
+  `{ syncing: false, error: "…" }` behavior.
+
+---
+
 ## 3.0.0-alpha.28 — Self-healing flush retry
 
 `createStarfishStore` gains an optional `flushRetry` option that automatically

@@ -4,6 +4,7 @@ import { devtools } from "zustand/middleware"
 import { StarfishClient } from "../src/client.js"
 import { SyncManager } from "../src/sync.js"
 import { createStarfishStore, subscribeSyncStatus } from "../src/bindings/zustand.js"
+import { StarfishHttpError } from "../src/types.js"
 import type { PullResponse, PushSuccess } from "../src/types.js"
 
 function mockClient(overrides: {
@@ -63,17 +64,41 @@ describe("createStarfishStore", () => {
     expect(state.error).toBeNull()
   })
 
-  it("pull sets error on failure", async () => {
+  it("pull sets error on HTTP/server failure", async () => {
     const { store } = createTestStore({
-      pull: async () => { throw new Error("network down") },
+      pull: async () => { throw new StarfishHttpError(500, "server exploded") },
     })
 
     await store.getState().pull()
 
     const state = store.getState()
-    expect(state.error).toBe("network down")
+    expect(state.error).toBe("HTTP 500: server exploded")
     expect(state.syncing).toBe(false)
+    expect(state.stale).toBe(false)
     expect(state.data).toEqual({})
+  })
+
+  it("pull preserves persisted data and sets stale on transport failure (offline)", async () => {
+    // First pull succeeds — simulates data already in the store from a previous sync.
+    const { store } = createTestStore()
+    await store.getState().pull()
+    expect(store.getState().data).toEqual({ key: "value" })
+
+    // Subsequent pull fails with a transport/offline error (classifyError → "network").
+    const { store: store2 } = createTestStore({
+      pull: async () => { throw new TypeError("fetch failed") },
+    })
+    // Seed the store with existing data to simulate a persist-rehydrated state.
+    store2.getState().restore({ key: "cached" })
+
+    await store2.getState().pull()
+
+    const state = store2.getState()
+    expect(state.stale).toBe(true)
+    expect(state.error).toBeNull()
+    expect(state.syncing).toBe(false)
+    // Persisted data must be preserved — no clobber on offline pull.
+    expect(state.data).toEqual({ key: "cached" })
   })
 
   it("set applies optimistic local write and marks dirty", async () => {
