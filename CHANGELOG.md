@@ -1,5 +1,27 @@
 # Changelog
 
+## 3.0.0-alpha.28 — Self-healing flush retry
+
+`createStarfishStore` gains an optional `flushRetry` option that automatically
+re-attempts a failed flush with jittered exponential backoff while the store stays
+dirty and online. This self-heals transient push failures (network blips, 409
+hash-mismatch recoveries, temporary server errors) without any application code
+changes. The retry counter resets on success or when the store goes offline;
+`AbortError`s are never retried.
+
+**TS-only release** — Python packages remain at `3.0.0a27`.
+
+### Added
+
+- **`CreateStarfishStoreOptions.flushRetry` (TS `starfish-client`)** — optional
+  `{ maxRetries?, initialDelayMs?, maxDelayMs? }` config. When set, a failed
+  `flush()` schedules re-attempts via `min(initialDelayMs × 2^attempt, maxDelayMs) + jitter(100ms)`.
+  Defaults when present: `maxRetries: 5`, `initialDelayMs: 500`, `maxDelayMs: 30_000`.
+  A successful flush, a fresh `set()` write, or `setOnline(false)` each cancel any
+  pending retry timer and reset the counter.
+
+---
+
 ## 3.0.0-alpha.27 — Push write-through to pull cache
 
 `StarfishClient.push()` now writes the pushed data through to the pull cache

@@ -54,6 +54,12 @@ interface CreateStarfishStoreOptions {
   devtools?: (storeCreator: any) => any
   /** Pass `produce` from immer to enable draft-based mutations in set(). */
   produce?: <T>(base: T, recipe: (draft: T) => T | void) => T
+  /**
+   * Auto re-attempt a failed flush with exponential backoff while the store
+   * stays dirty + online. Omit to keep the default no-retry behavior.
+   * Defaults when present: `maxRetries: 5`, `initialDelayMs: 500`, `maxDelayMs: 30_000`.
+   */
+  flushRetry?: { maxRetries?: number; initialDelayMs?: number; maxDelayMs?: number }
 }
 ```
 
@@ -153,6 +159,18 @@ Pushes dirty data to the server. No-op if already syncing or not dirty.
 ```ts
 await settingsStore.getState().flush()
 ```
+
+**Self-healing retry** — pass `flushRetry` to `createStarfishStore` to enable automatic re-attempts on failure:
+
+```ts
+const store = createStarfishStore({
+  name: "nodes",
+  syncManager,
+  flushRetry: { maxRetries: 5, initialDelayMs: 500, maxDelayMs: 30_000 },
+})
+```
+
+After each failed flush, the store schedules the next attempt with jittered exponential backoff (`min(initialDelayMs × 2^attempt, maxDelayMs) + random(100ms)`). The counter resets on success, a fresh `set()` call, or when the store goes offline. `AbortError`s are never retried. Going offline via `setOnline(false)` cancels any pending retry timer immediately.
 
 ### `setOnline(online)`
 

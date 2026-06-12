@@ -93,6 +93,20 @@ export interface CreateStarfishStoreOptions {
    * ```
    */
   onRemoteUpdate?: (data: Record<string, unknown>) => void
+  /**
+   * Auto re-attempt a failed flush with exponential backoff while the store
+   * stays dirty + online. Omit to keep the current no-retry behavior.
+   *
+   * Defaults when the option is present: `maxRetries: 5`, `initialDelayMs: 500`,
+   * `maxDelayMs: 30_000`. Backoff is `min(initial * 2^attempt, max) + jitter(100ms)`.
+   * A successful flush resets the counter. Going offline cancels any pending retry.
+   * `AbortError`s are never retried.
+   */
+  flushRetry?: {
+    maxRetries?: number
+    initialDelayMs?: number
+    maxDelayMs?: number
+  }
 }
 
 // Re-export DevtoolsOptions for convenience
@@ -110,6 +124,35 @@ export function createStarfishStore(
     get: StoreApi<StarfishStore>["getState"],
   ): StarfishStore => {
     const set = rawSet as NamedSet
+
+    // Self-healing flush retry (only active when options.flushRetry is set).
+    let retryTimer: ReturnType<typeof setTimeout> | undefined
+    let retryAttempt = 0
+
+    const scheduleFlushRetry = () => {
+      const retryOpts = options.flushRetry
+      if (!retryOpts) return
+      const maxRetries = retryOpts.maxRetries ?? 5
+      if (retryAttempt >= maxRetries) return
+      const initialMs = retryOpts.initialDelayMs ?? 500
+      const maxMs = retryOpts.maxDelayMs ?? 30_000
+      // Jittered exponential backoff — mirrors the push-conflict recovery pattern.
+      const delayMs = Math.min(initialMs * Math.pow(2, retryAttempt), maxMs) + Math.random() * 100
+      retryAttempt++
+      clearTimeout(retryTimer)
+      retryTimer = setTimeout(() => {
+        if (get().dirty && get().online && !get().syncing) {
+          get().flush().catch(() => {})
+        }
+      }, delayMs)
+    }
+
+    const cancelFlushRetry = () => {
+      clearTimeout(retryTimer)
+      retryTimer = undefined
+      retryAttempt = 0
+    }
+
     return {
     data: {},
     syncing: false,
@@ -162,6 +205,9 @@ export function createStarfishStore(
         const next = options.produce
           ? options.produce(get().data, modifier as (draft: Record<string, unknown>) => Record<string, unknown> | void)
           : modifier(get().data)
+        // Fresh write: reset retry budget so this change gets a full set of attempts.
+        retryAttempt = 0
+        clearTimeout(retryTimer)
         set({ data: next, dirty: true, error: null }, false, "set")
         if (get().online) get().flush().catch(() => {})
       } catch (err) {
@@ -178,15 +224,25 @@ export function createStarfishStore(
       set({ syncing: true, error: null }, false, "flush/start")
       try {
         await syncManager.push(get().data)
+        cancelFlushRetry()
         set({ data: syncManager.getData(), syncing: false, dirty: false, hash: syncManager.getHash(), stale: false }, false, "flush/success")
       } catch (err) {
+        // AbortErrors (e.g. tab close, unmount) are not retriable.
+        const isAbort = err instanceof Error && (err.name === "AbortError" ||
+          (typeof DOMException !== "undefined" && err instanceof DOMException && err.name === "AbortError"))
         set({ syncing: false, error: err instanceof Error ? err.message : String(err) }, false, "flush/error")
+        if (!isAbort) scheduleFlushRetry()
       }
     },
 
     setOnline: (online) => {
       set({ online }, false, "setOnline")
-      if (online && get().dirty) get().flush().catch(() => {})
+      if (online && get().dirty) {
+        get().flush().catch(() => {})
+      } else if (!online) {
+        // Cancel pending retry — no point retrying while offline.
+        cancelFlushRetry()
+      }
     },
   }}
 

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest"
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { produce } from "immer"
 import { devtools } from "zustand/middleware"
 import { StarfishClient } from "../src/client.js"
@@ -597,7 +597,7 @@ describe("subscribeSyncStatus", () => {
     unsub()
   })
 
-  it("does not emit duplicate statuses", () => {
+  it("does not emit duplicate statuses (unchanged state)", () => {
     const { store } = createTestStore()
     const statuses: string[] = []
 
@@ -711,7 +711,7 @@ describe("hash persistence", () => {
     expect(smC.getHash()).toBeNull()
   })
 
-  it("onRehydrateStorage does not overwrite a hash already set by a completed pull()", async () => {
+  it("onRehydrateStorage does NOT overwrite a hash already set by a completed pull()", async () => {
     // Simulate async storage: getItem returns a Promise that resolves only after pull() has run.
     let resolveGet!: (v: string | null) => void
     const asyncStorage = {
@@ -733,5 +733,138 @@ describe("hash persistence", () => {
 
     // Server hash must not be clobbered
     expect(sm.getHash()).toBe("abc123")
+  })
+})
+
+// ── flushRetry ────────────────────────────────────────────────────────────────
+
+describe("flushRetry", () => {
+  beforeEach(() => {
+    // Eliminate the ±100 ms jitter so retry delays are exactly initialDelayMs * 2^attempt.
+    // This makes timing assertions deterministic without needing fake timers.
+    vi.spyOn(Math, "random").mockReturnValue(0)
+  })
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  /** Store with flushRetry enabled and very short delays for fast tests. */
+  function createRetryStore(
+    pushFn: Parameters<typeof mockClient>[0]["push"],
+    retryOpts: { maxRetries?: number; initialDelayMs?: number; maxDelayMs?: number } = {},
+  ) {
+    const client = mockClient({ push: pushFn })
+    const syncManager = new SyncManager({ client, pullPath: "/pull/retry", pushPath: "/push/retry" })
+    const store = createStarfishStore({
+      name: "retry-test",
+      syncManager,
+      storage: false,
+      flushRetry: { maxRetries: 3, initialDelayMs: 10, maxDelayMs: 10_000, ...retryOpts },
+    })
+    return { store, client }
+  }
+
+  it("no flushRetry option — a failed flush is NOT retried automatically", async () => {
+    const pushFn = vi.fn(async () => { throw new Error("server error") })
+    const { store } = createTestStore({ push: pushFn })
+
+    store.getState().set((d) => ({ ...d, x: 1 }))
+    await vi.waitFor(() => expect(store.getState().error).toBe("server error"))
+    pushFn.mockClear()
+
+    // Wait past any plausible retry delay — nothing should fire
+    await new Promise((r) => setTimeout(r, 100))
+    expect(pushFn).not.toHaveBeenCalled()
+    expect(store.getState().dirty).toBe(true)
+  })
+
+  it("recovers after a transient push failure", async () => {
+    let attempt = 0
+    const pushFn = vi.fn(async () => {
+      if (attempt++ === 0) throw new Error("transient")
+      return { hash: "h1", timestamp: 100 }
+    })
+    const { store } = createRetryStore(pushFn, { maxRetries: 3, initialDelayMs: 10 })
+
+    store.getState().set((d) => ({ ...d, x: 1 }))
+
+    // First flush fails, retry fires within ~10 ms (jitter=0), succeeds
+    await vi.waitFor(() => expect(store.getState().dirty).toBe(false), { timeout: 2000 })
+    expect(store.getState().error).toBeNull()
+    expect(pushFn).toHaveBeenCalledTimes(2)
+  })
+
+  it("stops retrying after maxRetries attempts are exhausted", async () => {
+    const pushFn = vi.fn(async () => { throw new Error("persistent") })
+    // maxRetries=2: initial + retry1 + retry2 = 3 push calls total
+    // delays (jitter=0): 10 ms, 20 ms
+    const { store } = createRetryStore(pushFn, { maxRetries: 2, initialDelayMs: 10 })
+
+    store.getState().set((d) => ({ ...d, x: 1 }))
+
+    await vi.waitFor(() => expect(pushFn).toHaveBeenCalledTimes(3), { timeout: 2000 })
+
+    // No further calls after exhaustion
+    const countAtExhaustion = pushFn.mock.calls.length
+    await new Promise((r) => setTimeout(r, 150))
+    expect(pushFn.mock.calls.length).toBe(countAtExhaustion)
+    expect(store.getState().dirty).toBe(true)
+  })
+
+  it("success resets retry counter — the next write gets a fresh budget", async () => {
+    // push call order: 1=success (first write), 2=fail (second write), 3=success (retry)
+    // Using call count avoids timing races with a mutable shouldFail flag.
+    let callCount = 0
+    const pushFn = vi.fn(async () => {
+      callCount++
+      if (callCount === 2) throw new Error("transient-on-second-write")
+      return { hash: "h1", timestamp: 100 }
+    })
+    // maxRetries=1: would give 0 retries if the counter wasn't reset after first success
+    const { store } = createRetryStore(pushFn, { maxRetries: 1, initialDelayMs: 10 })
+
+    // First write (call 1): succeeds → cancelFlushRetry() resets retryAttempt to 0
+    store.getState().set((d) => ({ ...d, x: 1 }))
+    await vi.waitFor(() => expect(store.getState().dirty).toBe(false), { timeout: 1000 })
+    expect(pushFn).toHaveBeenCalledTimes(1)
+
+    // Second write: call 2 fails → retry scheduled (budget reset to 0 → 1 retry allowed)
+    // Retry: call 3 succeeds → dirty clears
+    store.getState().set((d) => ({ ...d, y: 2 }))
+    await vi.waitFor(() => expect(store.getState().dirty).toBe(false), { timeout: 2000 })
+    expect(store.getState().error).toBeNull()
+    expect(pushFn).toHaveBeenCalledTimes(3)
+  })
+
+  it("setOnline(false) cancels a pending retry timer", async () => {
+    const pushFn = vi.fn(async () => { throw new Error("fail") })
+    // Long initial delay so the test can go offline before the timer fires
+    const { store } = createRetryStore(pushFn, { maxRetries: 5, initialDelayMs: 500 })
+
+    store.getState().set((d) => ({ ...d, x: 1 }))
+    await vi.waitFor(() => expect(store.getState().error).toBe("fail"), { timeout: 1000 })
+    pushFn.mockClear()
+
+    // Going offline cancels the scheduled retry timer
+    store.getState().setOnline(false)
+
+    // Wait well past the retry delay — timer was cancelled, no push
+    await new Promise((r) => setTimeout(r, 700))
+    expect(pushFn).not.toHaveBeenCalled()
+    expect(store.getState().dirty).toBe(true)
+  })
+
+  it("AbortError is not retried", async () => {
+    const abortErr = Object.assign(new Error("aborted"), { name: "AbortError" })
+    const pushFn = vi.fn(async () => { throw abortErr })
+    const { store } = createRetryStore(pushFn, { maxRetries: 5, initialDelayMs: 10 })
+
+    store.getState().set((d) => ({ ...d, x: 1 }))
+    await vi.waitFor(() => expect(store.getState().error).toBe("aborted"))
+    pushFn.mockClear()
+
+    // No retry should fire for aborts (e.g. tab close, unmount)
+    await new Promise((r) => setTimeout(r, 100))
+    expect(pushFn).not.toHaveBeenCalled()
   })
 })
