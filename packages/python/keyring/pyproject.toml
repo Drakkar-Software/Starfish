@@ -5,6 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "starfish-keyring"
 version = "3.0.0a25"
+classifiers = ["Development Status :: 7 - Inactive"]
 description = "Starfish multi-recipient encryption layer (keyring documents, recipient management, AES-GCM payload encryption)"
 requires-python = ">=3.11"
 dependencies = [

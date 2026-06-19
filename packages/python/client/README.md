@@ -1,3 +1,7 @@
+> ⚠️ **Deprecated.** The Python implementation of Starfish is no longer maintained in
+> parity with the TypeScript packages and will be **removed in a future release**.
+> Use the TypeScript `@drakkar.software/starfish-*` packages instead.
+
 # starfish-sdk
 
 Python async client SDK for [Starfish](../../../README.md). Pull/push documents with hash-based conflict detection, end-to-end multi-recipient encryption, and cap-cert authorization.

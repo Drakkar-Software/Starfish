@@ -5,6 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "starfish-outbox"
 version = "3.0.0a25"
+classifiers = ["Development Status :: 7 - Inactive"]
 description = "Starfish durable offline write-queue — dedup-by-id, claim, retry, reconnect-drain, persisted per identity, framework-free"
 readme = "README.md"
 requires-python = ">=3.11"

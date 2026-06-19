@@ -5,6 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "starfish-sharing"
 version = "3.0.0a25"
+classifiers = ["Development Status :: 7 - Inactive"]
 description = "Starfish member-cap extension (member cap-cert minting, scope presets, member directory)"
 requires-python = ">=3.11"
 dependencies = [

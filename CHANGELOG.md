@@ -1,5 +1,10 @@
 # Changelog
 
+> ⚠️ **The Python implementation (`packages/python/*`) is deprecated.** It is no longer
+> maintained in parity with the TypeScript packages and will be **removed in a future
+> release**. New work targets the TypeScript `@drakkar.software/starfish-*` packages; the
+> Python packages are now marked `Development Status :: 7 - Inactive`.
+
 ## 3.0.0-alpha.29 — Persist-backed stores are offline-first for reads
 
 `createStarfishStore` now classifies network transport failures in its `pull()` error path. When the

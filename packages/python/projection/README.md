@@ -1,3 +1,7 @@
+> ⚠️ **Deprecated.** The Python implementation of Starfish is no longer maintained in
+> parity with the TypeScript packages and will be **removed in a future release**.
+> Use the TypeScript `@drakkar.software/starfish-*` packages instead.
+
 # starfish-projection
 
 Incremental-list extension for Starfish (Python). After a successful push, the

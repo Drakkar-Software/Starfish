@@ -5,6 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "starfish-audit"
 version = "3.0.0a25"
+classifiers = ["Development Status :: 7 - Inactive"]
 description = "Starfish audit logging extension (console / callback / no-op audit loggers for server pull/push events)"
 requires-python = ">=3.11"
 dependencies = [

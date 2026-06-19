@@ -1,3 +1,7 @@
+> ⚠️ **Deprecated.** The Python implementation of Starfish is no longer maintained in
+> parity with the TypeScript packages and will be **removed in a future release**.
+> Use the TypeScript `@drakkar.software/starfish-*` packages instead.
+
 # starfish-protocol
 
 Shared protocol primitives for [Starfish](../../../README.md) — the on-the-wire shapes that the Python client and server agree on, byte-for-byte parity with the TypeScript `@drakkar.software/starfish-protocol` package.
