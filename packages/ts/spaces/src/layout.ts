@@ -1,10 +1,10 @@
 /**
- * Default `SpaceLayout` — implements the canonical octospaces path and
+ * Default `SpaceLayout` — implements the canonical starfish-spaces path and
  * cap-scope structure.
  *
  * This is the value used when no `layout` override is supplied via
- * {@link configureSpaces}. Any app whose server uses the standard Starfish
- * server configuration (the octospaces layout) can use this directly.
+ * {@link configureSpaces}. Any app using the standard Starfish server
+ * configuration can use this directly.
  *
  * Override individual methods or create a fresh object implementing
  * {@link SpaceLayout} to support alternative collection names, deeper
@@ -20,8 +20,8 @@ import type { SpaceLayout } from "./config.js"
  * Standard object-content collection names.
  *
  * These are the collections that a space member cap must cover (read / write
- * as appropriate). They mirror the octospaces server's registered collection
- * list; changing them requires a matching server-side change.
+ * as appropriate). They mirror the server's registered collection list;
+ * changing them requires a matching server-side change.
  */
 export const OBJECT_COLLECTIONS = [
   "spacekeyring",
@@ -63,7 +63,7 @@ const push = (rest: string) => `/push/${rest}`
 // ── Default layout ─────────────────────────────────────────────────────────────
 
 /**
- * The canonical octospaces path layout.
+ * The canonical starfish-spaces path layout.
  *
  * Path conventions:
  * - User-personal docs:   `/pull|push/user/{userId}/<doc>`

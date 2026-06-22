@@ -87,8 +87,8 @@ def _resolve_config(cfg: SpacesConfig) -> dict[str, Any]:
         "user_id_from_ed_pub": cfg.user_id_from_ed_pub or default_user_id_from_ed_pub,
         "space_id_prefix": cfg.space_id_prefix or "sp-",
         "node_id_prefix": cfg.node_id_prefix or "obj-",
-        "inbox_aad_namespace": cfg.inbox_aad_namespace or "octospaces:inbox:v1",
-        "kv_key_prefix": cfg.kv_key_prefix or "octospaces.spaceaccess.",
+        "inbox_aad_namespace": cfg.inbox_aad_namespace or "starfish:inbox:v1",
+        "kv_key_prefix": cfg.kv_key_prefix or "starfish.spaceaccess.",
         "kv_adapter": cfg.kv_adapter,
     }
 

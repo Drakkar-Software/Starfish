@@ -1,10 +1,10 @@
 /**
  * Starfish client construction + space keyring/encryptor helpers.
  *
- * Unlike the octospaces version, the server coordinates (baseUrl, namespace)
- * are injected through `ClientOpts` rather than read from a global config
- * module — call `makeSpaceClient` / `makeAnonSpaceClient` with the
- * connection parameters your app has already resolved.
+ * Server coordinates (baseUrl, namespace) are injected through `ClientOpts`
+ * rather than read from a global config module — call `makeSpaceClient` /
+ * `makeAnonSpaceClient` with the connection parameters your app has already
+ * resolved.
  */
 import { StarfishClient } from "@drakkar.software/starfish-client"
 import type { BatchPullEntry, Encryptor, StarfishCapProvider, StarfishClientOptions } from "@drakkar.software/starfish-client"

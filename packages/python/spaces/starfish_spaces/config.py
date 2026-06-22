@@ -3,7 +3,7 @@
 :class:`SpaceLayout` is a ``Protocol`` (structural) that produces every
 collection path and cap-scope from ``(space_id, node_id, user_id)``.  An app
 injects its concrete implementation via :func:`configure_spaces`; the package
-ships :data:`default_space_layout` as a ready-to-use default (octospaces layout).
+ships :data:`default_space_layout` as a ready-to-use default.
 
 :class:`SpacesConfig` bundles the runtime knobs (layout, userId derivation, id
 prefixes, AAD/KV namespaces) that an app may override.
@@ -43,9 +43,8 @@ NodeAccess = str
 class SealedBlob:
     """An AES-256-GCM sealed envelope.
 
-    Wire format: ``ct = hex(iv[12] ‖ AES-GCM-ciphertext)``.  Intentionally
-    binary-compatible with the octospaces wire format (NOT starfish-keyring's
-    base64 format for ct).
+    Wire format: ``ct = hex(iv[12] ‖ AES-GCM-ciphertext)``.  Note: distinct
+    from starfish-keyring's base64 ``ct`` format.
     """
 
     entry: dict[str, Any]
@@ -253,10 +252,10 @@ class SpacesConfig:
     """Default ``"obj-"``."""
 
     inbox_aad_namespace: Optional[str] = None
-    """Default ``"octospaces:inbox:v1"``."""
+    """Default ``"starfish:inbox:v1"``."""
 
     kv_key_prefix: Optional[str] = None
-    """Default ``"octospaces.spaceaccess."``."""
+    """Default ``"starfish.spaceaccess."``."""
 
     kv_adapter: Optional[KvAdapter] = None
 

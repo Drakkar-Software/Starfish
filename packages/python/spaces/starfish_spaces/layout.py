@@ -1,8 +1,8 @@
-"""Default ``SpaceLayout`` — implements the canonical octospaces path and cap-scope structure.
+"""Default ``SpaceLayout`` — implements the canonical starfish-spaces path and cap-scope structure.
 
 This is the value used when no ``layout`` override is supplied via
-:func:`configure_spaces`.  Any app whose server uses the standard Starfish server
-configuration (the octospaces layout) can use this directly.
+:func:`configure_spaces`.  Any app using the standard Starfish server configuration
+can use this directly.
 
 Override individual methods or create a fresh object implementing
 :class:`SpaceLayout` to support alternative collection names, deeper namespacing,
@@ -32,7 +32,7 @@ OBJECT_COLLECTIONS: list[str] = [
 """Standard object-content collection names.
 
 These are the collections that a space member cap must cover (read / write as
-appropriate).  They mirror the octospaces server's registered collection list;
+appropriate).  They mirror the server's registered collection list;
 changing them requires a matching server-side change.
 """
 
@@ -71,7 +71,7 @@ def _push(rest: str) -> str:
 
 
 class _DefaultSpaceLayout:
-    """The canonical octospaces path layout.
+    """The canonical starfish-spaces path layout.
 
     Path conventions:
 
@@ -211,7 +211,7 @@ class _DefaultSpaceLayout:
 
 
 default_space_layout: SpaceLayout = _DefaultSpaceLayout()  # type: ignore[assignment]
-"""The canonical octospaces :class:`SpaceLayout` — ready-to-use default."""
+"""The canonical starfish-spaces :class:`SpaceLayout` — ready-to-use default."""
 
 
 __all__ = [

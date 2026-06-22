@@ -85,8 +85,8 @@ function resolveConfig(cfg: SpacesConfig) {
     userIdFromEdPub: cfg.userIdFromEdPub ?? defaultUserIdFromEdPub,
     spaceIdPrefix: cfg.spaceIdPrefix ?? "sp-",
     nodeIdPrefix: cfg.nodeIdPrefix ?? "obj-",
-    inboxAadNamespace: cfg.inboxAadNamespace ?? "octospaces:inbox:v1",
-    kvKeyPrefix: cfg.kvKeyPrefix ?? "octospaces.spaceaccess.",
+    inboxAadNamespace: cfg.inboxAadNamespace ?? "starfish:inbox:v1",
+    kvKeyPrefix: cfg.kvKeyPrefix ?? "starfish.spaceaccess.",
     kvAdapter: cfg.kvAdapter,
   }
 }

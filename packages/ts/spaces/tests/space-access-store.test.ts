@@ -62,14 +62,14 @@ describe("hydrateSpaceAccessStore", () => {
 
   it("loads from KV on first call for a user", async () => {
     const kv = makeKv()
-    kv.store.set("octospaces.spaceaccess.user1", JSON.stringify({ "sp-3": { kind: "member", cap: "cached" } }))
+    kv.store.set("starfish.spaceaccess.user1", JSON.stringify({ "sp-3": { kind: "member", cap: "cached" } }))
     await hydrateSpaceAccessStore("user1", {}, {}, kv)
     expect(getSpaceAccessEntry("sp-3")).toEqual({ kind: "member", cap: "cached" })
   })
 
   it("server caps override KV cache", async () => {
     const kv = makeKv()
-    kv.store.set("octospaces.spaceaccess.user1", JSON.stringify({ "sp-1": { kind: "member", cap: "old" } }))
+    kv.store.set("starfish.spaceaccess.user1", JSON.stringify({ "sp-1": { kind: "member", cap: "old" } }))
     await hydrateSpaceAccessStore("user1", { "sp-1": "new-cap" }, {}, kv)
     expect(getSpaceAccessEntry("sp-1")).toEqual({ kind: "member", cap: "new-cap" })
   })
@@ -131,6 +131,6 @@ describe("clearPersistedSpaceAccess", () => {
     await hydrateSpaceAccessStore("user1", { "sp-1": "cap" }, {}, kv)
     clearPersistedSpaceAccess("user1", kv)
     expect(getSpaceAccessEntry("sp-1")).toBeNull()
-    expect(kv.store.has("octospaces.spaceaccess.user1")).toBe(false)
+    expect(kv.store.has("starfish.spaceaccess.user1")).toBe(false)
   })
 })

@@ -10,9 +10,7 @@
  *  - {@link sealToRecipient}/{@link unsealFromRecipient} — sealed to ANOTHER
  *    user's published KEM key (inbox delivery of invite bundles, grants, etc.).
  *
- * Wire format: `ct` is hex-encoded `iv[12] ‖ AES-256-GCM ciphertext` — binary-
- * compatible with `octospaces-sdk`'s `account-seal` module so existing blobs
- * can be unsealed after migrating to `starfish-spaces`.
+ * Wire format: `ct` is hex-encoded `iv[12] ‖ AES-256-GCM ciphertext`.
  *
  * Functions accept any object with a `keys` field (a `Session` or a plain
  * `{ keys: DeviceKeys }` wrapper) so callers need not destructure the session.

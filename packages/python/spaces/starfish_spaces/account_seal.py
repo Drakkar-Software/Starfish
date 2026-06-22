@@ -1,8 +1,7 @@
 """Session-scoped sealed-envelope helpers.
 
 Wire format: ``ct = hex(iv[12] ‖ AES-256-GCM ciphertext+tag)``.
-Binary-compatible with octospaces.  This is intentionally distinct from
-``starfish_keyring``'s base64 ct format.
+Distinct from ``starfish_keyring``'s base64 ct format.
 
 ``v:1`` = AAD-context-bound seal.  :func:`unseal_from_self` and
 :func:`unseal_from_recipient` reject ``v:1`` blobs when no namespace is

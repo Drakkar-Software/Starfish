@@ -13,8 +13,7 @@
  * doc (durable source of truth — merged OVER the local KV on hydrate).
  * Keyed PER-USER so multiple accounts on one device don't see each other's entries.
  *
- * The KV key prefix defaults to `'octospaces.spaceaccess.'` (config field
- * `kvKeyPrefix`), preserving data compatibility when migrating from `octospaces-sdk`.
+ * The KV key prefix defaults to `'starfish.spaceaccess.'` (config field `kvKeyPrefix`).
  */
 import type { CapMap, KvAdapter } from "./config.js"
 
@@ -46,7 +45,7 @@ export type SpaceAccessMap = Record<string, SpaceAccessEntry>
 let _cache: SpaceAccessMap = {}
 let _activeKey: string | null = null
 let _kv: KvAdapter | undefined = undefined
-let _kvKeyPrefix = "octospaces.spaceaccess."
+let _kvKeyPrefix = "starfish.spaceaccess."
 
 /** Configure the KV adapter + key prefix (call once at startup). */
 export function configureSpaceAccessStore(opts: {

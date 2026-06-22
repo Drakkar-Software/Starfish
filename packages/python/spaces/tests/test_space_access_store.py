@@ -85,10 +85,10 @@ def test_remove_node_entry_removes_all_tiers():
     assert get_node_keyring_access_entry(SPACE, NODE) is None
 
 
-def test_kv_key_prefix_is_octospaces():
+def test_kv_key_prefix_is_starfish():
     """The KV key prefix must match the cross-language constant."""
     from starfish_spaces.space_access_store import _kv_key_prefix  # type: ignore[attr-defined]
-    assert _kv_key_prefix.startswith("octospaces.spaceaccess.")
+    assert _kv_key_prefix.startswith("starfish.spaceaccess.")
 
 
 def test_local_entries():
@@ -102,5 +102,5 @@ def test_local_entries():
 
 def test_configure_store_with_kv():
     kv = MemoryKvAdapter()
-    configure_space_access_store(USER, kv, "octospaces.spaceaccess.")
+    configure_space_access_store(USER, kv, "starfish.spaceaccess.")
     # No error

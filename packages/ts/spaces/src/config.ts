@@ -5,14 +5,11 @@
  * members, nodes, invites, …) from the application's concrete storage paths
  * and cap scopes. Inject a custom layout if your server uses different
  * collection names or path conventions; the `defaultSpaceLayout` export
- * implements the canonical octospaces layout and is correct for any app built
+ * implements the canonical starfish-spaces layout and is correct for any app built
  * on the standard Starfish server configuration.
  *
  * `SpacesConfig` carries all tunable constants — id prefixes, userId derivation,
- * inbox AAD namespace, and the KV key prefix for the local access store. The
- * defaults match the octospaces wire format, so an app that migrates from
- * `octospaces-sdk` to `starfish-spaces` without any override preserves full
- * data + server compatibility.
+ * inbox AAD namespace, and the KV key prefix for the local access store.
  */
 import type { ScopePreset } from "@drakkar.software/starfish-identities"
 
@@ -23,7 +20,7 @@ import type { ScopePreset } from "@drakkar.software/starfish-identities"
  *
  * Inject a custom layout via {@link SpacesConfig.layout} when your server uses
  * different collection names or path structures. For the standard Starfish server
- * (default octospaces configuration) use {@link defaultSpaceLayout} — it is the
+ * (standard Starfish server configuration) use {@link defaultSpaceLayout} — it is the
  * value `configureSpaces()` installs when no `layout` is provided.
  */
 export interface SpaceLayout {
@@ -120,16 +117,14 @@ export interface KvAdapter {
 /**
  * Runtime configuration for the `starfish-spaces` module.
  *
- * All fields are optional. The defaults are compatible with the standard
- * octospaces wire format, preserving data + server compatibility for any app
- * migrating from `octospaces-sdk`.
+ * All fields are optional.
  *
  * Install with {@link configureSpaces}; each field falls back to the listed
  * default when omitted. The active config is read lazily on first use.
  */
 export interface SpacesConfig {
   /**
-   * Path + scope layout. Default: `defaultSpaceLayout` (canonical octospaces
+   * Path + scope layout. Default: `defaultSpaceLayout` (canonical starfish-spaces
    * path structure). Override only if your server uses different collection
    * names or routing conventions.
    */
@@ -151,13 +146,13 @@ export interface SpacesConfig {
   nodeIdPrefix?: string
   /**
    * Namespace fragment embedded in inbox-seal AADs.
-   * Default: `'octospaces:inbox:v1'` — must match across all peers for
+   * Default: `'starfish:inbox:v1'` — must match across all peers for
    * sealed messages to be readable (changing breaks the wire format).
    */
   inboxAadNamespace?: string
   /**
    * KV key prefix for the local space-access store.
-   * Default: `'octospaces.spaceaccess.'` — changing migrates the store key
+   * Default: `'starfish.spaceaccess.'` — changing migrates the store key
    * and forgets locally-cached credentials (they are recovered from the
    * server-side `_spaces` doc on next hydrate).
    */
@@ -261,8 +256,8 @@ export interface ObjectsIndex {
  * A small secret sealed to a X25519 KEM key for transport in a plaintext sync
  * document. The `ct` field is `hex(iv[12] ‖ AES-256-GCM ciphertext)`.
  *
- * Wire-format: identical to `octospaces-sdk`'s `SealedBlob` (hex ct), preserved
- * for backward compatibility with existing `_spaces.pubAccess` blobs.
+ * Wire-format: `ct = hex(iv[12] ‖ AES-256-GCM ciphertext)`; `v:1` signals
+ * AAD context-binding was applied.
  * `v:1` indicates AAD context-binding was applied during sealing; opening without
  * the matching AAD fails immediately (relocation/downgrade-attack guard).
  */
@@ -287,7 +282,7 @@ let _config: SpacesConfig = {}
 /**
  * Install module-level defaults for `starfish-spaces`. Call once at app
  * startup (before using any spaces API). Unset fields retain their built-in
- * defaults (octospaces-compatible values).
+ * defaults.
  *
  * ```ts
  * import { configureSpaces } from '@drakkar.software/starfish-spaces'

@@ -1,6 +1,6 @@
 /**
  * Tests for `defaultSpaceLayout` — verifies that all path and scope
- * producers return the correct canonical octospaces values.
+ * producers return the correct canonical starfish-spaces values.
  */
 import { describe, it, expect } from "vitest"
 import { defaultSpaceLayout } from "../src/layout.js"

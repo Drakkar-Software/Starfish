@@ -59,13 +59,13 @@ SpaceAccessMap = dict[str, SpaceAccessEntry]
 _cache: dict[str, SpaceAccessEntry] = {}
 _active_key: Optional[str] = None
 _kv: Optional[KvAdapter] = None
-_kv_key_prefix: str = "octospaces.spaceaccess."
+_kv_key_prefix: str = "starfish.spaceaccess."
 
 
 def configure_space_access_store(
     user_id: str,
     kv: Optional[KvAdapter] = None,
-    kv_key_prefix: str = "octospaces.spaceaccess.",
+    kv_key_prefix: str = "starfish.spaceaccess.",
 ) -> None:
     """Configure the store for a new session.
 
