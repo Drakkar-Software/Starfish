@@ -63,7 +63,11 @@ export function openNodeEncryptor(
   return openEncryptor(client, keys, session.layout.nodeKeyringPull(spaceId, nodeId), trustedAdders)
 }
 
-/** Soft variant of {@link openNodeEncryptor}: resolves `null` instead of throwing. */
+/** Soft variant of {@link openNodeEncryptor}: resolves `null` instead of throwing.
+ *
+ * Propagates `NodeAccessRevokedError` when the server returns 403 — a revocation
+ * signal that callers must handle explicitly rather than treating as "not ready".
+ */
 export function buildNodeEncryptor(
   client: StarfishClient,
   keys: DeviceKeys,
@@ -72,7 +76,7 @@ export function buildNodeEncryptor(
   nodeId: string,
   trustedAdders: string[],
 ): Promise<Encryptor | null> {
-  return buildEncryptor(client, keys, session.layout.nodeKeyringPull(spaceId, nodeId), trustedAdders)
+  return buildEncryptor(client, keys, session.layout.nodeKeyringPull(spaceId, nodeId), trustedAdders, spaceId, nodeId)
 }
 
 /**

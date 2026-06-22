@@ -90,6 +90,7 @@ from starfish_spaces.keyed_store import (
 
 # ── Space access error ─────────────────────────────────────────────────────────
 from starfish_spaces.space_access_error import SpaceAccessError
+from starfish_spaces.node_access_revoked_error import NodeAccessRevokedError
 
 # ── Space access store ─────────────────────────────────────────────────────────
 from starfish_spaces.space_access_store import (
@@ -329,6 +330,7 @@ __all__ = [
     "KeyedStore", "ComposedStore", "create_keyed_store", "create_composed_store",
     # space access error
     "SpaceAccessError",
+    "NodeAccessRevokedError",
     # space access store
     "SpaceAccessEntry",
     "configure_space_access_store", "hydrate_space_access_store",

@@ -6,7 +6,7 @@
  * `makeAnonSpaceClient` with the connection parameters your app has already
  * resolved.
  */
-import { StarfishClient } from "@drakkar.software/starfish-client"
+import { StarfishClient, StarfishHttpError } from "@drakkar.software/starfish-client"
 import type { BatchPullEntry, Encryptor, StarfishCapProvider, StarfishClientOptions } from "@drakkar.software/starfish-client"
 import { addCollectionRecipient, createKeyring, createKeyringEncryptor } from "@drakkar.software/starfish-keyring"
 import type { Keyring } from "@drakkar.software/starfish-keyring"
@@ -14,6 +14,7 @@ import { signRequest, stableStringify } from "@drakkar.software/starfish-protoco
 import type { SignableMethod } from "@drakkar.software/starfish-protocol"
 
 import { SpaceAccessError } from "./space-access-error.js"
+import { NodeAccessRevokedError } from "./node-access-revoked-error.js"
 import { signKemSig } from "./request-verify.js"
 import { computeOwnerTrustedAdders } from "@drakkar.software/starfish-identities"
 import type { SpaceLayout } from "./config.js"
@@ -87,7 +88,8 @@ export async function openEncryptor(
   keyringPullPath: string,
   trustedAdders: string[],
 ): Promise<Encryptor> {
-  const res = await client.pull(keyringPullPath).catch(() => {
+  const res = await client.pull(keyringPullPath).catch((err: unknown) => {
+    if (err instanceof StarfishHttpError) throw err
     throw new Error("Could not reach the server to fetch node keys.")
   })
   const keyring = res?.data as unknown as Keyring | undefined
@@ -110,16 +112,26 @@ export async function openEncryptor(
   }
 }
 
-/** Soft variant of {@link openEncryptor}: returns `null` instead of throwing. */
+/** Soft variant of {@link openEncryptor}: returns `null` instead of throwing.
+ *
+ * Exception: when the server responds with 403, throws `NodeAccessRevokedError`
+ * instead of returning `null` — a 403 is a definitive revocation signal, not a
+ * transient "not yet available" state, and callers must handle it explicitly.
+ */
 export async function buildEncryptor(
   client: StarfishClient,
   keys: DeviceKeys,
   keyringPullPath: string,
   trustedAdders: string[],
+  spaceId?: string,
+  nodeId?: string,
 ): Promise<Encryptor | null> {
   try {
     return await openEncryptor(client, keys, keyringPullPath, trustedAdders)
-  } catch {
+  } catch (err: unknown) {
+    if (err instanceof StarfishHttpError && err.status === 403) {
+      throw new NodeAccessRevokedError(spaceId ?? "", nodeId ?? "")
+    }
     return null
   }
 }

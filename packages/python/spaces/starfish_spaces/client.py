@@ -34,6 +34,7 @@ from starfish_sdk.types import ConflictError, StarfishHttpError
 from starfish_spaces.cas_retry import run_cas
 from starfish_spaces.request_verify import sign_kem_sig
 from starfish_spaces.space_access_error import SpaceAccessError
+from starfish_spaces.node_access_revoked_error import NodeAccessRevokedError
 
 if TYPE_CHECKING:
     from starfish_sdk import StarfishClient
@@ -362,7 +363,11 @@ async def open_encryptor(
         keyring = Keyring.from_dict(data) if hasattr(Keyring, "from_dict") else data
         encryptor = create_keyring_encryptor(keyring, None, kem_priv, trusted_adders=trusted_adders)
         return encryptor
-    except (StarfishHttpError, Exception) as exc:
+    except StarfishHttpError as exc:
+        if exc.status == 403 and node_id is not None:
+            raise NodeAccessRevokedError(space_id or collection_name, node_id) from exc
+        raise SpaceAccessError(space_id or collection_name, node_id, str(exc)) from exc
+    except Exception as exc:
         raise SpaceAccessError(space_id or collection_name, node_id, str(exc)) from exc
 
 
@@ -374,11 +379,17 @@ async def build_encryptor(
     space_id: Optional[str] = None,
     node_id: Optional[str] = None,
 ) -> Optional[Any]:
-    """Like :func:`open_encryptor` but returns ``None`` instead of raising."""
+    """Like :func:`open_encryptor` but returns ``None`` instead of raising.
+
+    Exception: :class:`NodeAccessRevokedError` is propagated — a 403 is a
+    definitive revocation signal that callers must handle explicitly.
+    """
     try:
         return await open_encryptor(
             client, collection_name, kem_priv, trusted_adders, space_id, node_id
         )
+    except NodeAccessRevokedError:
+        raise
     except Exception:
         return None
 

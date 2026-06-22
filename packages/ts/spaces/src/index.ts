@@ -69,6 +69,7 @@ export { createKeyedStore, createComposedStore } from "./keyed-store.js"
 
 // ── Space access error ────────────────────────────────────────────────────────
 export { SpaceAccessError } from "./space-access-error.js"
+export { NodeAccessRevokedError } from "./node-access-revoked-error.js"
 
 // ── Space access store ────────────────────────────────────────────────────────
 export type { SpaceAccessEntry, SpaceAccessMap, LinkAccessPayload } from "./space-access-store.js"
