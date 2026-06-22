@@ -14,7 +14,7 @@ import { SyncManager } from "../sync.js"
 import { classifyError } from "../fetch.js"
 import { AppendLogCursor, type AppendElement } from "../append-log.js"
 import { setupCrossTabSync, type BroadcastableStore } from "../broadcast.js"
-import type { StarfishCapProvider, ConflictResolver, PullCache } from "../types.js"
+import type { StarfishClientOptions, StarfishCapProvider, ConflictResolver, PullCache } from "../types.js"
 import type { SyncLogger } from "../logger.js"
 import type { Validator } from "../validate.js"
 
@@ -451,6 +451,19 @@ export interface SyncInitConfig {
   cache?: PullCache
   /** Max age (ms) for {@link cache} entries; see {@link StarfishClientOptions.cacheMaxAgeMs}. */
   cacheMaxAgeMs?: number
+  /**
+   * HTTP status codes for which pulls fall back to the last-cached snapshot rather than
+   * throwing — stale-while-revalidate for transient server failures.
+   * See {@link StarfishClientOptions.cacheFallbackStatuses}.
+   * Recommended set for offline-first apps: `[429, 500, 502, 503, 504]`.
+   */
+  cacheFallbackStatuses?: number[]
+  /**
+   * Called after a background revalidation following a {@link cacheFallbackStatuses} hit:
+   * the server returned a live response and the fresh snapshot has been written through.
+   * See {@link StarfishClientOptions.onRevalidated}.
+   */
+  onRevalidated?: StarfishClientOptions["onRevalidated"]
   logger?: SyncLogger
   validate?: Validator
 }
@@ -482,6 +495,8 @@ export function useSyncInit(config: SyncInitConfig | null): StoreApi<StarfishSto
       fetch: config.fetch,
       cache: config.cache,
       cacheMaxAgeMs: config.cacheMaxAgeMs,
+      cacheFallbackStatuses: config.cacheFallbackStatuses,
+      onRevalidated: config.onRevalidated,
     })
 
     const syncManager = new SyncManager({
@@ -537,7 +552,169 @@ export function useSyncInit(config: SyncInitConfig | null): StoreApi<StarfishSto
   return store
 }
 
-// ── Append-only log binding ──────────────────────────────────────────
+// ── Shared sync-store registry ───────────────────────────────────────
+//
+// Problem: `useSyncInit` mints a brand-new StarfishClient + SyncManager + zustand
+// store on every React mount — `storeName` is only a label, not a dedup key. When
+// multiple components mount the same logical document (e.g. a shared object index),
+// each gets its own store and each fires its own pull(), producing a request storm.
+//
+// Solution: a module-level Map keyed by `storeName`. The first acquire constructs
+// and seeds/pulls the store; subsequent acquires share the live instance (refCount++).
+// Release decrements; on 0 the entry is dropped and GC'd, mirroring useSyncInit's
+// own teardown (which just drops its local store ref — no explicit destroy needed).
+//
+// When to use useSharedSyncStore vs useSyncInit:
+//   - useSharedSyncStore: same document, multiple components — guaranteed one pull,
+//     shared live state, correct reactivity for every subscriber.
+//   - useSyncInit: unique document per mount, or when you need per-instance onData.
+
+/**
+ * Config for a shared sync store — identical to {@link SyncInitConfig} EXCEPT:
+ *  - `onData` is omitted: it is not safe to fan out a single `onRemoteUpdate`
+ *    callback to multiple independent subscribers. Consumers should instead
+ *    subscribe to the returned store via `store.subscribe(...)`.
+ *  - `storeName` is REQUIRED: it is the registry key, not an optional label.
+ */
+export type SharedSyncConfig = Omit<SyncInitConfig, "onData" | "storeName"> & {
+  /** Registry key AND store persistence label. Required; there is no default. */
+  storeName: string
+}
+
+interface _RegistryEntry {
+  store: StoreApi<StarfishStore>
+  refCount: number
+}
+
+const _syncStoreRegistry = new Map<string, _RegistryEntry>()
+
+/**
+ * Return (or create) the shared zustand store for `config.storeName`.
+ *
+ * On the **first** acquire, constructs `StarfishClient` → `SyncManager` → store
+ * (forwarding all config fields, including `cacheFallbackStatuses` and `onRevalidated`
+ * for native stale-while-revalidate), then fires `seed().finally(pull())`. On every
+ * subsequent acquire of the same `storeName`, the existing store is returned — **no**
+ * new pull fires.
+ *
+ * Always pair with {@link releaseSyncStore}. Call {@link clearSyncStoreRegistry}
+ * on account switch / sign-out.
+ */
+export function acquireSyncStore(config: SharedSyncConfig): StoreApi<StarfishStore> {
+  const existing = _syncStoreRegistry.get(config.storeName)
+  if (existing) {
+    existing.refCount += 1
+    return existing.store
+  }
+
+  const client = new StarfishClient({
+    baseUrl: config.serverUrl,
+    namespace: config.namespace,
+    capProvider: config.capProvider,
+    fetch: config.fetch,
+    cache: config.cache,
+    cacheMaxAgeMs: config.cacheMaxAgeMs,
+    cacheFallbackStatuses: config.cacheFallbackStatuses,
+    onRevalidated: config.onRevalidated,
+  })
+  const syncManager = new SyncManager({
+    client,
+    pullPath: config.pullPath,
+    pushPath: config.pushPath,
+    encryptor: config.encryptor,
+    onConflict: config.onConflict,
+    logger: config.logger,
+    validate: config.validate,
+  })
+  const store = createStarfishStore({
+    name: config.storeName,
+    syncManager,
+    storage: config.storage,
+    // No onRemoteUpdate: consumers subscribe via store.subscribe() — see module comment.
+  })
+
+  const entry: _RegistryEntry = { store, refCount: 1 }
+  _syncStoreRegistry.set(config.storeName, entry)
+
+  // Cache-first paint then one network pull, fire-and-forget:
+  //  - errors must NOT evict the entry (the store stays usable; SWR retries in background)
+  //  - identity guard stops a stale pull firing after a registry clear (account switch)
+  store.getState().seed().finally(() => {
+    if (_syncStoreRegistry.get(config.storeName) === entry) {
+      store.getState().pull().catch(() => {})
+    }
+  })
+
+  return store
+}
+
+/**
+ * Release a previously acquired store. Decrements the refCount; on 0 the entry is
+ * evicted — the store, client, and sync manager are dropped and GC'd (mirrors
+ * `useSyncInit`'s own teardown, which simply drops the local store reference).
+ */
+export function releaseSyncStore(storeName: string): void {
+  const entry = _syncStoreRegistry.get(storeName)
+  if (!entry) return
+  entry.refCount -= 1
+  if (entry.refCount <= 0) _syncStoreRegistry.delete(storeName)
+}
+
+/**
+ * Clear all registry entries.
+ *
+ * Call on account switch or sign-out alongside any other per-session cache clears.
+ * An identity guard inside {@link acquireSyncStore} prevents any in-flight pull from
+ * firing against the old session's cap after this is called.
+ */
+export function clearSyncStoreRegistry(): void {
+  _syncStoreRegistry.clear()
+}
+
+/**
+ * React hook that returns (or creates) the shared zustand store for
+ * `config.storeName` — a drop-in replacement for {@link useSyncInit} when the
+ * same logical document is consumed from multiple components.
+ *
+ * **Key design decision — effect deps include only `storeName`:** config identity
+ * churn (fresh `capProvider`/`encryptor` refs per render) is intentionally ignored.
+ * For a given `(user, space)` the cap and keyring are functionally equivalent across
+ * refs, and no `onData` fan-out is needed, so the shared store never needs to rebuild
+ * on churn. The `configRef` pattern ensures the latest config values are captured at
+ * acquire-time without re-running the effect.
+ *
+ * Pass `null` to disable sync (returns `null`).
+ */
+export function useSharedSyncStore(
+  config: SharedSyncConfig | null,
+): StoreApi<StarfishStore> | null {
+  const [store, setStore] = useState<StoreApi<StarfishStore> | null>(null)
+  const storeName = config?.storeName ?? null
+
+  // Hold the latest config in a ref so the effect (keyed on storeName only) reads
+  // current values at acquire-time without re-running on identity churn.
+  const configRef = useRef<SharedSyncConfig | null>(config)
+  configRef.current = config
+
+  useEffect(() => {
+    if (!storeName) {
+      setStore(null)
+      return
+    }
+    const acquired = acquireSyncStore(configRef.current!)
+    setStore(acquired)
+    return () => {
+      releaseSyncStore(storeName)
+      setStore(null)
+    }
+    // Intentionally depend only on storeName — see JSDoc above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storeName])
+
+  return store
+}
+
+
 //
 // The reactive counterpart for an append-only collection, backed by an
 // `AppendLogCursor` instead of a `SyncManager`. A log only grows, so the

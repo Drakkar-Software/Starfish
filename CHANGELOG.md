@@ -52,6 +52,26 @@ Python parity added in the corresponding packages.
   of a fetch request (timer cleared on response headers), composing with any caller-provided
   `AbortSignal` via `AbortSignal.any`.
 
+- **Shared sync-store registry (`starfish-client/zustand`)** — new exports
+  `SharedSyncConfig`, `acquireSyncStore`, `releaseSyncStore`, `clearSyncStoreRegistry`,
+  and `useSharedSyncStore`. When the same logical document (identified by `storeName`) is
+  consumed from multiple React components, `useSyncInit` previously minted an independent
+  store per mount and fired a separate `pull()` for each. `useSharedSyncStore` is a drop-in
+  replacement that maintains a module-level ref-counted registry: the first acquire builds
+  and seeds/pulls the store; every subsequent acquire shares the live instance with no
+  additional network request. `releaseSyncStore` decrements the refCount and evicts at 0
+  (mirroring `useSyncInit`'s own teardown). `clearSyncStoreRegistry` wipes all entries —
+  call it on account switch alongside other per-session cache clears. `onData` is
+  intentionally absent from `SharedSyncConfig`; consumers subscribe reactively via
+  `store.subscribe()`.
+
+- **`SyncInitConfig.cacheFallbackStatuses` + `onRevalidated` (`starfish-client/zustand`)** —
+  these two `StarfishClientOptions` fields were previously accepted in `SyncInitConfig` but
+  silently dropped before being forwarded to the underlying `StarfishClient` constructor.
+  They are now forwarded correctly. Set `cacheFallbackStatuses: [429, 500, 502, 503, 504]`
+  in `useSyncInit` (or `useSharedSyncStore`) config to enable native stale-while-revalidate
+  for transient server failures without a fetch-layer wrapper.
+
 - **Keyring ensure-then-add lifecycle helper (`starfish-keyring`)** —
   `ensureKeyringRecipient(client, collectionPath, recipient, adder, opts)` atomically creates
   a keyring if missing, adds a recipient, swallows "already present" errors, and retries on
