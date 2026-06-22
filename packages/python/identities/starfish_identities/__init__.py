@@ -68,6 +68,7 @@ from starfish_identities.directory import (
     list_devices,
     remove_device_entry,
 )
+from starfish_identities.trusted_adders import compute_owner_trusted_adders
 # Re-exported from the protocol layer: distinguishes a self-signed root-device
 # cap from delegated devices/members (used by server-side root-only collections).
 from starfish_protocol import is_root_device_cap
@@ -136,4 +137,5 @@ __all__ = [
     "remove_device_entry",
     "identities_server_plugin",
     "is_root_device_cap",
+    "compute_owner_trusted_adders",
 ]

@@ -1,0 +1,273 @@
+{
+  "buildTree": [
+    {
+      "label": "empty",
+      "input": [],
+      "expected": []
+    },
+    {
+      "label": "single-root",
+      "input": [
+        {
+          "id": "a",
+          "type": "page",
+          "order": 1.0,
+          "title": "a",
+          "updatedAt": 0
+        }
+      ],
+      "expected": [
+        {
+          "id": "a",
+          "parentId": null,
+          "depth": 0,
+          "order": 1.0
+        }
+      ]
+    },
+    {
+      "label": "two-roots-ordered",
+      "input": [
+        {
+          "id": "b",
+          "type": "page",
+          "order": 2.0,
+          "title": "b",
+          "updatedAt": 0
+        },
+        {
+          "id": "a",
+          "type": "page",
+          "order": 1.0,
+          "title": "a",
+          "updatedAt": 0
+        }
+      ],
+      "expected": [
+        {
+          "id": "a",
+          "parentId": null,
+          "depth": 0,
+          "order": 1.0
+        },
+        {
+          "id": "b",
+          "parentId": null,
+          "depth": 0,
+          "order": 2.0
+        }
+      ]
+    },
+    {
+      "label": "parent-child",
+      "input": [
+        {
+          "id": "root",
+          "type": "page",
+          "order": 1.0,
+          "title": "root",
+          "updatedAt": 0
+        },
+        {
+          "id": "child",
+          "type": "page",
+          "order": 1.5,
+          "title": "child",
+          "updatedAt": 0,
+          "parentId": "root"
+        }
+      ],
+      "expected": [
+        {
+          "id": "root",
+          "parentId": null,
+          "depth": 0,
+          "order": 1.0
+        },
+        {
+          "id": "child",
+          "parentId": "root",
+          "depth": 1,
+          "order": 1.5
+        }
+      ]
+    },
+    {
+      "label": "deep-tree",
+      "input": [
+        {
+          "id": "root",
+          "type": "page",
+          "order": 1.0,
+          "title": "root",
+          "updatedAt": 0
+        },
+        {
+          "id": "child",
+          "type": "page",
+          "order": 1.0,
+          "title": "child",
+          "updatedAt": 0,
+          "parentId": "root"
+        },
+        {
+          "id": "grand",
+          "type": "page",
+          "order": 1.0,
+          "title": "grand",
+          "updatedAt": 0,
+          "parentId": "child"
+        }
+      ],
+      "expected": [
+        {
+          "id": "root",
+          "parentId": null,
+          "depth": 0,
+          "order": 1.0
+        },
+        {
+          "id": "child",
+          "parentId": "root",
+          "depth": 1,
+          "order": 1.0
+        },
+        {
+          "id": "grand",
+          "parentId": "child",
+          "depth": 2,
+          "order": 1.0
+        }
+      ]
+    },
+    {
+      "label": "orphan-becomes-root",
+      "input": [
+        {
+          "id": "orphan",
+          "type": "page",
+          "order": 1.0,
+          "title": "orphan",
+          "updatedAt": 0,
+          "parentId": "nonexistent"
+        }
+      ],
+      "expected": [
+        {
+          "id": "orphan",
+          "parentId": "nonexistent",
+          "depth": 0,
+          "order": 1.0
+        }
+      ]
+    },
+    {
+      "label": "siblings-tiebreak",
+      "input": [
+        {
+          "id": "z",
+          "type": "page",
+          "order": 1.0,
+          "title": "z",
+          "updatedAt": 0
+        },
+        {
+          "id": "a",
+          "type": "page",
+          "order": 1.0,
+          "title": "a",
+          "updatedAt": 0
+        }
+      ],
+      "expected": [
+        {
+          "id": "a",
+          "parentId": null,
+          "depth": 0,
+          "order": 1.0
+        },
+        {
+          "id": "z",
+          "parentId": null,
+          "depth": 0,
+          "order": 1.0
+        }
+      ]
+    },
+    {
+      "label": "mixed-depth",
+      "input": [
+        {
+          "id": "r1",
+          "type": "page",
+          "order": 1.0,
+          "title": "r1",
+          "updatedAt": 0
+        },
+        {
+          "id": "r2",
+          "type": "page",
+          "order": 2.0,
+          "title": "r2",
+          "updatedAt": 0
+        },
+        {
+          "id": "c1",
+          "type": "page",
+          "order": 1.0,
+          "title": "c1",
+          "updatedAt": 0,
+          "parentId": "r1"
+        },
+        {
+          "id": "c2",
+          "type": "page",
+          "order": 2.0,
+          "title": "c2",
+          "updatedAt": 0,
+          "parentId": "r1"
+        },
+        {
+          "id": "g1",
+          "type": "page",
+          "order": 1.0,
+          "title": "g1",
+          "updatedAt": 0,
+          "parentId": "c2"
+        }
+      ],
+      "expected": [
+        {
+          "id": "r1",
+          "parentId": null,
+          "depth": 0,
+          "order": 1.0
+        },
+        {
+          "id": "c1",
+          "parentId": "r1",
+          "depth": 1,
+          "order": 1.0
+        },
+        {
+          "id": "c2",
+          "parentId": "r1",
+          "depth": 1,
+          "order": 2.0
+        },
+        {
+          "id": "g1",
+          "parentId": "c2",
+          "depth": 2,
+          "order": 1.0
+        },
+        {
+          "id": "r2",
+          "parentId": null,
+          "depth": 0,
+          "order": 2.0
+        }
+      ]
+    }
+  ]
+}

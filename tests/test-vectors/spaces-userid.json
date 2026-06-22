@@ -1,0 +1,20 @@
+{
+  "cases": [
+    {
+      "edPub": "0000000000000000000000000000000000000000000000000000000000000000",
+      "userId": "66687aadf862bd776c8fc18b8e9f8e20"
+    },
+    {
+      "edPub": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "userId": "af9613760f72635fbdb44a5a0a63c39f"
+    },
+    {
+      "edPub": "a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4",
+      "userId": "8e19c947ab0e8fecca1af17eabdd5d0a"
+    },
+    {
+      "edPub": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "userId": "4884fdaafea47c29fea7159d0daddd9c"
+    }
+  ]
+}

@@ -1,0 +1,132 @@
+{
+  "spaceId": "sp-0000000000000001",
+  "nodeId": "obj-0000000000000001",
+  "userId": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",
+  "shard": "2024-01",
+  "paths": {
+    "spacesPull": "/pull/user/a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4/_spaces",
+    "spacesPush": "/push/user/a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4/_spaces",
+    "spaceAccessPull": "/pull/spaces/sp-0000000000000001/_access",
+    "spaceAccessPush": "/push/spaces/sp-0000000000000001/_access",
+    "keyringPull": "/pull/spaces/sp-0000000000000001/_keyring",
+    "keyringPush": "/push/spaces/sp-0000000000000001/_keyring",
+    "objIndexPull": "/pull/spaces/sp-0000000000000001/objects/_index",
+    "objIndexPush": "/push/spaces/sp-0000000000000001/objects/_index",
+    "profilePull": "/pull/user/a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4/profile",
+    "profilePush": "/push/user/a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4/profile",
+    "inboxPull": "/pull/inbox/a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4/2024-01",
+    "inboxPush": "/push/inbox/a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4/2024-01",
+    "nodeKeyringPull": "/pull/spaces/sp-0000000000000001/objects/n/obj-0000000000000001/_keyring",
+    "nodeKeyringPush": "/push/spaces/sp-0000000000000001/objects/n/obj-0000000000000001/_keyring",
+    "objectDirPull": "/pull/_index/objects/public"
+  },
+  "scopes": {
+    "spaceMemberScopeWrite": {
+      "ops": [
+        "read",
+        "write",
+        "list"
+      ],
+      "collections": [
+        "spacekeyring",
+        "objindex",
+        "objlog",
+        "objsnap",
+        "objdoc",
+        "objblob",
+        "typeindex",
+        "objpub",
+        "objpublog"
+      ],
+      "paths": [
+        "spaces/sp-0000000000000001/**"
+      ]
+    },
+    "spaceMemberScopeRead": {
+      "ops": [
+        "read",
+        "list"
+      ],
+      "collections": [
+        "spacekeyring",
+        "objindex",
+        "objlog",
+        "objsnap",
+        "objdoc",
+        "objblob",
+        "typeindex",
+        "objpub",
+        "objpublog"
+      ],
+      "paths": [
+        "spaces/sp-0000000000000001/**"
+      ]
+    },
+    "nodeMemberScopeWrite": {
+      "ops": [
+        "read",
+        "write",
+        "list"
+      ],
+      "collections": [
+        "objinv"
+      ],
+      "paths": [
+        "spaces/sp-0000000000000001/objects/obj-0000000000000001/**"
+      ]
+    },
+    "nodeStreamScopeWrite": {
+      "ops": [
+        "read",
+        "write",
+        "list"
+      ],
+      "collections": [
+        "objinvlog"
+      ],
+      "paths": [
+        "spaces/sp-0000000000000001/objects/obj-0000000000000001/**"
+      ]
+    },
+    "nodeKeyringScope": {
+      "ops": [
+        "read",
+        "list"
+      ],
+      "collections": [
+        "nodekeyring"
+      ],
+      "paths": [
+        "spaces/sp-0000000000000001/objects/obj-0000000000000001/**"
+      ]
+    },
+    "ownerScope": {
+      "ops": [
+        "read",
+        "write",
+        "list"
+      ],
+      "collections": [
+        "*"
+      ],
+      "paths": [
+        "**"
+      ]
+    },
+    "accountScope": {
+      "ops": [
+        "read",
+        "write",
+        "list"
+      ],
+      "collections": [
+        "*"
+      ],
+      "paths": [
+        "user/a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4/**",
+        "spaces/**",
+        "inbox/a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4/**"
+      ]
+    }
+  }
+}

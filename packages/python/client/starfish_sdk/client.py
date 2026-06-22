@@ -556,6 +556,40 @@ class StarfishClient:
         result = resp.json()
         return BlobPushResult(hash=result["hash"])
 
+    async def append_anonymous(
+        self,
+        path: str,
+        data: dict[str, Any],
+    ) -> PushSuccess:
+        """Append an element to a public-write (anonymous) append collection.
+
+        Unlike :meth:`append`, this method sends NO authentication headers and
+        NO author signature, regardless of whether the client has a
+        ``cap_provider``. Use it for anonymous-append (``public_write``) inbox
+        collections where a cap would be rejected or is unnecessary.
+
+        Args:
+            path: The push endpoint path (e.g. "/push/inbox/alice/2024-03")
+            data: The element payload (typically an encrypted blob dict).
+
+        Raises:
+            StarfishHttpError: on a non-2xx response.
+        """
+        payload: dict[str, Any] = {DATA_FIELD: data}
+        body = json.dumps(payload)
+        resp = await self._client.post(
+            f"{self._base_url}{self._send_path(path)}",
+            content=body,
+            headers={
+                HEADER_CONTENT_TYPE: "application/json",
+                HEADER_ACCEPT: "application/json",
+            },
+        )
+        if resp.status_code != 200:
+            raise StarfishHttpError(resp.status_code, resp.text)
+        result = resp.json()
+        return PushSuccess(hash=result["hash"], timestamp=result["timestamp"])
+
     async def get_config(self) -> dict:
         """Fetch the server's collection config from the /config endpoint."""
         config_path = "/sync/config" if self._namespace is not None else "/config"

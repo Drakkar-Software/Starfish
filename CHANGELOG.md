@@ -8,9 +8,11 @@ collaboration primitive: a roster of members, a shared object tree with per-node
 access (`public` / `space` / `invite`) and optional E2EE, invite / link join
 flows, revocation, identity links, and a sealed request/grant inbox round-trip.
 
-**New TS package: `@drakkar.software/starfish-spaces` (`packages/ts/spaces`).**
-⚠️ This release temporarily deviates from the dual-implementation rule —
-Python parity (`packages/python/spaces`) is tracked as a follow-up TODO.
+**New packages: `@drakkar.software/starfish-spaces` (`packages/ts/spaces`) and
+`starfish-spaces` (`packages/python/spaces`).**
+Full dual-implementation parity restored — the temporary deviation from alpha.31 is resolved.
+Cross-language conformance vectors (`tests/test-vectors/spaces-*.json`) cover layout paths,
+userId derivation, `kemSig` signing/verification, and object-tree algorithms.
 
 ### Added
 
@@ -61,10 +63,23 @@ Python parity (`packages/python/spaces`) is tracked as a follow-up TODO.
   - **`SpaceAccessError`** — domain error thrown when no space/node access
     credential is available; callers redirect users to join/request flows.
 
-- **`computeOwnerTrustedAdders` (`starfish-identities`)** — pure utility
+- **`computeOwnerTrustedAdders` (`starfish-identities`, TS + Python)** — pure utility
   computing the trusted-adder allow-list for opening an OWNED keyring:
   `[selfEdPub]` when owner equals self (common single-device case), or
   `[ownerEdPub, selfEdPub]` when a paired device opens an owner-sealed keyring.
+  Python: `compute_owner_trusted_adders` in `starfish_identities`.
+
+- **Python `starfish-spaces` package (`packages/python/spaces`)** — full 1:1 Python port
+  of the TS `@drakkar.software/starfish-spaces` extension. All 25 domain modules ported
+  (`config`, `layout`, `session`, `client`, `registry`, `members`, `nodes`, `object_index`,
+  `objects`, `account_seal`, `node_keyring`, `space_access`, `space_access_store`,
+  `space_access_error`, `inbox`, `resource_requests`, `request_verify`, `keyed_store`,
+  `identity_link`, `invite_helpers`, `token_types`, `cas_retry`, `object_directory`,
+  `plugin`). 83 unit tests; 4 cross-language JSON conformance vectors.
+
+- **Cross-language spaces test vectors** — `tests/test-vectors/spaces-layout.json`,
+  `spaces-userid.json`, `spaces-objects.json`, `spaces-kemsig.json` with generators in
+  `tests/test-vectors/_generators/spaces_*.py`.
 
 ## 3.0.0-alpha.30 — Migration of octospaces generic helpers into starfish core
 

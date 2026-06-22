@@ -1,0 +1,46 @@
+{
+  "sign": [
+    {
+      "label": "alice-device-kem-sig",
+      "edPriv": "f265551f55f7fce8977bec75f3d457c12bf14c7d612422a964204a59f5e4742a",
+      "kemPub": "3eff30609e9818588e2c2923ee5b532efe18af1f192c6443148c8b55bba75c1c",
+      "sig": "231bb24c041284236150088b0b56af270a215bd79511c572db9057b1db3e4187facf484a17a3de52a1a272b40604fdb949e856ea755db3a0a38577614f408303"
+    },
+    {
+      "label": "bob-device-kem-sig",
+      "edPriv": "7085870a0a1d5debcd1b265e930e3f5818dd2e2f25a4c4077a18b984b048eda1",
+      "kemPub": "1490d099931f94eaafe5489f9c88b215467123b677c31ed3d305a0f1e22f6d76",
+      "sig": "fc787126e37a410dba8235a10b3bc2932e7b0f213859c59a77812f83805729355a9e1b99e2c883d1f631a6edeaa606f50fe7131bd96a82674a87daed08538f0a"
+    }
+  ],
+  "verify": [
+    {
+      "label": "valid-alice",
+      "edPub": "5333460b6cdb1dd4adc074c70ac38823c09153d430202406599f0b929a55f8ca",
+      "kemPub": "3eff30609e9818588e2c2923ee5b532efe18af1f192c6443148c8b55bba75c1c",
+      "sig": "231bb24c041284236150088b0b56af270a215bd79511c572db9057b1db3e4187facf484a17a3de52a1a272b40604fdb949e856ea755db3a0a38577614f408303",
+      "expected": true
+    },
+    {
+      "label": "wrong-key-alice",
+      "edPub": "5333460b6cdb1dd4adc074c70ac38823c09153d430202406599f0b929a55f8ca",
+      "kemPub": "1490d099931f94eaafe5489f9c88b215467123b677c31ed3d305a0f1e22f6d76",
+      "sig": "231bb24c041284236150088b0b56af270a215bd79511c572db9057b1db3e4187facf484a17a3de52a1a272b40604fdb949e856ea755db3a0a38577614f408303",
+      "expected": false
+    },
+    {
+      "label": "wrong-signer",
+      "edPub": "864529c0fc9393d3daa1760caee912687071cb0ecab9e7cf061bbc44efd45fdd",
+      "kemPub": "3eff30609e9818588e2c2923ee5b532efe18af1f192c6443148c8b55bba75c1c",
+      "sig": "231bb24c041284236150088b0b56af270a215bd79511c572db9057b1db3e4187facf484a17a3de52a1a272b40604fdb949e856ea755db3a0a38577614f408303",
+      "expected": false
+    },
+    {
+      "label": "empty-sig",
+      "edPub": "5333460b6cdb1dd4adc074c70ac38823c09153d430202406599f0b929a55f8ca",
+      "kemPub": "3eff30609e9818588e2c2923ee5b532efe18af1f192c6443148c8b55bba75c1c",
+      "sig": "",
+      "expected": false
+    }
+  ]
+}
