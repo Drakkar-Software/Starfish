@@ -1,0 +1,46 @@
+{
+  "name": "@drakkar.software/starfish-spaces",
+  "version": "3.0.0-alpha.30",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Drakkar-Software/starfish.git",
+    "directory": "packages/ts/spaces"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "description": "Starfish spaces extension — generic multi-user spaces with roster, object tree, invite flows, E2EE keyrings, and a server role-enricher.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@drakkar.software/starfish-protocol": "workspace:*",
+    "@drakkar.software/starfish-client": "workspace:*",
+    "@drakkar.software/starfish-keyring": "workspace:*",
+    "@drakkar.software/starfish-sharing": "workspace:*",
+    "@drakkar.software/starfish-identities": "workspace:*",
+    "@drakkar.software/starfish-server": "workspace:*",
+    "@noble/curves": "^2.2.0",
+    "@noble/hashes": "^2.0.0",
+    "@scure/bip39": "^1.5.4"
+  },
+  "scripts": {
+    "build": "node build.mjs && tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "esbuild": "^0.27.4",
+    "typescript": "^5.5.0",
+    "vitest": "^3.0.0"
+  },
+  "files": [
+    "dist"
+  ]
+}

@@ -388,6 +388,46 @@ importers:
         specifier: ^3.0.0
         version: 3.2.4(@types/node@25.5.2)(jsdom@29.0.1(@noble/hashes@2.2.0))
 
+  packages/ts/spaces:
+    dependencies:
+      '@drakkar.software/starfish-client':
+        specifier: workspace:*
+        version: link:../client
+      '@drakkar.software/starfish-identities':
+        specifier: workspace:*
+        version: link:../identities
+      '@drakkar.software/starfish-keyring':
+        specifier: workspace:*
+        version: link:../keyring
+      '@drakkar.software/starfish-protocol':
+        specifier: workspace:*
+        version: link:../protocol
+      '@drakkar.software/starfish-server':
+        specifier: workspace:*
+        version: link:../server
+      '@drakkar.software/starfish-sharing':
+        specifier: workspace:*
+        version: link:../sharing
+      '@noble/curves':
+        specifier: ^2.2.0
+        version: 2.2.0
+      '@noble/hashes':
+        specifier: ^2.0.0
+        version: 2.2.0
+      '@scure/bip39':
+        specifier: ^1.5.4
+        version: 1.6.0
+    devDependencies:
+      esbuild:
+        specifier: ^0.27.4
+        version: 0.27.4
+      typescript:
+        specifier: ^5.5.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.4(@types/node@25.5.2)(jsdom@29.0.1(@noble/hashes@2.2.0))
+
   packages/ts/wal:
     dependencies:
       '@drakkar.software/starfish-protocol':
@@ -1077,6 +1117,10 @@ packages:
     resolution: {integrity: sha512-T/BoHgFXirb0ENSPBquzX0rcjXeM6Lo892a2jlYJkqk83LqZx0l1Of7DzlKJ6jkpvMrkHSnAcgb5JegL8SeIkQ==}
     engines: {node: '>= 20.19.0'}
 
+  '@noble/hashes@1.8.0':
+    resolution: {integrity: sha512-jCs9ldd7NwzpgXDIf6P3+NrHh9/sD6CQdxHyjQI+h/6rDNo88ypBxxz45UDuZHz9r3tNz7N/VInSVoVdtXEI4A==}
+    engines: {node: ^14.21.3 || >=16}
+
   '@noble/hashes@2.2.0':
     resolution: {integrity: sha512-IYqDGiTXab6FniAgnSdZwgWbomxpy9FtYvLKs7wCUs2a8RkITG+DFGO1DM9cr+E3/RgADRpFjrKVaJ1z6sjtEg==}
     engines: {node: '>= 20.19.0'}
@@ -1208,6 +1252,12 @@ packages:
     resolution: {integrity: sha512-2HRCml6OztYXyJXAvdDXPKcawukWY2GpR5/nxKp4iBgiO3wcoEGkAaqctIbZcNB6KlUQBIqt8VYkNSj2397EfA==}
     cpu: [x64]
     os: [win32]
+
+  '@scure/base@1.2.6':
+    resolution: {integrity: sha512-g/nm5FgUa//MCj1gV09zTJTaM6KBAHqLN907YVQqf7zC49+DcO4B1so4ZX07Ef10Twr6nuqYEH9GEggFXA4Fmg==}
+
+  '@scure/bip39@1.6.0':
+    resolution: {integrity: sha512-+lF0BbLiJNwVlev4eKelw1WWLaiKXw7sSl8T6FvBlWkdX+94aGJ4o8XjUdlyhTCjd8c+B3KT3JfS8P0bLRNU6A==}
 
   '@smithy/chunked-blob-reader-native@4.2.3':
     resolution: {integrity: sha512-jA5k5Udn7Y5717L86h4EIv06wIr3xn8GM1qHRi/Nf31annXcXHJjBKvgztnbn2TxH3xWrPBfgwHsOwZf0UmQWw==}
@@ -2802,6 +2852,8 @@ snapshots:
     dependencies:
       '@noble/hashes': 2.2.0
 
+  '@noble/hashes@1.8.0': {}
+
   '@noble/hashes@2.2.0': {}
 
   '@rolldown/pluginutils@1.0.0-beta.27': {}
@@ -2880,6 +2932,13 @@ snapshots:
 
   '@rollup/rollup-win32-x64-msvc@4.59.0':
     optional: true
+
+  '@scure/base@1.2.6': {}
+
+  '@scure/bip39@1.6.0':
+    dependencies:
+      '@noble/hashes': 1.8.0
+      '@scure/base': 1.2.6
 
   '@smithy/chunked-blob-reader-native@4.2.3':
     dependencies:

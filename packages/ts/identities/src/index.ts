@@ -83,3 +83,5 @@ export type {
 } from "./directory.js"
 
 export { identitiesServerPlugin } from "./plugin.js"
+
+export { computeOwnerTrustedAdders } from "./trusted-adders.js"

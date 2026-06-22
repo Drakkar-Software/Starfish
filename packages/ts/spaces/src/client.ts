@@ -1,0 +1,397 @@
+/**
+ * Starfish client construction + space keyring/encryptor helpers.
+ *
+ * Unlike the octospaces version, the server coordinates (baseUrl, namespace)
+ * are injected through `ClientOpts` rather than read from a global config
+ * module — call `makeSpaceClient` / `makeAnonSpaceClient` with the
+ * connection parameters your app has already resolved.
+ */
+import { StarfishClient } from "@drakkar.software/starfish-client"
+import type { BatchPullEntry, Encryptor, StarfishCapProvider, StarfishClientOptions } from "@drakkar.software/starfish-client"
+import { addCollectionRecipient, createKeyring, createKeyringEncryptor } from "@drakkar.software/starfish-keyring"
+import type { Keyring } from "@drakkar.software/starfish-keyring"
+import { signRequest, stableStringify } from "@drakkar.software/starfish-protocol"
+import type { SignableMethod } from "@drakkar.software/starfish-protocol"
+
+import { SpaceAccessError } from "./space-access-error.js"
+import { signKemSig } from "./request-verify.js"
+import { computeOwnerTrustedAdders } from "@drakkar.software/starfish-identities"
+import type { SpaceLayout } from "./config.js"
+
+// ── DeviceKeys ─────────────────────────────────────────────────────────────────
+
+/** The four-hex-key bundle for a device (Ed25519 + X25519). */
+export interface DeviceKeys {
+  edPriv: string
+  edPub: string
+  kemPriv: string
+  kemPub: string
+}
+
+// ── Client construction ────────────────────────────────────────────────────────
+
+/** Connection parameters for building a Starfish client. */
+export interface ClientOpts {
+  baseUrl: string
+  namespace: string
+  /** Optional fetch override (e.g. timeout wrapper). */
+  fetch?: typeof globalThis.fetch
+  /** Optional pull-cache adapter. */
+  cache?: StarfishClientOptions["cache"]
+  cacheMaxAgeMs?: number
+  cacheFallbackStatuses?: number[]
+  onRevalidated?: () => void
+}
+
+export function capProviderFor(cap: unknown, devEdPrivHex: string): StarfishCapProvider {
+  return {
+    async getCap() {
+      return { cap: cap as never, devEdPrivHex }
+    },
+  }
+}
+
+/** Build an authenticated Starfish client from a cap + device key. */
+export function makeSpaceClient(cap: unknown, devEdPrivHex: string, opts: ClientOpts): StarfishClient {
+  return new StarfishClient({
+    baseUrl: opts.baseUrl,
+    namespace: opts.namespace,
+    capProvider: capProviderFor(cap, devEdPrivHex),
+    fetch: opts.fetch,
+    cache: opts.cache,
+    cacheMaxAgeMs: opts.cacheMaxAgeMs,
+    cacheFallbackStatuses: opts.cacheFallbackStatuses,
+    onRevalidated: opts.onRevalidated,
+  })
+}
+
+/** Build a cap-less (anonymous) Starfish client for public reads/writes. */
+export function makeAnonSpaceClient(opts: Pick<ClientOpts, "baseUrl" | "namespace" | "fetch">): StarfishClient {
+  return new StarfishClient({
+    baseUrl: opts.baseUrl,
+    namespace: opts.namespace,
+    fetch: opts.fetch,
+  })
+}
+
+// ── Keyring encryptor helpers ──────────────────────────────────────────────────
+
+/**
+ * Open a node's decryptor from the server-side keyring doc.
+ * Throws `SpaceAccessError` on access denial; any other error indicates
+ * a transient network / server failure.
+ */
+export async function openEncryptor(
+  client: StarfishClient,
+  keys: DeviceKeys,
+  keyringPullPath: string,
+  trustedAdders: string[],
+): Promise<Encryptor> {
+  const res = await client.pull(keyringPullPath).catch(() => {
+    throw new Error("Could not reach the server to fetch node keys.")
+  })
+  const keyring = res?.data as unknown as Keyring | undefined
+  if (!keyring || !keyring.epochs) {
+    throw new SpaceAccessError("", undefined, "This node has no keyring yet — ask the owner to create it first.")
+  }
+  try {
+    const enc = await createKeyringEncryptor(
+      keyring,
+      { kemPubHex: keys.kemPub, kemPrivHex: keys.kemPriv },
+      { trustedAdders },
+    )
+    return enc as unknown as Encryptor
+  } catch {
+    throw new SpaceAccessError(
+      "",
+      undefined,
+      "You're not a recipient of this node's keyring — ask the owner to invite you.",
+    )
+  }
+}
+
+/** Soft variant of {@link openEncryptor}: returns `null` instead of throwing. */
+export async function buildEncryptor(
+  client: StarfishClient,
+  keys: DeviceKeys,
+  keyringPullPath: string,
+  trustedAdders: string[],
+): Promise<Encryptor | null> {
+  try {
+    return await openEncryptor(client, keys, keyringPullPath, trustedAdders)
+  } catch {
+    return null
+  }
+}
+
+const ENSURE_KEYRING_MAX_ATTEMPTS = 3
+
+/**
+ * Owner-side: create a per-node keyring if missing, then return an encryptor.
+ * Uses a CAS retry loop to survive concurrent creates from multiple devices.
+ */
+export async function ownerEnsureKeyring(
+  client: StarfishClient,
+  keys: DeviceKeys,
+  keyringPullPath: string,
+  keyringPushPath: string,
+  trustedAdders: string[] = [keys.edPub],
+): Promise<Encryptor> {
+  let attempt = 0
+  while (attempt < ENSURE_KEYRING_MAX_ATTEMPTS) {
+    attempt++
+    const krRes = await client.pull(keyringPullPath).catch(() => null)
+    let keyring = krRes?.data as unknown as Keyring | undefined
+    if (!keyring || !keyring.epochs) {
+      const created = await createKeyring({ edPrivHex: keys.edPriv, edPubHex: keys.edPub }, [
+        { subKemHex: keys.kemPub },
+      ])
+      keyring = created.keyring
+      try {
+        await client.push(keyringPushPath, keyring as unknown as Record<string, unknown>, krRes?.hash ?? null)
+      } catch (pushErr) {
+        const msg = pushErr instanceof Error ? pushErr.message : String(pushErr)
+        if (/409|412|conflict|hash mismatch|stale/i.test(msg) && attempt < ENSURE_KEYRING_MAX_ATTEMPTS) continue
+        throw pushErr
+      }
+    }
+    const enc = await createKeyringEncryptor(
+      keyring,
+      { kemPubHex: keys.kemPub, kemPrivHex: keys.kemPriv },
+      { trustedAdders },
+    )
+    return enc as unknown as Encryptor
+  }
+  throw new Error("ownerEnsureKeyring: max retries exceeded (hash conflict loop)")
+}
+
+/** True when the error indicates the recipient is already present (idempotent). */
+export function isAlreadyPresentRecipient(err: unknown): boolean {
+  return /already (present|a recipient|exists)|duplicate/i.test(err instanceof Error ? err.message : String(err))
+}
+
+/** True when the error indicates the keyring doesn't exist yet (benign during device pairing). */
+export function isKeyringMissing(err: unknown): boolean {
+  return err instanceof Error && /not found|404|does not exist|no keyring/i.test(err.message)
+}
+
+/**
+ * Add a recipient to a keyring collection. Swallows "already present" so
+ * re-inviting the same KEM is idempotent.
+ */
+export async function addKeyringRecipientCore(
+  client: StarfishClient,
+  keys: DeviceKeys,
+  collection: string,
+  recipient: { subKem: string; userId?: string; label?: string },
+  trustedAdders: string[],
+): Promise<void> {
+  try {
+    await addCollectionRecipient(
+      client,
+      collection,
+      recipient,
+      { edPriv: keys.edPriv, edPub: keys.edPub, kemPriv: keys.kemPriv },
+      { trustedAdders },
+    )
+  } catch (err) {
+    if (!isAlreadyPresentRecipient(err)) throw err
+  }
+}
+
+/** Add a recipient to a space's keyring. Swallows "already present". */
+export function addSpaceKeyringRecipient(
+  session: { spacesKeyringClient: StarfishClient; keys: DeviceKeys; ownerEdPub?: string; layout: SpaceLayout },
+  spaceId: string,
+  recipient: { subKem: string; userId: string; label: string },
+): Promise<void> {
+  return addKeyringRecipientCore(
+    session.spacesKeyringClient,
+    session.keys,
+    session.layout.keyringName(spaceId),
+    recipient,
+    computeOwnerTrustedAdders(session.ownerEdPub, session.keys.edPub),
+  )
+}
+
+type SpaceKeyringSession = {
+  spacesKeyringClient: StarfishClient
+  keys: DeviceKeys
+  ownerEdPub?: string
+  layout: SpaceLayout
+}
+
+/** Create the space keyring if absent, then return the owner's encryptor. */
+export function ownerEnsureSpaceKeyring(session: SpaceKeyringSession, spaceId: string): Promise<Encryptor> {
+  const trustedAdders = computeOwnerTrustedAdders(session.ownerEdPub, session.keys.edPub)
+  return ownerEnsureKeyring(
+    session.spacesKeyringClient,
+    session.keys,
+    session.layout.keyringPull(spaceId),
+    session.layout.keyringPush(spaceId),
+    trustedAdders,
+  )
+}
+
+/** Ensure the space keyring exists, then add a recipient. Returns the owner's encryptor. */
+export async function ensureSpaceKeyringRecipient(
+  session: SpaceKeyringSession,
+  spaceId: string,
+  recipient: { subKem: string; userId: string; label: string },
+): Promise<Encryptor> {
+  const enc = await ownerEnsureSpaceKeyring(session, spaceId)
+  await addSpaceKeyringRecipient(session, spaceId, recipient)
+  return enc
+}
+
+// ── Profile helpers ────────────────────────────────────────────────────────────
+
+/** A user's public profile. */
+export interface PublicProfile {
+  pseudo: string | null
+  avatar: string | null
+  edPub: string | null
+  kemPub: string | null
+  kemSig: string | null
+}
+
+function coerceProfile(data: Record<string, unknown> | null): PublicProfile {
+  return {
+    pseudo: typeof data?.pseudo === "string" ? data.pseudo : null,
+    avatar: typeof data?.avatar === "string" ? data.avatar : null,
+    edPub: typeof data?.edPub === "string" ? data.edPub : null,
+    kemPub: typeof data?.kemPub === "string" ? data.kemPub : null,
+    kemSig: typeof data?.kemSig === "string" ? data.kemSig : null,
+  }
+}
+
+async function fetchProfileRaw(
+  baseUrl: string,
+  pullPath: string,
+  fetchFn = globalThis.fetch,
+): Promise<{ status: number; ok: boolean; data: Record<string, unknown> | null }> {
+  const r = await fetchFn(`${baseUrl}${pullPath}`)
+  if (!r.ok) return { status: r.status, ok: false, data: null }
+  const body = await r.json()
+  return { status: r.status, ok: true, data: (body?.data ?? null) as Record<string, unknown> | null }
+}
+
+/** Read a user's public profile (pseudo, avatar, public identity keys). */
+export async function readProfile(
+  userId: string,
+  opts: { baseUrl: string; layout: SpaceLayout; fetch?: typeof globalThis.fetch },
+): Promise<PublicProfile> {
+  try {
+    const info = await fetchProfileRaw(opts.baseUrl, opts.layout.profilePull(userId), opts.fetch)
+    if (!info.ok) return coerceProfile(null)
+    return coerceProfile(info.data)
+  } catch {
+    return coerceProfile(null)
+  }
+}
+
+const PROFILE_BATCH_CHUNK = 24
+
+/** Read multiple users' public profiles in batched `/batch/pull` round-trips. */
+export async function readProfiles(
+  ids: string[],
+  opts: { baseUrl: string; namespace: string; fetch?: typeof globalThis.fetch; layout: SpaceLayout },
+): Promise<Map<string, PublicProfile>> {
+  const out = new Map<string, PublicProfile>()
+  const client = makeAnonSpaceClient({ baseUrl: opts.baseUrl, namespace: opts.namespace, fetch: opts.fetch })
+  for (let i = 0; i < ids.length; i += PROFILE_BATCH_CHUNK) {
+    const chunk = ids.slice(i, i + PROFILE_BATCH_CHUNK)
+    let entries: BatchPullEntry[]
+    try {
+      entries = await client.batchPullMany("profile", chunk.map((id) => ({ identity: id })))
+    } catch {
+      continue
+    }
+    chunk.forEach((id, j) => {
+      const entry = entries[j]
+      if (!entry || entry.error) return
+      const profile = coerceProfile((entry.data ?? null) as Record<string, unknown> | null)
+      out.set(id, profile)
+    })
+  }
+  return out
+}
+
+/** Merge a patch into the caller's own profile doc. */
+export async function writeProfile(
+  client: StarfishClient,
+  userId: string,
+  layout: SpaceLayout,
+  patch: { pseudo?: string; avatar?: string | null; edPub?: string; kemPub?: string; kemSig?: string },
+): Promise<void> {
+  const current = await client.pull(layout.profilePull(userId)).catch(() => null)
+  const base = (current?.data as Record<string, unknown> | undefined) ?? {}
+  const next: Record<string, unknown> = { ...base, ...patch, v: 1 }
+  if (next.avatar == null) delete next.avatar
+  await client.push(layout.profilePush(userId), next, current?.hash ?? null)
+}
+
+/** Seed the caller's profile pseudo only when none exists yet. */
+export async function ensurePseudo(
+  client: StarfishClient,
+  userId: string,
+  layout: SpaceLayout,
+  fallback: string,
+): Promise<string> {
+  try {
+    const res = await client.pull(layout.profilePull(userId)).catch(() => null)
+    const data = (res?.data ?? null) as Record<string, unknown> | null
+    const existing = typeof data?.pseudo === "string" ? data.pseudo.trim() : null
+    if (existing) return existing
+    await writeProfile(client, userId, layout, { pseudo: fallback })
+    return fallback
+  } catch {
+    return fallback
+  }
+}
+
+/**
+ * Publish this identity's public Ed + KEM keys in its profile (one-time, idempotent).
+ * Also writes `kemSig` so paired devices can include it in their identity links.
+ */
+export async function ensureProfileKeys(
+  client: StarfishClient,
+  userId: string,
+  layout: SpaceLayout,
+  keys: { edPub: string; kemPub: string; edPriv: string },
+): Promise<void> {
+  try {
+    const res = await client.pull(layout.profilePull(userId)).catch(() => null)
+    const data = (res?.data ?? null) as Record<string, unknown> | null
+    if (data && typeof data.edPub === "string" && typeof data.kemPub === "string") return
+    const kemSig = signKemSig(keys)
+    await writeProfile(client, userId, layout, { edPub: keys.edPub, kemPub: keys.kemPub, kemSig })
+  } catch {
+    // Best-effort: profile key publication is not critical for sync
+  }
+}
+
+// ── Auth headers for raw fetch ─────────────────────────────────────────────────
+
+/**
+ * Build cap-cert auth headers for raw `fetch` calls outside StarfishClient.
+ */
+export async function buildAuthHeaders(
+  cap: unknown,
+  devEdPrivHex: string,
+  method: string,
+  pathAndQuery: string,
+): Promise<Record<string, string>> {
+  const { sig, ts, nonce } = await signRequest(
+    { method: method as SignableMethod, pathAndQuery, host: "" },
+    devEdPrivHex,
+  )
+  const capJson = stableStringify(cap as Record<string, unknown>)
+  const capB64 = btoa(capJson)
+  return {
+    Authorization: `Cap ${capB64}`,
+    "X-Starfish-Sig": sig,
+    "X-Starfish-Ts": String(ts),
+    "X-Starfish-Nonce": nonce,
+  }
+}

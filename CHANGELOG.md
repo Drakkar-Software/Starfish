@@ -1,5 +1,71 @@
 # Changelog
 
+## 3.0.0-alpha.31 — starfish-spaces extension
+
+Extracts the "spaces" feature from `octospaces-sdk` into a new generic
+`@drakkar.software/starfish-spaces` extension package. Spaces are a multi-user
+collaboration primitive: a roster of members, a shared object tree with per-node
+access (`public` / `space` / `invite`) and optional E2EE, invite / link join
+flows, revocation, identity links, and a sealed request/grant inbox round-trip.
+
+**New TS package: `@drakkar.software/starfish-spaces` (`packages/ts/spaces`).**
+⚠️ This release temporarily deviates from the dual-implementation rule —
+Python parity (`packages/python/spaces`) is tracked as a follow-up TODO.
+
+### Added
+
+- **`@drakkar.software/starfish-spaces` extension** — full-domain spaces library:
+  - **`SpaceLayout` interface + `defaultSpaceLayout`** — parameterizes all
+    collection paths and cap scopes. The default implements the canonical
+    octospaces path structure (`spaces/{spaceId}/…`, `inbox/{userId}/…`,
+    `_index/objects/…`) with `/pull/` / `/push/` verb prefixes. Inject a custom
+    layout for non-standard server configurations.
+  - **`SpacesConfig` + `configureSpaces()`** — injectable constants:
+    `userIdFromEdPub`, `spaceIdPrefix`, `nodeIdPrefix`, `inboxAadNamespace`,
+    `kvKeyPrefix`, `kvAdapter`. Defaults are wire-compatible with `octospaces-sdk`
+    so migrating apps need zero config changes.
+  - **`Session` + `buildSession` / `buildLinkedSession` / `deriveSession`** —
+    root runtime object carrying identity keys, pre-built Starfish clients,
+    resolved layout, and namespace constants.
+  - **Registry** — `listSpaces`, `createSpace`, `joinSpace`, `leaveSpace`,
+    `readSpaceAccess`, `writeSpaceAccess` with CAS-safe read-modify-write.
+  - **Members** — `inviteMember`, `createInviteLink`, `acceptInvite`,
+    `joinViaLink`, `recoverSpaceAccess`, `revokeMember` with keyring eviction.
+  - **Nodes (two-axis `access × enc`)** — `createNode`, `inviteToNode`,
+    `acceptNodeInvite`, `joinNodeViaLink`, `revokeNodeMember`,
+    `openNodeEncryptor`, `buildNodeEncryptor`.
+  - **Object index** — `seedSpaceObjectIndex`, `updateObjectIndex`,
+    `readObjectTree` over the CAS-safe unified index doc.
+  - **Pure tree algorithms** — `buildTree`, `addObject`, `patchObject`,
+    `reparentObject`, `reorderObjects`, `archiveObject`, `breadcrumbs`,
+    `ancestors`, `subtreeIds`, `nextOrder`.
+  - **Inbox** — `pullInbox`, monthly-sharded ring buffer
+    (`inbox/{userId}/{YYYY-MM}`) with AAD namespace bound in every seal.
+  - **Resource requests** — `submitResourceRequest`, `scanResourceRequests`,
+    `acceptResourceRequest`, `rejectResourceRequest`, `scanResourceGrants`,
+    `acceptResourceGrant` — sealed request → inbox → owner scan → grant/reject.
+  - **Identity links** — `IdentityLink`, `encodeIdentityLink`,
+    `decodeIdentityLink`, `verifyIdentityLinkKeys`, `verifyIdentityLinkBinding`,
+    `myIdentityLink` — credential-less public identity tokens.
+  - **Account seal** — `sealToSelf`, `unsealFromSelf`, `sealToRecipient`,
+    `unsealFromRecipient` — session-scoped hex-ct sealed envelopes (wire-
+    compatible with existing octospaces blobs).
+  - **Server companion** — `createSpacesRoleEnricher(store, layout?)` (grants
+    `space:owner` / `space:member` from `_access` docs) and
+    `createSpacesDirectoryServerPlugin(layout?)` (`afterWrite` projection that
+    maintains the world-readable `_index/objects/public` directory).
+  - **`kemSig` helpers** — `signKemSig`, `verifyKemSig` — Ed25519 proof of KEM
+    key ownership (MITM protection in join requests).
+  - **`KeyedStore`** — in-memory typed key-value store with composable keys and
+    serialization for nonce maps and ephemeral invite stores.
+  - **`SpaceAccessError`** — domain error thrown when no space/node access
+    credential is available; callers redirect users to join/request flows.
+
+- **`computeOwnerTrustedAdders` (`starfish-identities`)** — pure utility
+  computing the trusted-adder allow-list for opening an OWNED keyring:
+  `[selfEdPub]` when owner equals self (common single-device case), or
+  `[ownerEdPub, selfEdPub]` when a paired device opens an owner-sealed keyring.
+
 ## 3.0.0-alpha.30 — Migration of octospaces generic helpers into starfish core
 
 A comprehensive migration of generic, reusable capabilities from the octospaces-sdk into starfish
