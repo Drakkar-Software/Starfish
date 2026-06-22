@@ -104,7 +104,19 @@ export { signKemSig, verifyKemSig } from "./request-verify.js"
 export { runCas } from "./cas-retry.js"
 
 // ── Objects (pure tree algorithms) ───────────────────────────────────────────
-export { buildTree, addObject } from "./objects.js"
+export {
+  buildTree,
+  addObject,
+  nextOrder,
+  breadcrumbs,
+  ancestors,
+  subtreeIds,
+  patchObject,
+  reparentObject,
+  reorderObjects,
+  archiveObject,
+} from "./objects.js"
+export type { ObjectTreeNode, NewObjectInput } from "./objects.js"
 
 // ── Node keyring ──────────────────────────────────────────────────────────────
 export type { NodeKeyringRecipient } from "./node-keyring.js"
@@ -253,6 +265,18 @@ export {
 // ── Object directory ──────────────────────────────────────────────────────────
 export type { ObjectDirectoryEntry } from "./object-directory.js"
 export { parseObjectDirectoryDoc, readObjectDirectory } from "./object-directory.js"
+
+// ── Vault (platform-agnostic identity persistence) ────────────────────────────
+export type {
+  DerivedIdentity,
+  PersistedSession,
+  Vault,
+  VaultLoad,
+  UnlockMethod,
+  PasskeyEnrollment,
+  SeedLock,
+} from "./vault.js"
+export { rootIdentityOf, sessionFromPersisted, activeAccountOf } from "./vault.js"
 
 // ── Plugin (server companion) ─────────────────────────────────────────────────
 export type { SpaceObjectStore, DirectoryStore } from "./plugin.js"

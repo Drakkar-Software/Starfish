@@ -99,10 +99,69 @@ export function getCrypto(): CryptoProvider {
   )
 }
 
-// Chunk size for the btoa-based encoder: a multiple of 3 so every chunk
-// produces a valid, padding-free fragment, and small enough to stay well
-// under V8's function-argument limit (~65 536 args ≈ 0x8000 bytes).
+// Chunk size for base64 operations: a multiple of 3 so every chunk produces a
+// valid, padding-free fragment, and small enough to stay under V8's apply limit
+// (~65 536 args ≈ 0x8000 bytes).
 const _B64_CHUNK = 0x6000 // 24 576 bytes
+
+// ── Pure-JS base64 codec (no btoa/atob dependency) ────────────────────────────
+// Used as the default fallback when btoa/atob are absent (React Native / Hermes).
+
+const _ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+const _REVERSE = (() => {
+  const table = new Int16Array(128).fill(-1)
+  for (let i = 0; i < _ALPHABET.length; i++) table[_ALPHABET.charCodeAt(i)] = i
+  return table
+})()
+
+function _encodePure(data: Uint8Array): string {
+  const len = data.length
+  const full = len - (len % 3)
+  const parts: string[] = []
+  for (let start = 0; start < full; start += _B64_CHUNK) {
+    const stop = Math.min(start + _B64_CHUNK, full)
+    let s = ""
+    for (let i = start; i < stop; i += 3) {
+      const n = (data[i] << 16) | (data[i + 1] << 8) | data[i + 2]
+      s +=
+        _ALPHABET[(n >> 18) & 63] +
+        _ALPHABET[(n >> 12) & 63] +
+        _ALPHABET[(n >> 6) & 63] +
+        _ALPHABET[n & 63]
+    }
+    parts.push(s)
+  }
+  if (len - full === 1) {
+    const n = data[full] << 16
+    parts.push(_ALPHABET[(n >> 18) & 63] + _ALPHABET[(n >> 12) & 63] + "==")
+  } else if (len - full === 2) {
+    const n = (data[full] << 16) | (data[full + 1] << 8)
+    parts.push(_ALPHABET[(n >> 18) & 63] + _ALPHABET[(n >> 12) & 63] + _ALPHABET[(n >> 6) & 63] + "=")
+  }
+  return parts.join("")
+}
+
+function _decodePure(encoded: string): Uint8Array {
+  let validLen = encoded.length
+  while (validLen > 0 && encoded.charCodeAt(validLen - 1) === 61) validLen--
+  const out = new Uint8Array((validLen * 3) >> 2)
+  let o = 0,
+    buf = 0,
+    bits = 0
+  for (let i = 0; i < validLen; i++) {
+    const code = encoded.charCodeAt(i)
+    const v = code < 128 ? _REVERSE[code] : -1
+    if (v < 0) continue
+    buf = (buf << 6) | v
+    bits += 6
+    if (bits >= 8) {
+      bits -= 8
+      out[o++] = (buf >> bits) & 0xff
+    }
+  }
+  return o === out.length ? out : out.subarray(0, o)
+}
 
 /** Resolve the active base64 provider. */
 export function getBase64(): Base64Provider {
@@ -110,10 +169,9 @@ export function getBase64(): Base64Provider {
   if (typeof globalThis !== "undefined" && typeof globalThis.btoa === "function") {
     return {
       /**
-       * Chunked encode — walks the byte array in fixed windows instead of
-       * spreading the whole array into `String.fromCharCode`. This avoids
-       * "Maximum call stack size exceeded" on multi-MB blobs in both browser
-       * and React Native (Hermes).
+       * Chunked encode — walks bytes in fixed windows instead of spreading the
+       * whole array into `String.fromCharCode`. Avoids stack overflow on
+       * multi-MB blobs in browser and Hermes.
        */
       encode(data: Uint8Array): string {
         let binary = ""
@@ -133,8 +191,8 @@ export function getBase64(): Base64Provider {
       },
     }
   }
-  throw new Error(
-    "starfish-protocol: No base64 provider available. " +
-      "In React Native, call configurePlatform({ base64: ... }) before using the SDK.",
-  )
+  // Pure-JS fallback — for environments without btoa/atob (React Native /
+  // Hermes without a polyfill). No injection needed; hosts can still override
+  // via configurePlatform({ base64: ... }) if they have a faster native codec.
+  return { encode: _encodePure, decode: _decodePure }
 }

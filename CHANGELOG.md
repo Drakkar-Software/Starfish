@@ -1,5 +1,36 @@
 # Changelog
 
+## 3.0.0-alpha.32
+
+### `@drakkar.software/starfish-protocol`
+
+#### Added
+- **`bytesToHex` / `hexToBytes`** — now exported from the main barrel
+  (`@drakkar.software/starfish-protocol`). Previously only used internally
+  in `suites/_hex.ts`; now a first-class public API so callers don't need
+  to vendor their own hex codec.
+- **Base64 pure-JS fallback** — `getBase64()` no longer throws in environments
+  where `btoa`/`atob` are absent (React Native / Hermes without a polyfill).
+  When `btoa` is unavailable the provider falls back to a pure-JS chunked
+  codec with O(1) stack depth; `configurePlatform({ base64: ... })` still
+  overrides it.
+
+### `@drakkar.software/starfish-spaces`
+
+#### Added
+- **Full object-tree algorithm surface** — `buildTree` and `addObject` were
+  already exported; now also: `nextOrder`, `breadcrumbs`, `ancestors`,
+  `subtreeIds`, `patchObject`, `reparentObject`, `reorderObjects`,
+  `archiveObject`, and the types `ObjectTreeNode` + `NewObjectInput`.
+- **Vault** — new module `vault.ts` (re-exported from the main barrel):
+  platform-agnostic multi-account identity persistence types and helpers.
+  - Types: `Vault`, `PersistedSession`, `DerivedIdentity`, `UnlockMethod`,
+    `SeedLock`, `PasskeyEnrollment`, `VaultLoad`.
+  - Helpers: `rootIdentityOf`, `sessionFromPersisted(p, clientOpts, opts?)`,
+    `activeAccountOf`. `sessionFromPersisted` takes `clientOpts` explicitly
+    (no globals) and resolves in priority order: linked-device bundle →
+    cached keys → seed re-derivation.
+
 ## 3.0.0-alpha.31 — starfish-spaces extension
 
 Extracts the "spaces" feature from `octospaces-sdk` into a new generic

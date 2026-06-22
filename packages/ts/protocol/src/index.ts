@@ -76,6 +76,7 @@ export {
   decodeLinkFragment,
 } from "./encoding.js"
 export { randomId, slugify } from "./random.js"
+export { bytesToHex, hexToBytes } from "./suites/_hex.js"
 export {
   AUTHOR_PUBKEY_FIELD,
   AUTHOR_SIGNATURE_FIELD,
