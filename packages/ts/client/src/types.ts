@@ -20,6 +20,24 @@ export class StarfishHttpError extends Error {
 }
 
 /**
+ * Non-2xx HTTP error from an anonymous (cap-less) append call.
+ *
+ * Distinct from {@link StarfishHttpError} so callers can distinguish "the
+ * anonymous write was rejected" (e.g. auth required, payload too large) from
+ * other client errors without pattern-matching on the error message.
+ */
+export class AppendHttpError extends Error {
+  constructor(
+    /** HTTP status returned by the server. */
+    public readonly status: number,
+    message: string,
+  ) {
+    super(message)
+    this.name = "AppendHttpError"
+  }
+}
+
+/**
  * v3.0 cap-cert provider for `StarfishClient`. Returns the device's cap-cert and
  * the matching Ed25519 private key (hex). The client calls `getCap()` once per
  * outgoing request; implementations are expected to cache so this is cheap.

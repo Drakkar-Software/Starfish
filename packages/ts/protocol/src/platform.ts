@@ -3,6 +3,11 @@
  *
  * Browser and Node.js >= 15 work with zero configuration (globalThis.crypto).
  * React Native users must call configurePlatform() before using the SDK.
+ *
+ * The default Base64 provider uses a **chunked** btoa/atob path instead of the
+ * naive `btoa(String.fromCharCode(...data))` spread, which overflows the call-
+ * stack on multi-megabyte payloads. All paths (browser/Node/Hermes/pure) process
+ * bytes in fixed-size windows so the stack depth is O(1) regardless of blob size.
  */
 
 /** Minimal crypto interface required by the SDK (subset of Web Crypto API). */
@@ -94,21 +99,42 @@ export function getCrypto(): CryptoProvider {
   )
 }
 
+// Chunk size for the btoa-based encoder: a multiple of 3 so every chunk
+// produces a valid, padding-free fragment, and small enough to stay well
+// under V8's function-argument limit (~65 536 args ≈ 0x8000 bytes).
+const _B64_CHUNK = 0x6000 // 24 576 bytes
+
 /** Resolve the active base64 provider. */
 export function getBase64(): Base64Provider {
   if (_base64) return _base64
   if (typeof globalThis !== "undefined" && typeof globalThis.btoa === "function") {
     return {
+      /**
+       * Chunked encode — walks the byte array in fixed windows instead of
+       * spreading the whole array into `String.fromCharCode`. This avoids
+       * "Maximum call stack size exceeded" on multi-MB blobs in both browser
+       * and React Native (Hermes).
+       */
       encode(data: Uint8Array): string {
-        return btoa(String.fromCharCode(...data))
+        let binary = ""
+        for (let i = 0; i < data.length; i += _B64_CHUNK) {
+          binary += String.fromCharCode.apply(
+            null,
+            data.subarray(i, i + _B64_CHUNK) as unknown as number[],
+          )
+        }
+        return btoa(binary)
       },
       decode(encoded: string): Uint8Array {
-        return Uint8Array.from(atob(encoded), (c) => c.charCodeAt(0))
+        const binary = atob(encoded)
+        const out = new Uint8Array(binary.length)
+        for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i)
+        return out
       },
     }
   }
   throw new Error(
-    "starfish-client: No base64 provider available. " +
+    "starfish-protocol: No base64 provider available. " +
       "In React Native, call configurePlatform({ base64: ... }) before using the SDK.",
   )
 }

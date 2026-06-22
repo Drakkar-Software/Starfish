@@ -26,6 +26,10 @@
       "types": "./dist/bindings/legend.d.ts",
       "import": "./dist/bindings/legend.js"
     },
+    "./events": {
+      "types": "./dist/events.d.ts",
+      "import": "./dist/events.js"
+    },
     "./fetch": {
       "types": "./dist/fetch.d.ts",
       "import": "./dist/fetch.js"

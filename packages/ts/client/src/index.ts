@@ -29,6 +29,7 @@ export type { Encryptor } from "@drakkar.software/starfish-protocol"
 export {
   ConflictError,
   StarfishHttpError,
+  AppendHttpError,
 } from "./types.js"
 export type {
   StarfishClientOptions,
@@ -64,6 +65,8 @@ export { fetchServerConfig } from "./config.js"
 export type { EncryptionMode, CollectionClientInfo, ConfigResponse } from "./config.js"
 export { createIndexedDBStorage } from "./storage/indexeddb.js"
 export type { IndexedDBStorageOptions, AsyncStateStorage } from "./storage/indexeddb.js"
+export { createKvPullCache } from "./kv-cache.js"
+export type { KvStore, KvPullCacheOptions } from "./kv-cache.js"
 export { exportData, importData, exportToBlob } from "./export.js"
 export type { ExportOptions } from "./export.js"
 export { isBackgroundSyncSupported, registerBackgroundSync } from "./background-sync.js"

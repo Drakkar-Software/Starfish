@@ -1055,7 +1055,8 @@ useEffect(() => cleanup, [])
 `netInfo` is optional. Both behaviors can be disabled individually via `{ pullOnForeground: false, flushOnBackground: false }`.
 
 ```ts
-import { createRetryFetch, createResilientFetch } from "@drakkar.software/starfish-client/fetch"
+import { createRetryFetch, createResilientFetch, createTimeoutFetch } from "@drakkar.software/starfish-client/fetch"
+import { subscribeChanges, buildSignedEventsUrl, parseSseFrames } from "@drakkar.software/starfish-client/events"
 import { setupCrossTabSync } from "@drakkar.software/starfish-client/broadcast"
 import { createMockClient } from "@drakkar.software/starfish-client/testing"
 import {
@@ -1065,7 +1066,22 @@ import {
   classifyError,
   SnapshotHistory,
   startPolling,
+  createKvPullCache,
+  AppendHttpError,
 } from "@drakkar.software/starfish-client"
+
+// WAL live-client adapters (separate subpath — excludes starfish-client from WAL-free bundles)
+import {
+  createWalDocument,
+  createWalTransport,
+  createWalSnapshotStore,
+  walSignerFromKeys,
+  walEncryptorFromKeyring,
+  noopEncryptor,
+} from "@drakkar.software/starfish-wal/client"
+
+// Protocol encoding utilities
+import { toBase64Url, fromBase64Url, encodeLinkFragment, decodeLinkFragment, randomId, slugify } from "@drakkar.software/starfish-protocol"
 ```
 
 See the [CHANGELOG](CHANGELOG.md) for full details.

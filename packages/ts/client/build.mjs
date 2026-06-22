@@ -4,6 +4,7 @@ const ENTRIES = {
   "index":            "src/index.ts",
   "bindings/zustand": "src/bindings/zustand.ts",
   "bindings/legend":  "src/bindings/legend.ts",
+  "events":           "src/events.ts",
   "fetch":            "src/fetch.ts",
   "broadcast":        "src/broadcast.ts",
   "testing":          "src/testing.ts",

@@ -1,5 +1,76 @@
 # Changelog
 
+## 3.0.0-alpha.30 — Migration of octospaces generic helpers into starfish core
+
+A comprehensive migration of generic, reusable capabilities from the octospaces-sdk into starfish
+core packages. Consumers no longer need to ship hand-rolled helpers for SSE subscriptions, chunked
+base64 encoding, anonymous public-write appends, WAL client wiring, KV-backed pull caches, or
+keyring lifecycle management.
+
+**TS packages updated: `starfish-protocol`, `starfish-client`, `starfish-wal`, `starfish-keyring`.**
+Python parity added in the corresponding packages.
+
+### Added
+
+- **Chunked base64 encoder/decoder (`starfish-protocol`)** — the default `getBase64()` provider
+  now uses a `_B64_CHUNK`-based loop instead of spreading the entire array into
+  `String.fromCharCode.apply`, fixing stack overflows on multi-MB binary payloads.
+
+- **`toBase64Url` / `fromBase64Url` + link-token helpers (`starfish-protocol`)** — URL-safe
+  base64 (RFC 4648 §5, no padding) and `encodeLinkFragment` / `decodeLinkFragment` for invite
+  link construction. Exported from the main `@drakkar.software/starfish-protocol` entry point.
+  Python: `to_base64url`, `from_base64url`, `encode_link_fragment`, `decode_link_fragment` in
+  `starfish_protocol.encoding`.
+
+- **`randomId` + `slugify` utilities (`starfish-protocol`)** — 128-bit CSPRNG hex ID generator
+  and an opinionated `[a-z0-9-]`-safe slug normaliser. Python: `random_id`, `slugify` in
+  `starfish_protocol.random`.
+
+- **SSE subscribe transport (`starfish-client/events`)** — `subscribeChanges` streams
+  server-sent events with auto-reconnect and capped exponential backoff. `parseSseFrames`
+  and `buildSignedEventsUrl` are exposed for custom transports. New `/events` subpath export.
+  Python: async generator `subscribe_changes` in `starfish_sdk.events`.
+
+- **Anonymous (cap-less) public-write append (`starfish-client`)** —
+  `StarfishClient.appendAnonymous(path, element, signer)` sends a signed element with no
+  `Authorization` header, for collections with `writeRoles: ["public"]`. Throws
+  `AppendHttpError` on non-2xx responses. Python: `append_anonymous` method on `StarfishClient`.
+
+- **KV-backed pull cache (`starfish-client`)** — `createKvPullCache(kv, opts?)` implements the
+  `PullCache` interface over any async `{get, set}` key-value store, with optional TTL expiry.
+  Useful for React Native (MMKV, AsyncStorage), Electron, and Node.js. Python:
+  `create_kv_pull_cache` in `starfish_sdk.kv_cache`.
+
+- **WAL live client adapters (`starfish-wal/client`)** — new `/client` subpath export with
+  `createWalDocument` (one-call factory), `createWalTransport` (append-log over
+  `StarfishClient`), `createWalSnapshotStore` (CAS-safe LWW snapshot), `walSignerFromKeys`,
+  `walEncryptorFromKeyring`, and `noopEncryptor`. The WAL core package gains no new runtime
+  dependency on `starfish-client` — adapters compose structurally via the `WalStarfishClient`
+  interface.
+
+- **`createTimeoutFetch` (`starfish-client/fetch`)** — bounds only the connect / TTFB phase
+  of a fetch request (timer cleared on response headers), composing with any caller-provided
+  `AbortSignal` via `AbortSignal.any`.
+
+- **Keyring ensure-then-add lifecycle helper (`starfish-keyring`)** —
+  `ensureKeyringRecipient(client, collectionPath, recipient, adder, opts)` atomically creates
+  a keyring if missing, adds a recipient, swallows "already present" errors, and retries on
+  CAS conflict. Returns `"added"` or `"already-present"`.
+
+### Changed
+
+- **Default base64 provider is now chunked** (`starfish-protocol`) — fixes stack overflow on
+  multi-MB arrays in browsers and React Native. The `Base64Provider` interface and
+  `configurePlatform({ base64 })` override are unchanged.
+
+- **`seal` / `sealToSelf` / `unseal` / `unsealToString` / `unsealFromSelf` gain optional `aad`
+  context-binding** (`starfish-keyring`) — pass `aad?: string` to bind a blob to a specific
+  context (e.g. a collection ID). Blobs sealed with `aad` carry `v: 1` and throw if opened
+  without the matching context string, preventing relocation/downgrade attacks. Fully backward
+  compatible — blobs without `v` open exactly as before.
+
+---
+
 ## 3.0.0-alpha.29 — Persist-backed stores are offline-first for reads
 
 `createStarfishStore` now classifies network transport failures in its `pull()` error path. When the

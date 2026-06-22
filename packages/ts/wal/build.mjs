@@ -2,6 +2,7 @@ import { build } from "esbuild"
 
 const ENTRIES = {
   index: "src/index.ts",
+  client: "src/client.ts",
 }
 
 const EXTERNAL = [

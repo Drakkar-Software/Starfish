@@ -78,3 +78,81 @@ describe("sealed envelopes", () => {
     await expect(unseal(tampered, me.kemPrivHex)).rejects.toThrow()
   })
 })
+
+// ── AAD context-binding (v:1) ─────────────────────────────────────────────────
+
+describe("sealed envelopes — AAD context-binding (v:1)", () => {
+  it("seal with aad sets v:1 on the blob", async () => {
+    const me = makeIdentity()
+    const blob = await sealToSelf("secret", me.kemPubHex, me, "spaces/sp-abc")
+    expect(blob.v).toBe(1)
+  })
+
+  it("seal without aad does NOT set v (backward-compatible)", async () => {
+    const me = makeIdentity()
+    const blob = await sealToSelf("secret", me.kemPubHex, me)
+    expect(blob.v).toBeUndefined()
+  })
+
+  it("round-trips with aad through sealToSelf / unsealFromSelf", async () => {
+    const me = makeIdentity()
+    const aad = "spaces/sp-abc/context"
+    const blob = await sealToSelf("my-secret", me.kemPubHex, me, aad)
+    const raw = await unsealFromSelf(blob, { kemPrivHex: me.kemPrivHex, edPubHex: me.edPubHex }, { aad })
+    expect(new TextDecoder().decode(raw)).toBe("my-secret")
+  })
+
+  it("round-trips with aad through seal / unseal (peer)", async () => {
+    const sender = makeIdentity()
+    const peer = makeIdentity()
+    const aad = "collection-id:coll-42"
+    const blob = await seal("peer-secret", peer.kemPubHex, sender, aad)
+    expect(blob.v).toBe(1)
+    const out = await unseal(blob, peer.kemPrivHex, { aad })
+    expect(new TextDecoder().decode(out)).toBe("peer-secret")
+  })
+
+  it("round-trips with aad through seal / unsealToString", async () => {
+    const me = makeIdentity()
+    const blob = await seal("text-secret", me.kemPubHex, me, "my-context")
+    const text = await unsealToString(blob, me.kemPrivHex, { aad: "my-context" })
+    expect(text).toBe("text-secret")
+  })
+
+  it("v:1 blob WITHOUT aad on open throws immediately (downgrade guard)", async () => {
+    const me = makeIdentity()
+    const blob = await sealToSelf("guarded", me.kemPubHex, me, "spaces/sp-abc")
+    expect(blob.v).toBe(1)
+    await expect(unseal(blob, me.kemPrivHex)).rejects.toThrow(/aad required/)
+    await expect(unsealFromSelf(blob, { kemPrivHex: me.kemPrivHex, edPubHex: me.edPubHex })).rejects.toThrow(
+      /aad required/,
+    )
+  })
+
+  it("v:1 blob with WRONG aad fails at AEAD authentication", async () => {
+    const me = makeIdentity()
+    const blob = await sealToSelf("aad-locked", me.kemPubHex, me, "correct-context")
+    await expect(unseal(blob, me.kemPrivHex, { aad: "wrong-context" })).rejects.toThrow()
+  })
+
+  it("legacy (no v) blob opens fine without aad", async () => {
+    const me = makeIdentity()
+    // Simulate a legacy blob with no v field.
+    const legacyBlob = await sealToSelf("legacy", me.kemPubHex, me)
+    expect(legacyBlob.v).toBeUndefined()
+    const text = await unsealToString(legacyBlob, me.kemPrivHex)
+    expect(text).toBe("legacy")
+  })
+
+  it("legacy blob with v:1 stripped does not bypass aad (auth tag mismatch)", async () => {
+    // Adversary strips v:1 to bypass the guard. The AEAD auth tag covers aad,
+    // so the ciphertext is still authenticated — opening WITHOUT aad fails.
+    const me = makeIdentity()
+    const blob = await sealToSelf("guarded-data", me.kemPubHex, me, "ctx")
+    // Strip v:1 from the blob to simulate attacker manipulation.
+    const strippedBlob = { entry: blob.entry, ct: blob.ct } // no v
+    // Opening without aad (the blob has no v, so guard doesn't fire) but the
+    // AEAD auth tag still covers aad bytes, so decryption MUST fail.
+    await expect(unseal(strippedBlob, me.kemPrivHex)).rejects.toThrow()
+  })
+})

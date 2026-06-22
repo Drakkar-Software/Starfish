@@ -61,6 +61,13 @@ from starfish_protocol.revocation import (
     revocation_list_canonical_signing_input,
 )
 from starfish_protocol.suites import ed25519 as ed25519_suite
+from starfish_protocol.encoding import (
+    to_base64url,
+    from_base64url,
+    encode_link_fragment,
+    decode_link_fragment,
+)
+from starfish_protocol.random import random_id, slugify
 
 __all__ = [
     "AuditEntry",
@@ -124,4 +131,10 @@ __all__ = [
     "build_revocation_list",
     "revocation_list_canonical_signing_input",
     "ed25519_suite",
+    "to_base64url",
+    "from_base64url",
+    "encode_link_fragment",
+    "decode_link_fragment",
+    "random_id",
+    "slugify",
 ]

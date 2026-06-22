@@ -70,6 +70,13 @@ export {
 } from "./append-author.js"
 export type { AppendAuthor } from "./append-author.js"
 export {
+  toBase64Url,
+  fromBase64Url,
+  encodeLinkFragment,
+  decodeLinkFragment,
+} from "./encoding.js"
+export { randomId, slugify } from "./random.js"
+export {
   AUTHOR_PUBKEY_FIELD,
   AUTHOR_SIGNATURE_FIELD,
   DATA_FIELD,

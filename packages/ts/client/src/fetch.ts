@@ -185,6 +185,72 @@ export function createCompressedFetch(inner?: typeof globalThis.fetch): typeof g
 }
 
 /**
+ * Wrap `fetch` to bound the **connect / Time-to-First-Byte** phase with a
+ * timeout. The timer is cleared as soon as the response HEADERS arrive (i.e.
+ * the `fetch()` promise resolves), so a slow large-body download after a fast
+ * connection is not interrupted. Only the initial "will the server even
+ * respond?" window is bounded.
+ *
+ * The wrapper composes with the caller's `AbortSignal`: if the caller's signal
+ * fires first the request is still aborted and the timeout timer is cleaned up.
+ *
+ * @param timeoutMs     How long (in ms) to wait for the server to start
+ *                      responding before aborting. Default `10 000`.
+ * @param inner         Optional underlying `fetch` to wrap (defaults to
+ *                      `globalThis.fetch`).
+ *
+ * @example
+ * ```ts
+ * import { createTimeoutFetch, createResilientFetch } from "@drakkar.software/starfish-client/fetch"
+ *
+ * const { fetch: resilient } = createResilientFetch()
+ * const client = new StarfishClient({
+ *   baseUrl: "https://api.example.com",
+ *   fetch: createTimeoutFetch(8_000, resilient),
+ * })
+ * ```
+ */
+export function createTimeoutFetch(
+  timeoutMs = 10_000,
+  inner?: typeof globalThis.fetch,
+): typeof globalThis.fetch {
+  const baseFetch = inner ?? globalThis.fetch.bind(globalThis)
+  return async (input, init?) => {
+    const timeoutCtrl = new AbortController()
+    const timer = setTimeout(() => timeoutCtrl.abort(new Error(`connect timeout after ${timeoutMs}ms`)), timeoutMs)
+
+    // Compose with a caller-supplied AbortSignal if present.
+    const callerSignal = init?.signal as AbortSignal | null | undefined
+    let combinedSignal: AbortSignal
+
+    if (callerSignal) {
+      if (typeof AbortSignal.any === "function") {
+        combinedSignal = AbortSignal.any([timeoutCtrl.signal, callerSignal])
+      } else {
+        // Polyfill for environments without AbortSignal.any.
+        const combo = new AbortController()
+        const onCallerAbort = () => combo.abort(callerSignal.reason)
+        const onTimeout = () => combo.abort(timeoutCtrl.signal.reason)
+        callerSignal.addEventListener("abort", onCallerAbort, { once: true })
+        timeoutCtrl.signal.addEventListener("abort", onTimeout, { once: true })
+        combinedSignal = combo.signal
+      }
+    } else {
+      combinedSignal = timeoutCtrl.signal
+    }
+
+    try {
+      const res = await baseFetch(input, { ...init, signal: combinedSignal })
+      clearTimeout(timer) // Headers arrived — clear the connect timeout.
+      return res
+    } catch (err) {
+      clearTimeout(timer)
+      throw err
+    }
+  }
+}
+
+/**
  * Combines retry and circuit breaker into a single resilient fetch wrapper.
  * Rejects immediately when the circuit is open.
  */

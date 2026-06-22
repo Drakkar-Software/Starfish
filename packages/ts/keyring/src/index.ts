@@ -41,6 +41,9 @@ export type {
 
 // Sealed envelopes — wrap a secret to a single static KEM key for carrying in a
 // plaintext synced doc (sealed credentials, bearer secrets, peer hand-offs).
+// `seal`/`sealToSelf` accept an optional `aad` (Additional Authenticated Data)
+// string for context-binding; `unseal`/`unsealToString`/`unsealFromSelf` accept
+// `opts.aad` to open `v:1` blobs sealed with a context string.
 export {
   seal,
   sealToSelf,
@@ -49,6 +52,11 @@ export {
   unsealFromSelf,
 } from "./seal.js"
 export type { SealedBlob, SealerKeys } from "./seal.js"
+
+// Keyring lifecycle helper — idempotent ensure-and-add (create keyring on first
+// use, skip duplicate, retry on CAS conflict).
+export { ensureKeyringRecipient, keyringPathFor as ensureKeyringPath } from "./ensure.js"
+export type { EnsureKeyringRecipientOptions } from "./ensure.js"
 
 // Low-level crypto utilities shared with the identities extension (HKDF,
 // hex codec, byte concat). Stable enough to expose for inter-extension use.

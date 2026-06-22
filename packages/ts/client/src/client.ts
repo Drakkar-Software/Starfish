@@ -25,7 +25,7 @@ import type {
   StarfishCapProvider,
   PullCache,
 } from "./types.js"
-import { ConflictError, StarfishHttpError } from "./types.js"
+import { AppendHttpError, ConflictError, StarfishHttpError } from "./types.js"
 import { parseRetryAfterMs } from "./fetch.js"
 
 const APPEND_DEFAULT_FIELD = "items"
@@ -736,6 +736,67 @@ export class StarfishClient {
       throw new StarfishHttpError(res.status, await res.text())
     }
     return res.json() as Promise<PushSuccess>
+  }
+
+  /**
+   * Append one element to a **public-write** append-only collection with an
+   * Ed25519 author proof but **no cap `Authorization` header**.
+   *
+   * Unlike {@link append}, which always attaches a cap-signed `Authorization`
+   * header from the configured `capProvider`, this method signs only the
+   * append-author proof (binding the element to the writer's Ed25519 key) and
+   * sends the request without authentication headers. This is required for
+   * collections with `writeRoles: ["public"]` — the server's cap-scope check
+   * would reject a request carrying a cap whose scope does not cover the path.
+   *
+   * Typical use-case: writing a sealed invitation to another user's
+   * public-write inbox collection without needing a cap scoped to the
+   * recipient's namespace. The author proof is optional on the server side
+   * (`requireAuthorSignature: false` for a public inbox), but signing anyway
+   * binds the stored element to the sender's Ed25519 key for verification in
+   * the receive path.
+   *
+   * The element is sent as `{ data, authorPubkey, authorSignature }`.
+   *
+   * @param path    The push path, e.g. `/push/inbox/{userId}/{shard}`.
+   * @param element The JSON element to append.
+   * @param signer  The sender's Ed25519 keypair (signs the author proof).
+   *
+   * @throws {AppendHttpError} on a non-2xx response.
+   */
+  async appendAnonymous(
+    path: string,
+    element: Record<string, unknown>,
+    signer: { edPubHex: string; edPrivHex: string },
+  ): Promise<void> {
+    const sendPath = this.applyNamespace(path)
+    const documentKey = stripPushPrefix(path)
+    const { authorPubkey, authorSignature } = signAppendAuthor(
+      documentKey,
+      element,
+      signer.edPubHex,
+      signer.edPrivHex,
+    )
+    const body = JSON.stringify({
+      [DATA_FIELD]: element,
+      [AUTHOR_PUBKEY_FIELD]: authorPubkey,
+      [AUTHOR_SIGNATURE_FIELD]: authorSignature,
+    })
+    const res = await this.fetch(`${this.baseUrl}${sendPath}`, {
+      method: "POST",
+      headers: {
+        [HEADER_CONTENT_TYPE]: "application/json",
+        [HEADER_ACCEPT]: "application/json",
+      },
+      body,
+    })
+    if (!res.ok) {
+      const detail = await res.text().catch(() => "")
+      throw new AppendHttpError(
+        res.status,
+        `anonymous append failed: HTTP ${res.status} ${detail}`.trim(),
+      )
+    }
   }
 
   /**

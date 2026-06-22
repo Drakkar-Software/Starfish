@@ -1,0 +1,62 @@
+{
+  "description": "Cross-language vector for base64url helpers (toBase64Url, fromBase64Url) and link-fragment helpers (encodeLinkFragment, decodeLinkFragment). Base64url is standard RFC 4648 §5 (URL-safe, no padding). The link-fragment vector uses a concrete origin + path + token object so both TS and Python conformance tests can verify the serialised fragment form. Exported from @drakkar.software/starfish-protocol (TS) and starfish_protocol.encoding (Python).",
+  "base64url": {
+    "cases": [
+      {
+        "label": "simple-ascii",
+        "input": "{\"type\":\"space\",\"id\":\"abc\"}",
+        "base64url": "eyJ0eXBlIjoic3BhY2UiLCJpZCI6ImFiYyJ9"
+      },
+      {
+        "label": "empty-json",
+        "input": "{}",
+        "base64url": "e30"
+      },
+      {
+        "label": "unicode",
+        "input": "{\"msg\":\"héllo\"}",
+        "base64url": "eyJtc2ciOiJow6lsbG8ifQ"
+      },
+      {
+        "label": "padding-case-len-mod3-eq-0",
+        "comment": "len(base64) mod 4 == 0 — no = padding in base64url",
+        "input": "abc",
+        "base64url": "YWJj"
+      },
+      {
+        "label": "padding-case-len-mod3-eq-1",
+        "comment": "len(base64) mod 4 == 2 — two trailing = stripped",
+        "input": "a",
+        "base64url": "YQ"
+      },
+      {
+        "label": "padding-case-len-mod3-eq-2",
+        "comment": "len(base64) mod 4 == 3 — one trailing = stripped",
+        "input": "ab",
+        "base64url": "YWI"
+      },
+      {
+        "label": "url-unsafe-chars-absent",
+        "comment": "Standard base64 + and / must not appear in base64url output",
+        "input": "{\"challenge\":\"~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\"}",
+        "base64url_must_not_contain_chars": ["+", "/", "="]
+      }
+    ]
+  },
+  "link_fragment": {
+    "description": "encodeLinkFragment packs origin + path + token into a URL fragment. The fragment is base64url(JSON.stringify([origin, path, token])). decodeLinkFragment recovers the token via a caller-supplied validate function. Both helpers live in @drakkar.software/starfish-protocol (./encoding subpath).",
+    "cases": [
+      {
+        "label": "space-invite",
+        "origin": "https://app.example.com",
+        "path": "/spaces/sp-abc",
+        "token": {
+          "type": "space-invite",
+          "id": "sp-abc",
+          "expiresAt": 1900000000
+        },
+        "fragment": "WyJodHRwczovL2FwcC5leGFtcGxlLmNvbSIsIi9zcGFjZXMvc3AtYWJjIix7InR5cGUiOiJzcGFjZS1pbnZpdGUiLCJpZCI6InNwLWFiYyIsImV4cGlyZXNBdCI6MTkwMDAwMDAwMH1d"
+      }
+    ]
+  }
+}
