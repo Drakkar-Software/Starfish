@@ -1,5 +1,19 @@
 # Changelog
 
+## 3.0.0-alpha.34
+
+### `@drakkar.software/starfish-spaces`
+
+#### Fixed
+- **`defaultSpaceLayout` node cap-scope paths** — all three node scope functions
+  (`nodeMemberScope`, `nodeStreamScope`, `nodeKeyringScope`) now emit
+  `spaces/${spaceId}/objects/n/${nodeId}/**` (with the literal `/n/` segment).
+  Previously they used `objects/${nodeId}/**`, which did not match the actual
+  storage paths (e.g. `objects/n/${nodeId}/_keyring`, `objects/n/${nodeId}/log`)
+  and caused a `403 "request path is outside cap scope"` on the server for any
+  cap minted from these scopes. The keyring pull/push paths were already correct;
+  only the scope path globs needed fixing.
+
 ## 3.0.0-alpha.32
 
 ### `@drakkar.software/starfish-protocol`
