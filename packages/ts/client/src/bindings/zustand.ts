@@ -483,10 +483,7 @@ export function useSyncInit(config: SyncInitConfig | null): StoreApi<StarfishSto
   onDataRef.current = config?.onData
 
   useEffect(() => {
-    if (!config) {
-      setStore(null)
-      return
-    }
+    if (!config) return
 
     const client = new StarfishClient({
       baseUrl: config.serverUrl,
@@ -540,7 +537,7 @@ export function useSyncInit(config: SyncInitConfig | null): StoreApi<StarfishSto
       setStore(null)
     }
     // Intentionally depend on serializable config values, not the object reference
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-doctor/exhaustive-deps
   }, [
     config?.serverUrl,
     config?.pullPath,
@@ -549,7 +546,7 @@ export function useSyncInit(config: SyncInitConfig | null): StoreApi<StarfishSto
     config?.storeName,
   ])
 
-  return store
+  return config ? store : null
 }
 
 // ── Shared sync-store registry ───────────────────────────────────────
@@ -697,10 +694,7 @@ export function useSharedSyncStore(
   configRef.current = config
 
   useEffect(() => {
-    if (!storeName) {
-      setStore(null)
-      return
-    }
+    if (!storeName) return
     const acquired = acquireSyncStore(configRef.current!)
     setStore(acquired)
     return () => {
@@ -711,7 +705,7 @@ export function useSharedSyncStore(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [storeName])
 
-  return store
+  return storeName ? store : null
 }
 
 

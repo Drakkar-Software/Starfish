@@ -467,6 +467,7 @@ export class StarfishClient {
     firstRetryAfter: string | null,
   ): Promise<void> {
     let retryAfterHeader = firstRetryAfter
+    const fallbackSet = this.cacheFallbackStatuses ? new Set(this.cacheFallbackStatuses) : null
     for (let attempt = 0; attempt < MAX_REVALIDATE_ATTEMPTS; attempt++) {
       const delay = parseRetryAfterMs(retryAfterHeader, {
         fallbackMs: Math.min(
@@ -500,7 +501,7 @@ export class StarfishClient {
           return
         }
 
-        if (!this.cacheFallbackStatuses?.includes(res.status)) {
+        if (!fallbackSet?.has(res.status)) {
           // Genuine server answer (e.g. 403 or 404) — stop retrying.
           return
         }

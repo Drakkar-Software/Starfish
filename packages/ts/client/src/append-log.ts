@@ -290,29 +290,34 @@ export class AppendLogCursor {
 
       const batch: AppendElement[] = [] // decrypted, returned to the caller
       const stored: AppendElement[] = [] // what we keep in `items` (cipher- or plaintext)
-      let maxTs = since
       let skipped = 0
-      for (const el of raw) {
-        // Defensive: guard a misbehaving/mocked server from making us
-        // double-append a held element. Gated on `since > 0` to mirror the
-        // server (which only filters when checkpoint > 0): on a cold start
-        // `since` is 0 and we must NOT drop a legitimate `ts: 0` first element.
-        if (since > 0 && el.ts <= since) continue
-        // Advance past every windowed element BEFORE verify/decrypt so a skipped
-        // element still moves the checkpoint and is never re-fetched.
-        if (el.ts > maxTs) maxTs = el.ts
 
-        let decrypted: AppendElement | null = null
+      // Defensive: filter out already-held elements from a misbehaving server.
+      // Gated on `since > 0` to mirror the server (cold-start `since=0` must
+      // NOT drop a legitimate `ts: 0` first element).
+      const eligible = raw.filter(el => !(since > 0 && el.ts <= since))
+
+      // Advance past every windowed element BEFORE verify/decrypt so a skipped
+      // element still moves the checkpoint and is never re-fetched.
+      let maxTs = since
+      for (const el of eligible) if (el.ts > maxTs) maxTs = el.ts
+
+      // Decrypt all elements in parallel — each element's data is independent.
+      // Under "throw" policy Promise.all propagates the first failure before any
+      // state mutation, preserving the atomic semantics documented on `pull()`.
+      const decryptResults = await Promise.all(eligible.map(async (el) => {
         try {
           this.verifyOne(el)
           const data = this.encryptor ? await this.encryptor.decrypt(el.data) : el.data
-          decrypted = withAuthor(el.ts, data, el)
+          return { el, decrypted: withAuthor(el.ts, data, el) }
         } catch (err) {
-          // "throw" rethrows here, before any state mutation below — atomic.
           if (this.onElementError !== "skip") throw err
           skipped++
+          return { el, decrypted: null }
         }
+      }))
 
+      for (const { el, decrypted } of decryptResults) {
         if (this.persistEncrypted) {
           // Keep the original ciphertext envelope (even for a skipped element:
           // it is valid data we simply cannot read now — a later key might).
@@ -380,17 +385,17 @@ export class AppendLogCursor {
   async getDecryptedItems(): Promise<AppendElement[]> {
     const snapshot = [...this.items]
     if (!this.encryptor || !this.persistEncrypted) return snapshot
-    const out: AppendElement[] = []
-    for (const el of snapshot) {
+    const results = await Promise.all(snapshot.map(async (el) => {
       try {
         this.verifyOne(el)
-        const data = await this.encryptor.decrypt(el.data)
-        out.push(withAuthor(el.ts, data, el))
+        const data = await this.encryptor!.decrypt(el.data)
+        return withAuthor(el.ts, data, el)
       } catch (err) {
         if (this.onElementError !== "skip") throw err
+        return null
       }
-    }
-    return out
+    }))
+    return results.filter((el): el is AppendElement => el !== null)
   }
 
   /** The current checkpoint: the max `ts` held (the next pull's `since`). `0`

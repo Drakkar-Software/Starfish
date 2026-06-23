@@ -57,12 +57,8 @@ export async function unregisterServiceWorkers(): Promise<boolean> {
 
   try {
     const registrations = await navigator.serviceWorker.getRegistrations()
-    let unregistered = false
-    for (const registration of registrations) {
-      const result = await registration.unregister()
-      if (result) unregistered = true
-    }
-    return unregistered
+    const results = await Promise.all(registrations.map(r => r.unregister()))
+    return results.some(Boolean)
   } catch {
     return false
   }

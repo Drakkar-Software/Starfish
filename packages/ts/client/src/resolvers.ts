@@ -25,8 +25,7 @@ function shallowEqual(a: unknown, b: unknown): boolean {
 
   if (Array.isArray(a) !== Array.isArray(b)) return false
   if (Array.isArray(a) && Array.isArray(b)) {
-    if (a.length !== b.length) return false
-    return a.every((v, i) => shallowEqual(v, b[i]))
+    return a.length === b.length && a.every((v, i) => shallowEqual(v, b[i]))
   }
 
   const aObj = a as Record<string, unknown>
