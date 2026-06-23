@@ -132,19 +132,19 @@ export const defaultSpaceLayout: SpaceLayout = {
   nodeMemberScope: (spaceId, nodeId, canWrite) => ({
     ops: canWrite ? ["read", "write", "list"] : ["read", "list"],
     collections: ["objinv"],
-    paths: [`spaces/${spaceId}/objects/${nodeId}/**`],
+    paths: [`spaces/${spaceId}/objects/n/${nodeId}/**`],
   }),
 
   nodeStreamScope: (spaceId, nodeId, canWrite) => ({
     ops: canWrite ? ["read", "write", "list"] : ["read", "list"],
     collections: ["objinvlog"],
-    paths: [`spaces/${spaceId}/objects/${nodeId}/**`],
+    paths: [`spaces/${spaceId}/objects/n/${nodeId}/**`],
   }),
 
   nodeKeyringScope: (spaceId, nodeId) => ({
     ops: ["read", "list"],
     collections: ["nodekeyring"],
-    paths: [`spaces/${spaceId}/objects/${nodeId}/**`],
+    paths: [`spaces/${spaceId}/objects/n/${nodeId}/**`],
   }),
 
   accountScope: (userId) => ({
