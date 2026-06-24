@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <a href="#quick-start">Quick start</a> · <a href="#packages">Packages</a> · <a href="docs/migration/v2-to-v3.md">Migrate from v2</a>
+  <a href="#quick-start">Quick start</a> · <a href="#packages">Packages</a> · <a href="website/docs/migration/v2-to-v3.md">Migrate from v2</a>
 </p>
 
 ---
@@ -18,13 +18,13 @@ Starfish is a document sync library you drop in front of any storage backend. Pu
 
 **Authorization** — every request carries a signed **capability certificate** issued by the user's root identity. Cap-certs scope `{ops, collections, paths}` to a device or member for a bounded lifetime. Requests are signed under the subject key with nonce-replay protection and ±5 min clock skew.
 
-**Identity** — Ed25519 (sign) + X25519 (KEM), single suite, no algorithm negotiation. Root identities derive from a passphrase via Argon2id → HKDF-SHA256. Users with an existing secp256k1 root (Nostr `nsec`, Bitcoin / BIP-340) can bootstrap via `deriveRootIdentityFromSecp256k1Signature` — the external key never appears on the wire. See [identity models →](docs/ts/client/26-identity-models.md)
+**Identity** — Ed25519 (sign) + X25519 (KEM), single suite, no algorithm negotiation. Root identities derive from a passphrase via Argon2id → HKDF-SHA256. Users with an existing secp256k1 root (Nostr `nsec`, Bitcoin / BIP-340) can bootstrap via `deriveRootIdentityFromSecp256k1Signature` — the external key never appears on the wire. See [identity models →](website/docs/encryption-identity/identity-models.md)
 
-> **Upgrading from 2.x?** v3 is a clean break. See [docs/migration/v2-to-v3.md](docs/migration/v2-to-v3.md).
+> **Upgrading from 2.x?** v3 is a clean break. See [website/docs/migration/v2-to-v3.md](website/docs/migration/v2-to-v3.md).
 
 ## Packages
 
-Starfish ships **28 packages** — a TypeScript and a Python build of each of the 14 families below. All packages use **lockstep versioning** (every release bumps all 28 to the same version).
+Starfish ships **31 packages** — a TypeScript and a Python build of each of the 15 families below, plus one TypeScript-only family (webhook). All packages use **lockstep versioning** (every release bumps all 31 to the same version).
 
 ### Core
 
@@ -338,7 +338,7 @@ const config: SyncConfig = {
 
 > **Storage isolation**: The namespace is a URL prefix only. Use distinct `storagePath` values per namespace (e.g. prefix with the tenant name) to ensure data is stored separately.
 
-See the [namespaces guide](docs/ts/client/20-namespaces.md) for full details.
+See the [namespaces guide](website/docs/data-modeling/namespaces.md) for full details.
 
 ### Conflict handling
 
@@ -406,7 +406,7 @@ const router = createSyncRouter({
 Two modes — and nothing in between. The server never holds any encryption key.
 
 - **`"none"`** — stored in plaintext. Use for public data, server-managed indexes, anything that does not need confidentiality from the operator.
-- **`"delegated"`** — client-side AES-256-GCM. Each collection has a plaintext **keyring document** at `<storagePath>/_keyring` (override with `keyringPath`) listing per-recipient X25519 wraps of the current Content Encryption Key (CEK). Scales to N recipients — single device, multi-device, or multi-user — under one mode. See [Multi-Recipient Delegated Encryption](docs/ts/client/23-multi-recipient-delegated.md).
+- **`"delegated"`** — client-side AES-256-GCM. Each collection has a plaintext **keyring document** at `<storagePath>/_keyring` (override with `keyringPath`) listing per-recipient X25519 wraps of the current Content Encryption Key (CEK). Scales to N recipients — single device, multi-device, or multi-user — under one mode. See [Multi-Recipient Delegated Encryption](website/docs/encryption-identity/multi-recipient-delegated.md).
 
 ## Client SDKs
 
@@ -513,7 +513,7 @@ Every authenticated request carries a signed cap-cert plus a per-request Ed25519
 | `X-Starfish-Ts` | Unix milliseconds (±5 min server clock skew) |
 | `X-Starfish-Nonce` | base64 random 16 bytes — server-side LRU prevents reuse |
 
-Add a new device via in-person QR or a server-relay 6-digit code; grant a third party access by minting a `kind: "member"` cap-cert. See [Capability Certificates](docs/ts/client/25-capability-certs.md), [Pairing](docs/ts/client/24-pairing.md), and [Multi-Recipient Delegated Encryption](docs/ts/client/23-multi-recipient-delegated.md).
+Add a new device via in-person QR or a server-relay 6-digit code; grant a third party access by minting a `kind: "member"` cap-cert. See [Capability Certificates](website/docs/encryption-identity/capability-certs.md), [Pairing](website/docs/encryption-identity/pairing.md), and [Multi-Recipient Delegated Encryption](website/docs/encryption-identity/multi-recipient-delegated.md).
 
 When the server (or QR/relay channel) is not fully trusted, prefer the explicit safety knobs: `assemblePairingBundle({ grantedScope })` bounds a paired device's authority instead of trusting the peer-supplied scope, `installPairingBundle(bundle, device, { expectedQrNonce })` binds the bundle to its pairing session (and the install now fully verifies the cap-cert — signature, expiry window, and `kind === "device"`), and `addCollectionRecipient` / `removeRecipient` accept a `trustedAdders` pin so a hostile server cannot substitute a keyring entry. `scopes.admin` is a **device-cap** preset (it manages the keyring); `mintMemberCap` rejects it.
 
@@ -536,7 +536,7 @@ await removeRecipient(client, "notes", adderKeys, removedDeviceKemPub)
 const recipients = await listRecipients(client, "notes")
 ```
 
-Full API: [docs/ts/client/23-multi-recipient-delegated.md](docs/ts/client/23-multi-recipient-delegated.md).
+Full API: [Multi-Recipient Delegated Encryption](website/docs/encryption-identity/multi-recipient-delegated.md).
 
 ### Platform Support
 
@@ -890,7 +890,7 @@ The TypeScript client ships additional utilities via subpath exports:
 | `./broadcast` | `setupBroadcastSync`, `setupStorageFallback`, `setupCrossTabSync` | Cross-tab sync via BroadcastChannel or localStorage fallback |
 | `./testing` | `createMockClient`, `createMockFetch`, `createConflictFetch` | Mock utilities for unit and integration tests |
 
-The v3 identity surface — `bootstrapRootIdentity`, `deriveRootIdentity`, `mintDeviceCap`, `mintMemberCap`, `scopes`, the pairing helpers (`buildPairingQr` / `parsePairingQr` / `assemblePairingBundle` / `installPairingBundle` / `buildPairingRequest` / `readPairingRequest` / `buildPairingResponse` / `readPairingResponse` / `deriveCodeKey`), and the keyring/recipient helpers (`createKeyring` / `addRecipient` / `rotateEpoch` / `createKeyringEncryptor` / `addCollectionRecipient` / `removeRecipient` / `listRecipients`) — is on the main entrypoint. See [docs/ts/client/](docs/ts/client/) for guides 11, 23, 24, 25.
+The v3 identity surface — `bootstrapRootIdentity`, `deriveRootIdentity`, `mintDeviceCap`, `mintMemberCap`, `scopes`, the pairing helpers (`buildPairingQr` / `parsePairingQr` / `assemblePairingBundle` / `installPairingBundle` / `buildPairingRequest` / `readPairingRequest` / `buildPairingResponse` / `readPairingResponse` / `deriveCodeKey`), and the keyring/recipient helpers (`createKeyring` / `addRecipient` / `rotateEpoch` / `createKeyringEncryptor` / `addCollectionRecipient` / `removeRecipient` / `listRecipients`) — is on the main entrypoint. See the [encryption & identity guides](website/docs/encryption-identity/) for key derivation, multi-recipient encryption, pairing, and capability certs.
 
 The main entrypoint also exports:
 
@@ -928,7 +928,7 @@ const client = new StarfishClient({
 })
 ```
 
-`userId` is stable across devices (it is a function of `rootEdPub` alone), so URL paths like `/pull/<userId>/notes` keep working everywhere the user pairs in. Additional devices are added with [QR or relay pairing](docs/ts/client/24-pairing.md), never by re-sharing the passphrase — that keeps per-device revocation final.
+`userId` is stable across devices (it is a function of `rootEdPub` alone), so URL paths like `/pull/<userId>/notes` keep working everywhere the user pairs in. Additional devices are added with [QR or relay pairing](website/docs/encryption-identity/pairing.md), never by re-sharing the passphrase — that keeps per-device revocation final.
 
 #### Debounced Sync (`createDebouncedSync`)
 
@@ -1092,7 +1092,7 @@ See the [CHANGELOG](CHANGELOG.md) for full details.
 ```
 starfish/
 ├── packages/
-│   ├── python/            # protocol · server · client (starfish-sdk) + 11 extensions
+│   ├── python/            # protocol · server · client (starfish-sdk) + 12 extensions
 │   │   ├── protocol/      # Shared protocol primitives (hash, merge, crypto, types)
 │   │   ├── server/        # Python server (FastAPI router, S3 storage, encryption, config)
 │   │   ├── client/        # Python client SDK (httpx + cryptography)
@@ -1106,14 +1106,16 @@ starfish/
 │   │   ├── audit/         # Structured audit logging
 │   │   ├── replica/       # Multi-server replication
 │   │   ├── outbox/        # Durable offline write-queue (generic over payload)
-│   │   └── wal/           # Append-only CRDT op-log documents (core)
-│   └── ts/                # same 14 families, mirrored (@drakkar.software/starfish-*)
+│   │   ├── wal/           # Append-only CRDT op-log documents (core)
+│   │   └── spaces/        # Multi-user spaces (roster, E2EE keyrings, invite flows)
+│   └── ts/                # same 16 families + webhook (TS-only) (@drakkar.software/starfish-*)
 │       ├── protocol/      # Shared protocol primitives (hash, merge, crypto, types)
 │       ├── server/        # TypeScript server (Hono router, encryption, config, CF Workers)
 │       ├── client/        # TypeScript client SDK + Zustand/Legend bindings
 │       ├── keyring/  identities/  sharing/  entitlements/  restrictions/
 │       ├── queuing/  projection/  audit/  replica/  outbox/
-│       └── wal/
+│       ├── wal/  spaces/
+│       └── webhook/
 ├── examples/
 │   ├── ts/ · python/      # Single-file examples, one per v3 feature slice
 │   └── app/               # Full-stack chat app (Vite/React + FastAPI) wiring 6 extensions
@@ -1166,7 +1168,7 @@ STARFISH_STRESS=1 pnpm exec vitest run tests/router/append-only.stress.test.ts -
 uv run pytest -s -m stress tests/protocol/test_append_stress.py
 ```
 
-See `docs/ts/server/append-only-collections.md` §Size considerations for what they measure.
+See `website/docs/server/append-only-collections.md` §Size considerations for what they measure.
 
 The TypeScript client has 437 tests across 36 test files covering sync, crypto, bindings, React hooks, broadcast, retry/circuit breaker, resolvers, migration, validation, polling, history, dedup, export, metrics, Suspense, and more. The TypeScript server has 527 tests across 43 test files covering config, protocol, encryption, router, queue, replica, storage, middleware (CORS, security headers, timeout), ETag, batch pull, field permissions, TTL, OpenAPI, rate limiting, and lifecycle. The Python server has ~590 tests. The extension packages carry their own suites on top of these.
 
@@ -1354,7 +1356,7 @@ await sync.push({"balance": 1000})
 await sync.pull()  # decrypted plaintext
 ```
 
-Full algorithm, recipient lifecycle, and FS stance: [docs/ts/client/23-multi-recipient-delegated.md](docs/ts/client/23-multi-recipient-delegated.md).
+Full algorithm, recipient lifecycle, and FS stance: [website/docs/encryption-identity/multi-recipient-delegated.md](website/docs/encryption-identity/multi-recipient-delegated.md).
 
 ### Bundles
 
@@ -1373,7 +1375,7 @@ The `@drakkar.software/starfish-queuing` / `starfish-queuing` (Py) extension pub
 
 Queue errors never surface to clients — they are logged and the push response is returned normally. A collection only publishes if it appears in the plugin's `collections` map.
 
-> Full reference: [`docs/ts/queuing/01-overview.md`](docs/ts/queuing/01-overview.md)
+> Full reference: [`website/docs/extensions/queuing.md`](website/docs/extensions/queuing.md)
 
 #### QueueConfig
 
@@ -1408,7 +1410,7 @@ CollectionConfig(name="chat", storage_path="chats/{groupId}/{day}", read_roles=[
 
 Response: `{ "items": ["2026-04-13", "2026-04-12"], "hasMore": false }`. Pagination: `?limit=N` (default 100, max 1000) and `?after=<item>`. The endpoint returns keys only; for a derived list small enough to live in one document, prefer the projection extension below, which a client pulls in a single request.
 
-> Full reference: [`docs/ts/server/list-endpoint.md`](docs/ts/server/list-endpoint.md)
+> Full reference: [`website/docs/server/list-endpoint.md`](website/docs/server/list-endpoint.md)
 
 ### Projection (incremental lists)
 
@@ -1429,7 +1431,7 @@ createProjectionServerPlugin({
 })
 ```
 
-> Full reference: [`docs/ts/projection/01-overview.md`](docs/ts/projection/01-overview.md)
+> Full reference: [`website/docs/extensions/projection.md`](website/docs/extensions/projection.md)
 
 ---
 
@@ -1463,7 +1465,7 @@ Security obligations are enforced in this layer: **every** op-batch and snapshot
 
 > **Scope:** the TypeScript package ships the CRDT core + the `WalDocument` client log; the Python package ships the cross-language CRDT core (clock + fold) validated against the shared vectors. Python `WalDocument` parity, add-wins observed-remove maps, text tombstone-GC/compaction, and wiring over the live `AppendLogCursor`/`SyncManager` are not yet implemented — see the overview for current limitations.
 >
-> Full reference: [`docs/ts/wal/`](docs/ts/wal/01-overview.md) — overview, [CRDT model](docs/ts/wal/02-crdt-model.md), [document layer](docs/ts/wal/03-document.md), [reconcile API](docs/ts/wal/04-reconcile.md), [snapshots](docs/ts/wal/05-snapshots.md), [security](docs/ts/wal/06-security.md)
+> Full reference: [`website/docs/wal/`](website/docs/wal/overview.md) — overview, [CRDT model](website/docs/wal/crdt-model.md), [document layer](website/docs/wal/document.md), [reconcile API](website/docs/wal/reconcile.md), [snapshots](website/docs/wal/snapshots.md), [security](website/docs/wal/security.md)
 
 ---
 
@@ -1486,9 +1488,9 @@ await addMemberEntry(client, "shared-team", bobCap, { label: "Bob" }) // owner-o
 
 Bulk membership is one cap per recipient. If you need a server-authoritative allow-list (the old `createGroupRoleEnricher` behavior, **removed in 3.0**), write your own `RoleEnricher` (a few lines) that reads your list and grants a role, then compose it with `composeEnrichers`. Request-to-join is an app-level recipe (a `_requests` collection + owner-side `mintMemberCap`), not a built-in.
 
-**Public links.** For a plaintext (`encryption: "none"`) share by **link** rather than per-recipient cap, use `createPublicLink` / `parsePublicLink` / `redeemPublicLink`. It packs an `audience` cap-cert into a URL `#fragment` with an optional, server-enforced identity allow-list (`allowedIdentities`; omit for "anyone") and optional expiry. Redeemers sign with their own key (sent as `X-Starfish-Pub`), so the link embeds no private key and writes stay attributable. See [`docs/ts/sharing/02-public-links.md`](docs/ts/sharing/02-public-links.md).
+**Public links.** For a plaintext (`encryption: "none"`) share by **link** rather than per-recipient cap, use `createPublicLink` / `parsePublicLink` / `redeemPublicLink`. It packs an `audience` cap-cert into a URL `#fragment` with an optional, server-enforced identity allow-list (`allowedIdentities`; omit for "anyone") and optional expiry. Redeemers sign with their own key (sent as `X-Starfish-Pub`), so the link embeds no private key and writes stay attributable. See [`website/docs/sharing/public-links.md`](website/docs/sharing/public-links.md).
 
-> Full reference: [`docs/ts/server/group-access.md`](docs/ts/server/group-access.md) · [`docs/ts/sharing/`](docs/ts/sharing/)
+> Full reference: [`website/docs/server/group-access.md`](website/docs/server/group-access.md) · [`website/docs/sharing/`](website/docs/sharing/)
 
 ---
 
@@ -1540,7 +1542,7 @@ Gated collection:
   readRoles: ["entitlement:premium-package-1"], writeRoles: ["admin"] }
 ```
 
-> Full reference: [`docs/ts/entitlements/01-overview.md`](docs/ts/entitlements/01-overview.md)
+> Full reference: [`website/docs/extensions/entitlements.md`](website/docs/extensions/entitlements.md)
 
 ---
 
@@ -1603,7 +1605,7 @@ logs = await client.pull("/pull/audit", append_field="logs", limit=50)
 
 Push CPU is O(1) — the stored hash covers only the last item and array length, not the full array.
 
-> Full reference: [`docs/ts/server/append-only-collections.md`](docs/ts/server/append-only-collections.md)
+> Full reference: [`website/docs/server/append-only-collections.md`](website/docs/server/append-only-collections.md)
 
 #### Root-only collections
 
@@ -1619,7 +1621,7 @@ Set `rootOnly: true` (`root_only=True` in Python) to restrict a collection to th
 CollectionConfig(name="settings", storage_path="users/{identity}/settings", ..., root_only=True)
 ```
 
-> Full reference: [`docs/ts/server/root-only-collections.md`](docs/ts/server/root-only-collections.md)
+> Full reference: [`website/docs/server/root-only-collections.md`](website/docs/server/root-only-collections.md)
 
 #### Plugin config (per-collection)
 
@@ -1752,7 +1754,7 @@ sync_router = create_sync_router(SyncRouterOptions(
 
 **Auth modes:** `"public"` — no auth check, all collections returned. `"role-filtered"` — caller sees only collections matching their roles.
 
-There is no per-collection `publicKey` config field — v3 `"delegated"` encryption distributes recipient keys via the per-collection `_keyring` document, not through `/config` (see [`docs/ts/client/23-multi-recipient-delegated.md`](docs/ts/client/23-multi-recipient-delegated.md)).
+There is no per-collection `publicKey` config field — v3 `"delegated"` encryption distributes recipient keys via the per-collection `_keyring` document, not through `/config` (see [`website/docs/encryption-identity/multi-recipient-delegated.md`](website/docs/encryption-identity/multi-recipient-delegated.md)).
 
 Fetch from the client:
 
@@ -1768,7 +1770,7 @@ config = await fetch_server_config("https://api.example.com/v1")
 # config.collections[0].max_body_bytes, .encryption, .append_only, …
 ```
 
-> Full reference: [`docs/ts/server/config-endpoint.md`](docs/ts/server/config-endpoint.md)
+> Full reference: [`website/docs/server/config-endpoint.md`](website/docs/server/config-endpoint.md)
 
 ### Replicas
 
@@ -1849,7 +1851,7 @@ async def lifespan(app):
     await replica.manager.stop()
 ```
 
-> Full reference: [`docs/ts/replica/01-overview.md`](docs/ts/replica/01-overview.md)
+> Full reference: [`website/docs/extensions/replica.md`](website/docs/extensions/replica.md)
 
 ## Deployment
 

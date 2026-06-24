@@ -12,7 +12,7 @@ const config: Config = {
   },
 
   url: "https://starfish.drakkar.software",
-  baseUrl: "/",
+  baseUrl: "/Starfish/",
 
   organizationName: "Drakkar-Software",
   projectName: "Starfish",
