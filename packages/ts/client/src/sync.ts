@@ -88,6 +88,8 @@ export class SyncManager {
   private localData: Record<string, unknown> = {}
   private aborted: boolean = false
   private lastFromCache: boolean = false
+  /** True once {@link seedFromCache} has successfully seeded localData from the cache. */
+  private seeded: boolean = false
 
   constructor(options: SyncManagerOptions) {
     this.client = options.client
@@ -112,6 +114,25 @@ export class SyncManager {
 
   getData(): Record<string, unknown> {
     return { ...this.localData }
+  }
+
+  /**
+   * Returns true when `pull()` / `ingest()` should merge against the current
+   * `localData` rather than replace it wholesale.
+   *
+   * Two situations establish a merge baseline:
+   * - A successful prior pull/ingest advanced `lastCheckpoint` beyond 0 (the
+   *   normal steady-state case, unchanged since alpha.36).
+   * - A cache seed painted `localData` via {@link seedFromCache} AND the store
+   *   uses a custom conflict resolver (i.e. NOT the default `deepMerge`). For a
+   *   union/custom resolver the seeded snapshot is a real baseline that must not
+   *   be clobbered by a short first live response (a cache-fallback on 429/5xx
+   *   or a momentarily-short concurrent server snapshot). For the default
+   *   `deepMerge` resolver we keep the pre-fix wholesale-replace behaviour so
+   *   non-union stores are byte-identical to alpha.36.
+   */
+  private hasMergeBaseline(): boolean {
+    return this.lastCheckpoint > 0 || (this.seeded && this.onConflict !== deepMerge)
   }
 
   /**
@@ -155,7 +176,19 @@ export class SyncManager {
    * WITHOUT touching the network, decrypting in memory for E2E collections.
    * Returns whether anything was seeded (false on a miss, an expired entry, or
    * a decrypt failure — e.g. keyring skew). Call once on store creation before
-   * the initial live {@link pull}, which then supersedes the seeded snapshot.
+   * the initial live {@link pull}.
+   *
+   * `lastCheckpoint` is intentionally left at 0 so the first live pull sends a
+   * full (re)sync request to the server, not a delta. However, for stores with
+   * a custom conflict resolver (e.g. `createUnionMerge`) the seeded snapshot is
+   * treated as a merge baseline: {@link hasMergeBaseline} returns true, so the
+   * first pull/ingest merges against the seed rather than replacing it wholesale.
+   * This closes the bootstrap window where a short first-pull response (a cache-
+   * fallback on 429/5xx or a momentarily-short concurrent snapshot) would
+   * silently drop items the resolver was configured to preserve. For the default
+   * `deepMerge` resolver the first pull still takes the snapshot wholesale —
+   * behaviour is byte-identical to alpha.36.
+   *
    * Requires the client to have been built with a `cache`.
    */
   async seedFromCache(): Promise<boolean> {
@@ -171,8 +204,10 @@ export class SyncManager {
     if (this.aborted) return false
     this.localData = data
     this.lastHash = cached.hash
-    // Leave lastCheckpoint at 0 so the first live pull is a full (re)sync, not a
-    // delta against a stale cached checkpoint.
+    // Mark the seed so hasMergeBaseline() can protect it for custom resolvers.
+    // lastCheckpoint stays 0: the first live pull is a full resync (checkpoint=0
+    // in the query), not a delta against a possibly-stale cache timestamp.
+    this.seeded = true
     this.lastFromCache = true
     return true
   }
@@ -188,12 +223,15 @@ export class SyncManager {
    * {@link StarfishClientOptions.onRevalidated}) into the store.
    *
    * Like {@link pull}, `ingest` conflict-merges the snapshot against the
-   * established baseline via `this.onConflict` when a checkpoint exists — so a
-   * union-merge store does not lose array items when a revalidation result
-   * (e.g. a stale cache-fallback on 429/5xx) is a shorter snapshot. The first
-   * ingest (no checkpoint yet) takes the snapshot wholesale. Sets
-   * `lastFromCache = false` (a revalidation is a live response) so the binding
-   * can clear its `stale` flag.
+   * established baseline via `this.onConflict` when a merge baseline exists
+   * ({@link hasMergeBaseline}) — so a union-merge store does not lose array
+   * items when a revalidation result (e.g. a stale cache-fallback on 429/5xx)
+   * is a shorter snapshot. The baseline is established by either a prior
+   * pull/ingest that advanced `lastCheckpoint`, or by a successful
+   * {@link seedFromCache} for a store with a custom resolver. The first ingest
+   * without such a baseline takes the snapshot wholesale (default `deepMerge`
+   * stores are byte-identical to alpha.36). Sets `lastFromCache = false` (a
+   * revalidation is a live response) so the binding can clear its `stale` flag.
    *
    * **Staleness guard**: if a `push()` advanced `lastCheckpoint` between the
    * time the revalidation request was sent and the time it resolves, the
@@ -217,8 +255,9 @@ export class SyncManager {
       incoming = result.data
     }
     // Honor the configured conflict resolver against the established baseline
-    // (same as pull()). The first ingest takes the snapshot wholesale.
-    this.localData = this.lastCheckpoint > 0 ? this.onConflict(this.localData, incoming) : incoming
+    // (same as pull()). The first ingest takes the snapshot wholesale unless a
+    // prior cache seed established a baseline for a custom resolver.
+    this.localData = this.hasMergeBaseline() ? this.onConflict(this.localData, incoming) : incoming
     this.lastHash = result.hash
     this.lastCheckpoint = result.timestamp
     this.lastFromCache = false
@@ -251,12 +290,12 @@ export class SyncManager {
       // the same resolver the push-conflict path (push 409 / resolve()) already
       // uses. A union-merge store must not lose array items when a pull returns a
       // shorter/stale snapshot (cache-fallback on 429/5xx or a momentarily-short
-      // concurrent write). The first pull (no checkpoint yet) takes the snapshot
-      // wholesale so a cache seed is superseded by a full resync.
-      // onConflict defaults to deepMerge ⇒ no behavior change for stores without
-      // a custom resolver (plaintext incremental merges and E2EE snapshots behave
-      // exactly as before).
-      this.localData = this.lastCheckpoint > 0 ? this.onConflict(this.localData, incoming) : incoming
+      // concurrent write). hasMergeBaseline() returns true when either a prior
+      // pull/ingest advanced lastCheckpoint OR a cache seed established a baseline
+      // for a custom resolver. The first pull without a prior seed (or with the
+      // default deepMerge) takes the snapshot wholesale — byte-identical to
+      // alpha.36 for stores without a custom resolver.
+      this.localData = this.hasMergeBaseline() ? this.onConflict(this.localData, incoming) : incoming
       result.data = this.localData
 
       this.lastHash = result.hash

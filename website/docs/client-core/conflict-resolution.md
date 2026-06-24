@@ -27,7 +27,8 @@ When no custom resolver is provided, `SyncManager` uses `deepMerge`:
 - **Nested objects**: recursively merged
 - **Arrays**: atomic — remote wins entirely (no element-level merge). Use
   `createUnionMerge()` as `onConflict` to get element-wise union on both
-  push-conflict and pull/revalidation.
+  push-conflict, pull, and revalidation (including the first pull after a
+  cache seed — see _Bootstrap window_ in the `SyncManager` docs).
 
 ```ts
 const sync = new SyncManager({

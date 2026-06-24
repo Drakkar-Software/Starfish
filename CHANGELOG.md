@@ -1,5 +1,22 @@
 # Changelog
 
+## 3.0.0-alpha.38
+
+### `@drakkar.software/starfish-client`
+
+#### Fixed
+- **`SyncManager` cache-seed bootstrap window closed** — `seedFromCache()` now marks a
+  *seeded* baseline; `pull()` and `ingest()` honor the configured `onConflict` resolver
+  (via a new `hasMergeBaseline()` gate) when a cache seed exists AND a custom resolver is
+  in use. Previously, even with a union-merge resolver, a store evicted and rebuilt from
+  the shared registry would take its very first post-seed pull/ingest wholesale (because
+  `lastCheckpoint` was deliberately kept at 0 for a full resync), so a short first-pull
+  response — a cache-fallback on 429/5xx, or a momentarily-short concurrent server
+  snapshot — silently dropped array items that the resolver was configured to preserve,
+  and they never returned until a full restart. Both `pull()` and `ingest()` are fixed.
+  Stores using the default `deepMerge` resolver are byte-identical to alpha.36 (first pull
+  still wholesale — `hasMergeBaseline()` gates on `onConflict !== deepMerge`).
+
 ## 3.0.0-alpha.37
 
 ### React performance

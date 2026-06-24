@@ -23,6 +23,7 @@ function stubEncryptor(): Encryptor {
 function mockClient(overrides: {
   pull?: (path: string, checkpoint?: number) => Promise<PullResponse>
   push?: (path: string, data: Record<string, unknown>, baseHash: string | null, sig?: string) => Promise<PushSuccess>
+  peekCache?: (path: string) => Promise<PullResponse | null>
 } = {}) {
   const client = {
     pull: overrides.pull ?? vi.fn(async () => ({
@@ -34,6 +35,9 @@ function mockClient(overrides: {
       hash: "def456",
       timestamp: 2000,
     })),
+    // seedFromCache() calls peekCache; default to null (no cache hit) so
+    // existing tests that never call seedFromCache() are unaffected.
+    peekCache: overrides.peekCache ?? vi.fn(async () => null),
   } as unknown as StarfishClient
 
   return client
@@ -433,6 +437,76 @@ describe("SyncManager pull/ingest honor onConflict", () => {
     await sync.pull()
     const item = (sync.getData().objects as Array<{ id: string; title: string }>)[0]
     expect(item.title).toBe("New")
+  })
+
+  // ── bootstrap window (seed → first pull) ────────────────────────────────────
+  //
+  // Root of the OctoChat iOS bug: when the object-index store is evicted
+  // (refCount→0 on home→room→back) and rebuilt, acquireSyncStore runs
+  // seed().finally(pull()).  seedFromCache() sets localData but leaves
+  // lastCheckpoint=0.  The first pull() gated on `lastCheckpoint > 0` then
+  // takes the server snapshot wholesale — bypassing onConflict — so a shorter
+  // first response (cache-fallback on 429/5xx, or a momentarily-short
+  // concurrent snapshot) silently drops room nodes from the index.
+
+  it("REPRO: seedFromCache + union pull — first pull must NOT drop seed items (RED on alpha.36)", async () => {
+    // Seed: cache has both 'a' and 'b'.  First live pull returns only 'a'.
+    // With createUnionMerge the seed is the baseline — 'b' must survive.
+    const seedItems = [{ id: "a", updatedAt: 1 }, { id: "b", updatedAt: 1 }]
+    const client = mockClient({
+      peekCache: async () => ({ data: { items: seedItems }, hash: "h0", timestamp: 0 }),
+      pull: async () => ({ data: { items: [{ id: "a", updatedAt: 2 }] }, hash: "h1", timestamp: 5 }),
+    })
+    const sm = new SyncManager({
+      client,
+      pullPath: "/pull/test",
+      pushPath: "/push/test",
+      onConflict: createUnionMerge({ idKey: "id", timestampKey: "updatedAt" }),
+    })
+    expect(await sm.seedFromCache()).toBe(true)
+    await sm.pull()
+    const ids = (sm.getData().items as Array<{ id: string }>).map((x) => x.id).sort()
+    // GREEN after fix: both items survive.  RED on alpha.36: only ['a'].
+    expect(ids).toEqual(["a", "b"])
+  })
+
+  it("seedFromCache + union ingest — revalidation snapshot must NOT drop seed items", async () => {
+    const seedObjects = [{ id: "cat" }, { id: "r1" }, { id: "r2" }]
+    const client = mockClient({
+      peekCache: async () => ({ data: { objects: seedObjects }, hash: "h0", timestamp: 0 }),
+    })
+    const sm = new SyncManager({
+      client,
+      pullPath: "/pull/test",
+      pushPath: "/push/test",
+      onConflict: createUnionMerge(),
+    })
+    expect(await sm.seedFromCache()).toBe(true)
+    // Ingest a shorter revalidation snapshot — union must preserve r1 and r2.
+    await sm.ingest({ data: { objects: [{ id: "cat" }] }, hash: "h1", timestamp: 5 })
+    const ids = (sm.getData().objects as Array<{ id: string }>).map((x) => x.id).sort()
+    expect(ids).toEqual(["cat", "r1", "r2"])
+  })
+
+  it("seedFromCache + default deepMerge — first pull still wholesale (non-breaking proof)", async () => {
+    // With the DEFAULT resolver (deepMerge), a cache seed must NOT change the
+    // wholesale-replace behavior of the first pull.  If hasMergeBaseline() is
+    // correctly gated on onConflict !== deepMerge, this stays byte-identical to
+    // alpha.36 (GREEN before AND after the fix).
+    const client = mockClient({
+      peekCache: async () => ({ data: { items: [{ id: "a" }, { id: "b" }], extra: 1 }, hash: "h0", timestamp: 0 }),
+      pull: async () => ({ data: { items: [{ id: "a" }] }, hash: "h1", timestamp: 5 }),
+    })
+    const sm = new SyncManager({
+      client,
+      pullPath: "/pull/test",
+      pushPath: "/push/test",
+      // no onConflict → deepMerge default
+    })
+    expect(await sm.seedFromCache()).toBe(true)
+    await sm.pull()
+    // deepMerge branch: first pull takes incoming wholesale — 'b' and 'extra' gone.
+    expect(sm.getData()).toEqual({ items: [{ id: "a" }] })
   })
 })
 

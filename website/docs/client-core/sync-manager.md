@@ -108,6 +108,15 @@ console.log(sync.getCheckpoint()) // last server timestamp (high-water mark)
 - With encryption: automatically decrypts before storing locally
 - The remote document is merged into local data via the configured `onConflict` resolver
   (defaults to `deepMerge`: remote-wins on scalars/arrays, recurse on plain objects)
+- **Bootstrap window:** when a store is rebuilt after eviction (e.g. all consumers unmount
+  and remount), `seedFromCache()` seeds `localData` from the offline cache but keeps
+  `lastCheckpoint` at 0 (so the first pull is a full resync, not a delta). For a
+  **custom resolver** (e.g. `createUnionMerge`), that seed is treated as a merge baseline:
+  the first `pull()` / `ingest()` after the seed will call `onConflict` against it, so a
+  short first-pull response (cache-fallback on 429/5xx, or a momentarily-short concurrent
+  snapshot) cannot drop items the resolver is configured to preserve. Stores using the
+  default `deepMerge` resolver are unaffected — their first pull still takes the snapshot
+  wholesale.
 
 **Returns:** `Promise<PullResult>`
 
