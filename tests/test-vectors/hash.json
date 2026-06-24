@@ -27,6 +27,17 @@
     { "input": 0.1, "expected": "0.1" },
     { "input": 0.30000000000000004, "expected": "0.30000000000000004" },
     { "input": 1e-7, "expected": "1e-7" },
+    { "input": 5e-7, "expected": "5e-7" },
+    { "input": 1.5e-7, "expected": "1.5e-7" },
+    { "input": 1e-6, "expected": "0.000001" },
+    { "input": 1.5e-6, "expected": "0.0000015" },
+    { "input": 9.9e-6, "expected": "0.0000099" },
+    { "input": 1e-5, "expected": "0.00001" },
+    { "input": 1.23e-5, "expected": "0.0000123" },
+    { "input": 1e-4, "expected": "0.0001" },
+    { "input": 1500000000000000.0, "expected": "1500000000000000" },
+    { "input": 1.5e16, "expected": "15000000000000000" },
+    { "input": 1e20, "expected": "100000000000000000000" },
     { "input": 1.7976931348623157e308, "expected": "1.7976931348623157e+308" },
     { "input": { "z": 1, "y": 2, "x": 3, "w": 4, "v": 5 }, "expected": "{\"v\":5,\"w\":4,\"x\":3,\"y\":2,\"z\":1}" },
     { "input": [[1, 2], [3, 4], [5, [6, 7]]], "expected": "[[1,2],[3,4],[5,[6,7]]]" },
@@ -109,6 +120,23 @@
       "input": { "empty_arr": [], "empty_obj": {}, "null_val": null, "zero": 0, "false_val": false, "empty_str": "" },
       "stableJson": "{\"empty_arr\":[],\"empty_obj\":{},\"empty_str\":\"\",\"false_val\":false,\"null_val\":null,\"zero\":0}",
       "expectedHash": "d41ed8678ba5c77f9c9bb8a457b4e796942fed3eb34f4fd7e9ca738e41b4fa7b"
-    }
+    },
+    {
+      "_comment": "Float fixed/exponent threshold — boundary values in [1e-6, 1e-4) where JS uses fixed notation but Python repr uses exponent form",
+      "input": { "f": 1e-6 },
+      "stableJson": "{\"f\":0.000001}",
+      "expectedHash": "a5e6e649f04eab93767038519185b5ddeb1a027abad682c829fbb85404feaed8"
+    },
+    { "input": { "f": 1.5e-6 }, "stableJson": "{\"f\":0.0000015}", "expectedHash": "3c0706714e8b0f6644f53bab53ec24e5f4d59085725b135cee722b318331ad2f" },
+    { "input": { "f": 9.9e-6 }, "stableJson": "{\"f\":0.0000099}", "expectedHash": "d9bb0bfd3eb556859e43ddd446ef760a43e3b15fb492aa81b1e72f839a13c713" },
+    { "input": { "f": 1e-5 }, "stableJson": "{\"f\":0.00001}", "expectedHash": "a1b4f9dc4e3f72b2d4f23d01e9f64392ba1767ecb8a55cff8c20e9e9d2a5b78f" },
+    { "input": { "f": 1.23e-5 }, "stableJson": "{\"f\":0.0000123}", "expectedHash": "7cd89912639c3e92c0ea5fc3834f68e898f20ed025628c2db9ebd0a0921ef2d2" },
+    {
+      "_comment": "Large non-integer floats that Python repr formats with exponent but ECMAScript uses fixed-point (0 < n <= 21)",
+      "input": { "f": 1500000000000000.0 },
+      "stableJson": "{\"f\":1500000000000000}",
+      "expectedHash": "a1478e846faef808724832d0f3b5c0354fc345699d9fb8a581a8baf07574e413"
+    },
+    { "input": { "f": 1.5e16 }, "stableJson": "{\"f\":15000000000000000}", "expectedHash": "340a88058247728afc0bc316b053df72d272760b620c015742125a5a770d450e" }
   ]
 }

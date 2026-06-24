@@ -263,7 +263,7 @@ wheels = [
 
 [[package]]
 name = "starfish-protocol"
-version = "3.0.0a25"
+version = "3.0.0a35"
 source = { editable = "." }
 dependencies = [
     { name = "argon2-cffi" },

@@ -10,9 +10,12 @@
 
 import {
   assertCapCertWellFormed,
+  bytesToHex,
   getBase64,
   getCrypto,
+  hexToBytes,
   signCapCert,
+  userIdFromPubHex,
   type CapCert,
   type UnsignedCapCert,
 } from "@drakkar.software/starfish-protocol"
@@ -51,27 +54,6 @@ export interface MintOpts {
 export const DEFAULT_TTL_SEC = 30 * 24 * 3600
 export const NONCE_LEN = 16
 
-export function bytesToHex(bytes: Uint8Array): string {
-  let s = ""
-  for (let i = 0; i < bytes.length; i++) s += bytes[i]!.toString(16).padStart(2, "0")
-  return s
-}
-
-export function hexToBytes(hex: string): Uint8Array {
-  if (hex.length % 2 !== 0) throw new Error("hex string has odd length")
-  if (!/^[0-9a-fA-F]*$/.test(hex)) throw new Error("hex string has invalid characters")
-  const out = new Uint8Array(hex.length / 2)
-  for (let i = 0; i < out.length; i++) {
-    out[i] = parseInt(hex.substring(i * 2, i * 2 + 2), 16)
-  }
-  return out
-}
-
-export async function userIdFromPubHex(pubHex: string): Promise<string> {
-  const pubBytes = hexToBytes(pubHex)
-  const digest = await getCrypto().subtle.digest("SHA-256", pubBytes as BufferSource)
-  return bytesToHex(new Uint8Array(digest)).slice(0, 32)
-}
 
 export function defaultNonce(): Uint8Array {
   const buf = new Uint8Array(NONCE_LEN)
@@ -101,7 +83,7 @@ export async function mintDeviceCap(
     v: 1,
     kind: "device",
     iss: issEdPubHex,
-    issUserId: await userIdFromPubHex(issEdPubHex),
+    issUserId: userIdFromPubHex(issEdPubHex),
     sub: sub.edPubHex,
     subKem: sub.kemPubHex,
     scope: { ...scope },

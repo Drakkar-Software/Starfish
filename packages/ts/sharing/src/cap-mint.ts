@@ -12,6 +12,7 @@ import {
   getCrypto,
   pathGlobMatch,
   signCapCert,
+  userIdFromPubHex,
   type CapCert,
   type UnsignedCapCert,
 } from "@drakkar.software/starfish-protocol"
@@ -139,28 +140,6 @@ function resolveValidity(opts: MintOpts): { nbf: number; exp: number } {
   return { nbf, exp: nbf + (opts.ttlSec ?? DEFAULT_TTL_SEC) }
 }
 
-function bytesToHex(bytes: Uint8Array): string {
-  let s = ""
-  for (let i = 0; i < bytes.length; i++) s += bytes[i]!.toString(16).padStart(2, "0")
-  return s
-}
-
-function hexToBytes(hex: string): Uint8Array {
-  if (hex.length % 2 !== 0) throw new Error("hex string has odd length")
-  // Reject non-hex chars: `parseInt` → NaN → 0, silently zeroing malformed input.
-  if (!/^[0-9a-fA-F]*$/.test(hex)) throw new Error("hex string has invalid characters")
-  const out = new Uint8Array(hex.length / 2)
-  for (let i = 0; i < out.length; i++) {
-    out[i] = parseInt(hex.substring(i * 2, i * 2 + 2), 16)
-  }
-  return out
-}
-
-async function userIdFromPubHex(pubHex: string): Promise<string> {
-  const pubBytes = hexToBytes(pubHex)
-  const digest = await getCrypto().subtle.digest("SHA-256", pubBytes as BufferSource)
-  return bytesToHex(new Uint8Array(digest)).slice(0, 32)
-}
 
 function defaultNonce(): Uint8Array {
   const buf = new Uint8Array(NONCE_LEN)
@@ -204,7 +183,7 @@ export async function mintMemberCap(
     v: 1,
     kind: "member",
     iss: issEdPubHex,
-    issUserId: await userIdFromPubHex(issEdPubHex),
+    issUserId: userIdFromPubHex(issEdPubHex),
     sub: sub.edPubHex,
     subKem: sub.kemPubHex,
     subUserId: sub.userIdHex,
@@ -391,7 +370,7 @@ export async function mintAudienceCap(
     v: 1,
     kind: "audience",
     iss: issEdPubHex,
-    issUserId: await userIdFromPubHex(issEdPubHex),
+    issUserId: userIdFromPubHex(issEdPubHex),
     scope: { ...scope, collections: [collection] },
     nbf,
     exp,

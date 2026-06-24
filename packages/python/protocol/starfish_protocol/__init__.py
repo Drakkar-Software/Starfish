@@ -1,6 +1,6 @@
 from starfish_protocol.audit import AuditEntry, AuditLogger
 from starfish_protocol.hash import stable_stringify, compute_hash
-from starfish_protocol.merge import deep_merge
+from starfish_protocol.merge import deep_merge, UNSAFE_KEYS
 from starfish_protocol.crypto import Encryptor, derive_key, IV_BYTES, ENCRYPTED_KEY
 from starfish_protocol.types import Timestamps, PullResult, PushSuccess, PullKeyringProjection
 from starfish_protocol.cap import (
@@ -75,6 +75,7 @@ __all__ = [
     "stable_stringify",
     "compute_hash",
     "deep_merge",
+    "UNSAFE_KEYS",
     "Encryptor",
     "derive_key",
     "IV_BYTES",

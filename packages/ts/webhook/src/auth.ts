@@ -7,18 +7,12 @@
  * configured timestamp header bounds replay without any server-side nonce store.
  */
 
-import { getCrypto } from "@drakkar.software/starfish-protocol"
+import { bytesToHex, getCrypto } from "@drakkar.software/starfish-protocol"
 import type { HmacAuthConfig } from "./types.js"
 
 const ENC = new TextEncoder()
 const DEFAULT_SIGNATURE_HEADER = "x-webhook-signature"
 const DEFAULT_TOLERANCE_SECONDS = 300
-
-function bytesToHex(bytes: Uint8Array): string {
-  let hex = ""
-  for (const b of bytes) hex += b.toString(16).padStart(2, "0")
-  return hex
-}
 
 async function hmacHex(secret: string, message: string): Promise<string> {
   // The protocol `CryptoProvider` narrows `subtle` to the few operations the core

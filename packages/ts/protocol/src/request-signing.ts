@@ -18,6 +18,7 @@ import { sha256 } from "@noble/hashes/sha2.js"
 import { stableStringify } from "./hash.js"
 import { getCrypto, getBase64 } from "./platform.js"
 import * as ed25519Suite from "./suites/ed25519.js"
+import { bytesToHex } from "./suites/_hex.js"
 
 /** HTTP methods the request-signing protocol supports. */
 export type SignableMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE"
@@ -64,9 +65,6 @@ function bodyToBytes(body: Uint8Array | string | undefined): Uint8Array {
   return body
 }
 
-function bytesToHex(bytes: Uint8Array): string {
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")
-}
 
 /**
  * Domain-separation tag prepended to a per-request signing input. Binds the

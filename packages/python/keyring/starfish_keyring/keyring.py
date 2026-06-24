@@ -401,7 +401,12 @@ class KeyringEncryptor:
         cek = self._epoch_ceks[self._current_epoch]
         iv = secrets.token_bytes(KEYRING_IV_BYTES)
         aead = AESGCM(cek)
-        ct = aead.encrypt(iv, json.dumps(data).encode("utf-8"), None)
+        # Bind the epoch into AES-GCM AAD so a ciphertext cannot be replayed
+        # with a different _epoch value (an attacker flipping _epoch would point
+        # decrypt() at the wrong CEK, causing an InvalidTag error regardless).
+        # This is the JSON-path equivalent of the seal_bytes AAD binding.
+        aad = str(self._current_epoch).encode("utf-8")
+        ct = aead.encrypt(iv, json.dumps(data).encode("utf-8"), aad)
         return {
             "_encrypted": base64.b64encode(iv + ct).decode("ascii"),
             "_epoch": self._current_epoch,
@@ -423,8 +428,10 @@ class KeyringEncryptor:
         iv = blob[:KEYRING_IV_BYTES]
         ct = blob[KEYRING_IV_BYTES:]
         aead = AESGCM(cek)
+        # AAD must match the epoch used during encryption.
+        aad = str(epoch).encode("utf-8")
         try:
-            pt = aead.decrypt(iv, ct, None)
+            pt = aead.decrypt(iv, ct, aad)
         except InvalidTag as exc:
             raise ValueError("Decryption failed: payload may be tampered or wrong epoch CEK") from exc
         return json.loads(pt.decode("utf-8"))

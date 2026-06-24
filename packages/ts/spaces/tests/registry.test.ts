@@ -5,7 +5,9 @@
  * returns the cached _spaces doc instantly (when a cache is configured) and
  * that it still swallows 404 on a miss.
  */
-import { describe, it, expect, vi } from "vitest"
+import { describe, it, expect, vi, afterEach } from "vitest"
+
+afterEach(() => vi.useRealTimers())
 import { StarfishClient, StarfishHttpError } from "@drakkar.software/starfish-client"
 import type { PullCache } from "@drakkar.software/starfish-client"
 import { readSpaces } from "../src/registry.js"
@@ -38,6 +40,7 @@ function makeSession(userId = "u1"): Pick<Session, "userId" | "layout"> {
 
 describe("readSpaces staleWhileRevalidate", () => {
   it("returns the cached _spaces doc immediately and fires background revalidation", async () => {
+    vi.useFakeTimers()
     const cache = memCache()
     const spacesPath = defaultSpaceLayout.spacesPull("u1")  // /pull/user/u1/_spaces
     const stalePayload = { spaces: [{ id: "s1" }], caps: {}, pubAccess: {} }
@@ -66,11 +69,10 @@ describe("readSpaces staleWhileRevalidate", () => {
     expect(doc.spaces).toEqual([{ id: "s1" }])
     expect(doc.hash).toBe("hcached")
 
-    // The background revalidation fires immediately (no delay) and updates cache
-    // Give microtasks a chance to flush
-    await Promise.resolve()
-    await Promise.resolve()
-    await Promise.resolve()
+    // The background revalidation fires immediately (no delay) and updates cache.
+    // advanceTimersByTimeAsync(0) flushes all pending microtasks and zero-delay timers,
+    // ensuring the revalidation Promise chain fully settles before we assert.
+    await vi.advanceTimersByTimeAsync(0)
     expect(fetchMock).toHaveBeenCalledTimes(1)  // background revalidation fetch
     expect(onRevalidated).toHaveBeenCalledTimes(1)
     expect(onRevalidated).toHaveBeenCalledWith(

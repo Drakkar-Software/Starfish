@@ -633,3 +633,56 @@ def test_trusted_adders_allows_owner_added_entry(actors):
     )
     payload = enc.encrypt({"ok": True})
     assert enc.decrypt(payload) == {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Epoch AAD binding in JSON encrypt/decrypt
+# ---------------------------------------------------------------------------
+
+
+def test_json_encrypt_epoch_is_authenticated(actors):
+    """Flipping _epoch in an encrypted JSON payload must fail at AEAD authentication.
+
+    The epoch is bound into the AES-GCM AAD so a hostile server cannot substitute
+    a different _epoch value to redirect decryption to a wrong CEK. We rotate the
+    epoch so the decryptor has TWO valid CEKs (epochs 1 and 2), then flip the
+    envelope from epoch 2 to epoch 1. Without AAD binding, decrypt() would silently
+    use the epoch-1 CEK on epoch-2 ciphertext — returning garbled data with no error.
+    With binding, AES-GCM authentication fails with a clear error.
+    """
+    alice, dev1 = actors["alice"], actors["dev1"]
+    keyring, _cek = create_keyring(alice["edPriv"], alice["edPub"], [dev1["kemPub"]])
+
+    # Rotate so the encryptor has both epoch 1 and epoch 2 CEKs
+    rotated, _cek2 = rotate_epoch(keyring, alice["edPriv"], alice["edPub"], [dev1["kemPub"]])
+    assert rotated.current_epoch == 2
+
+    enc = create_keyring_encryptor(
+        rotated, dev1["kemPub"], dev1["kemPriv"], trusted_adders=[alice["edPub"]]
+    )
+    # Encrypts at epoch 2 (current)
+    payload = enc.encrypt({"secret": "data"})
+    assert payload["_epoch"] == 2
+
+    # Tamper: flip to epoch 1 (a CEK that EXISTS but is WRONG for this ciphertext)
+    tampered = {**payload, "_epoch": 1}
+    with pytest.raises(ValueError, match="(?i)decryption failed|tampered|wrong epoch"):
+        enc.decrypt(tampered)
+
+
+def test_json_encrypt_epoch_aad_round_trip(actors):
+    """encrypt/decrypt with epoch AAD succeeds normally for the right epoch."""
+    alice, dev1, dev2 = actors["alice"], actors["dev1"], actors["dev2"]
+    keyring, _cek = create_keyring(
+        alice["edPriv"], alice["edPub"], [dev1["kemPub"], dev2["kemPub"]]
+    )
+    enc1 = create_keyring_encryptor(
+        keyring, dev1["kemPub"], dev1["kemPriv"], trusted_adders=[alice["edPub"]]
+    )
+    enc2 = create_keyring_encryptor(
+        keyring, dev2["kemPub"], dev2["kemPriv"], trusted_adders=[alice["edPub"]]
+    )
+
+    payload = enc1.encrypt({"message": "hello", "value": 42})
+    assert enc2.decrypt(payload) == {"message": "hello", "value": 42}
+

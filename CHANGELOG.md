@@ -2,6 +2,44 @@
 
 ## 3.0.0-alpha.35
 
+### `starfish-protocol` (Python)
+
+#### Fixed
+- **Float hash canonicalization** — `_js_number` in `starfish_protocol/hash.py` now
+  implements the ECMAScript NumberToString algorithm exactly. Python's `repr()` emits
+  exponent form for values in `[1e-6, 1e-4)` (e.g. `repr(1e-6) = "1e-06"`) while
+  JavaScript's `JSON.stringify` emits fixed-point (`"0.000001"`). Documents containing
+  floats in this range produced different SHA-256 content hashes across TS and Python
+  nodes, causing permanent phantom-conflict divergence. Added 11 cross-language test
+  vectors to `tests/test-vectors/hash.json` covering the full exponent/fixed-point
+  boundary range.
+
+### `starfish-server` (Python)
+
+#### Fixed
+- **`UNSAFE_KEYS` sanitization asymmetry** — `helpers.py`'s `deep_sanitize` was using
+  a local 3-key denylist `{__proto__, constructor, prototype}`, missing `__class__` and
+  `__dict__` that both the TS server and `starfish_protocol.merge` apply. A document
+  containing `__class__` or `__dict__` was stored stripped by the TS server but intact
+  by the Python server, producing different content hashes and causing TS-signed
+  author-signature verification to fail (HTTP 403) in mixed-language deployments.
+  `helpers.py` now imports the canonical 5-key set from `starfish_protocol.merge` (same
+  source `deep_merge` already used). `UNSAFE_KEYS` is also now exported from the
+  `starfish_protocol` top-level barrel.
+
+### `@drakkar.software/starfish-client`
+
+#### Fixed
+- **Stale-revalidation data-loss race** — `SyncManager.ingest()` now drops any
+  `PullResult` whose `timestamp` is strictly less than the current `lastCheckpoint`.
+  Previously, a background `staleWhileRevalidate` revalidation that resolved *after* a
+  concurrent `push()` would clobber `localData`, `lastHash`, and `lastCheckpoint` with
+  the pre-push snapshot, silently losing the user's just-saved edit and causing a
+  spurious `ConflictError` on the next push. In `StarfishClient`, `revalidateLoop` now
+  tracks the latest document timestamp written to each cache key via an in-memory Map
+  (`latestCacheTimestamp`) and skips the cache write + `onRevalidated` callback when
+  the revalidation result is older than the current tracked value.
+
 ### Documentation
 
 #### Added
@@ -25,6 +63,53 @@
 #### Changed
 - **`readSpaces` / `pullSpacesDoc` uses SWR** — the `_spaces` doc pull now uses `{ staleWhileRevalidate: true }`, so when a client is built with a `cache` the full space list/caps/mutes is returned instantly from cache and revalidated in the background. No cache configured → unchanged network-first behavior.
 - **`ClientOpts.onRevalidated`** widened from `() => void` to `(path: string, result: PullResult) => void` (canonical two-arg form) so consumers can receive the fresh `_spaces` doc from the background revalidation and re-run caps/mutes/reads hydration.
+
+### `starfish-spaces` (Python)
+
+#### Fixed
+- **Cap-scope `/n/` path divergence** — `node_member_scope`, `node_stream_scope`, and
+  `node_keyring_scope` in `layout.py` now emit `spaces/{space_id}/objects/n/{node_id}/**`
+  (with the literal `/n/` segment). The previous paths omitted `/n/`, so `matchScopePath`
+  rejected legitimately-invited collaborators with `403 "request path is outside cap scope"`.
+  Now byte-identical to the TS `defaultSpaceLayout` equivalents.
+
+### `starfish-keyring` (Python)
+
+#### Fixed
+- **AAD context-binding for `seal` / `unseal`** — `seal.py` / `SealedBlob` now support
+  the `aad: str | None` parameter on `seal()`, `seal_to_self()`, `unseal()`,
+  `unseal_to_str()`, and `unseal_from_self()`. When `aad` is provided, the AES-GCM
+  authentication tag is bound to that context string and the blob is marked `v=1`. Opening
+  a `v=1` blob without the matching `aad` raises `ValueError("aad required: …")` before any
+  crypto (relocation/downgrade-attack guard). Previously Python-sealed blobs had no
+  relocation protection and Python could not open `v=1` blobs sealed by the TS SDK.
+- **Epoch AAD binding in JSON `encrypt`/`decrypt`** — `KeyringEncryptor.encrypt()` now
+  binds `_epoch` into the AES-GCM AAD. Without this, a hostile server could flip the
+  `_epoch` field to redirect decryption to a different epoch's CEK (availability impact:
+  `InvalidTag` instead of garbled plaintext). `decrypt()` reconstructs the matching AAD
+  from the `_epoch` field before calling `AESGCM.decrypt()`. The binary `seal_bytes` /
+  `open_bytes` path already applied this binding; the JSON path is now consistent with it.
+
+### `@drakkar.software/starfish-entitlements`
+
+#### Fixed
+- **Anonymous identity guard** — `createEntitlementRoleEnricher` now short-circuits with
+  `return []` when `auth.identity` is the empty string (the anonymous caller marker). The
+  cap-cert resolver sets `identity: ""` for requests without a cap header; without the
+  guard, the enricher would query `"users//entitlements"` (a bogus key), and if the store
+  ever held that key, unauthenticated callers would gain entitlement roles.
+
+### `@drakkar.software/starfish-protocol`, `@drakkar.software/starfish-identities`, `@drakkar.software/starfish-sharing`, `@drakkar.software/starfish-webhook`
+
+#### Changed
+- **Consolidated hex utilities** — `hexToBytes`, `bytesToHex`, and `userIdFromPubHex`
+  were previously copy-pasted in `protocol/src/cap.ts`, `protocol/src/revocation.ts`,
+  `protocol/src/request-signing.ts`, `identities/src/cap-mint.ts`,
+  `sharing/src/cap-mint.ts`, and `webhook/src/auth.ts`. All copies now import from the
+  canonical `@drakkar.software/starfish-protocol` exports (backed by
+  `protocol/src/suites/_hex.ts` for hex and `protocol/src/cap.ts` for
+  `userIdFromPubHex`). A divergence in any copy could have caused revocation lists and
+  cap-certs to derive different `userId` values for the same key.
 
 ## 3.0.0-alpha.34
 

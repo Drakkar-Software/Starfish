@@ -175,24 +175,29 @@ class _DefaultSpaceLayout:
         }
 
     def node_member_scope(self, space_id: str, node_id: str, can_write: bool) -> dict[str, Any]:
+        # Cap-scope paths MUST include the /n/ segment so they match the actual
+        # storage paths (e.g. objects/n/{nodeId}/_keyring, objects/n/{nodeId}/log).
+        # TS layout uses `objects/n/${nodeId}/**` for the same reason — omitting /n/
+        # causes `matchScopePath` to fail with "request path is outside cap scope" even
+        # for legitimately-invited collaborators.
         return {
             "ops": ["read", "write", "list"] if can_write else ["read", "list"],
             "collections": ["objinv"],
-            "paths": [f"spaces/{space_id}/objects/{node_id}/**"],
+            "paths": [f"spaces/{space_id}/objects/n/{node_id}/**"],
         }
 
     def node_stream_scope(self, space_id: str, node_id: str, can_write: bool) -> dict[str, Any]:
         return {
             "ops": ["read", "write", "list"] if can_write else ["read", "list"],
             "collections": ["objinvlog"],
-            "paths": [f"spaces/{space_id}/objects/{node_id}/**"],
+            "paths": [f"spaces/{space_id}/objects/n/{node_id}/**"],
         }
 
     def node_keyring_scope(self, space_id: str, node_id: str) -> dict[str, Any]:
         return {
             "ops": ["read", "list"],
             "collections": ["nodekeyring"],
-            "paths": [f"spaces/{space_id}/objects/{node_id}/**"],
+            "paths": [f"spaces/{space_id}/objects/n/{node_id}/**"],
         }
 
     def account_scope(self, user_id: str) -> dict[str, Any]:

@@ -17,6 +17,7 @@ import { sha256 } from "@noble/hashes/sha2.js"
 import { getBase64 } from "./platform.js"
 import { stableStringify } from "./hash.js"
 import * as ed25519Suite from "./suites/ed25519.js"
+import { bytesToHex, hexToBytes } from "./suites/_hex.js"
 
 /**
  * Authority binding kind.
@@ -398,22 +399,6 @@ export interface CapCertVerifyResult {
   reason?: string
 }
 
-function hexToBytes(hex: string): Uint8Array {
-  if (hex.length % 2 !== 0) throw new Error("hex string has odd length")
-  // Reject non-hex chars: `parseInt` → NaN → 0, silently zeroing malformed input.
-  if (!/^[0-9a-fA-F]*$/.test(hex)) throw new Error("hex string has invalid characters")
-  const out = new Uint8Array(hex.length / 2)
-  for (let i = 0; i < out.length; i++) {
-    out[i] = parseInt(hex.substring(i * 2, i * 2 + 2), 16)
-  }
-  return out
-}
-
-function bytesToHex(bytes: Uint8Array): string {
-  let s = ""
-  for (let i = 0; i < bytes.length; i++) s += bytes[i]!.toString(16).padStart(2, "0")
-  return s
-}
 
 /**
  * Derive a userId from an Ed25519 public key: `sha256(hexDecode(pubHex))[0:32]`

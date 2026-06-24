@@ -135,6 +135,11 @@ export function createEntitlementRoleEnricher(opts: EntitlementRoleEnricherOptio
     auth: AuthResult,
     _params: Record<string, string>,
   ): Promise<string[]> {
+    // Anonymous callers have identity="" — no entitlement doc to look up.
+    // Resolving features for the empty string would query "users//entitlements"
+    // (a bogus key) and, if the store ever returned a doc for it, could hand a
+    // public role to every unauthenticated caller.  Short-circuit early.
+    if (!auth.identity) return []
     const features = await resolveFeatures(auth.identity)
     return Array.from(features, (slug) => `${rolePrefix}:${slug}`)
   }

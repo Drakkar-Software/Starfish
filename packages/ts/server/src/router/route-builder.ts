@@ -1697,12 +1697,17 @@ function createBatchPullHandler(
       }
     }
 
+    // Build a name → config Map once so each per-name lookup is O(1) instead of
+    // O(C) (linear scan). With B names and C collections, the loop is O(B·C)
+    // without the map; the map makes it O(C + B).
+    const collectionByName = new Map(collections.map((cc) => [cc.name, cc]))
+
     const results: Record<string, Record<string, unknown>[]> = {}
     for (const name of colNames) {
       // A name absent from `params` reads one auto-filled doc (`[{}]`); present
       // means an array of param-sets, possibly empty (→ no reads, `[]`).
       const paramSets = paramsByCollection[name] ?? [{}]
-      const col = collections.find((cc) => cc.name === name)
+      const col = collectionByName.get(name)
       if (!col) {
         // One error entry PER requested set so the array stays index-aligned with
         // the caller's input (batchPullMany indexes results by position).

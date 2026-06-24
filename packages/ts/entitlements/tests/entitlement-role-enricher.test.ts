@@ -227,6 +227,25 @@ describe("createEntitlementRoleEnricher — unit", () => {
     const roles = await enricher({ identity: "alice", roles: [] }, {})
     expect(roles.sort()).toEqual(["entitlement:", "entitlement:premium"])
   })
+
+  it("returns empty array for anonymous caller (identity='') without touching the store", async () => {
+    // Anonymous requests arrive with identity="" (the cap-cert resolver's short-circuit
+    // return value for requests without a cap header). If the enricher ever queried
+    // the store for "" it would produce the bogus key "users//entitlements" — and if
+    // the store happened to hold that key, anonymous callers would gain entitlement
+    // roles.  The guard must short-circuit before any store read.
+    const store = new MemoryObjectStore(new Map())
+    const getStringSpy = vi.spyOn(store, "getString")
+
+    // Even with a doc present, the anon path must never reach the store
+    await writeEntitlementDoc(store, "users//entitlements", ["bogus-role"])
+
+    const enricher = createEntitlementRoleEnricher({ store })
+    const roles = await enricher({ identity: "", roles: [/* ROLE_PUBLIC */] }, {})
+
+    expect(roles).toEqual([])
+    expect(getStringSpy).not.toHaveBeenCalled()
+  })
 })
 
 // ── composeEnrichers unit tests ───────────────────────────────────────────────

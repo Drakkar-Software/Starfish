@@ -105,3 +105,103 @@ def test_to_dict_from_dict_round_trip() -> None:
 
     revived = SealedBlob.from_dict(blob.to_dict())
     assert unseal_to_str(revived, peer["kem_priv"]) == "carry-me"
+
+
+# ---------------------------------------------------------------------------
+# AAD context-binding (v=1 blobs)
+# ---------------------------------------------------------------------------
+
+
+def test_aad_seal_round_trip() -> None:
+    """A blob sealed with aad can only be opened with the same aad."""
+    me = _make_identity()
+    ctx = "keyring/spaces/sp-123/user/u1"
+    blob = seal_to_self(
+        "my-secret", me["kem_pub"],
+        sealer_ed_priv_hex=me["ed_priv"], sealer_ed_pub_hex=me["ed_pub"],
+        aad=ctx,
+    )
+    assert blob.v == 1, "v=1 must be set when aad is provided"
+    # Must open with the same aad
+    result = unseal(blob, me["kem_priv"], aad=ctx)
+    assert result == b"my-secret"
+
+
+def test_aad_v1_blob_requires_aad_on_open() -> None:
+    """Opening a v=1 blob without aad must raise before any crypto (timing guard)."""
+    me = _make_identity()
+    blob = seal_to_self(
+        "secret", me["kem_pub"],
+        sealer_ed_priv_hex=me["ed_priv"], sealer_ed_pub_hex=me["ed_pub"],
+        aad="some-context",
+    )
+    assert blob.v == 1
+    with pytest.raises(ValueError, match="aad required"):
+        unseal(blob, me["kem_priv"])  # no aad → must raise
+
+
+def test_aad_wrong_context_fails_aead() -> None:
+    """Opening a v=1 blob with the WRONG aad fails at AEAD authentication."""
+    me = _make_identity()
+    blob = seal_to_self(
+        "secret", me["kem_pub"],
+        sealer_ed_priv_hex=me["ed_priv"], sealer_ed_pub_hex=me["ed_pub"],
+        aad="correct-context",
+    )
+    with pytest.raises(ValueError):
+        unseal(blob, me["kem_priv"], aad="wrong-context")
+
+
+def test_aad_blob_survives_dict_serialization() -> None:
+    """v=1 round-trips through to_dict/from_dict correctly."""
+    from starfish_keyring.seal import SealedBlob
+
+    me = _make_identity()
+    ctx = "spaces/sp-abc/keyring"
+    blob = seal_to_self(
+        "persist-me", me["kem_pub"],
+        sealer_ed_priv_hex=me["ed_priv"], sealer_ed_pub_hex=me["ed_pub"],
+        aad=ctx,
+    )
+    revived = SealedBlob.from_dict(blob.to_dict())
+    assert revived.v == 1
+    assert unseal_to_str(revived, me["kem_priv"], aad=ctx) == "persist-me"
+    # Still rejects open without aad after round-trip
+    with pytest.raises(ValueError, match="aad required"):
+        unseal(revived, me["kem_priv"])
+
+
+def test_no_aad_blob_v_is_none() -> None:
+    """Blobs sealed without aad have v=None and open without aad."""
+    me = _make_identity()
+    blob = seal_to_self(
+        "plain", me["kem_pub"],
+        sealer_ed_priv_hex=me["ed_priv"], sealer_ed_pub_hex=me["ed_pub"],
+    )
+    assert blob.v is None
+    d = blob.to_dict()
+    assert "v" not in d, "v should be absent from dict when None (legacy compat)"
+    assert unseal_to_str(blob, me["kem_priv"]) == "plain"
+
+
+def test_aad_unseal_to_str() -> None:
+    """unseal_to_str propagates aad correctly."""
+    me = _make_identity()
+    blob = seal_to_self(
+        "string-secret", me["kem_pub"],
+        sealer_ed_priv_hex=me["ed_priv"], sealer_ed_pub_hex=me["ed_pub"],
+        aad="ctx",
+    )
+    assert unseal_to_str(blob, me["kem_priv"], aad="ctx") == "string-secret"
+
+
+def test_aad_unseal_from_self() -> None:
+    """unseal_from_self propagates aad correctly."""
+    me = _make_identity()
+    blob = seal_to_self(
+        "self-ctx", me["kem_pub"],
+        sealer_ed_priv_hex=me["ed_priv"], sealer_ed_pub_hex=me["ed_pub"],
+        aad="my-context",
+    )
+    result = unseal_from_self(blob, kem_priv_hex=me["kem_priv"], ed_pub_hex=me["ed_pub"], aad="my-context")
+    assert result == b"self-ctx"

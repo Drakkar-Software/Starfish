@@ -199,6 +199,12 @@ export class StarfishClient {
   private readonly onRevalidated?: (path: string, result: PullResult) => void
   private readonly revalidating = new Set<string>()
   /**
+   * In-memory mirror of the latest document timestamp written to each cache
+   * key via {@link writeCache}. Updated synchronously so {@link revalidateLoop}
+   * can guard against stale overwrites without an extra async cache read.
+   */
+  private readonly latestCacheTimestamp = new Map<string, number>()
+  /**
    * Installed client-side plugins. Currently stored as inert data; no
    * hooks fire yet. Extensions can inspect this list if needed.
    */
@@ -472,6 +478,11 @@ export class StarfishClient {
     result: { data: Record<string, unknown>; hash: string; timestamp: number },
   ): void {
     if (!this.cache) return
+    // Track the newest document timestamp written so revalidateLoop can check
+    // staleness synchronously (without an async cache read adding extra ticks).
+    if (result.timestamp > (this.latestCacheTimestamp.get(cacheKey) ?? -1)) {
+      this.latestCacheTimestamp.set(cacheKey, result.timestamp)
+    }
     const snapshot: CachedPull = {
       data: result.data,
       hash: result.hash,
@@ -549,8 +560,16 @@ export class StarfishClient {
 
         if (res.ok) {
           const result = (await res.json()) as PullResult
-          this.writeCache(cacheKey, result)
-          this.onRevalidated?.(pathAndQuery, result)
+          // Guard against stale overwrites: if push() wrote a newer snapshot
+          // while this revalidation was in-flight, the in-memory tracker
+          // reflects the current latest-written timestamp synchronously (no
+          // extra async tick). We drop the revalidation result and leave the
+          // cache — and onRevalidated — untouched so the pushed edit survives.
+          const latestTs = this.latestCacheTimestamp.get(cacheKey) ?? -1
+          if (result.timestamp >= latestTs) {
+            this.writeCache(cacheKey, result)
+            this.onRevalidated?.(pathAndQuery, result)
+          }
           return
         }
 

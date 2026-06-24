@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 from fastapi.responses import JSONResponse
 
 from starfish_protocol.append_author import verify_doc_author
+from starfish_protocol.merge import UNSAFE_KEYS
 from starfish_protocol.constants import (
     AUTHOR_PUBKEY_FIELD,
     AUTHOR_SIGNATURE_FIELD,
@@ -42,7 +43,11 @@ logger = logging.getLogger(__name__)
 SAFE_PARAM = re.compile(r"^[a-zA-Z0-9._:@-]+$")
 UNSAFE_KEY = re.compile(r"\.\.|[\x00-\x1f]|//")
 
-UNSAFE_KEYS = frozenset({"__proto__", "constructor", "prototype"})
+# UNSAFE_KEYS is imported from starfish_protocol.merge (the protocol-shared
+# 5-key denylist: __proto__, constructor, prototype, __class__, __dict__).
+# Do NOT redefine it here — the TS server sources the same set from
+# @drakkar.software/starfish-protocol/unsafe-keys so both languages sanitize
+# identical key sets, producing the same content hash for the same document.
 
 # Reject documents nested deeper than this. A deeply-nested body would otherwise
 # overflow the recursive ``deep_sanitize`` (and, in CPython, ``json.loads`` itself),

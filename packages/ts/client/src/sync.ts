@@ -191,9 +191,21 @@ export class SyncManager {
    * checkpoint — the revalidated result is always a full fresh snapshot. It
    * sets `lastFromCache = false` (a revalidation is a live response) so the
    * binding can clear its `stale` flag.
+   *
+   * **Staleness guard**: if a `push()` advanced `lastCheckpoint` between the
+   * time the revalidation request was sent and the time it resolves, the
+   * result is from an older document version. Ingesting it would clobber the
+   * user's just-saved edit and reset `lastHash` to a stale server hash
+   * (causing a spurious 409 on the next push). We silently drop the result in
+   * that case — the store's post-push state is already correct.
    */
   async ingest(result: PullResult): Promise<void> {
     if (this.aborted) return
+    // Drop a revalidation result that is older than our current local state.
+    // `lastCheckpoint` is advanced by every successful push() and pull(); a
+    // revalidation snapshot whose document timestamp is strictly less than the
+    // current checkpoint is stale relative to a concurrent push.
+    if (result.timestamp < this.lastCheckpoint) return
     if (this.encryptor) {
       const decrypted = await this.encryptor.decrypt(result.data)
       if (this.aborted) return

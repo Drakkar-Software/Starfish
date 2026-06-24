@@ -91,14 +91,54 @@ def test_node_member_scope():
     assert scope  # non-empty dict
 
 
+def test_node_member_scope_path_includes_n_segment():
+    """Cap-scope paths MUST include /n/ so they match actual storage paths.
+
+    Storage paths: spaces/{spaceId}/objects/n/{nodeId}/_keyring
+    Scope path (wrong): spaces/{spaceId}/objects/{nodeId}/**
+    Scope path (correct): spaces/{spaceId}/objects/n/{nodeId}/**
+
+    An invited collaborator whose cap was minted with the wrong scope glob gets
+    a 403 "request path is outside cap scope" even though the grant is valid.
+    Both TS and Python layout MUST use the /n/ segment for cross-language parity.
+    """
+    scope = default_space_layout.node_member_scope(SPACE_ID, NODE_ID, True)
+    path = scope["paths"][0]
+    assert f"objects/n/{NODE_ID}" in path, (
+        f"node_member_scope path must include /n/ segment: got {path!r}"
+    )
+    # Read-only variant
+    ro_scope = default_space_layout.node_member_scope(SPACE_ID, NODE_ID, False)
+    assert "write" not in ro_scope["ops"]
+    assert f"objects/n/{NODE_ID}" in ro_scope["paths"][0]
+
+
 def test_node_stream_scope():
     scope = default_space_layout.node_stream_scope(SPACE_ID, NODE_ID, True)
     assert scope
 
 
+def test_node_stream_scope_path_includes_n_segment():
+    scope = default_space_layout.node_stream_scope(SPACE_ID, NODE_ID, True)
+    path = scope["paths"][0]
+    assert f"objects/n/{NODE_ID}" in path, (
+        f"node_stream_scope path must include /n/ segment: got {path!r}"
+    )
+
+
 def test_node_keyring_scope():
     scope = default_space_layout.node_keyring_scope(SPACE_ID, NODE_ID)
     assert scope
+
+
+def test_node_keyring_scope_path_includes_n_segment():
+    scope = default_space_layout.node_keyring_scope(SPACE_ID, NODE_ID)
+    path = scope["paths"][0]
+    assert f"objects/n/{NODE_ID}" in path, (
+        f"node_keyring_scope path must include /n/ segment: got {path!r}"
+    )
+    # keyring scope should be read-only
+    assert scope["ops"] == ["read", "list"]
 
 
 def test_owner_scope():

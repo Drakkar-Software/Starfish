@@ -343,7 +343,7 @@ wheels = [
 
 [[package]]
 name = "starfish-keyring"
-version = "3.0.0a20"
+version = "3.0.0a35"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },
@@ -371,7 +371,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "starfish-protocol"
-version = "3.0.0a20"
+version = "3.0.0a35"
 source = { editable = "../protocol" }
 dependencies = [
     { name = "argon2-cffi" },
@@ -389,7 +389,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "starfish-sdk"
-version = "3.0.0a20"
+version = "3.0.0a35"
 source = { editable = "../client" }
 dependencies = [
     { name = "cryptography" },

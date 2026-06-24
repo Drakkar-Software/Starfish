@@ -265,17 +265,19 @@ export async function createKeyring(
   addedAt: number = Math.floor(Date.now() / 1000),
 ): Promise<{ keyring: Keyring; cek: Uint8Array }> {
   const resolvedCek = cek ?? randomBytes(32)
-  const wrappedKeys: WrappedKeyEntry[] = []
-  for (const r of recipients) {
-    wrappedKeys.push(
-      await wrapForRecipient(resolvedCek, r.subKemHex, {
+  // Wrap for all recipients in parallel — each wrapForRecipient call is
+  // independent (own ephemeral key, own ECDH, own signature). Sequential
+  // wraps scale O(R); Promise.all cuts it to one async tick for all R ops.
+  const wrappedKeys = await Promise.all(
+    recipients.map((r) =>
+      wrapForRecipient(resolvedCek, r.subKemHex, {
         adderEdPrivHex: adder.edPrivHex,
         adderEdPubHex: adder.edPubHex,
         addedAt,
         epoch: 1,
       }),
-    )
-  }
+    ),
+  )
   const keyring: Keyring = {
     v: 1,
     currentEpoch: 1,
@@ -342,17 +344,17 @@ export async function rotateEpoch(
 ): Promise<{ keyring: Keyring; cek: Uint8Array }> {
   const newEpoch = keyring.currentEpoch + 1
   const newCek = randomBytes(32)
-  const wrappedKeys: WrappedKeyEntry[] = []
-  for (const r of retainedRecipients) {
-    wrappedKeys.push(
-      await wrapForRecipient(newCek, r.subKemHex, {
+  // Wrap for all retained recipients in parallel — operations are independent.
+  const wrappedKeys = await Promise.all(
+    retainedRecipients.map((r) =>
+      wrapForRecipient(newCek, r.subKemHex, {
         adderEdPrivHex: adder.edPrivHex,
         adderEdPubHex: adder.edPubHex,
         addedAt,
         epoch: newEpoch,
       }),
-    )
-  }
+    ),
+  )
   const next: Keyring = {
     ...keyring,
     currentEpoch: newEpoch,
