@@ -47,6 +47,14 @@ const config: Config = {
         sidebarPath: "./sidebars-packages.ts",
       },
     ],
+    [
+      "docusaurus-plugin-llms-txt",
+      {
+        title: "Starfish",
+        description: "Generic document sync library with hash-based conflict detection, incremental sync via timestamps, and role-based access control. Dual implementation in TypeScript and Python.",
+        fullLLMsTxt: true,
+      },
+    ],
   ],
 
   presets: [
