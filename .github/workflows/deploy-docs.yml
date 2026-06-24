@@ -4,17 +4,6 @@ on:
   push:
     branches:
       - master
-    paths:
-      - "docs/**"
-      - "website/**"
-      - "packages/**/README.md"
-      - ".github/workflows/deploy-docs.yml"
-  pull_request:
-    paths:
-      - "docs/**"
-      - "website/**"
-      - "packages/**/README.md"
-      - ".github/workflows/deploy-docs.yml"
   workflow_dispatch:
 
 permissions:
