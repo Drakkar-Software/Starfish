@@ -1,8 +1,24 @@
 import { describe, it, expect, vi } from "vitest"
+import type { Encryptor } from "@drakkar.software/starfish-protocol"
 import { StarfishClient } from "../src/client.js"
 import { SyncManager } from "../src/sync.js"
+import { createUnionMerge } from "../src/resolvers.js"
 import { ConflictError } from "../src/types.js"
 import type { PullResponse, PushSuccess } from "../src/types.js"
+
+// Reversible stub Encryptor: wraps the JSON payload under `_encrypted`.
+function stubEncryptor(): Encryptor {
+  return {
+    async encrypt(data: Record<string, unknown>): Promise<Record<string, unknown>> {
+      return { _encrypted: JSON.stringify(data) }
+    },
+    async decrypt(wrapper: Record<string, unknown>): Promise<Record<string, unknown>> {
+      const blob = wrapper._encrypted
+      if (typeof blob !== "string") throw new Error("not encrypted")
+      return JSON.parse(blob)
+    },
+  }
+}
 
 function mockClient(overrides: {
   pull?: (path: string, checkpoint?: number) => Promise<PullResponse>
@@ -282,6 +298,142 @@ describe("SyncManager", () => {
     )
   })
 
+})
+
+// ── pull/ingest honor onConflict ──────────────────────────────────────────────
+//
+// Regression: the incremental-pull and ingest paths previously hardcoded
+// deepMerge, so a store configured with createUnionMerge still lost array items
+// whenever a pull/revalidation returned a shorter array.  Both paths now route
+// through this.onConflict when a checkpoint is established.  onConflict defaults
+// to deepMerge, so stores without a custom resolver behave identically.
+
+describe("SyncManager pull/ingest honor onConflict", () => {
+  it("non-breaking: default (deepMerge) still replaces an array wholesale on pull", async () => {
+    // Asserts the existing contract is preserved when no custom resolver is set.
+    let n = 0
+    const client = mockClient({
+      pull: async () => {
+        n++
+        if (n === 1) return { data: { items: [1, 2, 3], k: "v" }, hash: "h1", timestamp: 100 }
+        return { data: { items: [9] }, hash: "h2", timestamp: 200 }
+      },
+    })
+    const sync = new SyncManager({ client, pullPath: "/pull/test", pushPath: "/push/test" })
+    await sync.pull()
+    await sync.pull()
+    expect(sync.getData()).toEqual({ items: [9], k: "v" })
+  })
+
+  it("plaintext pull with createUnionMerge preserves items missing from a shorter snapshot", async () => {
+    // The iOS regression: a cache-fallback or concurrent-write snapshot carries
+    // only the category nodes — room nodes must NOT be dropped.
+    let n = 0
+    const client = mockClient({
+      pull: async () => {
+        n++
+        if (n === 1) return { data: { objects: [{ id: "cat-1" }, { id: "r1" }, { id: "r2" }] }, hash: "h1", timestamp: 100 }
+        return { data: { objects: [{ id: "cat-1" }] }, hash: "h2", timestamp: 200 }
+      },
+    })
+    const sync = new SyncManager({
+      client,
+      pullPath: "/pull/test",
+      pushPath: "/push/test",
+      onConflict: createUnionMerge(),
+    })
+    await sync.pull()
+    await sync.pull()
+    const ids = (sync.getData().objects as Array<{ id: string }>).map((o) => o.id).sort()
+    expect(ids).toEqual(["cat-1", "r1", "r2"])
+  })
+
+  it("E2EE pull with createUnionMerge preserves items from a shorter decrypted snapshot", async () => {
+    const enc = stubEncryptor()
+    let n = 0
+    const client = mockClient({
+      pull: async () => {
+        n++
+        const payload =
+          n === 1
+            ? { objects: [{ id: "cat-1" }, { id: "r1" }, { id: "r2" }] }
+            : { objects: [{ id: "cat-1" }] }
+        return { data: await enc.encrypt(payload), hash: `h${n}`, timestamp: n * 100 }
+      },
+    })
+    const sync = new SyncManager({
+      client,
+      pullPath: "/pull/test",
+      pushPath: "/push/test",
+      encryptor: enc,
+      onConflict: createUnionMerge(),
+    })
+    await sync.pull()
+    await sync.pull()
+    const ids = (sync.getData().objects as Array<{ id: string }>).map((o) => o.id).sort()
+    expect(ids).toEqual(["cat-1", "r1", "r2"])
+  })
+
+  it("ingest with createUnionMerge preserves items from a shorter revalidation snapshot", async () => {
+    const client = mockClient({
+      pull: async () => ({
+        data: { objects: [{ id: "cat-1" }, { id: "r1" }, { id: "r2" }] },
+        hash: "h1",
+        timestamp: 100,
+      }),
+    })
+    const sync = new SyncManager({
+      client,
+      pullPath: "/pull/test",
+      pushPath: "/push/test",
+      onConflict: createUnionMerge(),
+    })
+    await sync.pull() // establishes checkpoint 100
+
+    // Background revalidation returns a shorter snapshot.
+    await sync.ingest({ data: { objects: [{ id: "cat-1" }] }, hash: "h2", timestamp: 200 })
+    const ids = (sync.getData().objects as Array<{ id: string }>).map((o) => o.id).sort()
+    expect(ids).toEqual(["cat-1", "r1", "r2"])
+  })
+
+  it("ingest staleness guard still drops a result older than lastCheckpoint", async () => {
+    const client = mockClient({
+      pull: async () => ({ data: { objects: [{ id: "r1" }] }, hash: "h1", timestamp: 200 }),
+    })
+    const sync = new SyncManager({
+      client,
+      pullPath: "/pull/test",
+      pushPath: "/push/test",
+      onConflict: createUnionMerge(),
+    })
+    await sync.pull() // lastCheckpoint = 200
+
+    // Stale revalidation snapshot (timestamp 100 < 200) must be silently dropped.
+    await sync.ingest({ data: { objects: [] }, hash: "h0", timestamp: 100 })
+    const ids = (sync.getData().objects as Array<{ id: string }>).map((o) => o.id)
+    expect(ids).toEqual(["r1"])
+  })
+
+  it("newer updatedAt in incoming wins (rename flows through on pull)", async () => {
+    let n = 0
+    const client = mockClient({
+      pull: async () => {
+        n++
+        if (n === 1) return { data: { objects: [{ id: "r1", updatedAt: 1000, title: "Old" }] }, hash: "h1", timestamp: 100 }
+        return { data: { objects: [{ id: "r1", updatedAt: 2000, title: "New" }] }, hash: "h2", timestamp: 200 }
+      },
+    })
+    const sync = new SyncManager({
+      client,
+      pullPath: "/pull/test",
+      pushPath: "/push/test",
+      onConflict: createUnionMerge({ idKey: "id", timestampKey: "updatedAt" }),
+    })
+    await sync.pull()
+    await sync.pull()
+    const item = (sync.getData().objects as Array<{ id: string; title: string }>)[0]
+    expect(item.title).toBe("New")
+  })
 })
 
 // ── setHash ───────────────────────────────────────────────────────────────────
