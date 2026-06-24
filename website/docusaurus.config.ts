@@ -18,8 +18,8 @@ const config: Config = {
   projectName: "Starfish",
   trailingSlash: false,
 
-  // Warn rather than throw during initial bring-up; tighten to 'throw' once clean.
-  onBrokenLinks: "warn",
+  onBrokenLinks: "throw",
+  onBrokenAnchors: "throw",
 
   // Parse .md files as CommonMark (not MDX) to handle prose tokens like
   // {identity}, <col>, <ts> that appear throughout the docs.
@@ -54,13 +54,12 @@ const config: Config = {
       "classic",
       {
         docs: {
-          // Point at the root docs/ folder (one level up from website/)
-          path: "../docs",
+          // Docs now live inside website/docs/ (Docusaurus default location)
           // Serve docs at the site root (no /docs/ prefix)
           routeBasePath: "/",
           sidebarPath: "./sidebars.ts",
           editUrl:
-            "https://github.com/Drakkar-Software/Starfish/edit/master/docs/",
+            "https://github.com/Drakkar-Software/Starfish/edit/master/website/docs/",
         },
         blog: false,
         theme: {
@@ -103,7 +102,7 @@ const config: Config = {
         {
           title: "Docs",
           items: [
-            { label: "Getting Started", to: "/ts/client/01-getting-started" },
+            { label: "Getting Started", to: "/getting-started/intro" },
             { label: "Migration v2 → v3", to: "/migration/v2-to-v3" },
           ],
         },

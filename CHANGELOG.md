@@ -1,6 +1,33 @@
 # Changelog
 
+## 3.0.0-alpha.36
+
+### `@drakkar.software/starfish-client`
+
+#### Fixed
+- **`SyncManager.pull()` / `ingest()` honor the configured `onConflict` resolver** — the
+  incremental-pull and revalidation-ingest paths hardcoded a remote-wins `deepMerge`
+  (arrays atomic), so a store built with a non-lossy resolver (e.g. `createUnionMerge`)
+  still lost array items whenever a pull/revalidation returned a shorter array — a stale
+  cache-fallback snapshot on 429/5xx, or a momentarily-short concurrent write. Both paths
+  now route through `this.onConflict` (the same resolver the push-409 retry already used)
+  against the established checkpoint baseline, so union-merge stores keep their items.
+  Stores without a custom resolver are unchanged (`onConflict` defaults to `deepMerge`);
+  E2EE incremental pulls now also merge-against-local instead of replacing wholesale.
+
 ## 3.0.0-alpha.35
+
+### Documentation
+
+#### Changed
+- **Docs reorganised into a curated Docusaurus IA** — all markdown moved from root `docs/`
+  into `website/docs/`. The flat `ts/<pkg>/` monorepo layout is replaced by 13
+  topic-focused categories: Getting Started, Client Core, State & Offline, Encryption &
+  Identity, Data Modeling & Collections, Integration & Operations, Server, WAL / CRDT,
+  Sharing, Webhook, Extensions, Python, Migration. Clean URLs (no numeric prefixes);
+  sidebar ordering encoded via `sidebar_position` frontmatter. All 320 internal cross-doc
+  links and 11 test-vector links rewritten; build passes with `onBrokenLinks`,
+  `onBrokenAnchors`, and `onBrokenMarkdownLinks` all set to `throw`.
 
 ### `starfish-protocol` (Python)
 

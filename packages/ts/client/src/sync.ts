@@ -187,10 +187,13 @@ export class SyncManager {
    * action to absorb a background revalidation result (delivered via
    * {@link StarfishClientOptions.onRevalidated}) into the store.
    *
-   * Unlike {@link pull}, `ingest` never does a deep-merge with the previous
-   * checkpoint — the revalidated result is always a full fresh snapshot. It
-   * sets `lastFromCache = false` (a revalidation is a live response) so the
-   * binding can clear its `stale` flag.
+   * Like {@link pull}, `ingest` conflict-merges the snapshot against the
+   * established baseline via `this.onConflict` when a checkpoint exists — so a
+   * union-merge store does not lose array items when a revalidation result
+   * (e.g. a stale cache-fallback on 429/5xx) is a shorter snapshot. The first
+   * ingest (no checkpoint yet) takes the snapshot wholesale. Sets
+   * `lastFromCache = false` (a revalidation is a live response) so the binding
+   * can clear its `stale` flag.
    *
    * **Staleness guard**: if a `push()` advanced `lastCheckpoint` between the
    * time the revalidation request was sent and the time it resolves, the
@@ -206,13 +209,16 @@ export class SyncManager {
     // revalidation snapshot whose document timestamp is strictly less than the
     // current checkpoint is stale relative to a concurrent push.
     if (result.timestamp < this.lastCheckpoint) return
+    let incoming: Record<string, unknown>
     if (this.encryptor) {
-      const decrypted = await this.encryptor.decrypt(result.data)
+      incoming = await this.encryptor.decrypt(result.data)
       if (this.aborted) return
-      this.localData = decrypted
     } else {
-      this.localData = result.data
+      incoming = result.data
     }
+    // Honor the configured conflict resolver against the established baseline
+    // (same as pull()). The first ingest takes the snapshot wholesale.
+    this.localData = this.lastCheckpoint > 0 ? this.onConflict(this.localData, incoming) : incoming
     this.lastHash = result.hash
     this.lastCheckpoint = result.timestamp
     this.lastFromCache = false
@@ -234,17 +240,24 @@ export class SyncManager {
       // unreachable); a live response clears it. Surfaced as `stale` by the binding.
       this.lastFromCache = pullWasFromCache(result)
 
+      let incoming: Record<string, unknown>
       if (this.encryptor) {
-        const decrypted = await this.encryptor.decrypt(result.data)
+        incoming = await this.encryptor.decrypt(result.data)
         if (this.aborted) throw new AbortError()
-        this.localData = decrypted
-        result.data = decrypted
-      } else if (this.lastCheckpoint > 0) {
-        this.localData = deepMerge(this.localData, result.data)
-        result.data = this.localData
       } else {
-        this.localData = result.data
+        incoming = result.data
       }
+      // Honor the configured conflict resolver against the established baseline —
+      // the same resolver the push-conflict path (push 409 / resolve()) already
+      // uses. A union-merge store must not lose array items when a pull returns a
+      // shorter/stale snapshot (cache-fallback on 429/5xx or a momentarily-short
+      // concurrent write). The first pull (no checkpoint yet) takes the snapshot
+      // wholesale so a cache seed is superseded by a full resync.
+      // onConflict defaults to deepMerge ⇒ no behavior change for stores without
+      // a custom resolver (plaintext incremental merges and E2EE snapshots behave
+      // exactly as before).
+      this.localData = this.lastCheckpoint > 0 ? this.onConflict(this.localData, incoming) : incoming
+      result.data = this.localData
 
       this.lastHash = result.hash
       this.lastCheckpoint = result.timestamp
