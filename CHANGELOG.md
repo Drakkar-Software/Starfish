@@ -2,6 +2,11 @@
 
 ## 3.0.0-alpha.35
 
+### Documentation
+
+#### Added
+- **Bulk & Multi-Content Sync guide** (`docs/ts/client/31-bulk-multi-content-sync.md`) — comprehensive reference for moving many documents in as few round-trips as possible: `batchPull` / `batchPullMany` (one request, many collections and docs, per-doc error handling), bundle pull, `withKeyring`, the projection extension, list-then-batch pattern, fan-out push patterns (bounded-concurrency, restructure-into-one-doc, append-only), SSE-triggered invalidation, and `staleWhileRevalidate`. Includes a design note explaining why a GraphQL transport was not adopted. Client README index backfilled for docs 27–31.
+
 ### `@drakkar.software/starfish-client`
 
 #### Added

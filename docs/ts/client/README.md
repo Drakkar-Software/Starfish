@@ -68,6 +68,11 @@
 22. [Pairing](24-pairing.md) — bootstrap, in-person QR, and server-relay invite flows
 23. [Capability Certificates](25-capability-certs.md) — cap-cert schema, validation, minting
 24. [Identity Models](26-identity-models.md) — ed25519-only wire; secp256k1 root bootstrap via signature derivation
+25. [SSE Subscribe Transport](27-sse-subscribe.md) — real-time change notifications via Server-Sent Events
+26. [Anonymous Append](28-anonymous-append.md) — unauthenticated append-only writes
+27. [KV Pull Cache](29-kv-pull-cache.md) — persist pull results in any async KV store
+28. [WAL Client Adapters](30-wal-client-adapters.md) — WAL-backed sync adapters
+29. [Bulk & Multi-Content Sync](31-bulk-multi-content-sync.md) — `batchPull`, bundles, projection, fan-out push patterns
 
 Migrating from 2.x? Start with the runbook: [Migration: v2 to v3](../../migration/v2-to-v3.md).
 
@@ -100,5 +105,10 @@ Migrating from 2.x? Start with the runbook: [Migration: v2 to v3](../../migratio
 | [Pairing](24-pairing.md) | Bootstrap, in-person QR, and server-relay invite flows |
 | [Capability Certificates](25-capability-certs.md) | Cap-cert schema, validation, mint helpers |
 | [Identity Models](26-identity-models.md) | Ed25519-only wire; secp256k1 root bootstrap via signature derivation |
+| [SSE Subscribe Transport](27-sse-subscribe.md) | Real-time change notifications, auto-reconnect, backoff |
+| [Anonymous Append](28-anonymous-append.md) | Unauthenticated append-only writes |
+| [KV Pull Cache](29-kv-pull-cache.md) | Persist pull results in MMKV, AsyncStorage, localStorage, etc. |
+| [WAL Client Adapters](30-wal-client-adapters.md) | WAL-backed sync adapters |
+| [Bulk & Multi-Content Sync](31-bulk-multi-content-sync.md) | `batchPull`, bundles, projection, fan-out push patterns, freshness |
 
 For migration guidance, see [`docs/migration/v2-to-v3.md`](../../migration/v2-to-v3.md).
