@@ -109,7 +109,7 @@ export function SyncedApp({ creds }: { creds: DeviceCredentials | null }) {
 }
 
 function DataView({ store }: { store: NonNullable<ReturnType<typeof useSyncInit>> }) {
-  const { data } = useStarfish(store)
+  const data = useStarfishData(store)
   const status = useSyncStatus(store)
   return (
     <div>
@@ -139,18 +139,19 @@ export function Settings({
 }: {
   store: Awaited<typeof settingsStoreInit>
 }) {
-  const { data, syncing, pull, set } = useStarfish(store)
+  const theme = useStarfishData(store, (d) => d.theme as string | undefined)
+  const status = useSyncStatus(store)
 
   useEffect(() => {
-    pull()
-  }, [pull])
+    store.getState().pull()
+  }, [store])
 
   return (
     <button
-      disabled={syncing}
-      onClick={() => set((d) => ({ ...d, theme: "dark" }))}
+      disabled={status === "syncing"}
+      onClick={() => store.getState().set((d) => ({ ...d, theme: "dark" }))}
     >
-      Theme: {(data.theme as string) ?? "default"}
+      Theme: {theme ?? "default"}
     </button>
   )
 }

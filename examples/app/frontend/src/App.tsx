@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { CSSProperties, FormEvent, ReactNode } from "react"
 import { createUnionMerge } from "@drakkar.software/starfish-client"
 import {
   useConnectivity,
-  useStarfish,
   useStarfishData,
+  useStarfishState,
   useSyncInit,
   useSyncStatus,
 } from "@drakkar.software/starfish-client/zustand"
@@ -189,13 +189,13 @@ function initials(label: string): string {
   const t = label.trim()
   return (t ? t[0]! : "?").toUpperCase()
 }
-function Avatar({ seed, label, size = "md" }: { seed: string; label: string; size?: "sm" | "md" | "lg" }) {
+const Avatar = memo(function Avatar({ seed, label, size = "md" }: { seed: string; label: string; size?: "sm" | "md" | "lg" }) {
   return (
     <div className={`avatar ${size}`} style={avatarStyle(seed)} aria-hidden>
       {initials(label)}
     </div>
   )
-}
+})
 
 // ── Copyable read-only field ────────────────────────────────────────────────
 function CopyField({
@@ -240,6 +240,15 @@ function CopyField({
   )
 }
 
+// Module-level cache for pseudo fetches — shared across all usePseudos instances
+// (RoomChat and InvitePanel) so the same profile is never fetched twice.
+const _pseudoPromises = new Map<string, Promise<string | null>>()
+function cachedReadPseudo(id: string): Promise<string | null> {
+  let p = _pseudoPromises.get(id)
+  if (!p) { p = readPseudo(id); _pseudoPromises.set(id, p) }
+  return p
+}
+
 /** Resolve author pseudos from their public `profile` documents (cached). */
 function usePseudos(userIds: string[]): Record<string, string> {
   const [pseudos, setPseudos] = useState<Record<string, string>>({})
@@ -248,7 +257,7 @@ function usePseudos(userIds: string[]): Record<string, string> {
     const missing = userIds.filter((id) => !(id in pseudos))
     if (missing.length === 0) return
     let cancelled = false
-    Promise.all(missing.map(async (id) => [id, await readPseudo(id)] as const)).then((pairs) => {
+    Promise.all(missing.map(async (id) => [id, await cachedReadPseudo(id)] as const)).then((pairs) => {
       if (cancelled) return
       setPseudos((prev) => {
         const next = { ...prev }
@@ -621,8 +630,13 @@ function useRooms(session: Session, setSession: (s: Session) => void): RoomsApi 
   const [rooms, setRooms] = useState<string[]>(() => {
     if (!canManage) return session.roomId ? [session.roomId] : []
     try {
-      const saved = JSON.parse(localStorage.getItem(storeKey) || "[]")
-      const list: string[] = Array.isArray(saved) ? saved.filter((x) => typeof x === "string") : []
+      const raw = JSON.parse(localStorage.getItem(storeKey) || "null")
+      // Tolerate legacy format (bare array) and current format ({ v: 1, rooms: [...] })
+      const list: string[] = Array.isArray(raw)
+        ? raw.filter((x): x is string => typeof x === "string")
+        : Array.isArray(raw?.rooms)
+          ? (raw.rooms as unknown[]).filter((x): x is string => typeof x === "string")
+          : []
       return list.includes(session.roomId) ? list : [session.roomId, ...list]
     } catch {
       return session.roomId ? [session.roomId] : []
@@ -631,7 +645,7 @@ function useRooms(session: Session, setSession: (s: Session) => void): RoomsApi 
   const [roomError, setRoomError] = useState("")
 
   useEffect(() => {
-    if (canManage) localStorage.setItem(storeKey, JSON.stringify(rooms))
+    if (canManage) localStorage.setItem(storeKey, JSON.stringify({ v: 1, rooms }))
   }, [rooms, canManage, storeKey])
 
   useEffect(() => {
@@ -886,6 +900,42 @@ function StatusPill({ status }: { status: string }) {
   )
 }
 
+// ── Composer (isolated text state — typing doesn't re-render the message list) ─
+function Composer({ canWrite, onSend }: { canWrite: boolean; onSend: (text: string) => void }) {
+  const [text, setText] = useState("")
+  const handleSubmit = (e: FormEvent) => {
+    e.preventDefault()
+    const t = text.trim()
+    if (!t || !canWrite) return
+    setText("")
+    onSend(t)
+  }
+  return (
+    <>
+      {!canWrite && (
+        <div className="lock-note">
+          <IconLock size={15} /> You were invited read-only — sending is disabled.
+        </div>
+      )}
+      <form className="composer" onSubmit={handleSubmit}>
+        <div className={`pill ${canWrite ? "" : "locked"}`}>
+          {!canWrite && <IconLock size={15} style={{ color: "var(--muted)" }} />}
+          <input
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder={canWrite ? "Type a message…" : "Read-only — you can't post here"}
+            disabled={!canWrite}
+            aria-label="Message"
+          />
+        </div>
+        <button type="submit" className="send" disabled={!canWrite || !text.trim()} aria-label="Send">
+          <IconSend size={18} />
+        </button>
+      </form>
+    </>
+  )
+}
+
 function RoomChat({
   store,
   session,
@@ -902,15 +952,19 @@ function RoomChat({
   // Select the raw value (stable reference) — defaulting to `[]` inside the
   // selector would return a new array each render and loop forever.
   const rawMessages = useStarfishData(store, (d) => d.messages as ChatMessage[] | undefined)
-  const messages = rawMessages ?? []
+  // Memoize ordering so a re-render from status/error doesn't re-sort
+  const ordered = useMemo(
+    () => (rawMessages ?? []).toSorted((a, b) => a.ts - b.ts),
+    [rawMessages],
+  )
   const status = useSyncStatus(store)
-  const error = useStarfish(store).error
+  // Fine-grained selector — avoids re-renders on hash/stale/syncing transitions
+  const error = useStarfishState(store, (s) => s.error)
   useConnectivity(store)
-  const [text, setText] = useState("")
   const [confirmLeave, setConfirmLeave] = useState(false)
   const endRef = useRef<HTMLDivElement>(null)
 
-  const authorIds = useMemo(() => [...new Set(messages.map((m) => m.from))], [messages])
+  const authorIds = useMemo(() => [...new Set(ordered.map((m) => m.from))], [ordered])
   const pseudos = usePseudos(authorIds)
   const members = useMembers(session, memberRefresh)
   const isOwner = session.role === "owner"
@@ -932,13 +986,9 @@ function RoomChat({
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" })
-  }, [messages.length])
+  }, [ordered.length])
 
-  const onSend = (e: FormEvent) => {
-    e.preventDefault()
-    const t = text.trim()
-    if (!t || !session.canWrite) return
-    setText("")
+  const sendMessage = useCallback((t: string) => {
     store.getState().set((d) => {
       const msgs = (d.messages as ChatMessage[] | undefined) ?? []
       return {
@@ -949,7 +999,7 @@ function RoomChat({
         ],
       }
     })
-  }
+  }, [store, session.userId, session.name])
 
   const meta =
     members.length > 0 ? `end-to-end encrypted · ${members.length + 1} member${members.length ? "s" : ""}` : "end-to-end encrypted"
@@ -998,57 +1048,36 @@ function RoomChat({
       </header>
 
       <div className="messages">
-        {messages.length === 0 ? (
+        {ordered.length === 0 ? (
           <div className="empty">
             <div className="glyph">🐚</div>
             <div className="big">No messages yet</div>
             <div className="note">{session.canWrite ? "Say hello 👋" : "Waiting for the room to fill up."}</div>
           </div>
         ) : (
-          [...messages]
-            .sort((a, b) => a.ts - b.ts)
-            .map((m) => {
-              const me = m.from === session.userId
-              const who = pseudos[m.from] ?? m.name
-              return (
-                <div key={m.id} className={`msg ${me ? "me" : ""}`}>
-                  {!me && <Avatar seed={m.from} label={who} size="sm" />}
-                  <div className="stack">
-                    <div className="meta">
-                      {!me && <span className="who">{who}</span>}
-                      <span className="when">
-                        {new Date(m.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                      </span>
-                    </div>
-                    <div className="bubble">{m.text}</div>
+          ordered.map((m) => {
+            const me = m.from === session.userId
+            const who = pseudos[m.from] ?? m.name
+            return (
+              <div key={m.id} className={`msg ${me ? "me" : ""}`}>
+                {!me && <Avatar seed={m.from} label={who} size="sm" />}
+                <div className="stack">
+                  <div className="meta">
+                    {!me && <span className="who">{who}</span>}
+                    <span className="when">
+                      {new Date(m.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                    </span>
                   </div>
+                  <div className="bubble">{m.text}</div>
                 </div>
-              )
-            })
+              </div>
+            )
+          })
         )}
         <div ref={endRef} />
       </div>
 
-      {!session.canWrite && (
-        <div className="lock-note">
-          <IconLock size={15} /> You were invited read-only — sending is disabled.
-        </div>
-      )}
-      <form className="composer" onSubmit={onSend}>
-        <div className={`pill ${session.canWrite ? "" : "locked"}`}>
-          {!session.canWrite && <IconLock size={15} style={{ color: "var(--muted)" }} />}
-          <input
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            placeholder={session.canWrite ? "Type a message…" : "Read-only — you can't post here"}
-            disabled={!session.canWrite}
-            aria-label="Message"
-          />
-        </div>
-        <button type="submit" className="send" disabled={!session.canWrite || !text.trim()} aria-label="Send">
-          <IconSend size={18} />
-        </button>
-      </form>
+      <Composer canWrite={session.canWrite} onSend={sendMessage} />
       {error && <p className="err" style={{ margin: "0 22px 14px" }}>{error}</p>}
     </>
   )
@@ -1625,10 +1654,16 @@ function PremiumPanel({ session }: { session: Session }) {
 function ActivityPanel() {
   const [rows, setRows] = useState<AuditRow[]>([])
   useEffect(() => {
-    const tick = () => void fetchAudit().then(setRows)
+    const tick = () => { if (!document.hidden) void fetchAudit().then(setRows) }
     tick()
     const t = setInterval(tick, 3000)
-    return () => clearInterval(t)
+    // Re-fetch immediately when the tab becomes visible again
+    const onVisible = () => { if (!document.hidden) tick() }
+    document.addEventListener("visibilitychange", onVisible)
+    return () => {
+      clearInterval(t)
+      document.removeEventListener("visibilitychange", onVisible)
+    }
   }, [])
   const recent = [...rows].slice(-25).reverse()
   return (

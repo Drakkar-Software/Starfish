@@ -339,6 +339,14 @@ export function useStarfish(store: StoreApi<StarfishStore>): StarfishStore {
   return useStore(store)
 }
 
+/** Subscribe to a fine-grained slice of Starfish store state. Avoids re-renders on unrelated field changes. */
+export function useStarfishState<T>(
+  store: StoreApi<StarfishStore>,
+  selector: (state: StarfishState) => T,
+): T {
+  return useStore(store, selector)
+}
+
 /** Use only the synced data, with an optional selector for fine-grained subscriptions. */
 export function useStarfishData<T = Record<string, unknown>>(
   store: StoreApi<StarfishStore>,
@@ -436,10 +444,10 @@ export function useLastSynced(store: StoreApi<StarfishStore>): string {
     return unsub
   }, [store, computeLabel])
 
-  // Update label periodically
+  // Update label periodically — skip when the tab is hidden
   useEffect(() => {
     const timer = setInterval(() => {
-      setLabel(computeLabel())
+      if (!document.hidden) setLabel(computeLabel())
     }, 5000)
     return () => clearInterval(timer)
   }, [computeLabel])

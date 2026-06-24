@@ -6,6 +6,7 @@ import type { StarfishStore, StarfishLogStore } from "../src/bindings/zustand.js
 import {
   useStarfish,
   useStarfishData,
+  useStarfishState,
   useSyncStatus,
   useSyncInit,
   deriveSyncStatus,
@@ -123,6 +124,37 @@ describe("useStarfishData", () => {
     )
 
     expect(result.current).toBe("dark")
+  })
+})
+
+describe("useStarfishState", () => {
+  it("returns the selected state slice", () => {
+    const store = createMockStore({ error: "oops" })
+    const { result } = renderHook(() => useStarfishState(store, (s) => s.error))
+    expect(result.current).toBe("oops")
+  })
+
+  it("updates when the selected field changes", () => {
+    const store = createMockStore({ online: true })
+    const { result } = renderHook(() => useStarfishState(store, (s) => s.online))
+    expect(result.current).toBe(true)
+    act(() => { store.setState({ online: false }) })
+    expect(result.current).toBe(false)
+  })
+
+  it("does not re-render when an unrelated field changes", () => {
+    const store = createMockStore({ error: null })
+    let renderCount = 0
+    const { result } = renderHook(() => {
+      renderCount++
+      return useStarfishState(store, (s) => s.error)
+    })
+    const countAfterMount = renderCount
+    act(() => { store.setState({ syncing: true }) })
+    act(() => { store.setState({ dirty: true }) })
+    // error didn't change — no extra renders beyond the initial
+    expect(result.current).toBeNull()
+    expect(renderCount).toBe(countAfterMount)
   })
 })
 

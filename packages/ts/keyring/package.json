@@ -1,6 +1,6 @@
 {
   "name": "@drakkar.software/starfish-keyring",
-  "version": "3.0.0-alpha.36",
+  "version": "3.0.0-alpha.37",
   "repository": {
     "type": "git",
     "url": "https://github.com/Drakkar-Software/starfish.git",
@@ -11,6 +11,7 @@
   },
   "description": "Starfish multi-recipient encryption layer (delegated encryption, keyring documents, recipient management)",
   "type": "module",
+  "sideEffects": false,
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {

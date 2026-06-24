@@ -441,6 +441,8 @@ button {
   align-items: flex-end;
   max-width: 76%;
   animation: msg-in 0.32s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  content-visibility: auto;
+  contain-intrinsic-block-size: 56px;
 }
 
 @keyframes msg-in {
@@ -1297,6 +1299,8 @@ button {
   padding: 9px 0;
   border-bottom: 1px solid var(--line);
   font-size: 13px;
+  content-visibility: auto;
+  contain-intrinsic-block-size: 38px;
 }
 
 .feed-row:last-child {

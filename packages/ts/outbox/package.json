@@ -1,6 +1,6 @@
 {
   "name": "@drakkar.software/starfish-outbox",
-  "version": "3.0.0-alpha.36",
+  "version": "3.0.0-alpha.37",
   "repository": {
     "type": "git",
     "url": "https://github.com/Drakkar-Software/starfish.git",
@@ -11,6 +11,7 @@
   },
   "description": "Starfish durable offline write-queue \u2014 dedup-by-id, claim, retry/backoff, reconnect-drain, persisted per identity, framework-free",
   "type": "module",
+  "sideEffects": false,
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {

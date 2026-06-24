@@ -1,6 +1,6 @@
 {
   "name": "@drakkar.software/starfish-server",
-  "version": "3.0.0-alpha.36",
+  "version": "3.0.0-alpha.37",
   "repository": {
     "type": "git",
     "url": "https://github.com/Drakkar-Software/starfish.git",
@@ -11,6 +11,7 @@
   },
   "description": "TypeScript server for the Starfish sync protocol (Hono / Cloudflare Workers compatible)",
   "type": "module",
+  "sideEffects": false,
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {

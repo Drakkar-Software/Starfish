@@ -139,6 +139,34 @@ function ThemeBadge() {
 }
 ```
 
+#### `useStarfishState(store, selector)` — sync-state selectors
+
+Use `useStarfishState` when you need a single sync-state field (`error`, `syncing`, `online`, `dirty`, `stale`) without subscribing to the whole store or to `data`. It only re-renders the component when the selected value changes.
+
+```tsx
+import {
+  useStarfishState,
+  useStarfishData,
+} from "@drakkar.software/starfish-client/zustand"
+
+function ErrorBanner({ store }: { store: StoreApi<StarfishStore> }) {
+  const error = useStarfishState(store, (s) => s.error)
+  if (!error) return null
+  return <p style={{ color: "red" }}>{error}</p>
+}
+```
+
+Use `useStarfishData(store, selector)` for the `data` field (it uses the same selector pattern). Both hooks compose well in a single component:
+
+```tsx
+function RoomChat({ store }: { store: StoreApi<StarfishStore> }) {
+  const messages = useStarfishData(store, (d) => d.messages as Message[])
+  const error    = useStarfishState(store, (s) => s.error)
+  // Re-renders only when messages or error changes — not on every pull/hash update.
+  ...
+}
+```
+
 The store includes `subscribeWithSelector` middleware, so you can also subscribe programmatically:
 
 ```ts

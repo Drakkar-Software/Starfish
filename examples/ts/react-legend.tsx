@@ -7,7 +7,7 @@
  *   npm install @drakkar.software/starfish-client @legendapp/state react
  */
 
-import { useEffect } from "react"
+import { useState, useEffect } from "react"
 import { observer, useSelector } from "@legendapp/state/react"
 import {
   StarfishClient,
@@ -19,9 +19,11 @@ import {
   type Encryptor,
   type StarfishCapProvider,
   type DeviceCredentials,
-  type Keyring,
 } from "@drakkar.software/starfish-client"
-import { createStarfishObservable } from "@drakkar.software/starfish-client/legend"
+import {
+  createStarfishObservable,
+  type StarfishLegendStore,
+} from "@drakkar.software/starfish-client/legend"
 
 function makeCapProvider(creds: DeviceCredentials): StarfishCapProvider {
   return {
@@ -80,28 +82,37 @@ const setupPromise = (async () => {
     }),
   })
 
-  return { settingsStore, notesStore, keyring, creds }
+  return { settingsStore, notesStore }
 })()
 
-// In a real app, await this once at startup before rendering components.
-// Demonstration only — components below assume the stores are resolved.
-let settingsStore: Awaited<typeof setupPromise>["settingsStore"] | null = null
-let notesStore: Awaited<typeof setupPromise>["notesStore"] | null = null
-let initializedKeyring: Keyring | null = null
-setupPromise.then((s) => {
-  settingsStore = s.settingsStore
-  notesStore = s.notesStore
-  initializedKeyring = s.keyring
-  void initializedKeyring
-})
+// ---------------------------------------------------------------------------
+// AppShell — waits for the async setup (identity + keypair derivation) before
+// rendering. Passes resolved stores as props so child components receive
+// non-null stores and can call hooks unconditionally.
+// ---------------------------------------------------------------------------
+
+export function AppShell() {
+  const [stores, setStores] = useState<Awaited<typeof setupPromise> | null>(null)
+  useEffect(() => {
+    setupPromise.then(setStores)
+  }, [])
+  if (!stores) return <p>Loading…</p>
+  return (
+    <>
+      <Settings store={stores.settingsStore} />
+      <Notes store={stores.notesStore} />
+      <ThemeBadge store={stores.settingsStore} />
+    </>
+  )
+}
 
 // ---------------------------------------------------------------------------
 // Components — wrap with observer() to auto-subscribe to observables.
+// Hooks are called unconditionally; the loading guard is in AppShell.
 // ---------------------------------------------------------------------------
 
-export const Settings = observer(function Settings() {
-  if (!settingsStore) return <p>Loading…</p>
-  const { state, pull, set } = settingsStore
+export const Settings = observer(function Settings({ store }: { store: StarfishLegendStore }) {
+  const { state, pull, set } = store
 
   useEffect(() => {
     pull()
@@ -120,9 +131,8 @@ export const Settings = observer(function Settings() {
   )
 })
 
-export const Notes = observer(function Notes() {
-  if (!notesStore) return <p>Loading…</p>
-  const { state, pull, set, flush } = notesStore
+export const Notes = observer(function Notes({ store }: { store: StarfishLegendStore }) {
+  const { state, pull, set, flush } = store
 
   useEffect(() => {
     pull()
@@ -159,9 +169,7 @@ export const Notes = observer(function Notes() {
 })
 
 // Fine-grained subscription — only re-renders when theme changes.
-export function ThemeBadge() {
-  const theme = useSelector(() =>
-    settingsStore ? (settingsStore.state.data.get()["theme"] as string | undefined) : undefined,
-  )
+export function ThemeBadge({ store }: { store: StarfishLegendStore }) {
+  const theme = useSelector(() => store.state.data.get()["theme"] as string | undefined)
   return <span>{theme ?? "default"}</span>
 }

@@ -351,6 +351,7 @@ interface RevEntry {
   exp: number
 }
 interface RevLedger {
+  v: 1
   generation: number
   revoked: RevEntry[]
 }
@@ -361,12 +362,12 @@ function loadRevLedger(userId: string): RevLedger {
   try {
     const raw = JSON.parse(localStorage.getItem(revLedgerKey(userId)) ?? "")
     if (raw && typeof raw.generation === "number" && Array.isArray(raw.revoked)) {
-      return { generation: raw.generation, revoked: raw.revoked }
+      return { v: 1, generation: raw.generation, revoked: raw.revoked }
     }
   } catch {
     /* missing/invalid ledger → start fresh */
   }
-  return { generation: 0, revoked: [] }
+  return { v: 1, generation: 0, revoked: [] }
 }
 
 async function postRevocation(list: Record<string, unknown>): Promise<void> {
@@ -400,7 +401,7 @@ async function revokeCap(keys: DeviceKeys, userId: string, target: RevEntry): Pr
     revoked,
   })
   await postRevocation(list as unknown as Record<string, unknown>)
-  localStorage.setItem(revLedgerKey(userId), JSON.stringify({ generation, revoked }))
+  localStorage.setItem(revLedgerKey(userId), JSON.stringify({ v: 1, generation, revoked }))
 }
 
 /**
@@ -439,7 +440,7 @@ export async function revokeMember(
     { rotate: true, revoke: true },
   )
   const revoked = [...priorRevoked, { sub: member.sub, nonce: member.nonce, exp: member.exp }]
-  localStorage.setItem(revLedgerKey(userId), JSON.stringify({ generation, revoked }))
+  localStorage.setItem(revLedgerKey(userId), JSON.stringify({ v: 1, generation, revoked }))
   return buildEncryptor(chatClient, keys, roomId)
 }
 
@@ -518,10 +519,14 @@ export function leaveRoomLocal(userId: string, roomId: string): void {
   try {
     localStorage.removeItem(`chat-${userId}-${roomId}`)
     const rk = `starfish-rooms-${userId}`
-    const list = JSON.parse(localStorage.getItem(rk) ?? "[]")
-    if (Array.isArray(list)) {
-      localStorage.setItem(rk, JSON.stringify(list.filter((x) => x !== roomId)))
-    }
+    const raw = JSON.parse(localStorage.getItem(rk) ?? "null")
+    // Tolerate legacy format (bare array) and current format ({ v: 1, rooms: [...] })
+    const list: string[] = Array.isArray(raw)
+      ? raw.filter((x): x is string => typeof x === "string")
+      : Array.isArray(raw?.rooms)
+        ? (raw.rooms as unknown[]).filter((x): x is string => typeof x === "string")
+        : []
+    localStorage.setItem(rk, JSON.stringify({ v: 1, rooms: list.filter((x) => x !== roomId) }))
   } catch {
     /* ignore storage errors */
   }

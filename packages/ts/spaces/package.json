@@ -1,6 +1,6 @@
 {
   "name": "@drakkar.software/starfish-spaces",
-  "version": "3.0.0-alpha.36",
+  "version": "3.0.0-alpha.37",
   "repository": {
     "type": "git",
     "url": "https://github.com/Drakkar-Software/starfish.git",
@@ -11,6 +11,7 @@
   },
   "description": "Starfish spaces extension — generic multi-user spaces with roster, object tree, invite flows, E2EE keyrings, and a server role-enricher.",
   "type": "module",
+  "sideEffects": false,
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {

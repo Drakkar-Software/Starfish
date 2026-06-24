@@ -1,5 +1,28 @@
 # Changelog
 
+## 3.0.0-alpha.37
+
+### React performance
+
+#### Added
+- **`useStarfishState(store, selector)` hook** — fine-grained selector for sync-state fields (`error`, `syncing`, `online`, `dirty`, `stale`). Re-renders the component only when the selected value changes, unlike the broad `useStarfish` subscription. Exported from `@drakkar.software/starfish-client/zustand`.
+- **`./suspense` export** — `createSuspenseResource` is now reachable as `@drakkar.software/starfish-client/suspense`.
+- **`"sideEffects": false`** added to all 16 TypeScript packages, enabling consumers' bundlers to tree-shake unused exports.
+- **`document.hidden` guard in `useLastSynced`** — the 5 s label-refresh interval now skips ticks while the browser tab is hidden.
+
+#### Fixed
+- **Rules of Hooks violation in `react-legend.tsx` example** — `Settings` / `Notes` called hooks after a conditional early-return. Replaced with an `AppShell` component that waits for async store setup via `useState`/`useEffect` and passes resolved stores as props, so all hooks run unconditionally.
+- **`react-zustand.tsx` example uses fine-grained selectors** — `DataView`/`Settings` previously subscribed to the full store via `useStarfish`; now use `useStarfishData(store, selector)` and `useSyncStatus`, matching the documented pattern.
+- **Message list re-renders on every keystroke** — extracted a `<Composer>` component (owns `text` state + form) in `examples/app/frontend`. Typing only re-renders the composer; the message list is stable.
+- **Memoised sort in `RoomChat`** — `[...messages].sort(...)` inside render replaced with `useMemo(() => messages.toSorted(...), [messages])`.
+- **`Avatar` wrapped in `React.memo`** — avoids recomputing `hashHue`/`avatarStyle` when unrelated state changes.
+- **`RoomChat.error` uses fine-grained selector** — `useStarfish(store).error` replaced with `useStarfishState(store, s => s.error)`; no longer re-renders on every hash/stale/syncing transition.
+- **`ActivityPanel` pauses polling when tab hidden** — `visibilitychange` listener skips the audit fetch tick while `document.hidden` is true.
+- **Versioned localStorage schemas** — `starfish-rooms-*` now written as `{ v: 1, rooms: [...] }`; rev-ledger payloads include `v: 1`. Both reads tolerate the previous bare-array / legacy shape for backward compatibility.
+- **`content-visibility: auto`** applied to `.msg` and `.feed-row` in `examples/app/frontend/styles.css`, reducing layout/paint cost for long lists.
+- **Frontend `tsconfig.json` bumped to `ES2023`** — enables `Array.prototype.toSorted()` typing without a polyfill.
+- **Request deduplication in `usePseudos`** — module-level `Map<string, Promise<...>>` cache in `App.tsx` prevents duplicate in-flight requests for the same author ID.
+
 ## 3.0.0-alpha.36
 
 ### `@drakkar.software/starfish-client`
