@@ -5,6 +5,7 @@
 ### Documentation
 
 #### Added
+- **Docusaurus documentation site** (`website/`) — Docusaurus 3 static site built over the root `docs/` folder plus all 28 package `README.md` files synced as package API reference pages. Includes sidebar category labels, a landing page (`docs/index.md`), and a GitHub Actions workflow (`.github/workflows/deploy-docs.yml`) that builds and deploys to GitHub Pages at `https://drakkar-software.github.io/Starfish/` on every push to `master` that touches docs or website files. Markdown files are parsed as CommonMark so prose tokens like `{identity}` and `<col>` don't break the build. (**Note:** requires one-time manual step in GitHub repo Settings → Pages → Source = GitHub Actions to activate deployment.)
 - **Bulk & Multi-Content Sync guide** (`docs/ts/client/31-bulk-multi-content-sync.md`) — comprehensive reference for moving many documents in as few round-trips as possible: `batchPull` / `batchPullMany` (one request, many collections and docs, per-doc error handling), bundle pull, `withKeyring`, the projection extension, list-then-batch pattern, fan-out push patterns (bounded-concurrency, restructure-into-one-doc, append-only), SSE-triggered invalidation, and `staleWhileRevalidate`. Includes a design note explaining why a GraphQL transport was not adopted. Client README index backfilled for docs 27–31.
 
 ### `@drakkar.software/starfish-client`
