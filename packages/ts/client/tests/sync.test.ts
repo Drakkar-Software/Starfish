@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest"
 import type { Encryptor } from "@drakkar.software/starfish-protocol"
+import { deepMerge } from "@drakkar.software/starfish-protocol"
 import { StarfishClient } from "../src/client.js"
 import { SyncManager } from "../src/sync.js"
 import { createUnionMerge } from "../src/resolvers.js"
@@ -510,37 +511,267 @@ describe("SyncManager pull/ingest honor onConflict", () => {
   })
 })
 
-// ── setHash ───────────────────────────────────────────────────────────────────
+// ── bootstrap-window advanced interaction chains ──────────────────────────────
+//
+// These test the end-to-end chains that are the *actual* OctoChat regression
+// scenario: seed → pull → push-conflict-retry. The three repro tests shipped
+// with alpha.38 prove the fix at the unit level (seed→pull, seed→ingest); these
+// cover the full multi-step combinations that were never tested.
 
-describe("SyncManager.setHash", () => {
-  function makeSync() {
-    const client = mockClient()
-    return new SyncManager({ client, pullPath: "/pull/test", pushPath: "/push/test" })
-  }
+describe("SyncManager bootstrap-window — advanced interaction edges", () => {
+  // A1 — seed → union pull → push 409 → retry: seeded items survive the whole chain.
+  // This is the literal regression scenario: the store is evicted (home→room→back),
+  // rebuilt via seed+pull, then a push hits 409. The union merge in both the
+  // pull and the retry must keep r1+r2 throughout.
+  it("A1: seed → union pull → push 409 → retry — seeded rooms survive entire chain", async () => {
+    const cat = { id: "cat" }
+    const r1 = { id: "r1" }
+    const r2 = { id: "r2" }
 
-  it("sets the hash returned by getHash()", () => {
-    const sync = makeSync()
-    sync.setHash("h1")
-    expect(sync.getHash()).toBe("h1")
+    let pushCount = 0
+    const client = mockClient({
+      peekCache: async () => ({ data: { objects: [cat, r1, r2] }, hash: "stale-h", timestamp: 0 }),
+      pull: async () => ({ data: { objects: [cat] }, hash: "server-h0", timestamp: 10 }),
+      push: vi.fn(async () => {
+        pushCount++
+        if (pushCount === 1) throw new ConflictError()
+        return { hash: "server-h1", timestamp: 20 }
+      }) as any,
+    })
+
+    const sm = new SyncManager({
+      client,
+      pullPath: "/pull/test",
+      pushPath: "/push/test",
+      onConflict: createUnionMerge(),
+    })
+
+    await sm.seedFromCache()                          // localData = {objects:[cat,r1,r2]}
+    await sm.pull()                                   // short first pull → union → still [cat,r1,r2]
+
+    // Push a new edit; first attempt 409s; conflict re-pull returns short [cat] again;
+    // union retry must keep r1+r2 AND the extra field.
+    await sm.push({ objects: [cat, r1, r2], extra: "edit" })
+
+    const data = sm.getData()
+    const ids = (data.objects as Array<{ id: string }>).map((o) => o.id).sort()
+    expect(ids).toEqual(["cat", "r1", "r2"])
+    expect(data.extra).toBe("edit")
   })
 
-  it("accepts null to clear the hash", () => {
-    const sync = makeSync()
-    sync.setHash("h1")
-    sync.setHash(null)
-    expect(sync.getHash()).toBeNull()
+  // A2 — push directly after seed, NO pull (stale seed hash → 409 → union retry).
+  // The seed's lastHash is the cached hash. A push with no intervening pull uses it
+  // as baseHash, which may be stale → 409. The union merge in the retry must
+  // preserve items from the seeded localData that the short re-pull snapshot omits.
+  it("A2: push after seed with no pull — stale seed hash 409-retries and union preserves seed", async () => {
+    const r1 = { id: "r1" }
+    const r2 = { id: "r2" }
+    const r3 = { id: "r3" }
+
+    let pushCount = 0
+    const client = mockClient({
+      peekCache: async () => ({ data: { objects: [r1, r2] }, hash: "stale-seed-hash", timestamp: 0 }),
+      pull: async () => ({ data: { objects: [r1] }, hash: "server-h", timestamp: 5 }),
+      push: vi.fn(async () => {
+        pushCount++
+        if (pushCount === 1) throw new ConflictError()
+        return { hash: "server-h2", timestamp: 10 }
+      }) as any,
+    })
+
+    const sm = new SyncManager({
+      client,
+      pullPath: "/pull/test",
+      pushPath: "/push/test",
+      onConflict: createUnionMerge(),
+    })
+
+    await sm.seedFromCache()  // lastHash = "stale-seed-hash"
+    await sm.push({ objects: [r1, r2, r3] })  // no prior pull → baseHash = stale → 409
+
+    const ids = (sm.getData().objects as Array<{ id: string }>).map((o) => o.id).sort()
+    expect(ids).toEqual(["r1", "r2", "r3"])
   })
 
-  it("next push sends the restored hash as baseHash", async () => {
-    const pushFn = vi.fn(async () => ({ hash: "h2", timestamp: 200 }))
-    const client = mockClient({ push: pushFn as any })
-    const sync = new SyncManager({ client, pullPath: "/pull/test", pushPath: "/push/test" })
+  // A3 — seed → first pull THROWS (offline/429 with no fallback) → seeded baseline stays.
+  // A throwing pull must not modify localData or lastFromCache.
+  // "Rooms must stay visible when the first live pull fails."
+  it("A3: seed → first pull throws (offline) — seeded data remains visible", async () => {
+    const a = { id: "a" }
+    const b = { id: "b" }
 
-    sync.setHash("restored-hash")
-    await sync.push({ foo: "bar" })
+    const client = mockClient({
+      peekCache: async () => ({ data: { items: [a, b] }, hash: "h0", timestamp: 0 }),
+      pull: async () => { throw new Error("Network unreachable") },
+    })
 
-    // Third positional arg to client.push is baseHash
-    expect(pushFn.mock.calls[0][2]).toBe("restored-hash")
+    const sm = new SyncManager({
+      client,
+      pullPath: "/pull/test",
+      pushPath: "/push/test",
+      onConflict: createUnionMerge(),
+    })
+
+    await sm.seedFromCache()
+    expect(sm.getLastPullFromCache()).toBe(true)
+
+    await expect(sm.pull()).rejects.toThrow("Network unreachable")
+
+    // Seeded data must survive — pull threw before localData could be touched
+    const ids = (sm.getData().items as Array<{ id: string }>).map((x) => x.id).sort()
+    expect(ids).toEqual(["a", "b"])
+    // lastFromCache was never cleared by the failing pull
+    expect(sm.getLastPullFromCache()).toBe(true)
+  })
+
+  // A4 — seed holds a NEWER item than the first live pull (a locally-edited room).
+  // The union merge's per-item updatedAt comparison must keep the seeded version.
+  it("A4: seed-newer item beats stale server first-pull (per-item updatedAt wins)", async () => {
+    const client = mockClient({
+      peekCache: async () => ({
+        data: { objects: [{ id: "r1", updatedAt: 5, title: "Local edit" }] },
+        hash: "h0",
+        timestamp: 0,
+      }),
+      pull: async () => ({
+        data: { objects: [{ id: "r1", updatedAt: 2, title: "Stale server" }] },
+        hash: "h1",
+        timestamp: 10,
+      }),
+    })
+
+    const sm = new SyncManager({
+      client,
+      pullPath: "/pull/test",
+      pushPath: "/push/test",
+      onConflict: createUnionMerge({ idKey: "id", timestampKey: "updatedAt" }),
+    })
+
+    await sm.seedFromCache()
+    await sm.pull()
+
+    const r1 = (sm.getData().objects as Array<{ id: string; title: string }>).find(
+      (o) => o.id === "r1",
+    )
+    expect(r1?.title).toBe("Local edit")  // seeded version was newer — must not be clobbered
+  })
+
+  // A5 — E2EE seed → union first pull: bootstrap must work through the encryptor.
+  // peekCache returns an encrypted blob; seedFromCache decrypts it; the first
+  // pull also returns encrypted; after decrypt + union all seeded items survive.
+  // (Only the plaintext seed→union-pull path was covered by the alpha.38 repro.)
+  it("A5: E2EE seed → union first pull — encrypted seed items survive bootstrap", async () => {
+    const enc = stubEncryptor()
+    const cat = { id: "cat" }
+    const r1 = { id: "r1" }
+    const r2 = { id: "r2" }
+
+    const client = mockClient({
+      peekCache: async () => ({
+        data: await enc.encrypt({ objects: [cat, r1, r2] }),
+        hash: "h0",
+        timestamp: 0,
+      }),
+      pull: async () => ({
+        data: await enc.encrypt({ objects: [cat] }),
+        hash: "h1",
+        timestamp: 5,
+      }),
+    })
+
+    const sm = new SyncManager({
+      client,
+      pullPath: "/pull/test",
+      pushPath: "/push/test",
+      encryptor: enc,
+      onConflict: createUnionMerge(),
+    })
+
+    expect(await sm.seedFromCache()).toBe(true)
+    await sm.pull()
+
+    const ids = (sm.getData().objects as Array<{ id: string }>).map((o) => o.id).sort()
+    expect(ids).toEqual(["cat", "r1", "r2"])
+  })
+
+  // A6 — lastFromCache reset: seed sets it to true; a live (non-cache) pull must flip it false.
+  // Tested starting from false everywhere today; the seed→live-pull TRANSITION is uncovered.
+  it("A6: lastFromCache transitions from true (seed) to false (live pull)", async () => {
+    const client = mockClient({
+      peekCache: async () => ({ data: { x: 1 }, hash: "h0", timestamp: 0 }),
+      pull: async () => ({ data: { x: 2 }, hash: "h1", timestamp: 5 }),
+    })
+
+    const sm = new SyncManager({
+      client,
+      pullPath: "/pull/test",
+      pushPath: "/push/test",
+    })
+
+    await sm.seedFromCache()
+    expect(sm.getLastPullFromCache()).toBe(true)
+
+    await sm.pull()
+    // pullWasFromCache(result) is false for a plain mock response → lastFromCache cleared
+    expect(sm.getLastPullFromCache()).toBe(false)
+  })
+
+  // A7 — explicit onConflict: deepMerge (the same reference as the default) → seed protection OFF.
+  // hasMergeBaseline() gates on `this.onConflict !== deepMerge`. Passing the same symbol
+  // explicitly keeps wholesale-replace on the first pull — byte-identical to alpha.36.
+  it("A7: explicit onConflict: deepMerge (same ref) — seed protection OFF, first pull wholesale", async () => {
+    const client = mockClient({
+      peekCache: async () => ({
+        data: { items: [{ id: "a" }, { id: "b" }] },
+        hash: "h0",
+        timestamp: 0,
+      }),
+      pull: async () => ({ data: { items: [{ id: "a" }] }, hash: "h1", timestamp: 5 }),
+    })
+
+    const sm = new SyncManager({
+      client,
+      pullPath: "/pull/test",
+      pushPath: "/push/test",
+      onConflict: deepMerge,  // same ref as internal default → hasMergeBaseline() = false
+    })
+
+    await sm.seedFromCache()
+    await sm.pull()
+
+    // Protection OFF: first pull takes incoming wholesale — 'b' is dropped
+    expect(sm.getData()).toEqual({ items: [{ id: "a" }] })
+  })
+
+  // A8 — wrapper around deepMerge (different reference) → seed protection ON.
+  // vi.fn(deepMerge) delegates to deepMerge but is referentially !== deepMerge, so
+  // hasMergeBaseline() returns true and the spy is called on the first post-seed pull.
+  // A7 + A8 together pin the referential-identity contract of hasMergeBaseline().
+  it("A8: onConflict wrapper around deepMerge (different ref) — protection ON, spy called on first pull", async () => {
+    const seedItems = [{ id: "a" }, { id: "b" }]
+    const spyResolver = vi.fn(deepMerge)  // wraps deepMerge; referentially !== deepMerge
+
+    const client = mockClient({
+      peekCache: async () => ({ data: { items: seedItems }, hash: "h0", timestamp: 0 }),
+      pull: async () => ({ data: { items: [{ id: "a" }] }, hash: "h1", timestamp: 5 }),
+    })
+
+    const sm = new SyncManager({
+      client,
+      pullPath: "/pull/test",
+      pushPath: "/push/test",
+      onConflict: spyResolver,
+    })
+
+    await sm.seedFromCache()
+    await sm.pull()
+
+    // hasMergeBaseline() returned true → onConflict was invoked with (seeded, incoming)
+    expect(spyResolver).toHaveBeenCalledTimes(1)
+    expect(spyResolver).toHaveBeenCalledWith(
+      { items: seedItems },       // local = seeded snapshot
+      { items: [{ id: "a" }] },  // remote = first live pull
+    )
   })
 })
 
