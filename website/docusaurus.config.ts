@@ -11,8 +11,8 @@ const config: Config = {
     v4: true,
   },
 
-  url: "https://drakkar-software.github.io",
-  baseUrl: "/Starfish/",
+  url: "https://starfish.drakkar.software",
+  baseUrl: "/",
 
   organizationName: "Drakkar-Software",
   projectName: "Starfish",
