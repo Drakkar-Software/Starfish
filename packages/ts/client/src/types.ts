@@ -160,15 +160,21 @@ export interface StarfishClientOptions {
    */
   cacheFallbackStatuses?: number[]
   /**
-   * Called after a background revalidation succeeds following a
-   * {@link cacheFallbackStatuses} hit: the server returned a live response and
-   * the fresh snapshot has been written through to the cache.
+   * Called after a background revalidation delivers a fresh snapshot to the
+   * cache. Fires for two revalidation paths:
    *
-   * Use this to signal to the host app that the server is reachable again (e.g.
-   * call `reportReachability(true)`) so any stale views can re-pull and recover.
+   * 1. **Error-triggered** ({@link cacheFallbackStatuses} hit): the server
+   *    returned a transient error (429/5xx), `pull()` served the stale cache,
+   *    and the background retry loop eventually got a live response.
+   * 2. **SWR-on-read** ({@link PullOptions.staleWhileRevalidate}): `pull()`
+   *    served the cache immediately and the background fetch completed.
    *
-   * `path` is the namespaced document path sent to the server (namespace prefix
-   * + path + query string, matching the key under which the snapshot was cached).
+   * In both cases `result` is the fresh `PullResult` just written to cache.
+   * Use this to signal reachability recovery and/or push the fresh data into
+   * any store that is showing the stale snapshot.
+   *
+   * `path` is the namespaced document path (namespace prefix + path + query
+   * string, matching the cache key written by {@link StarfishClient.pull}).
    */
   onRevalidated?: (path: string, result: PullResult) => void
   /**

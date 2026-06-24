@@ -113,7 +113,11 @@ function coerceSpacesDoc(data: Record<string, unknown> | undefined, hash: string
 }
 
 async function pullSpacesDoc(client: StarfishClient, session: Session): Promise<SpacesDoc> {
-  const res = await client.pull(session.layout.spacesPull(session.userId)).catch((err: unknown) => {
+  // staleWhileRevalidate: return the cached _spaces doc instantly when the client
+  // has a cache configured, and revalidate in the background. This eliminates the
+  // network wait on every boot for the largest doc on the hot path. Falls through
+  // to a normal network-first pull when no cache hit exists (first boot).
+  const res = await client.pull(session.layout.spacesPull(session.userId), { staleWhileRevalidate: true }).catch((err: unknown) => {
     if (err instanceof StarfishHttpError && err.status === 404) return null
     throw err
   })

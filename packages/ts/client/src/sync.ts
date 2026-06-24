@@ -181,6 +181,31 @@ export class SyncManager {
     return this.lastCheckpoint
   }
 
+  /**
+   * Apply a freshly-fetched `PullResult` to this manager's state WITHOUT
+   * firing a network request. Used by the zustand binding's `mergeResult`
+   * action to absorb a background revalidation result (delivered via
+   * {@link StarfishClientOptions.onRevalidated}) into the store.
+   *
+   * Unlike {@link pull}, `ingest` never does a deep-merge with the previous
+   * checkpoint — the revalidated result is always a full fresh snapshot. It
+   * sets `lastFromCache = false` (a revalidation is a live response) so the
+   * binding can clear its `stale` flag.
+   */
+  async ingest(result: PullResult): Promise<void> {
+    if (this.aborted) return
+    if (this.encryptor) {
+      const decrypted = await this.encryptor.decrypt(result.data)
+      if (this.aborted) return
+      this.localData = decrypted
+    } else {
+      this.localData = result.data
+    }
+    this.lastHash = result.hash
+    this.lastCheckpoint = result.timestamp
+    this.lastFromCache = false
+  }
+
   async pull(): Promise<PullResult> {
     if (this.aborted) throw new AbortError()
     this.logger?.pullStart(this.loggerName)

@@ -41,7 +41,11 @@ export interface ClientOpts {
   cache?: StarfishClientOptions["cache"]
   cacheMaxAgeMs?: number
   cacheFallbackStatuses?: number[]
-  onRevalidated?: () => void
+  /** Called after a background revalidation delivers a fresh snapshot.
+   *  Receives the namespaced document path and the fresh `PullResult` —
+   *  use it to re-run any hydration (caps, mutes, reads) that depends on the
+   *  `_spaces` doc when the staleWhileRevalidate background fetch completes. */
+  onRevalidated?: StarfishClientOptions["onRevalidated"]
 }
 
 export function capProviderFor(cap: unknown, devEdPrivHex: string): StarfishCapProvider {

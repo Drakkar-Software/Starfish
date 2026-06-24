@@ -1,5 +1,25 @@
 # Changelog
 
+## 3.0.0-alpha.35
+
+### `@drakkar.software/starfish-client`
+
+#### Added
+- **`staleWhileRevalidate` pull option** — pass `client.pull(path, { staleWhileRevalidate: true })` to serve the cached snapshot immediately and revalidate in the background on every read (not only on errors). On a cache hit returns the stale result at once (tagged via `pullWasFromCache`) and fires the background fetch immediately (no initial delay); on a miss falls through to a normal network-first pull. `onRevalidated` fires with the fresh `PullResult` on success.
+- **`SyncManager.ingest(result: PullResult)`** — applies a freshly-fetched `PullResult` to the manager's state (decrypt, localData/lastHash/lastCheckpoint update, `lastFromCache = false`) without a network call. Foundation for the zustand `mergeResult` action.
+- **`mergeResult(result: PullResult)` store action** (`StarfishActions`) — push any fresh `PullResult` into a zustand store without a network round-trip. Decrypts for E2E collections, conflict-merges against local optimistic writes (same resolver as `pull()`), clears `stale`.
+- **Auto-merge on revalidation** — `useSyncInit` and `acquireSyncStore` now automatically push fresh revalidation results into the bound store via `mergeResult`. Stores self-heal after a 429/5xx recovery or a `staleWhileRevalidate` background fetch without any consumer-side change. Consumer `onRevalidated` callbacks still fire after the store update.
+
+#### Changed
+- **Unified SWR internals** — the `cacheFallbackStatuses` error path and the new `staleWhileRevalidate` read path share one `revalidateLoop` implementation (via an `immediate` flag for the first attempt), one `writeCache` helper (replaces three inline copies), and one `revalidateFetch` helper. The `revalidating` dedup Set prevents a concurrent error-triggered loop and an SWR-on-read loop from doubling up on the same document.
+- ** no `syncing` spinner on stale data** — `pull()` skips raising `syncing: true` when the store already shows stale content (`stale === true`). The UI sees the stale data as authoritative; the spinner only appears when the store is freshly empty.
+
+### `@drakkar.software/starfish-spaces`
+
+#### Changed
+- **`readSpaces` / `pullSpacesDoc` uses SWR** — the `_spaces` doc pull now uses `{ staleWhileRevalidate: true }`, so when a client is built with a `cache` the full space list/caps/mutes is returned instantly from cache and revalidated in the background. No cache configured → unchanged network-first behavior.
+- **`ClientOpts.onRevalidated`** widened from `() => void` to `(path: string, result: PullResult) => void` (canonical two-arg form) so consumers can receive the fresh `_spaces` doc from the background revalidation and re-run caps/mutes/reads hydration.
+
 ## 3.0.0-alpha.34
 
 ### `@drakkar.software/starfish-spaces`

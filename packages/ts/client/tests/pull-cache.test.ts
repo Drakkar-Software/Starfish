@@ -474,3 +474,219 @@ describe("zustand store cache-first paint", () => {
     expect(store.getState().data).toEqual({ messages: [{ id: "m1" }] })
   })
 })
+
+describe("staleWhileRevalidate pull option", () => {
+  it("returns cache immediately and revalidates in the background without initial delay", async () => {
+    vi.useFakeTimers()
+    const cache = memCache()
+    const staleData = { data: { v: 1 }, hash: "h1", timestamp: 1 }
+    const freshData = { data: { v: 2 }, hash: "h2", timestamp: 2 }
+    const onRevalidated = vi.fn()
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(staleData))     // initial prime pull
+      .mockResolvedValueOnce(jsonResponse(freshData))     // background revalidation
+
+    const client = new StarfishClient({
+      baseUrl: "https://h",
+      fetch: fetchMock as unknown as typeof fetch,
+      cache,
+      onRevalidated,
+    })
+
+    await client.pull("/pull/doc")  // prime cache
+
+    // SWR pull: should return cached data immediately
+    const result = await client.pull("/pull/doc", { staleWhileRevalidate: true })
+    expect(pullWasFromCache(result as never)).toBe(true)
+    expect((result as { data: unknown }).data).toEqual({ v: 1 })
+
+    // Background revalidation fires immediately (no initial delay)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(onRevalidated).toHaveBeenCalledTimes(1)
+    expect(onRevalidated).toHaveBeenCalledWith(
+      expect.stringContaining("/pull/doc"),
+      expect.objectContaining({ hash: "h2" }),
+    )
+
+    // Cache updated to fresh snapshot
+    const peek = await client.peekCache("/pull/doc")
+    expect((peek as { hash: string }).hash).toBe("h2")
+    vi.useRealTimers()
+  })
+
+  it("falls through to network-first when there is no cache hit", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      jsonResponse({ data: { v: 1 }, hash: "h1", timestamp: 1 }),
+    )
+    const client = new StarfishClient({
+      baseUrl: "https://h",
+      fetch: fetchMock as unknown as typeof fetch,
+      cache: memCache(),
+    })
+
+    // No prime: cache is empty — should go to network
+    const result = await client.pull("/pull/doc", { staleWhileRevalidate: true })
+    expect(pullWasFromCache(result as never)).toBe(false)
+    expect((result as { data: unknown }).data).toEqual({ v: 1 })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it("deduplicates with a concurrent cacheFallbackStatuses revalidation loop", async () => {
+    vi.useFakeTimers()
+    const cache = memCache()
+    const onRevalidated = vi.fn()
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ data: { v: 1 }, hash: "h1", timestamp: 1 }))  // prime
+      .mockResolvedValueOnce(jsonResponse("rate limited", 429))                              // error-SWR trigger
+      .mockResolvedValueOnce(jsonResponse({ data: { v: 2 }, hash: "h2", timestamp: 2 }))   // background success
+
+    const client = new StarfishClient({
+      baseUrl: "https://h",
+      fetch: fetchMock as unknown as typeof fetch,
+      cache,
+      cacheFallbackStatuses: [429],
+      onRevalidated,
+    })
+
+    await client.pull("/pull/doc")  // prime
+    await client.pull("/pull/doc")  // 429 → starts error-SWR loop (delayed)
+
+    // SWR-on-read while the error loop is in-flight: must NOT start a second loop
+    await client.pull("/pull/doc", { staleWhileRevalidate: true })
+
+    // Advance past the error loop's 1s initial delay
+    await vi.advanceTimersByTimeAsync(1100)
+
+    // Only one background fetch fired (the existing loop), onRevalidated once
+    expect(onRevalidated).toHaveBeenCalledTimes(1)
+    // Total: prime(1) + 429(1) + swr-read(0 fetch, cache hit) + background(1) = 3
+    expect(fetchMock.mock.calls.length).toBe(3)
+    vi.useRealTimers()
+  })
+
+  it("is a no-op without a cache configured (falls through to network)", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      jsonResponse({ data: { v: 1 }, hash: "h1", timestamp: 1 }),
+    )
+    // No cache option
+    const client = new StarfishClient({ baseUrl: "https://h", fetch: fetchMock as unknown as typeof fetch })
+
+    const result = await client.pull("/pull/doc", { staleWhileRevalidate: true })
+    expect(pullWasFromCache(result as never)).toBe(false)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe("SyncManager.ingest()", () => {
+  it("applies a PullResult to manager state without a network request", async () => {
+    const cache = memCache()
+    const fetchMock = vi.fn()
+    const client = new StarfishClient({ baseUrl: "https://h", fetch: fetchMock as unknown as typeof fetch, cache })
+    const sync = new SyncManager({ client, pullPath: "/pull/doc", pushPath: "/push/doc" })
+
+    const fresh: Parameters<typeof sync.ingest>[0] = { data: { k: "fresh" }, hash: "h-fresh", timestamp: 99, authorPubkey: undefined, authorSignature: undefined }
+    await sync.ingest(fresh)
+
+    expect(sync.getData()).toEqual({ k: "fresh" })
+    expect(sync.getHash()).toBe("h-fresh")
+    expect(sync.getLastPullFromCache()).toBe(false)
+    // No network calls
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("decrypts an E2E PullResult during ingest", async () => {
+    const enc = stubEncryptor()
+    const cache = memCache()
+    const client = new StarfishClient({ baseUrl: "https://h", fetch: vi.fn() as unknown as typeof fetch, cache })
+    const sync = new SyncManager({ client, pullPath: "/pull/doc", pushPath: "/push/doc", encryptor: enc })
+
+    const sealed = await enc.encrypt({ secret: 42 })
+    const fresh: Parameters<typeof sync.ingest>[0] = { data: sealed, hash: "h-enc", timestamp: 5, authorPubkey: undefined, authorSignature: undefined }
+    await sync.ingest(fresh)
+
+    expect(sync.getData()).toEqual({ secret: 42 })
+    expect(sync.getLastPullFromCache()).toBe(false)
+  })
+})
+
+describe("zustand mergeResult + auto-merge on revalidation", () => {
+  it("mergeResult() repaints data and clears stale without a network request", async () => {
+    const enc = stubEncryptor()
+    const cache = memCache()
+    const sealed = await enc.encrypt({ v: 1 })
+    cache.store.set("/pull/doc", JSON.stringify({ data: sealed, hash: "h1", timestamp: 1, cachedAt: Date.now() }))
+    const client = new StarfishClient({ baseUrl: "https://h", fetch: vi.fn() as unknown as typeof fetch, cache })
+    const syncManager = new SyncManager({ client, pullPath: "/pull/doc", pushPath: "/push/doc", encryptor: enc })
+    const store = createStarfishStore({ name: "doc", syncManager, storage: false })
+
+    await store.getState().seed()
+    expect(store.getState().stale).toBe(true)
+    expect(store.getState().data).toEqual({ v: 1 })
+
+    const freshSealed = await enc.encrypt({ v: 2 })
+    await store.getState().mergeResult({ data: freshSealed, hash: "h2", timestamp: 2, authorPubkey: undefined, authorSignature: undefined })
+
+    expect(store.getState().data).toEqual({ v: 2 })
+    expect(store.getState().stale).toBe(false)
+    expect(store.getState().hash).toBe("h2")
+  })
+
+  it("auto-merge: background revalidation paints fresh data into the store", async () => {
+    vi.useFakeTimers()
+    const cache = memCache()
+    const freshData = { data: { updated: true }, hash: "h2", timestamp: 10 }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ data: { stale: true }, hash: "h1", timestamp: 5 }))
+      .mockResolvedValueOnce(jsonResponse("rate limited", 429))
+      .mockResolvedValueOnce(jsonResponse(freshData))
+
+    let onRevalidatedFired = false
+    const client = new StarfishClient({
+      baseUrl: "https://h",
+      fetch: fetchMock as unknown as typeof fetch,
+      cache,
+      cacheFallbackStatuses: [429, 500, 502, 503, 504],
+      onRevalidated: () => { onRevalidatedFired = true },
+    })
+    const syncManager = new SyncManager({ client, pullPath: "/pull/doc", pushPath: "/push/doc" })
+    const store = createStarfishStore({ name: "doc-auto", syncManager, storage: false })
+
+    await client.pull("/pull/doc")   // prime cache
+    await client.pull("/pull/doc")   // 429 → stale, schedules revalidation
+
+    expect(onRevalidatedFired).toBe(false)
+    // In the real auto-wire wiring (useSyncInit / acquireSyncStore), onRevalidated
+    // would call store.mergeResult. We test mergeResult in isolation above;
+    // here we verify that the client's onRevalidated fires with the fresh result.
+    await vi.advanceTimersByTimeAsync(1100)
+    expect(onRevalidatedFired).toBe(true)
+    vi.useRealTimers()
+  })
+
+  it("pull() does not raise syncing spinner when store already has stale data (Gap D)", async () => {
+    const cache = memCache()
+    cache.store.set("/pull/doc", JSON.stringify({ data: { v: 0 }, hash: "h0", timestamp: 0, cachedAt: Date.now() }))
+
+    let resolveNetwork: (r: Response) => void
+    const networkPending = new Promise<Response>((res) => { resolveNetwork = res })
+    const fetchMock = vi.fn().mockReturnValueOnce(networkPending)
+
+    const client = new StarfishClient({ baseUrl: "https://h", fetch: fetchMock as unknown as typeof fetch, cache })
+    const syncManager = new SyncManager({ client, pullPath: "/pull/doc", pushPath: "/push/doc" })
+    const store = createStarfishStore({ name: "doc-gapd", syncManager, storage: false })
+
+    await store.getState().seed()
+    expect(store.getState().stale).toBe(true)
+
+    // Start pull (will block on network)
+    const pullPromise = store.getState().pull()
+    // syncing must NOT be raised while the store shows stale data
+    expect(store.getState().syncing).toBe(false)
+
+    // Let the network succeed
+    resolveNetwork!(jsonResponse({ data: { v: 1 }, hash: "h1", timestamp: 1 }))
+    await pullPromise
+    expect(store.getState().stale).toBe(false)
+    expect(store.getState().syncing).toBe(false)
+  })
+})

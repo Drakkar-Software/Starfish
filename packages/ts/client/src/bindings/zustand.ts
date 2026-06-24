@@ -8,7 +8,7 @@ import {
 } from "zustand/middleware"
 import type { DevtoolsOptions } from "zustand/middleware"
 import { useEffect, useRef, useState, useCallback } from "react"
-import type { Encryptor } from "@drakkar.software/starfish-protocol"
+import type { Encryptor, PullResult } from "@drakkar.software/starfish-protocol"
 import { StarfishClient } from "../client.js"
 import { SyncManager } from "../sync.js"
 import { classifyError } from "../fetch.js"
@@ -51,6 +51,18 @@ export interface StarfishActions {
    * pull; the live pull then supersedes the seeded snapshot.
    */
   seed: () => Promise<void>
+  /**
+   * Apply a freshly-fetched `PullResult` to the store WITHOUT firing a network
+   * request. Decrypts in memory for E2E collections, conflict-merges against
+   * any local optimistic writes (same logic as a live pull), and clears `stale`.
+   *
+   * Primarily called automatically by the binding when
+   * {@link StarfishClientOptions.onRevalidated} fires (background revalidation
+   * delivered a fresh snapshot after a 429/5xx hit or an SWR-on-read). Also
+   * available for manual use when a caller holds a fresh `PullResult` it wants
+   * to push into the store without a second network round-trip.
+   */
+  mergeResult: (result: PullResult) => Promise<void>
 }
 
 export type StarfishStore = StarfishState & StarfishActions
@@ -154,6 +166,27 @@ export function createStarfishStore(
       retryAttempt = 0
     }
 
+    // Shared commit for any remote snapshot landing in the store — used by both
+    // `pull()` (live response) and `mergeResult()` (background revalidation).
+    // Reads the already-updated SyncManager state, conflict-merges if dirty, then
+    // writes to the store and notifies domain stores via `onRemoteUpdate`.
+    const commitRemote = (label: string) => {
+      const remote = syncManager.getData()
+      // A remote snapshot would overwrite any local optimistic writes (they live
+      // only in store.data, never in localData until a push succeeds). When dirty,
+      // merge them back via the same resolver the push-conflict path uses so a
+      // pull racing a send can't lose the write.
+      const newData = get().dirty ? syncManager.resolve(get().data, remote) : remote
+      set({ data: newData, syncing: false, hash: syncManager.getHash(), stale: syncManager.getLastPullFromCache() }, false, label)
+      // The preserved write still needs to reach the server, and nothing else
+      // will trigger that here. Kick a flush, gated on dirty + online exactly
+      // like setOnline — a successful flush clears dirty, so there's no ping-pong.
+      if (get().online && get().dirty) get().flush().catch(() => {})
+      // Fire after state update so domain stores can read the updated Starfish state.
+      // Calling set() inside onRemoteUpdate does NOT re-enter pull/mergeResult, no feedback loop.
+      options.onRemoteUpdate?.(newData)
+    }
+
     return {
     data: {},
     syncing: false,
@@ -178,24 +211,14 @@ export function createStarfishStore(
     },
 
     pull: async () => {
-      set({ syncing: true, error: null }, false, "pull/start")
+      // Gap D: when the store already shows stale (seeded or previously offline)
+      // data, keep it on screen without a syncing flash — the user sees useful
+      // content and the live pull supersedes it silently. Only raise the spinner
+      // when the store is empty (fresh mount with no seed data).
+      set(get().stale ? { error: null } : { syncing: true, error: null }, false, "pull/start")
       try {
         await syncManager.pull()
-        const remote = syncManager.getData()
-        // A plain pull overwrites store.data with the server snapshot, which would
-        // drop optimistic writes that haven't been confirmed by a push yet (a
-        // `set()` only mutates store.data, so an un-pushed write lives nowhere
-        // else). When dirty, merge them back via the same resolver the push-
-        // conflict path uses, so a pull racing a send can't lose the local write.
-        const newData = get().dirty ? syncManager.resolve(get().data, remote) : remote
-        set({ data: newData, syncing: false, hash: syncManager.getHash(), stale: syncManager.getLastPullFromCache() }, false, "pull/success")
-        // The preserved write still needs to reach the server, and nothing else
-        // will trigger that here. Kick a flush, gated on dirty + online exactly
-        // like setOnline — a successful flush clears dirty, so there's no ping-pong.
-        if (get().online && get().dirty) get().flush().catch(() => {})
-        // Fire after state update so domain stores can read the updated Starfish state if needed.
-        // Calling set() inside onRemoteUpdate does NOT re-enter pull(), so no feedback loop.
-        options.onRemoteUpdate?.(newData)
+        commitRemote("pull/success")
       } catch (err) {
         // Transport unreachable (offline / DNS / timeout): the persisted `data` is still
         // the last-synced snapshot, so keep it on screen and flag it stale rather than
@@ -207,6 +230,11 @@ export function createStarfishStore(
         }
         set({ syncing: false, error: err instanceof Error ? err.message : String(err) }, false, "pull/error")
       }
+    },
+
+    mergeResult: async (result) => {
+      await syncManager.ingest(result)
+      commitRemote("merge/success")
     },
 
     set: (modifier) => {
@@ -493,7 +521,14 @@ export function useSyncInit(config: SyncInitConfig | null): StoreApi<StarfishSto
       cache: config.cache,
       cacheMaxAgeMs: config.cacheMaxAgeMs,
       cacheFallbackStatuses: config.cacheFallbackStatuses,
-      onRevalidated: config.onRevalidated,
+      // Auto-merge: when a background revalidation delivers a fresh snapshot,
+      // push it into the store so the UI heals without waiting for the next pull.
+      // newStore is referenced by closure — safe because onRevalidated only fires
+      // asynchronously, well after the store is created below.
+      onRevalidated: (path, result) => {
+        newStore.getState().mergeResult(result).catch(() => {})
+        config.onRevalidated?.(path, result)
+      },
     })
 
     const syncManager = new SyncManager({
@@ -612,7 +647,13 @@ export function acquireSyncStore(config: SharedSyncConfig): StoreApi<StarfishSto
     cache: config.cache,
     cacheMaxAgeMs: config.cacheMaxAgeMs,
     cacheFallbackStatuses: config.cacheFallbackStatuses,
-    onRevalidated: config.onRevalidated,
+    // Auto-merge: push fresh revalidated snapshots into the store.
+    // store is referenced by closure — safe because onRevalidated only fires
+    // asynchronously, well after the store is created below.
+    onRevalidated: (path, result) => {
+      store.getState().mergeResult(result).catch(() => {})
+      config.onRevalidated?.(path, result)
+    },
   })
   const syncManager = new SyncManager({
     client,

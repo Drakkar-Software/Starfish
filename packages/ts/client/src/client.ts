@@ -121,6 +121,21 @@ export interface PullOptions {
   checkpoint?: number
   /** Include the sibling `_keyring` document in the response. Defaults to false. */
   withKeyring?: boolean
+  /**
+   * Serve the last-synced cached snapshot immediately (tagged via
+   * {@link pullWasFromCache}) and revalidate in the background. Requires a
+   * {@link StarfishClientOptions.cache} to be configured; without one the option
+   * is a no-op and the pull goes to the network as usual.
+   *
+   * On a cache hit: returns the stale snapshot at once, kicks a background fetch,
+   * and on success writes the fresh snapshot to cache and fires
+   * {@link StarfishClientOptions.onRevalidated}. Uses the same dedup set as the
+   * {@link StarfishClientOptions.cacheFallbackStatuses} revalidation path — a
+   * concurrent error-triggered loop for the same document is not duplicated.
+   *
+   * On a cache miss: falls through to the normal network-first pull unchanged.
+   */
+  staleWhileRevalidate?: boolean
 }
 
 /** Per-collection result in a {@link BatchPullResult}: either the pulled
@@ -331,20 +346,23 @@ export class StarfishClient {
   ): Promise<PullResult | T[]> {
     let pathAndQuery = this.applyNamespace(path)
     let appendField: string | undefined
+    let swr = false
 
     if (typeof checkpointOrOptions === "number") {
       if (checkpointOrOptions) pathAndQuery += `?checkpoint=${checkpointOrOptions}`
     } else if (checkpointOrOptions != null) {
       // Disambiguate AppendPullOptions vs PullOptions.
       //
-      // PullOptions are identified by the presence of `withKeyring` or
-      // `checkpoint` keys (which AppendPullOptions does not have — append
-      // uses `since`, not `checkpoint`). Anything else, including an empty
+      // PullOptions are identified by the presence of `withKeyring`, `checkpoint`,
+      // or `staleWhileRevalidate` keys (which AppendPullOptions does not have —
+      // append uses `since`, not `checkpoint`). Anything else, including an empty
       // `{}` object, retains the historical behavior of AppendPullOptions
       // (extracts `data.items` with `?` query).
       const opts = checkpointOrOptions as AppendPullOptions & PullOptions
       const isPullOptions =
-        opts.withKeyring !== undefined || opts.checkpoint !== undefined
+        opts.withKeyring !== undefined ||
+        opts.checkpoint !== undefined ||
+        opts.staleWhileRevalidate !== undefined
       const params = new URLSearchParams()
 
       if (isPullOptions) {
@@ -354,6 +372,7 @@ export class StarfishClient {
         if (opts.withKeyring) {
           params.set("withKeyring", "1")
         }
+        swr = opts.staleWhileRevalidate === true
       } else {
         appendField = opts.appendField ?? APPEND_DEFAULT_FIELD
         // `full` means "the whole collection" — it cannot be combined with a bound.
@@ -386,6 +405,17 @@ export class StarfishClient {
     // collections own their own warm-start persistence via AppendLogCursor.
     const cacheKey =
       this.cache && appendField === undefined ? pullCacheKey(pathAndQuery) : undefined
+
+    // staleWhileRevalidate: serve the cached snapshot immediately (cache-first
+    // paint without a zustand store), kick background revalidation, return stale.
+    // Falls through to network-first when there is no cache hit (miss or expired).
+    if (swr && cacheKey) {
+      const cached = await this.readCache(cacheKey)
+      if (cached) {
+        this.scheduleRevalidate(cacheKey, pathAndQuery, null, /* immediate */ true)
+        return cached
+      }
+    }
 
     let res: Response
     try {
@@ -429,74 +459,97 @@ export class StarfishClient {
       const list = (result.data as Record<string, unknown> | null)?.[appendField]
       return (Array.isArray(list) ? list : []) as T[]
     }
-    if (cacheKey) {
-      const snapshot: CachedPull = {
-        data: result.data,
-        hash: result.hash,
-        timestamp: result.timestamp,
-        cachedAt: Date.now(),
-      }
-      void this.cache!.set(cacheKey, JSON.stringify(snapshot)).catch(() => {})
-    }
+    if (cacheKey) this.writeCache(cacheKey, result)
     return result
   }
 
-  /** Deduplicated fire-and-forget: starts one revalidation loop per cacheKey. */
+  /**
+   * Write a pull snapshot to the cache. Fire-and-forget; errors are swallowed
+   * so a failing cache never blocks the caller. No-op when no cache is configured.
+   */
+  private writeCache(
+    cacheKey: string,
+    result: { data: Record<string, unknown>; hash: string; timestamp: number },
+  ): void {
+    if (!this.cache) return
+    const snapshot: CachedPull = {
+      data: result.data,
+      hash: result.hash,
+      timestamp: result.timestamp,
+      cachedAt: Date.now(),
+    }
+    void this.cache.set(cacheKey, JSON.stringify(snapshot)).catch(() => {})
+  }
+
+  /** Build the URL + auth headers for one revalidation GET. Shared between
+   *  {@link pull} and {@link revalidateLoop} to avoid duplicated fetch setup. */
+  private async revalidateFetch(pathAndQuery: string): Promise<Response> {
+    const url = `${this.baseUrl}${pathAndQuery}`
+    const authHeaders = await this.buildAuthHeaders("GET", pathAndQuery, undefined)
+    return this.fetch(url, {
+      method: "GET",
+      headers: { [HEADER_ACCEPT]: "application/json", ...authHeaders },
+    })
+  }
+
+  /**
+   * Deduplicated fire-and-forget: starts one revalidation loop per cacheKey.
+   * Used by both the {@link cacheFallbackStatuses} error path (delayed first
+   * attempt, honoring `Retry-After`) and the {@link PullOptions.staleWhileRevalidate}
+   * read path (`immediate: true` — no initial delay on the first attempt). The
+   * `revalidating` set deduplicates across both triggers so a concurrent
+   * error-triggered loop and an SWR-on-read loop for the same key collapse to one.
+   */
   private scheduleRevalidate(
     cacheKey: string,
     pathAndQuery: string,
     retryAfterHeader: string | null,
+    immediate = false,
   ): void {
     if (this.revalidating.has(cacheKey)) return
     this.revalidating.add(cacheKey)
-    void this.revalidateLoop(cacheKey, pathAndQuery, retryAfterHeader).finally(() => {
+    void this.revalidateLoop(cacheKey, pathAndQuery, retryAfterHeader, immediate).finally(() => {
       this.revalidating.delete(cacheKey)
     })
   }
 
   /**
-   * Background revalidation loop for a {@link cacheFallbackStatuses} hit.
-   * Retries the pull (honoring `Retry-After`) up to {@link MAX_REVALIDATE_ATTEMPTS}
-   * times. On a live 2xx response the fresh snapshot is written through to the
-   * cache and {@link onRevalidated} fires. Stops early on a non-fallback HTTP
-   * status (e.g. 404/403 — the server gave a genuine answer).
+   * Background revalidation loop shared by both {@link cacheFallbackStatuses}
+   * hits and {@link PullOptions.staleWhileRevalidate} reads.
+   *
+   * Retries (honoring `Retry-After`) up to {@link MAX_REVALIDATE_ATTEMPTS} times.
+   * When `immediate` is true the first attempt fires without any initial delay
+   * (SWR-on-read path). On a live 2xx the fresh snapshot is written to cache and
+   * {@link onRevalidated} fires. Stops early on a non-fallback status (403/404).
    */
   private async revalidateLoop(
     cacheKey: string,
     pathAndQuery: string,
     firstRetryAfter: string | null,
+    immediate = false,
   ): Promise<void> {
     let retryAfterHeader = firstRetryAfter
     const fallbackSet = this.cacheFallbackStatuses ? new Set(this.cacheFallbackStatuses) : null
     for (let attempt = 0; attempt < MAX_REVALIDATE_ATTEMPTS; attempt++) {
-      const delay = parseRetryAfterMs(retryAfterHeader, {
-        fallbackMs: Math.min(
-          REVALIDATE_INITIAL_DELAY_MS * Math.pow(2, attempt),
-          REVALIDATE_MAX_DELAY_MS,
-        ),
-        maxMs: REVALIDATE_MAX_DELAY_MS,
-      })
-      await sleep(delay)
+      // Skip the initial delay for the first attempt when immediate mode is set
+      // (staleWhileRevalidate path). Subsequent attempts always backoff normally.
+      if (!immediate || attempt > 0) {
+        const delay = parseRetryAfterMs(retryAfterHeader, {
+          fallbackMs: Math.min(
+            REVALIDATE_INITIAL_DELAY_MS * Math.pow(2, attempt),
+            REVALIDATE_MAX_DELAY_MS,
+          ),
+          maxMs: REVALIDATE_MAX_DELAY_MS,
+        })
+        await sleep(delay)
+      }
 
       try {
-        const url = `${this.baseUrl}${pathAndQuery}`
-        const authHeaders = await this.buildAuthHeaders("GET", pathAndQuery, undefined)
-        const res = await this.fetch(url, {
-          method: "GET",
-          headers: { [HEADER_ACCEPT]: "application/json", ...authHeaders },
-        })
+        const res = await this.revalidateFetch(pathAndQuery)
 
         if (res.ok) {
           const result = (await res.json()) as PullResult
-          if (this.cache) {
-            const snapshot: CachedPull = {
-              data: result.data,
-              hash: result.hash,
-              timestamp: result.timestamp,
-              cachedAt: Date.now(),
-            }
-            void this.cache.set(cacheKey, JSON.stringify(snapshot)).catch(() => {})
-          }
+          this.writeCache(cacheKey, result)
           this.onRevalidated?.(pathAndQuery, result)
           return
         }
@@ -652,14 +705,7 @@ export class StarfishClient {
     // The push path is /push/X; the corresponding pull cache key is /pull/X.
     if (this.cache) {
       const pullPath = sendPath.replace("/push/", "/pull/")
-      const cacheKey = pullCacheKey(pullPath)
-      const snapshot: CachedPull = {
-        data,
-        hash: result.hash,
-        timestamp: result.timestamp,
-        cachedAt: Date.now(),
-      }
-      void this.cache.set(cacheKey, JSON.stringify(snapshot)).catch(() => {})
+      this.writeCache(pullCacheKey(pullPath), { data, hash: result.hash, timestamp: result.timestamp })
     }
     return result
   }
