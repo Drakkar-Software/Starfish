@@ -131,10 +131,10 @@ describe("createUnionMerge", () => {
 
   // ── advanced micro-edges ──────────────────────────────────────────────────
 
-  // B1 — equal updatedAt tie: local wins (compareTimestamps uses >=).
+  // equal updatedAt tie: local wins (compareTimestamps uses >=).
   // This is the load-bearing contract for the "cache seed holds a locally-edited item
   // at the same timestamp as the server" scenario.
-  it("B1: equal updatedAt tie — local item wins (compareTimestamps uses >=)", () => {
+  it("equal updatedAt tie — local item wins (compareTimestamps uses >=)", () => {
     const local = { items: [{ id: "x", updatedAt: 5, val: "local" }] }
     const remote = { items: [{ id: "x", updatedAt: 5, val: "remote" }] }
 
@@ -144,10 +144,10 @@ describe("createUnionMerge", () => {
     expect(items[0].val).toBe("local")
   })
 
-  // B2 — items missing idKey are kept from both sides without deduplication.
+  // items missing idKey are kept from both sides without deduplication.
   // Each keyless item is stored under a unique Symbol(), so they are never matched
   // or overwritten — every keyless item from both local and remote survives.
-  it("B2: items missing idKey are kept from both sides, never deduped", () => {
+  it("items missing idKey are kept from both sides, never deduped", () => {
     const local = { items: [{ x: 1 }, { x: 2 }] }   // no 'id' field
     const remote = { items: [{ x: 3 }] }              // no 'id' field
 
@@ -156,9 +156,9 @@ describe("createUnionMerge", () => {
     expect((result.items as unknown[]).length).toBe(3)
   })
 
-  // B3 — empty array on one side: union produces the other side's items.
+  // empty array on one side: union produces the other side's items.
   // The zero-element boundary ([], not just "shorter") was never explicitly tested.
-  it("B3: empty local array + remote items → remote items kept; empty remote + local → local kept", () => {
+  it("empty local array + remote items → remote items kept; empty remote + local → local kept", () => {
     const r1 = merge({ items: [] }, { items: [{ id: "a" }] })
     expect((r1.items as Array<{ id: string }>).map((i) => i.id)).toEqual(["a"])
 
@@ -166,11 +166,11 @@ describe("createUnionMerge", () => {
     expect((r2.items as Array<{ id: string }>).map((i) => i.id)).toEqual(["b"])
   })
 
-  // B4 — array on one side, scalar on the other for the same key.
+  // array on one side, scalar on the other for the same key.
   // The array check (Array.isArray(lv) && Array.isArray(rv)) is false, so the
   // resolver falls through to the document-timestamp scalar branch — meaning an
   // array field can be silently replaced by a scalar. FLAG: surprising behaviour.
-  it("B4: array-vs-scalar type mismatch — scalar (doc-timestamp) branch wins (FLAG: surprising)", () => {
+  it("array-vs-scalar type mismatch — scalar (doc-timestamp) branch wins (FLAG: surprising)", () => {
     // remote is newer (timestamp 2 > 1) → remote wins the scalar branch
     const local = { items: [{ id: "a" }], timestamp: 1 }
     const remote = { items: "not-an-array", timestamp: 2 }
@@ -180,11 +180,11 @@ describe("createUnionMerge", () => {
     expect(result.items).toBe("not-an-array")
   })
 
-  // B5 — nested non-array object is replaced wholesale, NOT deep-merged.
+  // nested non-array object is replaced wholesale, NOT deep-merged.
   // createUnionMerge uses the doc-timestamp scalar branch for plain objects, so
   // the newer document's version of the nested object wins in full. This differs
   // from deepMerge which recurses into nested objects. FLAG: differs from deepMerge.
-  it("B5: nested plain object replaced wholesale by newer doc — not recursively merged (FLAG: differs from deepMerge)", () => {
+  it("nested plain object replaced wholesale by newer doc — not recursively merged (FLAG: differs from deepMerge)", () => {
     const local = { meta: { a: 1, keep: true }, timestamp: 2 }  // local is newer
     const remote = { meta: { b: 2 }, timestamp: 1 }
 
@@ -195,12 +195,12 @@ describe("createUnionMerge", () => {
     expect((result.meta as Record<string, unknown>).b).toBeUndefined()
   })
 
-  // B6 — mixed numeric vs string per-item updatedAt falls to lexical comparison.
+  // mixed numeric vs string per-item updatedAt falls to lexical comparison.
   // compareTimestamps() only takes the numeric branch when BOTH sides are numbers.
   // When one is a number and the other an ISO string, both are coerced via String()
   // and compared lexicographically — "1000" < "2026-01-01" lexically → remote wins,
   // even though epoch 1000 ms is older than 2026. FLAG: latent footgun class.
-  it("B6: mixed numeric/string updatedAt falls to lexical compare — remote ISO string beats local number (FLAG: footgun)", () => {
+  it("mixed numeric/string updatedAt falls to lexical compare — remote ISO string beats local number (FLAG: footgun)", () => {
     const local = { items: [{ id: "x", updatedAt: 1000, val: "local" }] }  // number
     const remote = { items: [{ id: "x", updatedAt: "2026-01-01", val: "remote" }] }  // ISO string
 

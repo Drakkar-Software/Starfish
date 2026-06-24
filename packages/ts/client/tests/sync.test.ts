@@ -519,11 +519,11 @@ describe("SyncManager pull/ingest honor onConflict", () => {
 // cover the full multi-step combinations that were never tested.
 
 describe("SyncManager bootstrap-window — advanced interaction edges", () => {
-  // A1 — seed → union pull → push 409 → retry: seeded items survive the whole chain.
+  // seed → union pull → push 409 → retry: seeded items survive the whole chain.
   // This is the literal regression scenario: the store is evicted (home→room→back),
   // rebuilt via seed+pull, then a push hits 409. The union merge in both the
   // pull and the retry must keep r1+r2 throughout.
-  it("A1: seed → union pull → push 409 → retry — seeded rooms survive entire chain", async () => {
+  it("seed → union pull → push 409 → retry — seeded rooms survive entire chain", async () => {
     const cat = { id: "cat" }
     const r1 = { id: "r1" }
     const r2 = { id: "r2" }
@@ -559,11 +559,11 @@ describe("SyncManager bootstrap-window — advanced interaction edges", () => {
     expect(data.extra).toBe("edit")
   })
 
-  // A2 — push directly after seed, NO pull (stale seed hash → 409 → union retry).
+  // push directly after seed, NO pull (stale seed hash → 409 → union retry).
   // The seed's lastHash is the cached hash. A push with no intervening pull uses it
   // as baseHash, which may be stale → 409. The union merge in the retry must
   // preserve items from the seeded localData that the short re-pull snapshot omits.
-  it("A2: push after seed with no pull — stale seed hash 409-retries and union preserves seed", async () => {
+  it("push after seed with no pull — stale seed hash 409-retries and union preserves seed", async () => {
     const r1 = { id: "r1" }
     const r2 = { id: "r2" }
     const r3 = { id: "r3" }
@@ -593,10 +593,10 @@ describe("SyncManager bootstrap-window — advanced interaction edges", () => {
     expect(ids).toEqual(["r1", "r2", "r3"])
   })
 
-  // A3 — seed → first pull THROWS (offline/429 with no fallback) → seeded baseline stays.
+  // seed → first pull THROWS (offline/429 with no fallback) → seeded baseline stays.
   // A throwing pull must not modify localData or lastFromCache.
   // "Rooms must stay visible when the first live pull fails."
-  it("A3: seed → first pull throws (offline) — seeded data remains visible", async () => {
+  it("seed → first pull throws (offline) — seeded data remains visible", async () => {
     const a = { id: "a" }
     const b = { id: "b" }
 
@@ -624,9 +624,9 @@ describe("SyncManager bootstrap-window — advanced interaction edges", () => {
     expect(sm.getLastPullFromCache()).toBe(true)
   })
 
-  // A4 — seed holds a NEWER item than the first live pull (a locally-edited room).
+  // seed holds a NEWER item than the first live pull (a locally-edited room).
   // The union merge's per-item updatedAt comparison must keep the seeded version.
-  it("A4: seed-newer item beats stale server first-pull (per-item updatedAt wins)", async () => {
+  it("seed-newer item beats stale server first-pull (per-item updatedAt wins)", async () => {
     const client = mockClient({
       peekCache: async () => ({
         data: { objects: [{ id: "r1", updatedAt: 5, title: "Local edit" }] },
@@ -656,11 +656,11 @@ describe("SyncManager bootstrap-window — advanced interaction edges", () => {
     expect(r1?.title).toBe("Local edit")  // seeded version was newer — must not be clobbered
   })
 
-  // A5 — E2EE seed → union first pull: bootstrap must work through the encryptor.
+  // E2EE seed → union first pull: bootstrap must work through the encryptor.
   // peekCache returns an encrypted blob; seedFromCache decrypts it; the first
   // pull also returns encrypted; after decrypt + union all seeded items survive.
   // (Only the plaintext seed→union-pull path was covered by the alpha.38 repro.)
-  it("A5: E2EE seed → union first pull — encrypted seed items survive bootstrap", async () => {
+  it("E2EE seed → union first pull — encrypted seed items survive bootstrap", async () => {
     const enc = stubEncryptor()
     const cat = { id: "cat" }
     const r1 = { id: "r1" }
@@ -694,9 +694,9 @@ describe("SyncManager bootstrap-window — advanced interaction edges", () => {
     expect(ids).toEqual(["cat", "r1", "r2"])
   })
 
-  // A6 — lastFromCache reset: seed sets it to true; a live (non-cache) pull must flip it false.
+  // lastFromCache reset: seed sets it to true; a live (non-cache) pull must flip it false.
   // Tested starting from false everywhere today; the seed→live-pull TRANSITION is uncovered.
-  it("A6: lastFromCache transitions from true (seed) to false (live pull)", async () => {
+  it("lastFromCache transitions from true (seed) to false (live pull)", async () => {
     const client = mockClient({
       peekCache: async () => ({ data: { x: 1 }, hash: "h0", timestamp: 0 }),
       pull: async () => ({ data: { x: 2 }, hash: "h1", timestamp: 5 }),
@@ -716,10 +716,10 @@ describe("SyncManager bootstrap-window — advanced interaction edges", () => {
     expect(sm.getLastPullFromCache()).toBe(false)
   })
 
-  // A7 — explicit onConflict: deepMerge (the same reference as the default) → seed protection OFF.
+  // explicit onConflict: deepMerge (the same reference as the default) → seed protection OFF.
   // hasMergeBaseline() gates on `this.onConflict !== deepMerge`. Passing the same symbol
   // explicitly keeps wholesale-replace on the first pull — byte-identical to alpha.36.
-  it("A7: explicit onConflict: deepMerge (same ref) — seed protection OFF, first pull wholesale", async () => {
+  it("explicit onConflict: deepMerge (same ref) — seed protection OFF, first pull wholesale", async () => {
     const client = mockClient({
       peekCache: async () => ({
         data: { items: [{ id: "a" }, { id: "b" }] },
@@ -743,11 +743,11 @@ describe("SyncManager bootstrap-window — advanced interaction edges", () => {
     expect(sm.getData()).toEqual({ items: [{ id: "a" }] })
   })
 
-  // A8 — wrapper around deepMerge (different reference) → seed protection ON.
+  // wrapper around deepMerge (different reference) → seed protection ON.
   // vi.fn(deepMerge) delegates to deepMerge but is referentially !== deepMerge, so
   // hasMergeBaseline() returns true and the spy is called on the first post-seed pull.
-  // A7 + A8 together pin the referential-identity contract of hasMergeBaseline().
-  it("A8: onConflict wrapper around deepMerge (different ref) — protection ON, spy called on first pull", async () => {
+  // Together with the previous test, these pin the referential-identity contract of hasMergeBaseline().
+  it("onConflict wrapper around deepMerge (different ref) — protection ON, spy called on first pull", async () => {
     const seedItems = [{ id: "a" }, { id: "b" }]
     const spyResolver = vi.fn(deepMerge)  // wraps deepMerge; referentially !== deepMerge
 
