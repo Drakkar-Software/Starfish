@@ -737,7 +737,7 @@ wheels = [
 
 [[package]]
 name = "starfish-events"
-version = "3.0.0a40"
+version = "3.0.0a41"
 source = { editable = "." }
 dependencies = [
     { name = "pyarrow" },
