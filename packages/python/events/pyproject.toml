@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "starfish-events"
+version = "3.0.0a40"
+description = "Starfish server plugin that intercepts JSON event-batch pushes and encodes them as Parquet on S3 (Python mirror of @drakkar.software/starfish-events)"
+requires-python = ">=3.11"
+dependencies = [
+  "starfish-protocol",
+  "starfish-server",
+  # pyarrow is the ONLY heavy dep and lives here exclusively (the Python analog
+  # of hyparquet-writer living only in packages/ts/events).  >=10.0 covers the
+  # full stable API surface used here (pa.table, pa.array, pq.write_table,
+  # io.BytesIO); tested against 21.x.
+  "pyarrow>=10.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.0",
+  "pytest-asyncio>=0.21",
+  "httpx>=0.25.0",
+  "fastapi>=0.100",
+  # pyarrow is a runtime dep but we list it here too so `uv sync --extra dev`
+  # installs it for the round-trip decode assertions in tests.
+  "pyarrow>=10.0",
+]
+
+[tool.uv.sources]
+starfish-protocol = { path = "../protocol", editable = true }
+starfish-server = { path = "../server", editable = true }
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
