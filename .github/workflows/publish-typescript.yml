@@ -504,3 +504,106 @@ jobs:
       - name: Publish starfish-wal
         working-directory: packages/ts/wal
         run: npx npm@latest publish --provenance --access public --tag ${{ needs.setup.outputs.npm_tag }}
+
+  publish-events:
+    needs: [setup, publish-protocol, publish-server]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v5
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: pnpm
+          registry-url: "https://registry.npmjs.org"
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm build
+
+      - name: Set version from tag
+        run: |
+          VERSION="${{ needs.setup.outputs.version }}"
+          cd packages/ts/events
+          npm pkg set "version=$VERSION"
+          npm pkg set "dependencies.@drakkar.software/starfish-protocol=$VERSION"
+          npm pkg set "dependencies.@drakkar.software/starfish-server=$VERSION"
+
+      - name: Publish starfish-events
+        working-directory: packages/ts/events
+        run: npx npm@latest publish --provenance --access public --tag ${{ needs.setup.outputs.npm_tag }}
+
+  publish-spaces:
+    needs: [setup, publish-identities, publish-sharing, publish-server]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v5
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: pnpm
+          registry-url: "https://registry.npmjs.org"
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm build
+
+      - name: Set version from tag
+        run: |
+          VERSION="${{ needs.setup.outputs.version }}"
+          cd packages/ts/spaces
+          npm pkg set "version=$VERSION"
+          npm pkg set "dependencies.@drakkar.software/starfish-protocol=$VERSION"
+          npm pkg set "dependencies.@drakkar.software/starfish-client=$VERSION"
+          npm pkg set "dependencies.@drakkar.software/starfish-keyring=$VERSION"
+          npm pkg set "dependencies.@drakkar.software/starfish-sharing=$VERSION"
+          npm pkg set "dependencies.@drakkar.software/starfish-identities=$VERSION"
+          npm pkg set "dependencies.@drakkar.software/starfish-server=$VERSION"
+
+      - name: Publish starfish-spaces
+        working-directory: packages/ts/spaces
+        run: npx npm@latest publish --provenance --access public --tag ${{ needs.setup.outputs.npm_tag }}
+
+  publish-webhook:
+    needs: [setup, publish-keyring]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v5
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: pnpm
+          registry-url: "https://registry.npmjs.org"
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm build
+
+      - name: Set version from tag
+        run: |
+          VERSION="${{ needs.setup.outputs.version }}"
+          cd packages/ts/webhook
+          npm pkg set "version=$VERSION"
+          npm pkg set "dependencies.@drakkar.software/starfish-protocol=$VERSION"
+          npm pkg set "dependencies.@drakkar.software/starfish-keyring=$VERSION"
+
+      - name: Publish starfish-webhook
+        working-directory: packages/ts/webhook
+        run: npx npm@latest publish --provenance --access public --tag ${{ needs.setup.outputs.npm_tag }}

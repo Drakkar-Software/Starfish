@@ -85,6 +85,9 @@ const DOCS_ROUTE_MAP = {
   "ts/sharing/02-public-links.md":         "/sharing/public-links",
   "ts/webhook/01-overview.md":             "/webhook/overview",
   "ts/webhook/02-sealed-write.md":         "/webhook/sealed-write",
+  // Analytics
+  "ts/events/README.md":                   "/analytics/events",
+  "python/events/README.md":               "/analytics/events",
   // Extensions
   "ts/protocol/01-overview.md":            "/extensions/protocol",
   "ts/identities/01-overview.md":          "/extensions/identities",

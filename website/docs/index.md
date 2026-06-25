@@ -41,6 +41,7 @@ pip install starfish-sdk
 | [TypeScript Server](/server/storage) | Server setup, storage, extensions |
 | [TypeScript WAL](/wal/overview) | Write-Ahead Log extension |
 | [TypeScript Spaces](/extensions/spaces) | Multi-tenant spaces |
+| [Events Plugin](/analytics/events) | JSON push → Parquet on S3 (TS + Python) |
 | [Python Server](/python/server/storage) | Python FastAPI server |
 | [Migration v2 → v3](/migration/v2-to-v3) | Upgrade guide |
 | [Packages](/packages/typescript/client) | Per-package API references (TS + Python) |
