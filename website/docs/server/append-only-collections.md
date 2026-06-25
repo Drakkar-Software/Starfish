@@ -429,7 +429,30 @@ Result:
 
 **Lazy migration**: enabling `chunkSize` on a collection that already has a single-document log migrates it to chunks on the next append (a one-time O(N) append; bounded thereafter). **Stickiness**: once a document is segmented it stays segmented even if `chunkSize` is later removed from config — otherwise the next append would orphan the existing chunks.
 
-**Batch-pull caveat**: the `/batch/pull` endpoint is not append/checkpoint-aware. For a **chunked** append-only collection it returns only the head's non-array `data` (no elements). Use the normal `/pull/...` endpoint (with `?checkpoint=`/`?last=`) for append-only data. (Batch pull *can* now address `{param}` collections — `{identity}` is auto-filled and other params come from its `params` query — but the checkpoint caveat above still applies to chunked append-only ones.)
+**Batch-pull append support**: `/batch/pull` is append/checkpoint-aware via the `appendParams` query parameter. Pass a URL-encoded JSON object (same shape as `params`, index-aligned per collection) where each entry carries any of `since`, `last` / `limit`, or none:
+
+```ts
+// Fetch the 10 newest events from two rooms in one request
+const result = await client.batchPull({
+  collections: ['events'],
+  params: {
+    events: [{ roomId: 'room-1' }, { roomId: 'room-2' }],
+  },
+  appendParams: {
+    events: [{ last: 10 }, { last: 10 }],
+  },
+})
+```
+
+- **`since`** maps to the checkpoint (only elements with `ts > since` are returned); `since=0` is an explicit checkpoint meaning "from the beginning".
+- **`last` / `limit`** return the N newest elements (after the `since` filter, if both are given).
+- An empty entry `{}` (no `since`, no `last`) is rejected per-entry with `pull_bound_required`.
+- **`full:true` is disallowed** in batch entries — rejected `400` for the whole request (DoS guard). Use a dedicated `/pull/` call for a full unbounded append-only read.
+- **`appendParams` length must equal `params` length** for that collection — a mismatch is rejected `400 append_params_length_mismatch`. Every document in the batch must declare its own bounds.
+- **`appendField` is server-configured**, not a per-request wire parameter. The server resolves which field name holds the array from the collection's `AppendOnlyConfig.field` value; clients do not send it in `appendParams`.
+- A non-append-only collection that receives `appendParams` returns `{ error: "append_params_not_supported" }` per entry.
+- The server enforces a **`maxBatchAppendElements`** cap (default `10 000` elements total across all append entries in a single batch request). An over-limit request is rejected `400 batch_append_limit_exceeded` before any reads are attempted.
+- Use `batchPullManyAppend(collection, requests)` for the common "many docs of one collection, each with append bounds" case.
 
 ## Migration
 

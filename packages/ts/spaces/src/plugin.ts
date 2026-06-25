@@ -3,8 +3,10 @@
  *
  * Exports two factory functions:
  *
- *   - `createSpacesRoleEnricher(store, layout?)` — a `RoleEnricher` that grants
- *     `'space:owner'` / `'space:member'` from the space's `_access` registry doc.
+ *   - `createSpacesRoleEnricher(store, layout?, options?)` — a `RoleEnricher`
+ *     that grants `'space:owner'` / `'space:member'` from the space's `_access`
+ *     registry doc. Defaults to `allowTofu: false` (absent doc → Forbidden).
+ *     Pass `{ allowTofu: true }` only where first-create provisioning is needed.
  *
  *   - `createSpacesDirectoryServerPlugin(layout?)` — a `ServerPlugin` with an
  *     `afterWrite` hook that maintains the global public-object directory by
@@ -12,6 +14,7 @@
  */
 import { makeRegistryRoleEnricher } from "@drakkar.software/starfish-sharing"
 import type { ServerPlugin, WriteEvent } from "@drakkar.software/starfish-protocol"
+import type { CollectionConfig } from "@drakkar.software/starfish-server"
 
 import type { SpaceLayout } from "./config.js"
 import { defaultSpaceLayout } from "./layout.js"
@@ -27,13 +30,21 @@ export interface SpaceObjectStore {
  * Creates a `RoleEnricher` that grants `'space:owner'` / `'space:member'` roles
  * from the space's `_access` registry doc.
  *
- * Pass the SpaceLayout so the enricher reads from the correct path.
- * The `registryPath` is the raw storage key WITHOUT the `/pull/` prefix.
+ * `allowTofu` controls what happens when the `_access` doc is absent:
+ * - `false` (default): no roles → the caller is Forbidden. Use this on any read
+ *   path (including cross-space batch reads) to prevent a caller from "claiming"
+ *   an unclaimed spaceId by being the first to read it.
+ * - `true`: grants owner + member (TOFU provisioning). Use only where you
+ *   deliberately want first-writer-owns semantics (e.g. a space-creation flow).
+ *
+ * To combine multiple enrichers, use `composeEnrichers` from `starfish-server`.
  */
 export function createSpacesRoleEnricher(
   store: SpaceObjectStore,
   layout: SpaceLayout = defaultSpaceLayout,
+  options: { allowTofu?: boolean } = {},
 ): ReturnType<typeof makeRegistryRoleEnricher> {
+  const { allowTofu = false } = options
   // The raw storage key for the _access doc (no /pull/ prefix — store keys are bare).
   // layout.spaceAccessPull('{id}') returns '/pull/spaces/{id}/_access';
   // strip the '/pull/' prefix.
@@ -43,8 +54,40 @@ export function createSpacesRoleEnricher(
     registryPath,
     ownerRole: "space:owner",
     memberRole: "space:member",
-    allowTofu: true,
+    allowTofu,
   })
+}
+
+/**
+ * Returns the canonical server `CollectionConfig[]` for the space `_access`
+ * registry collection.
+ *
+ * Register these on your server alongside
+ * `createSpacesRoleEnricher(store)` so callers can batch-read `_access` across
+ * many spaces in a single request using the account-scoped shared client
+ * (`session.spacesRegistryClient`).
+ *
+ * Security notes:
+ * - `readRoles: ["space:member"]` — only the space owner / declared members can
+ *   read. The strict enricher (no TOFU) ensures missing spaces yield Forbidden.
+ * - `writeRoles: ["space:owner"]` — only the space owner may modify the roster.
+ * - Do NOT include `_keyring` or `_members` in this set; they are gated
+ *   separately and must not be reachable via the cross-space batch route.
+ */
+export function spacesCollections(layout: SpaceLayout = defaultSpaceLayout): CollectionConfig[] {
+  // storagePath is the bare key without /pull/ prefix.
+  const storagePath = layout.spaceAccessPull("{spaceId}").replace(/^\/pull\//, "")
+  return [
+    {
+      name: "spaceaccess",
+      storagePath,
+      readRoles: ["space:member"],
+      writeRoles: ["space:owner"],
+      encryption: "none",
+      maxBodyBytes: 64 * 1024,
+      allowedMimeTypes: ["application/json"],
+    },
+  ]
 }
 
 // ── Object directory server plugin ────────────────────────────────────────────

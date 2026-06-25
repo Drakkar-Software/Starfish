@@ -80,15 +80,59 @@ const entries = await client.batchPullMany("profile", [
 // Order matches paramsList. Entry is { data, hash, timestamp } or { error }.
 ```
 
+**Append-aware batch pulls:**
+
+Pass `appendParams` (index-aligned to each collection's `params` array) to get
+bounded-tail reads for append-only collections in the same request:
+
+```ts
+const result = await client.batchPull({
+  collections: ['events'],
+  params: { events: [{ roomId: 'room-1' }, { roomId: 'room-2' }] },
+  appendParams: { events: [{ since: lastSeen, last: 50 }, { last: 10 }] },
+})
+// result.collections.events[0].data.items — up to 50 new events for room-1
+// result.collections.events[1].data.items — 10 newest events for room-2
+```
+
+`full:true` is disallowed in `appendParams` (DoS guard). Use `batchPullManyAppend`
+for the common many-docs-of-one-collection case.
+
+**Cross-space batch pulls:**
+
+Reading the same collection across many spaces no longer requires N separate requests.
+Sign the batch with the account-scoped client (whose cap covers `spaces/**`) and the
+server's per-entry role enricher (`createSpacesRoleEnricher`, which defaults to
+`allowTofu: false`) authorizes each entry against its own `_access` doc — entries
+the caller is not a member of come back as `{ error: "Forbidden" }`:
+
+```ts
+import { readSpaceAccessBatch } from '@drakkar.software/starfish-spaces'
+
+// Returns Map<spaceId, SpaceEntry> — only spaces the caller can read
+const spaces = await readSpaceAccessBatch(session, ['sp-1', 'sp-2', 'sp-3'])
+```
+
 **Caveats:**
 
-- **Not append/checkpoint-aware.** Incremental append-only reads (e.g.
-  `pull(path, { since })` or `AppendLogCursor`) must still run per-collection —
-  `batchPull` carries no checkpoint state.
+- **`full` disallowed in appendParams.** Use the normal `/pull/` endpoint for a full
+  unbounded append-only read.
 - **Server cap: 100 by default.** The server enforces `maxCollectionsPerBatch`
   (default **100**), counting both distinct collection names and the total number of
   individual document reads across all param-sets. An over-limit request gets a 4xx
   error before any reads are attempted.
+- **`batchKeyDenySuffixes`** — the server blocks certain key suffixes from appearing in
+  a cross-space batch by default (`_keyring` and `_members` are excluded). These
+  sensitive sibling collections must be fetched via their own dedicated `/pull/` calls;
+  requesting them through the batch endpoint returns `400 batch_key_denied`.
+- **Errored and forbidden entries are indistinguishable in the Map.** `readSpaceAccessBatch`
+  (and the underlying `/batch/pull` contract) silently omits spaces whose entry resolves
+  to an error — whether that is `Forbidden` (not a member), a missing `_access` doc, or
+  a transient server error. This matches the bundle-pull contract: callers cannot
+  distinguish "not a member" from "server error" from the Map result alone.
+- For a server-maintained roster of all spaces a user belongs to, a projection collection
+  can be more efficient than per-entry batch fan-out: one pull returns the full membership
+  list without enumerating individual space IDs on the client.
 
 **Python:**
 

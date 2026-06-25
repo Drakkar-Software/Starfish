@@ -1,0 +1,179 @@
+{
+  "description": "Cross-space batch pull conformance vectors. Tests that batchPull authorises each requested collection entry independently (per-space membership) rather than requiring a per-space cap. The strict (allowTofu: false) enricher is used so unclaimed/missing spaces are Forbidden, not 200-empty.",
+  "collections": [
+    {
+      "name": "spaceaccess",
+      "storagePath": "spaces/{spaceId}/_access",
+      "readRoles": ["space:member"],
+      "writeRoles": ["space:owner"],
+      "encryption": "none"
+    }
+  ],
+  "fixtures": {
+    "spaces/space-A/_access": {
+      "owner": "alice",
+      "members": ["alice", "bob"],
+      "name": "Alpha"
+    },
+    "spaces/space-B/_access": {
+      "owner": "alice",
+      "members": ["alice"],
+      "name": "Beta"
+    },
+    "spaces/space-C/_access": {
+      "owner": "carol",
+      "members": ["carol"],
+      "name": "Gamma"
+    }
+  },
+  "cases": [
+    {
+      "id": "member_reads_own_spaces",
+      "description": "bob is a member of space-A but not space-B. Both requested in one batch. Expects 200 for space-A and Forbidden for space-B.",
+      "caller": "bob",
+      "capScope": "spaces/**",
+      "collections": ["spaceaccess"],
+      "params": {
+        "spaceaccess": [
+          { "spaceId": "space-A" },
+          { "spaceId": "space-B" }
+        ]
+      },
+      "expected": {
+        "spaceaccess": [
+          { "outcome": "ok", "dataFields": { "owner": "alice", "name": "Alpha" } },
+          { "outcome": "error", "error": "Forbidden" }
+        ]
+      }
+    },
+    {
+      "id": "owner_reads_all_owned_spaces",
+      "description": "alice is the owner (and member) of space-A and space-B. Both should resolve 200.",
+      "caller": "alice",
+      "capScope": "spaces/**",
+      "collections": ["spaceaccess"],
+      "params": {
+        "spaceaccess": [
+          { "spaceId": "space-A" },
+          { "spaceId": "space-B" }
+        ]
+      },
+      "expected": {
+        "spaceaccess": [
+          { "outcome": "ok", "dataFields": { "owner": "alice" } },
+          { "outcome": "ok", "dataFields": { "owner": "alice" } }
+        ]
+      }
+    },
+    {
+      "id": "stranger_forbidden_every_space",
+      "description": "dave has no membership in any space. All entries should return Forbidden.",
+      "caller": "dave",
+      "capScope": "spaces/**",
+      "collections": ["spaceaccess"],
+      "params": {
+        "spaceaccess": [
+          { "spaceId": "space-A" },
+          { "spaceId": "space-B" },
+          { "spaceId": "space-C" }
+        ]
+      },
+      "expected": {
+        "spaceaccess": [
+          { "outcome": "error", "error": "Forbidden" },
+          { "outcome": "error", "error": "Forbidden" },
+          { "outcome": "error", "error": "Forbidden" }
+        ]
+      }
+    },
+    {
+      "id": "per_space_cap_still_blocks_siblings",
+      "description": "When alice uses a per-space cap scoped to 'spaces/space-A/**' instead of the account 'spaces/**' cap, she can read space-A but space-B is blocked by matchScopePath (scope regression: the enricher alone must not bypass cap-scope).",
+      "caller": "alice",
+      "capScope": "spaces/space-A/**",
+      "collections": ["spaceaccess"],
+      "params": {
+        "spaceaccess": [
+          { "spaceId": "space-A" },
+          { "spaceId": "space-B" }
+        ]
+      },
+      "expected": {
+        "spaceaccess": [
+          { "outcome": "ok", "dataFields": { "owner": "alice" } },
+          { "outcome": "error", "error": "Forbidden" }
+        ]
+      }
+    },
+    {
+      "id": "strict_tofu_absent_space_is_forbidden",
+      "description": "space-MISSING has no _access doc. With allowTofu:false, the enricher grants no roles, so the entry must be Forbidden (not 200-empty as TOFU would return).",
+      "caller": "alice",
+      "capScope": "spaces/**",
+      "collections": ["spaceaccess"],
+      "params": {
+        "spaceaccess": [
+          { "spaceId": "space-MISSING" }
+        ]
+      },
+      "expected": {
+        "spaceaccess": [
+          { "outcome": "error", "error": "Forbidden" }
+        ]
+      }
+    },
+    {
+      "id": "mixed_member_absent_and_owned",
+      "description": "alice reads: her owned space-A (ok), absent space-MISSING (Forbidden due to no-TOFU), carol's space-C (Forbidden — alice not a member).",
+      "caller": "alice",
+      "capScope": "spaces/**",
+      "collections": ["spaceaccess"],
+      "params": {
+        "spaceaccess": [
+          { "spaceId": "space-A" },
+          { "spaceId": "space-MISSING" },
+          { "spaceId": "space-C" }
+        ]
+      },
+      "expected": {
+        "spaceaccess": [
+          { "outcome": "ok", "dataFields": { "owner": "alice" } },
+          { "outcome": "error", "error": "Forbidden" },
+          { "outcome": "error", "error": "Forbidden" }
+        ]
+      }
+    },
+    {
+      "id": "empty_params_array_yields_empty_result",
+      "description": "An empty param-set array for a collection returns an empty result array (no reads).",
+      "caller": "alice",
+      "capScope": "spaces/**",
+      "collections": ["spaceaccess"],
+      "params": {
+        "spaceaccess": []
+      },
+      "expected": {
+        "spaceaccess": []
+      }
+    },
+    {
+      "id": "collection_not_found_per_entry",
+      "description": "A collection name not registered on the server returns per-entry errors aligned to the requested param count.",
+      "caller": "alice",
+      "capScope": "spaces/**",
+      "collections": ["nonexistent"],
+      "params": {
+        "nonexistent": [
+          { "spaceId": "space-A" },
+          { "spaceId": "space-B" }
+        ]
+      },
+      "expected": {
+        "nonexistent": [
+          { "outcome": "error", "error": "Collection not found" },
+          { "outcome": "error", "error": "Collection not found" }
+        ]
+      }
+    }
+  ]
+}

@@ -177,6 +177,7 @@ export {
   writeSpaces,
   reorderSpaces,
   readSpaceAccess,
+  readSpaceAccessBatch,
   writeSpaceAccess,
   addSpaceMember,
   removeSpaceMember,
@@ -281,4 +282,4 @@ export { rootIdentityOf, sessionFromPersisted, activeAccountOf } from "./vault.j
 
 // ── Plugin (server companion) ─────────────────────────────────────────────────
 export type { SpaceObjectStore, DirectoryStore } from "./plugin.js"
-export { createSpacesRoleEnricher, createSpacesDirectoryServerPlugin } from "./plugin.js"
+export { createSpacesRoleEnricher, createSpacesDirectoryServerPlugin, spacesCollections } from "./plugin.js"

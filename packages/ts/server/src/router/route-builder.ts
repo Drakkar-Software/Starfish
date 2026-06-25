@@ -31,6 +31,7 @@ import {
   deepSanitize,
   jsonDepthWithin,
   isWithKeyringEnabled,
+  type AppendPullBounds,
 } from "./helpers.js"
 import { appendItem } from "../protocol/push.js"
 import {
@@ -63,6 +64,7 @@ import {
   QUERY_FULL,
   APPEND_DEFAULT_FIELD,
   APPEND_MAX_FUTURE_TS_SKEW_MS,
+  ERROR_APPEND_PARAMS_NOT_SUPPORTED,
 } from "../constants.js"
 import type { ServerPlugin, WriteEvent } from "@drakkar.software/starfish-protocol"
 import { dispatchAfterWrite, dispatchBeforePull, dispatchInterceptPush, dispatchAuthorize, hasAuthorizeHook } from "../plugins.js"
@@ -177,6 +179,14 @@ export interface SyncRouterOptions {
    *  {@link KVAdapter} (e.g. Garage K2V) to enforce rate limits across server instances;
    *  counters are namespaced per collection/action/dimension automatically. */
   rateLimitStore?: KVAdapter
+  /** Maximum total append elements across all entries in one batch pull request.
+   * Guards against 100×maxPullLimit amplification. Default: 5000. */
+  maxBatchAppendElements?: number
+  /** Resolved batch keys ending in any of these suffixes are rejected Forbidden
+   * regardless of the caller's roles. Defaults to ["_keyring","_members"] so a
+   * misconfigured enricher-authorized route cannot expose sibling sensitive docs.
+   * Pass `[]` to disable. */
+  batchKeyDenySuffixes?: string[]
 }
 
 function toRoutePath(action: string, storagePath: string): string {
@@ -252,6 +262,7 @@ function applyFieldReadFilter(
   data: unknown,
   fieldPermissions: CollectionConfig["fieldPermissions"],
   roles: Iterable<string>,
+  appendField?: string,
 ): void {
   if (!fieldPermissions || data == null || typeof data !== "object") return
   const userRoles = new Set(roles)
@@ -260,6 +271,15 @@ function applyFieldReadFilter(
     if (perm.readRoles && perm.readRoles.length > 0) {
       const hasAccess = perm.readRoles.some((r) => userRoles.has(r) || r === ROLE_PUBLIC)
       if (!hasAccess) delete obj[field]
+    }
+  }
+  // If this is an append-only result, also strip restricted fields from each
+  // element's nested .data object (elements are {ts, data:{...}}).
+  if (appendField != null && Array.isArray(obj[appendField])) {
+    for (const element of obj[appendField] as Array<{ data?: Record<string, unknown> }>) {
+      if (element != null && typeof element.data === "object" && element.data != null) {
+        applyFieldReadFilter(element.data as Record<string, unknown>, fieldPermissions, userRoles)
+      }
     }
   }
 }
@@ -1061,7 +1081,14 @@ function addCollectionRoutes(
 
       // Field-level read permissions: strip fields the user can't read
       if (pullResult.status === 200) {
-        applyFieldReadFilter(pullResult.body["data"], col.fieldPermissions, roles)
+        applyFieldReadFilter(
+          pullResult.body["data"],
+          col.fieldPermissions,
+          roles,
+          col.appendOnly != null && col.appendOnly.persist !== false
+            ? (col.appendOnly.field ?? APPEND_DEFAULT_FIELD)
+            : undefined,
+        )
       }
 
       // ETag conditional request support
@@ -1499,6 +1526,74 @@ function createBatchPullHandler(
       paramsByCollection = parsed as Record<string, Record<string, unknown>[]>
     }
 
+    // Optional `appendParams`: URL-encoded JSON mapping collection name → an ARRAY
+    // of per-entry append options index-aligned to that collection's `params` array.
+    // Absent ⇒ regular full-document pull. Malformed → whole-request 400.
+    // `full` is disallowed in batch to prevent oversized responses.
+    type BatchAppendOpts = {
+      since?: number
+      last?: number
+      limit?: number
+    }
+    let appendParamsByCollection: Record<string, (BatchAppendOpts | null)[]> = {}
+    const rawAppendParams = c.req.query("appendParams")
+    if (rawAppendParams != null && rawAppendParams.length > 0) {
+      let parsedAP: unknown
+      try {
+        parsedAP = JSON.parse(rawAppendParams)
+      } catch {
+        return c.json({ error: "Invalid appendParams parameter" }, 400)
+      }
+      if (parsedAP == null || typeof parsedAP !== "object" || Array.isArray(parsedAP)) {
+        return c.json({ error: "Invalid appendParams parameter" }, 400)
+      }
+      for (const [col, v] of Object.entries(parsedAP as Record<string, unknown>)) {
+        if (!Array.isArray(v)) {
+          return c.json({ error: "Invalid appendParams parameter" }, 400)
+        }
+        const coerced: (BatchAppendOpts | null)[] = []
+        for (const e of v) {
+          if (e == null) { coerced.push(null); continue }
+          if (typeof e !== "object" || Array.isArray(e)) {
+            return c.json({ error: "Invalid appendParams parameter" }, 400)
+          }
+          const ap = e as Record<string, unknown>
+          // `full` is unconditionally rejected in batch (prevents oversized responses).
+          if (ap.full === true || ap.full === 1 || ap.full === "true" || ap.full === "1") {
+            return c.json({ error: `appendParams["${col}"]: full is not allowed in batch pull` }, 400)
+          }
+          const parseIntBound = (v: unknown): number | undefined | "invalid" => {
+            if (v == null) return undefined
+            const n = Number(v)
+            if (!Number.isInteger(n) || n < 0) return "invalid"
+            return n
+          }
+          const since = parseIntBound(ap.since)
+          const last = parseIntBound(ap.last)
+          const limit = parseIntBound(ap.limit)
+          if (since === "invalid" || last === "invalid" || limit === "invalid") {
+            return c.json({ error: "Invalid appendParams parameter" }, 400)
+          }
+          coerced.push({
+            ...(since != null && { since }),
+            ...(last != null && { last }),
+            ...(limit != null && { limit }),
+          })
+        }
+        appendParamsByCollection[col] = coerced
+      }
+    }
+
+    // Length-equality guard: appendParams[col] must align index-for-index with
+    // params[col]. A mismatch would silently give trailing entries null append-opts
+    // (falling back to an unbounded full-document read of an append log).
+    for (const [col, apArr] of Object.entries(appendParamsByCollection)) {
+      const pArr = paramsByCollection[col]
+      if (pArr != null && apArr.length !== pArr.length) {
+        return c.json({ error: "appendParams length mismatch: must equal params length for each collection" }, 400)
+      }
+    }
+
     // Bound the TOTAL reads (Σ param-sets across collections), not just the count
     // of distinct names: with array params one name can fan in many documents, so
     // the distinct-name cap above is necessary but no longer sufficient. A name
@@ -1509,6 +1604,26 @@ function createBatchPullHandler(
     )
     if (totalReads > maxBatch) {
       return c.json({ error: "Too many collections" }, 400)
+    }
+
+    // Aggregate append-element budget: prevent 100×maxPullLimit amplification even
+    // when full is rejected per-entry. Sum the effective last/limit per entry,
+    // clamped to each collection's maxPullLimit (or a fallback ceiling).
+    if (Object.keys(appendParamsByCollection).length > 0) {
+      const maxTotal = opts.maxBatchAppendElements ?? 5000
+      let totalAppendElements = 0
+      for (const [col, apArr] of Object.entries(appendParamsByCollection)) {
+        const colCfg = collections.find((c) => c.name === col)
+        const colMax = colCfg?.appendOnly?.maxPullLimit ?? 1000
+        for (const ap of apArr) {
+          if (ap == null) continue
+          const effective = Math.min(ap.last ?? ap.limit ?? colMax, colMax)
+          totalAppendElements += effective
+        }
+      }
+      if (totalAppendElements > maxTotal) {
+        return c.json({ error: "Batch append element budget exceeded" }, 400)
+      }
     }
 
     // Resolve the caller's base auth ONCE — the resolver consumes the request
@@ -1573,9 +1688,13 @@ function createBatchPullHandler(
     // result entry (`{ data, hash, timestamp }` or `{ error }`). Factored out of
     // the loop so a collection's array of param-sets each runs the identical
     // params → auth-fold → access → key → scope → pull → field-filter pipeline.
+    // When `appendOpts` is non-null, dispatches to `handleAppendOnlyPull` instead
+    // of the regular `pull()`, returning the bounded-tail array in `data[appendField]`.
+    type BatchAppendOptsLocal = { since?: number; last?: number; limit?: number }
     const resolveEntry = async (
       col: CollectionConfig,
       supplied: Record<string, unknown>,
+      appendOpts?: BatchAppendOptsLocal | null,
     ): Promise<Record<string, unknown>> => {
       // Effective params built from ONLY the template's params (parity with the
       // standalone path's `extractPathParams`): caller-supplied keys outside the
@@ -1661,6 +1780,13 @@ function createBatchPullHandler(
           await recordAudit(col.name, key, false, 403, effectiveParams)
           return { error: "Forbidden" }
         }
+        // Key denylist: reject sensitive sibling collections even if the enricher
+        // granted roles. Defense-in-depth for enricher-authorized batch routes.
+        const denySuffixes = opts.batchKeyDenySuffixes ?? ["_keyring", "_members"]
+        if (denySuffixes.some((s) => key === s || key.endsWith("/" + s))) {
+          await recordAudit(col.name, key, false, 403, effectiveParams)
+          return { error: "Forbidden" }
+        }
         const batchCtx: StoreContext = {
           collection: col.name,
           params: effectiveParams,
@@ -1669,6 +1795,69 @@ function createBatchPullHandler(
           action: ACTION_PULL,
           ...(namespaceName != null && { namespace: namespaceName }),
         }
+
+        // ── Append-aware branch ──────────────────────────────────────────────
+        if (appendOpts != null) {
+          // Reject appendParams for non-append-only collections.
+          if (!col.appendOnly || col.appendOnly.persist === false) {
+            await recordAudit(col.name, key, false, 400, effectiveParams)
+            return { error: ERROR_APPEND_PARAMS_NOT_SUPPORTED }
+          }
+          const appendCfg = col.appendOnly
+          const appendField = appendCfg.field ?? APPEND_DEFAULT_FIELD
+          const bounds: AppendPullBounds | undefined = (() => {
+            const b: AppendPullBounds = {}
+            if (appendCfg.allowFull === false) b.allowFull = false
+            if (appendCfg.maxPullLimit != null) b.maxPullLimit = appendCfg.maxPullLimit
+            if (appendCfg.maxCheckpointAgeMs != null) b.maxCheckpointAgeMs = appendCfg.maxCheckpointAgeMs
+            return Object.keys(b).length > 0 ? b : undefined
+          })()
+          // `since` maps directly to `checkpoint` in handleAppendOnlyPull — both
+          // mean "return elements with ts strictly greater than this value". A
+          // checkpoint of 0 with no `last`/`limit` is rejected as pull_bound_required
+          // (same as standalone), so `since` alone without a last/limit bound is an
+          // error. Callers must pair `since=0` with a `last` or `limit`.
+          const appendResp = await handleAppendOnlyPull(
+            key,
+            store,
+            appendOpts.since != null ? String(appendOpts.since) : null,  // since → checkpoint
+            appendField,
+            col.cacheDurationMs,
+            false,                                  // isPublic=false — roles already checked
+            appendOpts.last != null ? String(appendOpts.last) : null,
+            batchCtx,
+            appendOpts.limit != null ? String(appendOpts.limit) : null,
+            null,                                   // full=null — disallowed in batch
+            bounds,
+          )
+          // Map non-200 PullResponse status codes → per-entry error strings.
+          if (appendResp.status !== 200) {
+            const errCode = (appendResp.body as { error?: string }).error ?? "Internal error"
+            await recordAudit(col.name, key, false, appendResp.status, effectiveParams)
+            return { error: errCode }
+          }
+          // PullResponse.body = { data: { [appendField]: [...] }, hash, timestamp }.
+          // Unwrap body.data so the batch entry shape is consistent with full-doc pulls.
+          const appendRespBody = appendResp.body as { data: Record<string, unknown>; hash: string; timestamp: number }
+          const appendData = { ...appendRespBody.data }
+          // Re-apply field-read filter + TTL: handleAppendOnlyPull does not strip fieldPermissions
+          applyFieldReadFilter(appendData, col.fieldPermissions, roles, appendField)
+          if (col.ttlMs != null) {
+            try {
+              const rawDoc = await store.getString(key, batchCtx)
+              if (rawDoc) {
+                const stored = JSON.parse(rawDoc) as { ts?: number }
+                if (isExpired(stored.ts ?? 0, col.ttlMs)) {
+                  appendData[appendField] = []
+                }
+              }
+            } catch { /* corrupt doc — skip TTL */ }
+          }
+          await recordAudit(col.name, key, true, 200, effectiveParams)
+          return { data: appendData, hash: appendRespBody.hash ?? null, timestamp: appendRespBody.timestamp }
+        }
+
+        // ── Regular (full-document) branch ────────────────────────────────────
         const pullResult = await pull(store, key, batchCtx)
         let data = pullResult.data
         // TTL: pull() returns now as its timestamp, so read the stored doc-level
@@ -1714,8 +1903,13 @@ function createBatchPullHandler(
         results[name] = paramSets.map(() => ({ error: "Collection not found" }))
         continue
       }
+      const colAppendParams = appendParamsByCollection[name]
       const entries: Record<string, unknown>[] = []
-      for (const supplied of paramSets) entries.push(await resolveEntry(col, supplied))
+      for (let i = 0; i < paramSets.length; i++) {
+        const supplied = paramSets[i] ?? {}
+        const appendOpts = colAppendParams != null ? (colAppendParams[i] ?? null) : null
+        entries.push(await resolveEntry(col, supplied, appendOpts))
+      }
       results[name] = entries
     }
 

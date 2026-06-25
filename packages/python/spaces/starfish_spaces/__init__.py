@@ -11,7 +11,8 @@ Public surface (mirrors ``@drakkar.software/starfish-spaces``):
 - **Nodes**: :func:`create_node`, :func:`invite_to_node`, :func:`accept_node_invite`, ...
 - **Resource requests**: :func:`submit_resource_request`, :func:`scan_resource_requests`, ...
 - **Identity link**: :class:`IdentityLink`, :func:`decode_identity_link`, ...
-- **Server plugin**: :func:`create_spaces_role_enricher`,
+- **Server plugin**: :func:`create_spaces_role_enricher` (pass ``allow_tofu=True``
+  for first-create provisioning; default is fail-closed),
   :func:`create_spaces_directory_server_plugin` (lazy-imported to avoid pulling
   in ``starfish_server`` for client-only users).
 """
@@ -193,6 +194,7 @@ from starfish_spaces.registry import (
     move_space,
     on_space_meta,
     read_space_access,
+    read_space_access_batch,
     read_spaces,
     reconcile_space_meta,
     remove_joined_space,
@@ -294,6 +296,7 @@ from starfish_spaces.object_directory import (
 _LAZY_PLUGIN = {
     "create_spaces_role_enricher",
     "create_spaces_directory_server_plugin",
+    "spaces_collections",
 }
 
 
@@ -367,7 +370,7 @@ __all__ = [
     "SpacesDoc", "SpaceEntry",
     "build_space", "on_space_meta", "broadcast_space_meta",
     "read_spaces", "update_spaces_doc", "update_spaces_extra_field", "write_spaces",
-    "reorder_spaces", "read_space_access", "write_space_access",
+    "reorder_spaces", "read_space_access", "read_space_access_batch", "write_space_access",
     "add_space_member", "remove_space_member",
     "remove_joined_space", "move_space",
     "add_joined_space", "add_joined_space_with_cap", "add_joined_space_with_link_access",

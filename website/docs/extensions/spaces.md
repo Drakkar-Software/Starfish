@@ -285,7 +285,7 @@ import { createSyncRouter } from '@drakkar.software/starfish-server'
 
 const router = createSyncRouter({
   store,
-  roleEnrichers: [createSpacesRoleEnricher(store)],
+  roleEnricher: createSpacesRoleEnricher(store),
   plugins: [
     sharingServerPlugin,
     createSpacesDirectoryServerPlugin(),
@@ -293,9 +293,75 @@ const router = createSyncRouter({
 })
 ```
 
-`createSpacesRoleEnricher(store, layout?)` reads `spaces/{spaceId}/_access` and grants the `space:owner` or `space:member` role to authenticated identities. It wraps the generic `makeRegistryRoleEnricher` from `starfish-sharing`.
+> To combine multiple enrichers, use `composeEnrichers` from `@drakkar.software/starfish-server`.
+
+```typescript
+```
+
+`createSpacesRoleEnricher(store, layout?, options?)` reads `spaces/{spaceId}/_access`
+and grants the `space:owner` or `space:member` role to authenticated identities. It
+wraps the generic `makeRegistryRoleEnricher` from `starfish-sharing`.
+
+**`options.allowTofu`** (default `false`) controls what the enricher does when the
+`_access` doc is absent:
+
+| `allowTofu` | Absent `_access` doc | When to use |
+|---|---|---|
+| `false` (default) | No roles → **Forbidden** | Any read path (normal, batch, cross-space). Safe default: a stale or missing space never looks like an open grant. |
+| `true` | Grants `space:owner + space:member` | First-create provisioning flows only (e.g. the `createSpace` path where the owner writes the `_access` doc and immediately reads it back). The caller must already hold the storage-layer write cap; TOFU is only a convenience, not an access bypass. |
+
+**Risk of `allowTofu: true`:** any unauthenticated or misconfigured request that hits an absent `_access` path silently receives full membership of that space. Do **not** use it on any route reachable by untrusted callers — in particular, never on the cross-space batch endpoint.
+
+**Risk of `allowTofu: false`:** a creation flow that reads the `_access` doc before the write completes (race window) will get Forbidden instead of the expected roles. Coordinate the creation write and the first read, or use the account-scoped cap (which covers all space paths) for the write step.
 
 `createSpacesDirectoryServerPlugin(layout?)` is a `ServerPlugin` with an `afterWrite` hook: when a write lands in the `objindex` collection, it extracts `access: 'public'` nodes from the updated index and writes them to `_index/objects/public` — the world-readable object directory.
+
+### Cross-space batch reads
+
+Two additional exports support reading the `_access` document for many spaces in a single
+`/batch/pull` request:
+
+**`createSpacesRoleEnricher(store, layout?)`** — use the default (`allowTofu: false`). A missing
+`_access` doc yields no roles → the batch entry returns `{ error: "Forbidden" }`, preventing a
+caller from "claiming" an unclaimed spaceId by being the first to read it. Never pass
+`{ allowTofu: true }` on the batch route: a misconfigured or absent space would silently grant
+full membership to whoever reads it first.
+
+**`spacesCollections(layout?)`** — returns the canonical `CollectionConfig[]` for the `spaceaccess`
+collection (the `spaces/{spaceId}/_access` registry, gated by `space:member`/`space:owner`). `_keyring`
+and `_members` are intentionally excluded. Register these collections alongside
+`createSpacesRoleEnricher` on the cross-space batch endpoint:
+
+```ts
+import {
+  createSpacesRoleEnricher,
+  spacesCollections,
+} from '@drakkar.software/starfish-spaces'
+
+const router = createSyncRouter({
+  store,
+  config: {
+    version: 1,
+    collections: [...appCollections, ...spacesCollections()],
+  },
+  roleEnricher: createSpacesRoleEnricher(store),  // allowTofu: false by default
+})
+```
+
+**`readSpaceAccessBatch(session, spaceIds)`** — convenience helper that calls
+`session.spacesRegistryClient.batchPullMany("spaceaccess", spaceIds.map(id => ({ spaceId: id })))` and
+returns `Map<spaceId, SpaceEntry>`. Entries where the server returns an error (not a member, absent
+`_access`) are silently omitted from the map.
+
+```ts
+import { readSpaceAccessBatch } from '@drakkar.software/starfish-spaces'
+
+const spaces = await readSpaceAccessBatch(session, ['sp-1', 'sp-2', 'sp-3'])
+// { 'sp-1': SpaceEntry, 'sp-3': SpaceEntry }  // sp-2 absent: not a member
+```
+
+Python equivalents: `create_spaces_role_enricher` (pass `allow_tofu=False`, which is the default),
+`spaces_collections`, `read_space_access_batch`.
 
 ---
 

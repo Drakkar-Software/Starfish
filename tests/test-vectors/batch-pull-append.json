@@ -1,0 +1,424 @@
+{
+  "description": "Append/checkpoint-aware batch pull conformance vectors. Tests the appendParams query parameter that makes each batch entry return a bounded tail of an append-only collection's log rather than the full document.",
+  "collections": [
+    {
+      "name": "events",
+      "storagePath": "rooms/{roomId}/events",
+      "readRoles": ["public"],
+      "writeRoles": ["self"],
+      "encryption": "none",
+      "appendOnly": {
+        "type": "by_timestamp",
+        "field": "items",
+        "persist": true,
+        "allowFull": true,
+        "maxPullLimit": 100
+      }
+    },
+    {
+      "name": "strictevents",
+      "storagePath": "rooms/{roomId}/strictevents",
+      "readRoles": ["public"],
+      "writeRoles": ["self"],
+      "encryption": "none",
+      "appendOnly": {
+        "type": "by_timestamp",
+        "field": "items",
+        "persist": true,
+        "allowFull": false,
+        "maxPullLimit": 50,
+        "maxCheckpointAgeMs": 86400000
+      }
+    },
+    {
+      "name": "feed",
+      "storagePath": "users/{userId}/feed",
+      "readRoles": ["public"],
+      "writeRoles": ["self"],
+      "encryption": "none",
+      "appendOnly": {
+        "type": "by_timestamp",
+        "field": "entries",
+        "persist": true,
+        "allowFull": true
+      }
+    },
+    {
+      "name": "notes",
+      "storagePath": "users/{userId}/notes",
+      "readRoles": ["public"],
+      "writeRoles": ["self"],
+      "encryption": "none"
+    }
+  ],
+  "fixtures": {
+    "rooms/room-1/events": {
+      "items": [
+        { "ts": 100, "data": { "text": "first" } },
+        { "ts": 200, "data": { "text": "second" } },
+        { "ts": 300, "data": { "text": "third" } },
+        { "ts": 400, "data": { "text": "fourth" } },
+        { "ts": 500, "data": { "text": "fifth" } }
+      ]
+    },
+    "rooms/room-2/events": {
+      "items": [
+        { "ts": 10, "data": { "text": "a" } },
+        { "ts": 20, "data": { "text": "b" } }
+      ]
+    },
+    "rooms/room-1/strictevents": {
+      "items": [
+        { "ts": 100, "data": { "msg": "x" } },
+        { "ts": 200, "data": { "msg": "y" } },
+        { "ts": 300, "data": { "msg": "z" } }
+      ]
+    },
+    "users/alice/feed": {
+      "entries": [
+        { "ts": 1000, "data": { "post": "hello" } },
+        { "ts": 2000, "data": { "post": "world" } }
+      ]
+    },
+    "users/alice/notes": {
+      "body": "plain note",
+      "hash": "abc123"
+    }
+  },
+  "cases": [
+    {
+      "id": "last_1_newest_only",
+      "description": "last=1 returns only the single newest element from each room.",
+      "caller": "alice",
+      "capScope": "**",
+      "collections": ["events"],
+      "params": {
+        "events": [
+          { "roomId": "room-1" },
+          { "roomId": "room-2" }
+        ]
+      },
+      "appendParams": {
+        "events": [
+          { "last": 1 },
+          { "last": 1 }
+        ]
+      },
+      "expected": {
+        "events": [
+          { "outcome": "ok", "appendField": "items", "count": 1, "lastTs": 500 },
+          { "outcome": "ok", "appendField": "items", "count": 1, "lastTs": 20 }
+        ]
+      }
+    },
+    {
+      "id": "last_n_tail",
+      "description": "last=3 returns the 3 newest elements.",
+      "caller": "alice",
+      "capScope": "**",
+      "collections": ["events"],
+      "params": {
+        "events": [{ "roomId": "room-1" }]
+      },
+      "appendParams": {
+        "events": [{ "last": 3 }]
+      },
+      "expected": {
+        "events": [
+          { "outcome": "ok", "appendField": "items", "count": 3, "firstTs": 300, "lastTs": 500 }
+        ]
+      }
+    },
+    {
+      "id": "since_strict_after",
+      "description": "since=200 (checkpoint=200) returns only elements with ts strictly greater than 200 (third, fourth, fifth). Must be paired with last to provide a result bound.",
+      "caller": "alice",
+      "capScope": "**",
+      "collections": ["events"],
+      "params": {
+        "events": [{ "roomId": "room-1" }]
+      },
+      "appendParams": {
+        "events": [{ "since": 200, "last": 100 }]
+      },
+      "expected": {
+        "events": [
+          { "outcome": "ok", "appendField": "items", "count": 3, "firstTs": 300, "lastTs": 500 }
+        ]
+      }
+    },
+    {
+      "id": "since_zero_explicit_checkpoint",
+      "description": "since=0 maps to checkpointParam='0' (non-null, explicit checkpoint). Server treats it as 'from the beginning' and is NOT rejected as pull_bound_required. Returns all elements without requiring last.",
+      "caller": "alice",
+      "capScope": "**",
+      "collections": ["events"],
+      "params": {
+        "events": [{ "roomId": "room-1" }]
+      },
+      "appendParams": {
+        "events": [{ "since": 0 }]
+      },
+      "expected": {
+        "events": [
+          { "outcome": "ok", "appendField": "items", "count": 5 }
+        ]
+      }
+    },
+    {
+      "id": "full_disallowed_in_batch",
+      "description": "full:true is rejected at the parse level — the whole request returns 400. Client-side guard should catch this before sending.",
+      "caller": "alice",
+      "capScope": "**",
+      "collections": ["events"],
+      "params": {
+        "events": [{ "roomId": "room-1" }]
+      },
+      "appendParams": {
+        "events": [{ "full": true }]
+      },
+      "expectedStatus": 400
+    },
+    {
+      "id": "full_not_allowed_on_strict_collection",
+      "description": "Even if full were not blocked at parse time, allowFull:false on strictevents would return full_not_allowed.",
+      "caller": "alice",
+      "capScope": "**",
+      "collections": ["strictevents"],
+      "params": {
+        "strictevents": [{ "roomId": "room-1" }]
+      },
+      "appendParams": {
+        "strictevents": [{ "last": 50 }]
+      },
+      "expected": {
+        "strictevents": [
+          { "outcome": "ok", "appendField": "items", "count": 3 }
+        ]
+      }
+    },
+    {
+      "id": "pull_bound_required_when_no_params",
+      "description": "An appendParams entry with no last/since/limit/full ({}) passes checkpointParam=null and no last/limit — handler rejects with pull_bound_required.",
+      "caller": "alice",
+      "capScope": "**",
+      "collections": ["events"],
+      "params": {
+        "events": [{ "roomId": "room-1" }]
+      },
+      "appendParams": {
+        "events": [{}]
+      },
+      "expected": {
+        "events": [
+          { "outcome": "error", "error": "pull_bound_required" }
+        ]
+      }
+    },
+    {
+      "id": "non_append_collection_with_append_params",
+      "description": "appendParams given for a non-append-only collection (notes) returns append_params_not_supported.",
+      "caller": "alice",
+      "capScope": "**",
+      "collections": ["notes"],
+      "params": {
+        "notes": [{ "userId": "alice" }]
+      },
+      "appendParams": {
+        "notes": [{ "last": 1 }]
+      },
+      "expected": {
+        "notes": [
+          { "outcome": "error", "error": "append_params_not_supported" }
+        ]
+      }
+    },
+    {
+      "id": "mixed_append_and_non_append_collections",
+      "description": "Batch with both an append collection (events) and a regular collection (notes, no appendParams). Append entry uses last=1; notes is a full-doc pull. Both in one request.",
+      "caller": "alice",
+      "capScope": "**",
+      "collections": ["events", "notes"],
+      "params": {
+        "events": [{ "roomId": "room-1" }],
+        "notes": [{ "userId": "alice" }]
+      },
+      "appendParams": {
+        "events": [{ "last": 1 }]
+      },
+      "expected": {
+        "events": [
+          { "outcome": "ok", "appendField": "items", "count": 1, "lastTs": 500 }
+        ],
+        "notes": [
+          { "outcome": "ok", "dataFields": { "body": "plain note" } }
+        ]
+      }
+    },
+    {
+      "id": "per_entry_mixed_bounds",
+      "description": "Different bounds per room in the same batch: room-1 uses last=2, room-2 uses last=1.",
+      "caller": "alice",
+      "capScope": "**",
+      "collections": ["events"],
+      "params": {
+        "events": [
+          { "roomId": "room-1" },
+          { "roomId": "room-2" }
+        ]
+      },
+      "appendParams": {
+        "events": [
+          { "last": 2 },
+          { "last": 1 }
+        ]
+      },
+      "expected": {
+        "events": [
+          { "outcome": "ok", "appendField": "items", "count": 2, "firstTs": 400, "lastTs": 500 },
+          { "outcome": "ok", "appendField": "items", "count": 1, "lastTs": 20 }
+        ]
+      }
+    },
+    {
+      "id": "limit_clamp_to_max_pull_limit",
+      "description": "strictevents has maxPullLimit:50. Requesting last=1000 is silently clamped to 50. With only 3 elements the result is still all 3.",
+      "caller": "alice",
+      "capScope": "**",
+      "collections": ["strictevents"],
+      "params": {
+        "strictevents": [{ "roomId": "room-1" }]
+      },
+      "appendParams": {
+        "strictevents": [{ "last": 1000 }]
+      },
+      "expected": {
+        "strictevents": [
+          { "outcome": "ok", "appendField": "items", "count": 3 }
+        ]
+      }
+    },
+    {
+      "id": "non_default_append_field",
+      "description": "feed uses 'entries' as its appendField. The batch result must use that field name.",
+      "caller": "alice",
+      "capScope": "**",
+      "collections": ["feed"],
+      "params": {
+        "feed": [{ "userId": "alice" }]
+      },
+      "appendParams": {
+        "feed": [{ "last": 1 }]
+      },
+      "expected": {
+        "feed": [
+          { "outcome": "ok", "appendField": "entries", "count": 1, "lastTs": 2000 }
+        ]
+      }
+    },
+    {
+      "id": "since_and_last_combined",
+      "description": "since=100 with last=2: first filter ts>100 (elements 200,300,400,500), then take last 2 (400,500).",
+      "caller": "alice",
+      "capScope": "**",
+      "collections": ["events"],
+      "params": {
+        "events": [{ "roomId": "room-1" }]
+      },
+      "appendParams": {
+        "events": [{ "since": 100, "last": 2 }]
+      },
+      "expected": {
+        "events": [
+          { "outcome": "ok", "appendField": "items", "count": 2, "firstTs": 400, "lastTs": 500 }
+        ]
+      }
+    },
+    {
+      "id": "absent_collection_entry_in_append_params_is_null",
+      "description": "appendParams for a collection must have the same number of entries as params for that collection. A shorter array returns a whole-request 400 (length-equality guard).",
+      "caller": "alice",
+      "capScope": "**",
+      "collections": ["events"],
+      "params": {
+        "events": [
+          { "roomId": "room-1" },
+          { "roomId": "room-2" }
+        ]
+      },
+      "appendParams": {
+        "events": [
+          { "last": 1 }
+        ]
+      },
+      "expectedStatus": 400
+    },
+    {
+      "id": "invalid_append_params_json_returns_400",
+      "description": "A malformed appendParams value (not valid JSON) returns a whole-request 400.",
+      "caller": "alice",
+      "capScope": "**",
+      "collections": ["events"],
+      "rawAppendParams": "this is not json",
+      "expectedStatus": 400
+    },
+    {
+      "id": "invalid_append_params_not_object_returns_400",
+      "description": "appendParams must be a JSON object. An array at the top level returns 400.",
+      "caller": "alice",
+      "capScope": "**",
+      "collections": ["events"],
+      "rawAppendParams": "[1,2,3]",
+      "expectedStatus": 400
+    },
+    {
+      "id": "float_last_value_returns_400",
+      "description": "last must be a non-negative integer. A float value (e.g. last=1.5) is rejected at the parse level and returns a whole-request 400.",
+      "caller": "alice",
+      "capScope": "**",
+      "collections": ["events"],
+      "params": {
+        "events": [{ "roomId": "room-1" }]
+      },
+      "appendParams": {
+        "events": [{ "last": 1.5 }]
+      },
+      "expectedStatus": 400
+    },
+    {
+      "id": "float_since_value_returns_400",
+      "description": "since must be a non-negative integer timestamp. A float value (e.g. since=100.9) is rejected at the parse level and returns a whole-request 400.",
+      "caller": "alice",
+      "capScope": "**",
+      "collections": ["events"],
+      "params": {
+        "events": [{ "roomId": "room-1" }]
+      },
+      "appendParams": {
+        "events": [{ "since": 100.9, "last": 10 }]
+      },
+      "expectedStatus": 400
+    },
+    {
+      "id": "aggregate_budget_exceeded",
+      "description": "When the server is configured with maxBatchAppendElements (e.g. 5), a batch whose sum of requested last values exceeds that budget returns 400. This test requires the server to be started with maxBatchAppendElements=5; harnesses that cannot configure this value should skip this case.",
+      "note": "Requires server config: maxBatchAppendElements=5",
+      "caller": "alice",
+      "capScope": "**",
+      "collections": ["events"],
+      "params": {
+        "events": [
+          { "roomId": "room-1" },
+          { "roomId": "room-2" }
+        ]
+      },
+      "appendParams": {
+        "events": [
+          { "last": 3 },
+          { "last": 3 }
+        ]
+      },
+      "expectedStatus": 400
+    }
+  ]
+}

@@ -1,5 +1,33 @@
 # Changelog
 
+## 3.0.0-alpha.39
+
+### `@drakkar.software/starfish-spaces`
+
+#### Added
+- **`createSpacesRoleEnricher` gains `options.allowTofu`** — the enricher now accepts a third argument `options: { allowTofu?: boolean }` (default `false`). `allowTofu: false` (the new default) makes a missing `_access` doc yield no roles → Forbidden, preventing the first-writer-owns-any-unclaimed-spaceId land-grab and the "absent doc → 200 empty" enumeration oracle. Pass `{ allowTofu: true }` only in creation flows where you deliberately need first-create provisioning semantics (e.g. `createSpace`). This replaces the former `createStrictSpacesRoleEnricher` separate export (removed — one function, one option).
+- **`spacesCollections(layout?)`** — returns the canonical `CollectionConfig[]` for the space `_access` registry collection (`spaceaccess`), gated by `space:member`/`space:owner`. Designed for use with `createSpacesRoleEnricher(store)` on a cross-space batch endpoint. `_keyring` and `_members` are intentionally excluded.
+- **`readSpaceAccessBatch(session, spaceIds)`** — batch-reads the `_access` doc for many spaces in a single request via the account-scoped `session.spacesRegistryClient`. Returns a `Map<spaceId, SpaceEntry>` containing only spaces the caller is authorised to read. Spaces where the server returns an error (non-member, absent) are silently omitted.
+- **Batch route key defense via `batchKeyDenySuffixes`** — resolved keys ending in `_keyring` or `_members` are rejected with `403 Forbidden` by default on the batch route, preventing lateral reads of sensitive per-space sub-collections through the cross-space endpoint.
+
+#### Changed
+- **`createSpacesRoleEnricher` default is now `allowTofu: false`** — previously the enricher silently granted owner + member roles when the `_access` doc was absent (inherited TOFU default from `makeRegistryRoleEnricher`). The new default is fail-closed: absent doc → Forbidden. Servers that previously relied on the implicit TOFU grant must now pass `{ allowTofu: true }` explicitly.
+
+### `@drakkar.software/starfish-server`
+
+#### Added
+- **`appendParams` query in `/batch/pull`** — each batch entry can now carry per-entry append options (`since`, `last`, `limit`) via a new `appendParams` URL-encoded JSON parameter. The server routes those entries through `handleAppendOnlyPull` and returns the bounded tail array in `data[appendField]`. Non-append collections with `appendParams` return `{ error: "append_params_not_supported" }` per entry. `full` is disallowed in batch entries (DoS guard). `appendParams` length must equal `params` length per collection; a mismatch returns `400 Bad Request`.
+- **`ERROR_APPEND_PARAMS_NOT_SUPPORTED`** constant — returned when `appendParams` is given for a non-append-only collection.
+- **`SyncRouterOptions.maxBatchAppendElements`** (default `5000`) — per-request aggregate element budget across all append batch entries. Requests whose total resolved elements would exceed this limit are rejected, preventing unbounded memory expansion on a single batch call.
+- **`SyncRouterOptions.batchKeyDenySuffixes`** (default `["_keyring", "_members"]`) — array of key suffixes checked after role resolution on the batch route. Any resolved key matching a denied suffix returns `403 Forbidden` for that entry without touching storage. Callers can override to expand or restrict the denylist.
+- **`appendField` is server-configured per collection** — `appendParams` entries do not carry a per-request `appendField` override. The field name is fixed at server configuration time; clients that need to read a different field must use a separate collection or endpoint.
+
+### `@drakkar.software/starfish-client`
+
+#### Added
+- **`BatchPullOptions.appendParams`** — extend `batchPull`/`batchPullMany` with per-entry append bounds. `full` is validated and rejected client-side before the request is sent. All bound values (`since`, `last`, `limit`) must be integers; float values throw a validation error before the request is dispatched.
+- **`StarfishClient.batchPullManyAppend(collection, requests)`** — convenience helper for append-aware batch reads: pass per-entry `params` + `AppendPullOptions`, receive `(T[] | { error: string })[]` aligned to `requests`. The `appendField` option is client-side only — used to extract the result array from the response — and is never transmitted to the server.
+
 ## 3.0.0-alpha.38
 
 ### `@drakkar.software/starfish-client`

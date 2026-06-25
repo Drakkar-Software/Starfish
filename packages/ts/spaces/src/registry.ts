@@ -199,6 +199,22 @@ export type SpaceEntry = {
   hash: string | null
 }
 
+/** Parse a raw `_access` doc body + hash into a typed {@link SpaceEntry}. */
+function parseSpaceAccess(
+  data: { owner?: unknown; members?: unknown; name?: unknown; image?: unknown } | undefined,
+  hash: string | null,
+): SpaceEntry {
+  return {
+    owner: typeof data?.owner === "string" ? data.owner : null,
+    members: Array.isArray(data?.members)
+      ? (data!.members as unknown[]).filter((m): m is string => typeof m === "string")
+      : [],
+    name: typeof data?.name === "string" ? data.name : null,
+    image: typeof data?.image === "string" ? data.image : null,
+    hash,
+  }
+}
+
 export async function readSpaceAccess(
   client: StarfishClient,
   spaceId: string,
@@ -208,16 +224,46 @@ export async function readSpaceAccess(
     if (err instanceof StarfishHttpError && err.status === 404) return null
     throw err
   })
-  const data = res?.data as { owner?: string; members?: unknown[]; name?: string; image?: string } | undefined
-  return {
-    owner: typeof data?.owner === "string" ? data.owner : null,
-    members: Array.isArray(data?.members)
-      ? data!.members!.filter((m): m is string => typeof m === "string")
-      : [],
-    name: typeof data?.name === "string" ? data.name : null,
-    image: typeof data?.image === "string" ? data.image : null,
-    hash: res?.hash ?? null,
+  return parseSpaceAccess(
+    res?.data as { owner?: string; members?: unknown[]; name?: string; image?: string } | undefined,
+    res?.hash ?? null,
+  )
+}
+
+/**
+ * Batch-read the `_access` doc for many spaces in a single round-trip.
+ *
+ * Requires the server to be configured with `spacesCollections()` and
+ * `createSpacesRoleEnricher(store)` (defaults to `allowTofu: false`), and the
+ * caller to use the account-scoped shared client (`session.spacesRegistryClient`)
+ * whose cap scope covers `spaces/**`.
+ *
+ * Returns a `Map<spaceId, SpaceEntry>` containing ONLY the spaces the caller is
+ * authorised to read. Spaces where the server returns `{ error }` (e.g. the caller
+ * is not a member, or the space does not exist) are silently omitted.
+ */
+export async function readSpaceAccessBatch(
+  session: Session,
+  spaceIds: string[],
+): Promise<Map<string, SpaceEntry>> {
+  if (spaceIds.length === 0) return new Map()
+  const entries = await session.spacesRegistryClient.batchPullMany(
+    "spaceaccess",
+    spaceIds.map((id) => ({ spaceId: id })),
+  )
+  const result = new Map<string, SpaceEntry>()
+  for (let i = 0; i < spaceIds.length; i++) {
+    const entry = entries[i]
+    if (!entry || entry.error) continue
+    result.set(
+      spaceIds[i],
+      parseSpaceAccess(
+        entry.data as { owner?: string; members?: unknown[]; name?: string; image?: string } | undefined,
+        entry.hash ?? null,
+      ),
+    )
   }
+  return result
 }
 
 export async function writeSpaceAccess(

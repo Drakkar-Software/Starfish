@@ -4,6 +4,8 @@ Exports two factory functions:
 
 - :func:`create_spaces_role_enricher` — a ``RoleEnricher`` that grants
   ``'space:owner'`` / ``'space:member'`` from the space's ``_access`` registry doc.
+  Defaults to ``allow_tofu=False`` (absent doc → Forbidden). Pass
+  ``allow_tofu=True`` only where first-create provisioning is needed.
 
 - :func:`create_spaces_directory_server_plugin` — a ``ServerPlugin`` with an
   ``after_write`` hook that maintains the global public-object directory by
@@ -33,12 +35,26 @@ if TYPE_CHECKING:
 def create_spaces_role_enricher(
     store: Any,
     layout: SpaceLayout = default_space_layout,
+    *,
+    allow_tofu: bool = False,
 ) -> Any:
     """Create a ``RoleEnricher`` that grants ``'space:owner'`` / ``'space:member'``.
 
+    ``allow_tofu`` controls what happens when the ``_access`` doc is absent:
+
+    - ``False`` (default): no roles → the caller is Forbidden. Use this on any
+      read path (including cross-space batch reads) to prevent a caller from
+      "claiming" an unclaimed spaceId by being the first to read it.
+    - ``True``: grants owner + member (TOFU provisioning). Use only where you
+      deliberately want first-writer-owns semantics (e.g. a space-creation flow).
+
+    To combine multiple enrichers, use ``compose_enrichers`` from
+    ``starfish_server``.
+
     Args:
-        store:  Any object with ``async get_string(key: str) -> str | None``.
-        layout: The :class:`SpaceLayout` to use (default: :data:`default_space_layout`).
+        store:      Any object with ``async get_string(key: str) -> str | None``.
+        layout:     The :class:`SpaceLayout` to use (default: :data:`default_space_layout`).
+        allow_tofu: See above. Default ``False``.
 
     Returns:
         A callable ``RoleEnricher`` (from ``starfish_sharing``).
@@ -53,8 +69,43 @@ def create_spaces_role_enricher(
         registry_path=registry_path,
         owner_role="space:owner",
         member_role="space:member",
-        allow_tofu=True,
+        allow_tofu=allow_tofu,
     )
+
+
+def spaces_collections(layout: SpaceLayout = default_space_layout) -> list[dict[str, Any]]:
+    """Return the canonical server collection config for the space ``_access`` doc.
+
+    Register this alongside :func:`create_spaces_role_enricher` (default
+    ``allow_tofu=False``) so callers can batch-read ``_access`` across many
+    spaces in one request via the account-scoped shared client
+    (``session.spaces_registry_client``).
+
+    Security notes:
+
+    - ``readRoles: ["space:member"]`` — only the space owner / declared members
+      can read.  The default ``allow_tofu=False`` enricher ensures missing spaces
+      yield ``Forbidden`` rather than an empty 200 response.
+    - ``writeRoles: ["space:owner"]`` — only the space owner may modify the roster.
+    - Do NOT include ``_keyring`` or ``_members`` in this set; they must not be
+      reachable via the cross-space batch route.
+
+    Returns:
+        A list of collection config dicts (one entry: ``spaceaccess``).
+    """
+    raw_pull_path = layout.space_access_pull("{spaceId}")
+    storage_path = raw_pull_path.lstrip("/").removeprefix("pull/")
+    return [
+        {
+            "name": "spaceaccess",
+            "storagePath": storage_path,
+            "readRoles": ["space:member"],
+            "writeRoles": ["space:owner"],
+            "encryption": "none",
+            "maxBodyBytes": 64 * 1024,
+            "allowedMimeTypes": ["application/json"],
+        }
+    ]
 
 
 # ── Directory server plugin ───────────────────────────────────────────────────
@@ -143,4 +194,5 @@ def create_spaces_directory_server_plugin(
 __all__ = [
     "create_spaces_role_enricher",
     "create_spaces_directory_server_plugin",
+    "spaces_collections",
 ]

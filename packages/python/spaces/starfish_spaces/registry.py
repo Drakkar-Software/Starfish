@@ -278,6 +278,20 @@ class SpaceEntry:
         self.hash = hash
 
 
+def _parse_space_access(data: Any, hash_: Optional[str]) -> "SpaceEntry":
+    """Parse a raw ``_access`` doc body + hash into a :class:`SpaceEntry`."""
+    if not isinstance(data, dict):
+        return SpaceEntry(None, [], None, None, None)
+    members = [m for m in data.get("members", []) if isinstance(m, str)]
+    return SpaceEntry(
+        owner=data.get("owner") if isinstance(data.get("owner"), str) else None,
+        members=members,
+        name=data.get("name") if isinstance(data.get("name"), str) else None,
+        image=data.get("image") if isinstance(data.get("image"), str) else None,
+        hash=hash_,
+    )
+
+
 async def read_space_access(
     client: "StarfishClient",
     space_id: str,
@@ -293,17 +307,39 @@ async def read_space_access(
             return SpaceEntry(None, [], None, None, None)
         raise
 
-    if not isinstance(data, dict):
-        return SpaceEntry(None, [], None, None, None)
+    return _parse_space_access(data, hash_)
 
-    members = [m for m in data.get("members", []) if isinstance(m, str)]
-    return SpaceEntry(
-        owner=data.get("owner") if isinstance(data.get("owner"), str) else None,
-        members=members,
-        name=data.get("name") if isinstance(data.get("name"), str) else None,
-        image=data.get("image") if isinstance(data.get("image"), str) else None,
-        hash=hash_,
+
+async def read_space_access_batch(
+    session: "Session",
+    space_ids: list[str],
+) -> dict[str, "SpaceEntry"]:
+    """Batch-read the ``_access`` doc for many spaces in a single round-trip.
+
+    Requires the server to be configured with :func:`spaces_collections` and
+    :func:`create_spaces_role_enricher` (``allow_tofu=False``, the default),
+    and the caller to use the account-scoped shared client
+    (``session.spaces_registry_client``) whose cap scope covers ``spaces/**``.
+
+    Returns a ``dict[space_id, SpaceEntry]`` containing ONLY the spaces the caller
+    is authorised to read.  Spaces where the server returns ``{"error": ...}``
+    (e.g. caller is not a member, or the space does not exist) are silently omitted.
+    """
+    if not space_ids:
+        return {}
+    entries = await session.spaces_registry_client.batch_pull_many(
+        "spaceaccess",
+        [{"spaceId": sid} for sid in space_ids],
     )
+    result: dict[str, SpaceEntry] = {}
+    for i, space_id in enumerate(space_ids):
+        if i >= len(entries):
+            break
+        entry = entries[i]
+        if not isinstance(entry, dict) or entry.get("error"):
+            continue
+        result[space_id] = _parse_space_access(entry.get("data"), entry.get("hash"))
+    return result
 
 
 async def write_space_access(

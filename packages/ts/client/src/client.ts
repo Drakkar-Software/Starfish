@@ -165,6 +165,25 @@ export interface BatchPullOptions {
    *  omit the collection from `params` entirely (an unlisted collection reads one
    *  auto-filled doc). Results come back under the same name in request order. */
   params?: Record<string, Record<string, string>[]>
+  /**
+   * Per-collection append options, index-aligned to `params`. Makes the batch
+   * request **append/checkpoint-aware**: each entry returns the bounded tail of
+   * that collection's append-only log rather than the full document.
+   *
+   * Serialized as URL-encoded JSON alongside `params`. Server ignores it for
+   * collections that are not append-only (returns `{ error: "append_params_not_supported" }`
+   * for those entries). `full` is disallowed in batch (`full_not_allowed` per entry).
+   *
+   * Example — read the last 5 events for two rooms and the newest item for a third:
+   * ```ts
+   * await client.batchPull(["events"], {
+   *   params: { events: [{ room: "a" }, { room: "b" }, { room: "c" }] },
+   *   appendParams: { events: [{ last: 5 }, { last: 5 }, { last: 1 }] },
+   * })
+   * ```
+   * Each `data[appendField]` in the result is the filtered array for that entry.
+   */
+  appendParams?: Record<string, AppendPullOptions[]>
 }
 
 /**
@@ -631,8 +650,7 @@ export class StarfishClient {
    *
    * For the common "many docs of one collection" case prefer {@link batchPullMany}.
    *
-   * Note: not append/checkpoint-aware — for incremental append-only reads use
-   * `pull(path, { since })` (or `AppendLogCursor`) per collection.
+   * Pass `appendParams` per entry for append-only bounded-tail reads (see {@link batchPullManyAppend}).
    */
   async batchPull(
     collections: string[],
@@ -642,6 +660,31 @@ export class StarfishClient {
     search.set("collections", collections.join(","))
     if (opts.params && Object.keys(opts.params).length > 0) {
       search.set("params", JSON.stringify(opts.params))
+    }
+    if (opts.appendParams && Object.keys(opts.appendParams).length > 0) {
+      // Client-side guard: `full` is disallowed in batch (DoS risk). Apply the
+      // same `full ⊥ since/limit/last` mutual-exclusion check from pull() too.
+      for (const [col, optsArr] of Object.entries(opts.appendParams)) {
+        for (const ap of optsArr) {
+          if (ap.full) {
+            throw new Error(
+              `batchPull: appendParams["${col}"] contains full:true — full is not supported in batch pull`,
+            )
+          }
+          // Validate since/last/limit are non-negative integers (floats are rejected
+          // server-side; reject client-side for a faster, clearer error).
+          if (ap.since != null && (!Number.isInteger(ap.since) || ap.since < 0)) {
+            throw new Error(`batchPull: appendParams["${col}"].since must be a non-negative integer`)
+          }
+          if (ap.last != null && (!Number.isInteger(ap.last) || ap.last < 0)) {
+            throw new Error(`batchPull: appendParams["${col}"].last must be a non-negative integer`)
+          }
+          if (ap.limit != null && (!Number.isInteger(ap.limit) || ap.limit < 0)) {
+            throw new Error(`batchPull: appendParams["${col}"].limit must be a non-negative integer`)
+          }
+        }
+      }
+      search.set("appendParams", JSON.stringify(opts.appendParams))
     }
     const pathAndQuery = `${this.applyNamespace("/batch/pull")}?${search.toString()}`
     const url = `${this.baseUrl}${pathAndQuery}`
@@ -671,6 +714,50 @@ export class StarfishClient {
     if (paramsList.length === 0) return []
     const res = await this.batchPull([collection], { params: { [collection]: paramsList } })
     return res.collections[collection] ?? []
+  }
+
+  /**
+   * Convenience over {@link batchPull} for reading append-only bounded tails from
+   * MANY entries of ONE collection in a single round-trip.
+   *
+   * Each request in `requests` carries optional `params` (path params) and
+   * `options` (append bounds: `since`/`last`/`limit`/`appendField`). An empty
+   * `requests` issues no request and returns `[]`.
+   *
+   * Returns an array aligned to `requests` by index. Each element is either:
+   * - the filtered array `T[]` extracted from `entry.data[appendField]`, or
+   * - `{ error: string }` if the server returned a per-entry error.
+   *
+   * The `appendField` used for extraction defaults to `"items"` and can be
+   * overridden per request via `options.appendField`.
+   *
+   * The `appendField` option is client-side only (used for result extraction, not sent to the server).
+   * It must match the collection's server-configured append field and defaults to `"items"`.
+   *
+   * Note: `full: true` is not supported in batch and is rejected client-side
+   * before the request is sent.
+   */
+  async batchPullManyAppend<T = unknown>(
+    collection: string,
+    requests: { params?: Record<string, string>; options: AppendPullOptions }[],
+  ): Promise<(T[] | { error: string })[]> {
+    if (requests.length === 0) return []
+    const paramsList = requests.map((r) => r.params ?? {})
+    // Strip appendField from wire opts — server uses its configured field,
+    // not the client-supplied one. We keep it locally for result extraction below.
+    const appendParamsList = requests.map(({ options: { appendField: _af, ...wireOpts } }) => wireOpts)
+    const res = await this.batchPull([collection], {
+      params: { [collection]: paramsList },
+      appendParams: { [collection]: appendParamsList },
+    })
+    const entries = res.collections[collection] ?? []
+    return entries.map((entry, i) => {
+      if (entry.error) return { error: entry.error }
+      const appendField = requests[i]?.options.appendField ?? APPEND_DEFAULT_FIELD
+      const data = entry.data as Record<string, unknown> | undefined
+      const items = data?.[appendField]
+      return Array.isArray(items) ? (items as T[]) : []
+    })
   }
 
   /**

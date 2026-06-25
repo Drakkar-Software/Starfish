@@ -76,6 +76,7 @@ from starfish_server.constants import (
     QUERY_FULL,
     APPEND_DEFAULT_FIELD,
     APPEND_MAX_FUTURE_TS_SKEW_MS,
+    ERROR_APPEND_PARAMS_NOT_SUPPORTED,
 )
 
 @dataclass(frozen=True)
@@ -127,6 +128,12 @@ class SyncRouterOptions:
     # per-request work (store reads + enricher + scope checks) one signed request
     # can drive, since the rate limiter caps requests, not work-per-request.
     max_collections_per_batch: int = 100
+    max_batch_append_elements: int = 5000
+    """Maximum total append elements across all entries in one batch pull request.
+    Guards against 100×max_pull_limit amplification. Default: 5000."""
+    batch_key_deny_suffixes: list[str] | None = None
+    """Resolved batch keys ending in any of these suffixes are rejected Forbidden
+    regardless of the caller's roles. Defaults to ['_keyring','_members']."""
     # Shared store for rate-limit counters. When None, each rate limiter uses its own
     # in-memory (process-local) store — the original behavior. Pass a networked KVAdapter
     # (e.g. Garage K2V) to enforce rate limits across server instances; counters are
@@ -432,12 +439,17 @@ def _apply_field_read_filter(
     data: Any,
     field_permissions: Any,
     roles: frozenset[str] | set[str],
+    append_field: str | None = None,
 ) -> None:
     """Strip fields the caller's roles cannot read from ``data``, in place.
 
     Shared by the standalone, bundle, and batch pull paths so field-read
     permissions are enforced identically everywhere (the bundle path previously
     skipped this, leaking restricted fields).
+
+    When ``append_field`` is provided and ``data[append_field]`` is a list of
+    ``{ts, data: {...}}`` envelopes (append-only elements), restricted fields are
+    also stripped from each element's nested ``data`` dict.
     """
     if not field_permissions or not isinstance(data, dict):
         return
@@ -446,6 +458,12 @@ def _apply_field_read_filter(
             has_access = any(r in roles or r == ROLE_PUBLIC for r in fp.read_roles)
             if not has_access:
                 data.pop(field_name, None)
+    # If this is an append-only result, also strip restricted fields from each
+    # element's nested data dict (elements are {ts: ..., data: {...}}).
+    if append_field is not None and isinstance(data.get(append_field), list):
+        for element in data[append_field]:
+            if isinstance(element, dict) and isinstance(element.get("data"), dict):
+                _apply_field_read_filter(element["data"], field_permissions, roles)
 
 
 def _is_access_allowed(
@@ -1398,6 +1416,58 @@ def _make_batch_pull_handler(
                 return JSONResponse({"error": "Invalid params parameter"}, status_code=400)
             params_by_collection = parsed
 
+        # Optional `appendParams`: URL-encoded JSON mapping collection name → an
+        # ARRAY of per-entry append options index-aligned to that collection's
+        # `params` array. Absent ⇒ regular full-document pull.
+        # `full` is disallowed in batch to prevent oversized responses.
+        append_params_by_collection: dict[str, list[dict[str, Any] | None]] = {}
+        raw_append_params = request.query_params.get("appendParams")
+        if raw_append_params:
+            try:
+                parsed_ap = json.loads(raw_append_params)
+            except (ValueError, TypeError, RecursionError):
+                return JSONResponse({"error": "Invalid appendParams parameter"}, status_code=400)
+            if not isinstance(parsed_ap, dict):
+                return JSONResponse({"error": "Invalid appendParams parameter"}, status_code=400)
+            for col_name, v in parsed_ap.items():
+                if not isinstance(v, list):
+                    return JSONResponse({"error": "Invalid appendParams parameter"}, status_code=400)
+                coerced: list[dict[str, Any] | None] = []
+                for e in v:
+                    if e is None:
+                        coerced.append(None)
+                        continue
+                    if not isinstance(e, dict):
+                        return JSONResponse({"error": "Invalid appendParams parameter"}, status_code=400)
+                    # `full` is unconditionally rejected in batch (prevents oversized responses).
+                    if e.get("full") in (True, "true", "1", 1):
+                        return JSONResponse(
+                            {"error": f"appendParams[{col_name!r}]: full is not allowed in batch pull"},
+                            status_code=400,
+                        )
+                    ap: dict[str, Any] = {}
+                    for k in ("since", "last", "limit"):
+                        if k in e:
+                            val = e[k]
+                            if not isinstance(val, int) or isinstance(val, bool):
+                                return JSONResponse({"error": "Invalid appendParams parameter"}, status_code=400)
+                            if val < 0:
+                                return JSONResponse({"error": "Invalid appendParams parameter"}, status_code=400)
+                            ap[k] = val
+                    coerced.append(ap)
+                append_params_by_collection[col_name] = coerced
+
+        # Length-equality guard: append_params[col] must align index-for-index with
+        # params[col]. A mismatch would silently give trailing entries None append-opts
+        # (falling back to an unbounded full-document read of an append log).
+        for col_name, ap_arr in append_params_by_collection.items():
+            p_arr = params_by_collection.get(col_name)
+            if p_arr is not None and len(ap_arr) != len(p_arr):
+                return JSONResponse(
+                    {"error": "appendParams length mismatch: must equal params length for each collection"},
+                    status_code=400,
+                )
+
         # Bound the TOTAL reads (Σ param-sets across collections), not just the count
         # of distinct names: with array params one name can fan in many documents, so
         # the distinct-name cap above is necessary but no longer sufficient. A name
@@ -1408,6 +1478,24 @@ def _make_batch_pull_handler(
         )
         if total_reads > opts.max_collections_per_batch:
             return JSONResponse({"error": "Too many collections"}, status_code=400)
+
+        # Aggregate append-element budget: prevent 100×max_pull_limit amplification
+        # even when full is rejected per-entry.
+        if append_params_by_collection:
+            max_total = opts.max_batch_append_elements
+            total_append_elements = 0
+            col_map = {c.name: c for c in (opts.config.collections if opts.config else [])}
+            for col_name, ap_arr in append_params_by_collection.items():
+                col_cfg = col_map.get(col_name)
+                col_max = (col_cfg.append_only.max_pull_limit if col_cfg and col_cfg.append_only and col_cfg.append_only.max_pull_limit is not None else 1000)
+                for ap in ap_arr:
+                    if ap is None:
+                        continue
+                    requested = ap.get("last") or ap.get("limit")
+                    effective = min(requested, col_max) if requested is not None else col_max
+                    total_append_elements += effective
+            if total_append_elements > max_total:
+                return JSONResponse({"error": "Batch append element budget exceeded"}, status_code=400)
 
         # Resolve the caller's base auth ONCE — the resolver consumes the request
         # nonce, so it must not run per-collection. Per-collection `self`/enricher
@@ -1468,13 +1556,18 @@ def _make_batch_pull_handler(
         store = opts.store
 
         async def _resolve_entry(
-            col: CollectionConfig, supplied: dict[str, Any]
+            col: CollectionConfig,
+            supplied: dict[str, Any],
+            append_opts: dict[str, Any] | None = None,
         ) -> dict[str, Any]:
             # Resolve ONE document of `col` for a single supplied param-set,
             # returning its result entry (`{data,hash,timestamp}` or `{error}`).
             # Factored out of the loop so a collection's array of param-sets each
             # runs the identical params → auth-fold → access → key → scope → pull →
             # field-filter pipeline.
+            # When `append_opts` is non-None, dispatches to `handle_append_only_pull`
+            # instead of the regular `pull()`, returning the bounded tail in
+            # `data[append_field]`.
             #
             # Effective params built from ONLY the template's params (parity with
             # the standalone path): caller-supplied keys outside the template are
@@ -1560,6 +1653,12 @@ def _make_batch_pull_handler(
                 if not match_scope_path(key, scope_paths):
                     await _record_audit(col.name, key, False, 403, effective_params)
                     return {"error": "Forbidden"}
+                # Key denylist: reject sensitive sibling collections even if the enricher
+                # granted roles. Defense-in-depth for enricher-authorized batch routes.
+                deny_suffixes = opts.batch_key_deny_suffixes if opts.batch_key_deny_suffixes is not None else ["_keyring", "_members"]
+                if any(key == s or key.endswith("/" + s) for s in deny_suffixes):
+                    await _record_audit(col.name, key, False, 403, effective_params)
+                    return {"error": "Forbidden"}
                 batch_ctx = StoreContext(
                     collection=col.name,
                     params=effective_params,
@@ -1568,6 +1667,64 @@ def _make_batch_pull_handler(
                     action=ACTION_PULL,
                     namespace=namespace_name,
                 )
+
+                # ── Append-aware branch ──────────────────────────────────────
+                if append_opts is not None:
+                    # Reject appendParams for non-append-only collections.
+                    if col.append_only is None or col.append_only.persist is False:
+                        await _record_audit(col.name, key, False, 400, effective_params)
+                        return {"error": ERROR_APPEND_PARAMS_NOT_SUPPORTED}
+                    append_cfg = col.append_only
+                    append_field = append_cfg.field or APPEND_DEFAULT_FIELD
+                    # ``since`` maps directly to ``checkpoint`` in
+                    # handle_append_only_pull — both mean "return elements with ts
+                    # strictly > this value". checkpoint=0 without last/limit is
+                    # rejected as pull_bound_required (same as standalone), so
+                    # ``since`` alone without last/limit is an error.
+                    since_val = append_opts.get("since")
+                    append_resp = await handle_append_only_pull(
+                        key,
+                        store,
+                        str(since_val) if since_val is not None else None,  # since → checkpoint
+                        append_field,
+                        col.cache_duration_ms,
+                        False,                            # is_public=False — roles already checked
+                        str(append_opts["last"]) if "last" in append_opts else None,
+                        batch_ctx,
+                        str(append_opts["limit"]) if "limit" in append_opts else None,
+                        None,                             # full=None — disallowed in batch
+                        append_cfg.allow_full,
+                        append_cfg.max_pull_limit,
+                        append_cfg.max_checkpoint_age_ms,
+                    )
+                    if append_resp.status_code != 200:
+                        body_dict = json.loads(append_resp.body)
+                        err_code = body_dict.get("error", "Internal error")
+                        await _record_audit(col.name, key, False, append_resp.status_code, effective_params)
+                        return {"error": err_code}
+                    # JSONResponse.body is bytes. The handler returns
+                    # { data: { [appendField]: [...] }, hash, timestamp }.
+                    # Unwrap body["data"] so the batch entry shape matches full-doc pulls.
+                    resp_dict: dict[str, Any] = json.loads(append_resp.body)
+                    append_data: dict[str, Any] = dict(resp_dict.get("data") or {})
+                    resp_hash = resp_dict.get("hash")
+                    resp_timestamp = resp_dict.get("timestamp")
+                    # Re-apply field-read filter + TTL: handle_append_only_pull does not strip field_permissions
+                    _apply_field_read_filter(append_data, col.field_permissions, effective_roles, append_field)
+                    if col.ttl_ms is not None:
+                        raw_doc = await opts.store.get_string(key, context=batch_ctx)
+                        if raw_doc:
+                            try:
+                                stored = json.loads(raw_doc)
+                                doc_timestamp = stored.get("ts") or 0
+                                if _is_expired(doc_timestamp, col.ttl_ms):
+                                    append_data[append_field] = []
+                            except (ValueError, AttributeError):
+                                pass  # corrupt stored doc: return the append data as-is
+                    await _record_audit(col.name, key, True, 200, effective_params)
+                    return {"data": append_data, "hash": resp_hash, "timestamp": resp_timestamp}
+
+                # ── Regular (full-document) branch ────────────────────────────
                 pull_result = await pull(store, key, batch_ctx)
                 data = pull_result.data
 
@@ -1609,7 +1766,12 @@ def _make_batch_pull_handler(
                 # with the caller's input (batch_pull_many indexes by position).
                 results[name] = [{"error": "Collection not found"} for _ in param_sets]
                 continue
-            results[name] = [await _resolve_entry(col, supplied) for supplied in param_sets]
+            col_append_params = append_params_by_collection.get(name)
+            entries: list[dict[str, Any]] = []
+            for i, supplied in enumerate(param_sets):
+                append_opts = col_append_params[i] if col_append_params is not None and i < len(col_append_params) else None
+                entries.append(await _resolve_entry(col, supplied, append_opts))
+            results[name] = entries
 
         return JSONResponse({"collections": results})
 

@@ -53,6 +53,8 @@ export const ERROR_FULL_WITH_BOUNDS = "full_with_bounds"
 export const ERROR_FULL_NOT_ALLOWED = "full_not_allowed"
 /** Append-only pull rejected: `?checkpoint=` is older than `maxCheckpointAgeMs`. */
 export const ERROR_CHECKPOINT_TOO_OLD = "checkpoint_too_old"
+/** Batch-pull rejected: `appendParams` given for a collection that is not append-only. */
+export const ERROR_APPEND_PARAMS_NOT_SUPPORTED = "append_params_not_supported"
 /** Suffix appended to a document key to namespace its segmented-storage chunks,
  *  e.g. head `events/X` → chunks under `events/X__seg/`. A sibling prefix (not a
  *  child of the head key) so the head can stay a single file even on the

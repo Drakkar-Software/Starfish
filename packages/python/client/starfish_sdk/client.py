@@ -37,8 +37,6 @@ from starfish_sdk.types import (
 
 APPEND_DEFAULT_FIELD = "items"
 
-APPEND_DEFAULT_FIELD = "items"
-
 
 class StarfishClient:
     """Low-level HTTP client for the Starfish sync protocol.
@@ -325,6 +323,7 @@ class StarfishClient:
         collections: list[str],
         *,
         params: dict[str, list[dict[str, str]]] | None = None,
+        append_params: dict[str, list[dict[str, Any]]] | None = None,
     ) -> dict[str, Any]:
         """Pull several documents in one round-trip via ``/batch/pull``.
 
@@ -336,16 +335,40 @@ class StarfishClient:
                 a URL-encoded JSON ``params`` query parameter. The ``{identity}`` param
                 is auto-filled by the server from the authenticated caller for any set
                 that omits it, so a self-doc collection needs no params.
+            append_params: Per collection, an ARRAY of append options index-aligned to
+                ``params``. Each element is a dict of ``since``, ``last``, ``limit``,
+                and/or ``append_field`` keys. Makes the batch request append/checkpoint-
+                aware. ``full`` is disallowed in batch (``full_not_allowed`` per entry).
+                Server ignores for non-append collections (returns
+                ``{"error": "append_params_not_supported"}`` per entry).
 
         Returns the parsed response: ``{"collections": {<name>: [{...doc...} |
         {"error": ...}]}}`` — each name maps to an ARRAY of entries in request order.
 
         For the common "many docs of one collection" case prefer
         :meth:`batch_pull_many`.
-
-        Not append/checkpoint-aware — for incremental append-only reads use
-        ``pull(path, since=...)`` (or ``AppendLogCursor``) per collection.
         """
+        # Client-side guard: ``full`` is disallowed in batch (DoS risk).
+        if append_params:
+            for col, opts_list in append_params.items():
+                for i, ap in enumerate(opts_list):
+                    if ap.get("full"):
+                        raise ValueError(
+                            f"batch_pull: append_params[{col!r}][{i}] contains full=True"
+                            " — full is not supported in batch pull"
+                        )
+                    for key in ("since", "last", "limit"):
+                        val = ap.get(key)
+                        if val is not None:
+                            if not isinstance(val, int) or isinstance(val, bool):
+                                raise ValueError(
+                                    f"batch_pull: append_params[{col!r}][{i}].{key} must be an integer"
+                                )
+                            if val < 0:
+                                raise ValueError(
+                                    f"batch_pull: append_params[{col!r}][{i}].{key} must be non-negative"
+                                )
+
         # Build the query ONCE and use it for BOTH the signed canonical and the
         # sent URL, so the bytes signed equal the bytes on the wire (the cap-cert
         # signature binds method+path+query). ``quote(safe="")`` percent-encodes the
@@ -354,6 +377,10 @@ class StarfishClient:
         if params:
             query_parts.append(
                 f"params={quote(json.dumps(params, separators=(',', ':')), safe='')}"
+            )
+        if append_params:
+            query_parts.append(
+                f"appendParams={quote(json.dumps(append_params, separators=(',', ':')), safe='')}"
             )
         query = "&".join(query_parts)
 
@@ -380,6 +407,10 @@ class StarfishClient:
         back the entry list aligned to ``params_list`` by index (each entry is
         ``{"data", "hash", "timestamp"}`` or ``{"error": ...}``). An empty
         ``params_list`` issues no request and returns ``[]``.
+
+        Note: this helper does not expose ``appendParams``; for append/checkpoint-aware
+        batch reads use :meth:`batch_pull_many_append` or call :meth:`batch_pull`
+        directly with ``append_params``.
         """
         if not params_list:
             return []
@@ -387,6 +418,61 @@ class StarfishClient:
         collections = res.get("collections", {})
         entries = collections.get(collection, [])
         return entries if isinstance(entries, list) else []
+
+    async def batch_pull_many_append(
+        self,
+        collection: str,
+        requests: list[dict[str, Any]],
+    ) -> list[list[Any] | dict[str, Any]]:
+        """Read bounded append-only tails from MANY entries of ONE collection.
+
+        Convenience over :meth:`batch_pull` for append/checkpoint-aware reads.
+        Each request dict may contain:
+        - ``params`` *(dict[str, str])* — path params for the collection entry.
+        - ``options`` *(dict)* — append bounds: ``since``, ``last``, ``limit``,
+          and/or ``append_field``.
+
+        ``append_field`` is client-side only: it names the key to extract from
+        ``entry["data"]`` and is stripped before the options are sent to the
+        server (the server uses its own configured field name and does not
+        recognise ``append_field`` in ``appendParams``).
+
+        Returns a list aligned to ``requests`` by index. Each element is either:
+        - the filtered ``list`` extracted from ``entry["data"][append_field]``, or
+        - ``{"error": str}`` if the server returned a per-entry error.
+
+        Note: ``full`` is not supported in batch and is rejected client-side.
+        An empty ``requests`` issues no request and returns ``[]``.
+        """
+        if not requests:
+            return []
+        params_list = [r.get("params") or {} for r in requests]
+        # Strip append_field from wire opts — server uses its configured field.
+        # Keep it locally for result extraction.
+        opts_list = []
+        for r in requests:
+            opts = dict(r.get("options") or {})
+            opts.pop("append_field", None)
+            opts_list.append(opts)
+        res = await self.batch_pull(
+            [collection],
+            params={collection: params_list},
+            append_params={collection: opts_list},
+        )
+        entries = (res.get("collections", {}).get(collection) or [])
+        result: list[list[Any] | dict[str, Any]] = []
+        for i, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                result.append([])
+                continue
+            if entry.get("error"):
+                result.append({"error": entry["error"]})
+                continue
+            append_field = (requests[i].get("options") or {}).get("append_field") or APPEND_DEFAULT_FIELD
+            data = entry.get("data") or {}
+            items = data.get(append_field) if isinstance(data, dict) else None
+            result.append(items if isinstance(items, list) else [])
+        return result
 
     async def push(
         self,
