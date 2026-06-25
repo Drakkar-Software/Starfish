@@ -13,6 +13,8 @@ import {
   HEADER_PUB,
   HEADER_CONTENT_TYPE,
   HEADER_ACCEPT,
+  PARQUET_MIME_TYPE as PARQUET_MIME_TYPE_VALUE,
+  PARQUET_MIME_TYPES as PARQUET_MIME_TYPES_VALUE,
   signAppendAuthor,
   signRequest,
   stableStringify,
@@ -1002,5 +1004,50 @@ export class StarfishClient {
       throw new StarfishHttpError(res.status, await res.text())
     }
     return res.json() as Promise<BlobPushResult>
+  }
+
+  /**
+   * Push an Apache Parquet file to a Parquet collection.
+   *
+   * Thin wrapper over {@link pushBlob} that fixes `Content-Type` to
+   * `application/vnd.apache.parquet` so the S3 object is tagged correctly
+   * for DuckDB and CDN consumption.
+   *
+   * @example
+   * ```ts
+   * const parquetBytes = await generateParquet(rows)
+   * const result = await client.pushParquet("/push/analytics/alice/q1.parquet", parquetBytes)
+   * console.log("stored hash:", result.hash)
+   * ```
+   */
+  async pushParquet(
+    path: string,
+    data: ArrayBuffer | Uint8Array | Blob,
+  ): Promise<BlobPushResult> {
+    return this.pushBlob(path, data, PARQUET_MIME_TYPE_VALUE)
+  }
+
+  /**
+   * Pull an Apache Parquet file from a Parquet collection.
+   *
+   * Thin wrapper over {@link pullBlob} for API symmetry with
+   * {@link pushParquet}.
+   *
+   * @example
+   * ```ts
+   * const result = await client.pullParquet("/pull/analytics/alice/q1.parquet")
+   * // result.data        → ArrayBuffer
+   * // result.contentType → "application/vnd.apache.parquet"
+   * ```
+   */
+  async pullParquet(path: string): Promise<BlobPullResult> {
+    const result = await this.pullBlob(path)
+    if (!PARQUET_MIME_TYPES_VALUE.includes(result.contentType as any)) {
+      throw new StarfishHttpError(
+        415,
+        `Expected a Parquet content-type, got: ${result.contentType}`,
+      )
+    }
+    return result
   }
 }

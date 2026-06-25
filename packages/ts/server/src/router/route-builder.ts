@@ -216,13 +216,21 @@ const LIST_MAX_LIMIT = 1000
 /** Default cap on collections per `/batch/pull` request (see `maxCollectionsPerBatch`). */
 const DEFAULT_MAX_BATCH_COLLECTIONS = 100
 
-function resolveDocumentKey(
+/** Resolves `{param}` placeholders in a `storagePath` template.
+ *  The result is the S3 object key for binary collections and the
+ *  document key for JSON collections.
+ *
+ * @example
+ * resolveDocumentKey("datasets/{owner}/{dataset}", { owner: "alice", dataset: "sales.parquet" })
+ * // → "datasets/alice/sales.parquet"
+ */
+export function resolveDocumentKey(
   template: string,
   params: Record<string, string>,
 ): string {
   let result = template
   for (const [key, value] of Object.entries(params)) {
-    result = result.replace(`{${key}}`, value)
+    result = result.replaceAll(`{${key}}`, value)
   }
   return result
 }

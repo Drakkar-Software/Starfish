@@ -45,6 +45,7 @@ export { push, appendItem, type Author, type AppendConflict, type AppendOutcome 
 export {
   createSyncRouter,
   setAjv,
+  resolveDocumentKey,
   type SyncRouterOptions,
   type AuthResult,
   type RoleResolver,
@@ -96,6 +97,18 @@ export { isExpired } from "./ttl.js"
 
 // OpenAPI
 export { generateOpenApiSpec } from "./openapi.js"
+
+// Parquet / DuckDB
+export {
+  createParquetCollection,
+  duckdbReadParquetSql,
+  type ParquetAccessMode,
+  type ParquetCollectionOptions,
+  type DuckdbParquetSqlOptions,
+  type DuckdbParquetSqlResult,
+  PARQUET_MIME_TYPE,
+  PARQUET_MIME_TYPES,
+} from "./parquet.js"
 
 // Cap-cert auth (v3, opt-in)
 export {

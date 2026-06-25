@@ -9,6 +9,7 @@ from starfish_sdk.types import (
     StarfishHttpError,
 )
 from starfish_protocol import Encryptor, ENCRYPTED_KEY
+from starfish_protocol.constants import PARQUET_MIME_TYPE, PARQUET_MIME_TYPES
 from starfish_sdk.client import StarfishClient
 from starfish_sdk.sync import SyncManager, SyncSigner
 from starfish_sdk.append_log import (
@@ -49,4 +50,6 @@ __all__ = [
     "CollectionClientInfo",
     "NamespaceClientConfig",
     "AppendOnlyClientInfo",
+    "PARQUET_MIME_TYPE",
+    "PARQUET_MIME_TYPES",
 ]

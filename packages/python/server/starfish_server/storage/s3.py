@@ -16,6 +16,7 @@ class S3StorageOptions:
     endpoint: str
     bucket: str
     region: str = "us-east-1"
+    force_path_style: bool = True
 
 
 class S3ObjectStore(AbstractObjectStore):

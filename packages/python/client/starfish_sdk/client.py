@@ -22,6 +22,8 @@ from starfish_protocol.constants import (
     HEADER_PUB,
     HEADER_CONTENT_TYPE,
     HEADER_ACCEPT,
+    PARQUET_MIME_TYPE,
+    PARQUET_MIME_TYPES,
 )
 from starfish_protocol.hash import stable_stringify
 from starfish_protocol.request_signing import sign_request
@@ -641,6 +643,49 @@ class StarfishClient:
 
         result = resp.json()
         return BlobPushResult(hash=result["hash"])
+
+    async def push_parquet(
+        self,
+        path: str,
+        data: bytes,
+    ) -> BlobPushResult:
+        """Push an Apache Parquet file to a Parquet collection.
+
+        Thin wrapper over :meth:`push_blob` that fixes ``Content-Type`` to
+        ``application/vnd.apache.parquet`` so the S3 object is tagged correctly
+        for DuckDB and CDN consumption.
+
+        Args:
+            path: The push endpoint path (e.g. ``"/push/analytics/alice/q1.parquet"``).
+            data: Raw Parquet bytes.
+
+        Example::
+
+            parquet_bytes = generate_parquet(rows)
+            result = await client.push_parquet("/push/analytics/alice/q1.parquet", parquet_bytes)
+            print("stored hash:", result.hash)
+        """
+        return await self.push_blob(path, data, PARQUET_MIME_TYPE)
+
+    async def pull_parquet(self, path: str) -> BlobPullResult:
+        """Pull an Apache Parquet file from a Parquet collection.
+
+        Thin wrapper over :meth:`pull_blob` for API symmetry with
+        :meth:`push_parquet`.
+
+        Example::
+
+            result = await client.pull_parquet("/pull/analytics/alice/q1.parquet")
+            # result.data         → bytes
+            # result.content_type → "application/vnd.apache.parquet"
+        """
+        result = await self.pull_blob(path)
+        if result.content_type not in PARQUET_MIME_TYPES:
+            raise StarfishHttpError(
+                415,
+                f"Expected a Parquet content-type, got: {result.content_type}",
+            )
+        return result
 
     async def append_anonymous(
         self,

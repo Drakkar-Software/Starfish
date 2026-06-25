@@ -20,6 +20,7 @@ export type {
   BatchPullResult,
   BatchPullEntry,
 } from "./client.js"
+export { PARQUET_MIME_TYPE, PARQUET_MIME_TYPES } from "@drakkar.software/starfish-protocol"
 export { SyncManager, AbortError } from "./sync.js"
 export type { SyncManagerOptions, SyncSigner } from "./sync.js"
 export { AppendLogCursor, AppendAuthorError, checkpointOf } from "./append-log.js"

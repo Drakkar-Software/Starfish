@@ -55,6 +55,24 @@ CORS_ALLOW_HEADERS = [
     "X-Requested-With",
 ]
 
+# Apache Parquet MIME types.
+# Mirrored byte-for-byte by ``packages/ts/protocol/src/constants.ts``.
+
+# Canonical MIME type for Apache Parquet files.
+# Use this when pushing Parquet data so the S3 object carries the correct
+# ContentType (readable by DuckDB, CDNs, and standard tooling).
+PARQUET_MIME_TYPE = "application/vnd.apache.parquet"
+
+# Accept-list for a Parquet push collection.
+# Many Parquet writers emit ``application/octet-stream``; ``application/x-parquet``
+# covers older tooling. Use this list as ``allowed_mime_types`` in a server
+# collection config that accepts Parquet uploads.
+PARQUET_MIME_TYPES = (
+    "application/vnd.apache.parquet",
+    "application/x-parquet",
+    "application/octet-stream",
+)
+
 __all__ = [
     "AUTHOR_PUBKEY_FIELD",
     "AUTHOR_SIGNATURE_FIELD",
@@ -70,4 +88,6 @@ __all__ = [
     "HEADER_CONTENT_TYPE",
     "HEADER_ACCEPT",
     "CORS_ALLOW_HEADERS",
+    "PARQUET_MIME_TYPE",
+    "PARQUET_MIME_TYPES",
 ]

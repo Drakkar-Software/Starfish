@@ -77,6 +77,15 @@ from starfish_server.router.cap_resolver import (
     create_cap_cert_role_resolver,
 )
 from starfish_server.enrichers.identity import make_identity_role_enricher
+from starfish_server.router.route_builder import resolve_document_key
+from starfish_server.parquet import (
+    create_parquet_collection,
+    duckdb_read_parquet_sql,
+    DuckdbParquetSqlResult,
+    ParquetAccessMode,
+    PARQUET_MIME_TYPE,
+    PARQUET_MIME_TYPES,
+)
 from starfish_server.events_proxy import (
     DEFAULT_SAFE_ID,
     create_events_proxy_router,
@@ -197,4 +206,12 @@ __all__ = [
     "has_authorize_hook",
     "AuthorizeContext",
     "AuthorizeResult",
+    # Parquet / DuckDB
+    "resolve_document_key",
+    "create_parquet_collection",
+    "duckdb_read_parquet_sql",
+    "DuckdbParquetSqlResult",
+    "ParquetAccessMode",
+    "PARQUET_MIME_TYPE",
+    "PARQUET_MIME_TYPES",
 ]

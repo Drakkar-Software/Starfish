@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "starfish-restrictions"
-version = "3.0.0a39"
+version = "3.0.0a40"
 description = "Starfish identity action restrictions extension (deny/allow access by identity, scoped to the server, a namespace, a collection, or an action)"
 requires-python = ">=3.11"
 dependencies = [

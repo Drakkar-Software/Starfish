@@ -309,6 +309,20 @@ def _resolve_document_key(template: str, params: dict[str, str]) -> str:
     return result
 
 
+def resolve_document_key(template: str, params: dict[str, str]) -> str:
+    """Resolve ``{param}`` placeholders in a ``storage_path`` template.
+
+    The result is the S3 object key for binary collections and the document
+    key for JSON collections.
+
+    Example::
+
+        resolve_document_key("datasets/{owner}/{dataset}", {"owner": "alice", "dataset": "sales.parquet"})
+        # → "datasets/alice/sales.parquet"
+    """
+    return _resolve_document_key(template, params)
+
+
 def _to_list_prefix(storage_path: str, params: dict[str, str]) -> str:
     """Resolve the storage key prefix for listKeys (storagePath without the last param)."""
     segments = storage_path.split("/")

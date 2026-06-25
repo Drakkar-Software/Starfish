@@ -211,3 +211,4 @@ Because `readRoles` contains `"public"`, the `Cache-Control` header is emitted w
 - [StarfishClient](/client-core/starfish-client) — `pullBlob` / `pushBlob` method signatures
 - [Collection Patterns](/data-modeling/collection-patterns) — JSON collection design patterns
 - [Multi-Recipient Delegated Encryption](/encryption-identity/multi-recipient-delegated) — incompatible with binary collections
+- [Parquet & DuckDB](/analytics/parquet-duckdb) — binary collections for Apache Parquet with DuckDB query helpers

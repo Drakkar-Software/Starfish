@@ -1,5 +1,28 @@
 # Changelog
 
+## 3.0.0-alpha.40
+
+### `@drakkar.software/starfish-protocol` / `starfish-protocol`
+
+#### Added
+- **`PARQUET_MIME_TYPE`** (`"application/vnd.apache.parquet"`) — canonical MIME type for Apache Parquet files. Shared by both the TypeScript and Python protocol packages so client and server cannot drift.
+- **`PARQUET_MIME_TYPES`** — accept-list `["application/vnd.apache.parquet", "application/x-parquet", "application/octet-stream"]` for server collection config. Many Parquet writers emit `application/octet-stream`; the list ensures they all push successfully.
+
+### `@drakkar.software/starfish-server` / `starfish-server`
+
+#### Added
+- **`createParquetCollection(opts)`** — factory that returns a `CollectionConfig` preset for Apache Parquet / DuckDB workflows. Forces `encryption: "none"` (ciphertext is opaque to DuckDB), sets `allowedMimeTypes = PARQUET_MIME_TYPES`, auto-enables `listable` when the last `storagePath` segment is a `{param}`. Supports independent `read` / `write` levers (`"public"` | `"authenticated"` | `"none"` | `string[]`) and an optional `rateLimit` override.
+- **`duckdbReadParquetSql(opts)`** — pure string builder that produces DuckDB SQL (`INSTALL/LOAD httpfs` + `SET s3_*` + `SELECT * FROM read_parquet(...)`) from `S3StorageOptions` and a resolved key. No DuckDB dependency required. Supports `glob: true` for prefix globs (`/*.parquet`) over listable collections.
+- **`resolveDocumentKey(template, params)`** — now exported from the server package (was previously internal). Resolves `{param}` placeholders in a `storagePath` to the exact S3 object key. Re-exported via `duckdb_read_parquet_sql` and the Python `resolve_document_key` public alias.
+- **`PARQUET_MIME_TYPE`**, **`PARQUET_MIME_TYPES`** — re-exported from the server package for a single import surface.
+
+### `@drakkar.software/starfish-client` / `starfish-sdk`
+
+#### Added
+- **`StarfishClient.pushParquet(path, data)`** — thin wrapper over `pushBlob` that fixes `Content-Type` to `application/vnd.apache.parquet` so S3 objects are tagged correctly for DuckDB and CDN consumption.
+- **`StarfishClient.pullParquet(path)`** — thin wrapper over `pullBlob` for API symmetry with `pushParquet`.
+- **`PARQUET_MIME_TYPE`**, **`PARQUET_MIME_TYPES`** — re-exported from the client package.
+
 ## 3.0.0-alpha.39
 
 ### `@drakkar.software/starfish-spaces`

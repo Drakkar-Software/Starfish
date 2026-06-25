@@ -20,6 +20,8 @@ Starfish is a document sync library you drop in front of any storage backend. Pu
 
 **Identity** — Ed25519 (sign) + X25519 (KEM), single suite, no algorithm negotiation. Root identities derive from a passphrase via Argon2id → HKDF-SHA256. Users with an existing secp256k1 root (Nostr `nsec`, Bitcoin / BIP-340) can bootstrap via `deriveRootIdentityFromSecp256k1Signature` — the external key never appears on the wire. See [identity models →](website/docs/encryption-identity/identity-models.md)
 
+**Parquet / DuckDB** — `createParquetCollection()` configures a binary collection that accepts Apache Parquet uploads. Files are stored verbatim on S3; `duckdbReadParquetSql()` generates the DuckDB `httpfs` SQL to query them directly from S3 without a server round-trip. See [Parquet & DuckDB →](website/docs/analytics/parquet-duckdb.md)
+
 > **Upgrading from 2.x?** v3 is a clean break. See [website/docs/migration/v2-to-v3.md](website/docs/migration/v2-to-v3.md).
 
 ## Packages
