@@ -17,7 +17,7 @@ await Promise.all(
       bundle: true,
       format: "esm",
       target: "es2022",
-      platform: "neutral",
+      platform: "node",
       external: EXTERNAL,
       sourcemap: true,
       treeShaking: true,
