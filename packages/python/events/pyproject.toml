@@ -14,7 +14,7 @@ dependencies = [
   # of hyparquet-writer living only in packages/ts/events).  >=10.0 covers the
   # full stable API surface used here (pa.table, pa.array, pq.write_table,
   # io.BytesIO); tested against 21.x.
-  "pyarrow>=10.0",
+  "pyarrow>=24.0",
 ]
 
 [project.optional-dependencies]
@@ -25,7 +25,7 @@ dev = [
   "fastapi>=0.100",
   # pyarrow is a runtime dep but we list it here too so `uv sync --extra dev`
   # installs it for the round-trip decode assertions in tests.
-  "pyarrow>=10.0",
+  "pyarrow>=24.0",
 ]
 
 [tool.uv.sources]

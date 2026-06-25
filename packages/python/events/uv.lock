@@ -758,8 +758,8 @@ dev = [
 requires-dist = [
     { name = "fastapi", marker = "extra == 'dev'", specifier = ">=0.100" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.25.0" },
-    { name = "pyarrow", specifier = ">=10.0" },
-    { name = "pyarrow", marker = "extra == 'dev'", specifier = ">=10.0" },
+    { name = "pyarrow", specifier = ">=24.0" },
+    { name = "pyarrow", marker = "extra == 'dev'", specifier = ">=24.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.21" },
     { name = "starfish-protocol", editable = "../protocol" },
