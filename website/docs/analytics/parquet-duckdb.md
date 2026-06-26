@@ -27,6 +27,13 @@ read_parquet('s3://…') ──────────────────�
 - **Standard format** — any tool that speaks Parquet (pandas, polars, Arrow, Spark, …) can read the same files.
 - **Controlled ingestion** — the server enforces MIME type, body-size limits, and cap-cert authentication on writes, keeping data quality checks in one place.
 
+> **Note on storage:** the Parquet write path (via `pushParquet` or the events plugin)
+> is **store-agnostic** — files land in whatever `ObjectStore` you configure (S3,
+> filesystem, memory, or custom). The `read_parquet('s3://…')` recipes on this page
+> are specific to S3-backed stores. If you use `FilesystemObjectStore`, substitute a
+> local file path and omit `httpfs`; see [Events plugin — Storage backends](/analytics/events#storage-backends)
+> for the full backend matrix.
+
 ---
 
 ## Server configuration

@@ -1,8 +1,11 @@
 # @drakkar.software/starfish-events
 
 Starfish server plugin that intercepts JSON event-batch pushes and encodes them as
-[Apache Parquet](https://parquet.apache.org/) files written directly to the object
-store (typically S3).
+[Apache Parquet](https://parquet.apache.org/) files written to any configured object
+store — S3, filesystem, memory, or custom. The plugin has no direct S3 dependency;
+it writes through the abstract `ObjectStore.putBytes` interface. The DuckDB query
+examples below use S3; see [Storage backends](/analytics/events#storage-backends) for
+non-S3 alternatives.
 
 Mirrors [`starfish-events`](../python/events) (Python) with identical Parquet
 encoding — both are locked to the same test vectors.
@@ -22,9 +25,9 @@ npm install @drakkar.software/starfish-events
    Parquet and written via `store.putBytes`. The default JSON document write is
    short-circuited — **no JSON is persisted alongside the Parquet**.
 
-One Parquet file is written per push (one file per batch). DuckDB's
-`read_parquet('s3://…/**/*.parquet')` glob treats all files under the prefix as one
-logical dataset.
+One Parquet file is written per push (one file per batch). For S3-backed stores,
+DuckDB's `read_parquet('s3://…/**/*.parquet')` glob treats all files under the prefix
+as one logical dataset.
 
 ## Usage
 
@@ -75,6 +78,8 @@ The plugin adds `received_at` (ISO-8601 UTC) to every event row before encoding.
 
 ## Querying with DuckDB
 
+**S3-backed stores** — requires the `httpfs` extension and S3 credentials:
+
 ```sql
 SELECT event_type, COUNT(*) AS n
 FROM read_parquet('s3://my-bucket/events/myapp/**/*.parquet')
@@ -82,4 +87,14 @@ GROUP BY event_type
 ORDER BY n DESC;
 ```
 
-See [Analytics — Events & Parquet](/analytics/events) for the full guide.
+**Filesystem-backed stores** — no `httpfs` or credentials needed:
+
+```sql
+SELECT event_type, COUNT(*) AS n
+FROM read_parquet('/data/root/events/myapp/**/*.parquet')
+GROUP BY event_type
+ORDER BY n DESC;
+```
+
+See [Analytics — Events & Parquet](/analytics/events) for the full guide, including
+the [storage backend matrix](/analytics/events#storage-backends).

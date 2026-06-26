@@ -38,6 +38,9 @@
 
 #### Added
 - `packages/ts/events/README.md` and `packages/python/events/README.md` — package-level reference files consumed by the website sync script to generate API reference pages for `@drakkar.software/starfish-events` / `starfish-events`.
+
+#### Changed
+- Clarified that events / Parquet **ingest is object-store-agnostic** (S3, filesystem, memory, or custom — the events package has no direct S3 dependency). Only the DuckDB query recipes (`duckdbReadParquetSql` / `read_parquet('s3://…')`) are S3-specific. Updated `events.md`, `parquet-duckdb.md`, both events package READMEs, and the top-level README with a storage-backend matrix and filesystem query examples.
 - `packages/ts/spaces/README.md` and `packages/python/spaces/README.md` — same, for `@drakkar.software/starfish-spaces` / `starfish-spaces`.
 - `website/docs/analytics/events.md` — setup guide for the Events & Parquet plugin with TypeScript and Python examples and DuckDB query snippets.
 - Events Plugin row added to the `website/docs/index.md` package overview table.

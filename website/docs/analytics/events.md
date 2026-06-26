@@ -5,8 +5,8 @@ sidebar_position: 2
 # Events Plugin — JSON push → Parquet
 
 The **starfish-events** plugin intercepts JSON event-batch pushes on the server
-and encodes them as Apache Parquet files written directly to S3. No JSON is
-persisted — the collection stores Parquet only.
+and encodes them as Apache Parquet files written directly to the configured object
+store. No JSON is persisted — the collection stores Parquet only.
 
 This is the server-side complement to the [Parquet & DuckDB](/analytics/parquet-duckdb)
 client-push model. Use the events plugin when:
@@ -15,8 +15,8 @@ client-push model. Use the events plugin when:
 - You want the server to handle encoding rather than the client.
 
 ```
-Analytics client       Starfish Server (+ events plugin)       S3
-────────────────        ─────────────────────────────────       ──
+Analytics client       Starfish Server (+ events plugin)       Object Store (e.g. S3)
+────────────────        ─────────────────────────────────       ──────────────────────
 push JSON batch  ──►  intercept → encode Parquet → putBytes ──► events/app/<batchId>.parquet
                  ◄──  { hash }
 ```
@@ -122,7 +122,31 @@ server-side at ingest time.
 
 ---
 
+## Storage backends
+
+The plugin writes Parquet bytes through the abstract `ObjectStore` /
+`AbstractObjectStore` interface — **no direct S3 dependency in the events package
+itself**. Any store that supports binary writes (`putBytes` / `put_bytes`) can receive
+the files.
+
+| Backend | Ingest (write Parquet) | DuckDB query |
+|---|---|---|
+| `S3ObjectStore` | ✓ | ✓ — `read_parquet('s3://…/**/*.parquet')` + `httpfs` + `SET s3_*` |
+| `FilesystemObjectStore` | ✓ | ✓ — `read_parquet('/data/root/…/**/*.parquet')`, no credentials needed |
+| `MemoryObjectStore` | ✓ (dev / tests) | ✗ — no file path to give DuckDB; testing only |
+| Custom / `CustomObjectStore` | ✓ if `putBytes` / `put_bytes` is implemented | depends — DuckDB needs a URI it can reach for those bytes |
+
+> **Takeaway:** ingest is backend-agnostic. The DuckDB query examples below assume S3.
+> For `FilesystemObjectStore`, replace the `s3://` URI with the local file path on
+> disk — no `httpfs` extension or credentials required. Support for a
+> `duckdbReadParquetSql`-equivalent helper for non-S3 backends is a possible future
+> addition.
+
+---
+
 ## Querying with DuckDB
+
+### S3-backed stores
 
 ```sql
 -- Count events by type across all batches for one app
@@ -144,6 +168,19 @@ ORDER BY 1;
 > Requires the DuckDB `httpfs` extension and S3 credentials configured via
 > `SET s3_region`, `SET s3_access_key_id`, etc. See the
 > [Parquet & DuckDB](/analytics/parquet-duckdb) page for S3 setup.
+
+### Filesystem-backed stores
+
+For servers using `FilesystemObjectStore`, Parquet files land on the local filesystem.
+Query them directly — no `httpfs` or credentials required:
+
+```sql
+-- Replace /data/root with the root path passed to FilesystemObjectStore
+SELECT event_type, COUNT(*) AS n
+FROM read_parquet('/data/root/events/myapp/**/*.parquet')
+GROUP BY event_type
+ORDER BY n DESC;
+```
 
 ---
 
