@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "starfish-queuing"
-version = "3.0.0a42"
+version = "3.0.0a43"
 description = "Starfish change-event queuing extension (post-push publish hook, MemoryQueue/CustomQueue/NatsQueue backends, per-collection config)"
 requires-python = ">=3.11"
 dependencies = [

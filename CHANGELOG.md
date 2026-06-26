@@ -1,5 +1,32 @@
 # Changelog
 
+## 3.0.0-alpha.43
+
+### `@drakkar.software/starfish-server` / `starfish-server`
+
+#### Added
+- **`createSealedParquetCollection(opts)`** — factory that returns a `CollectionConfig` for
+  **client-sealed** (E2EE) Parquet datasets. Same option surface as `createParquetCollection`
+  (`name`, `storagePath`, `read`/`write` access modes, `rateLimit`, `maxBodyBytes`, `cacheDurationMs`),
+  with two differences: `read` defaults to `"authenticated"` (not `"public"` — E2EE data is not
+  world-downloadable by default), and `allowedMimeTypes` is `["application/octet-stream"]` instead of
+  `PARQUET_MIME_TYPES`. `encryption` is always `"none"` (sealing is client-side). `listable` is
+  auto-enabled when the last `storagePath` segment is a `{param}`. Because the stored bytes are
+  ciphertext, they are **not** valid Parquet files — DuckDB cannot read them via
+  `read_parquet('s3://…')`. Use when E2EE is the priority and clients query locally (e.g. DuckDB-WASM
+  after unsealing); use `createParquetCollection` when server-side/S3-direct DuckDB queryability is
+  the goal.
+- `SealedParquetCollectionOptions` type alias (same shape as `ParquetCollectionOptions`).
+
+### `@drakkar.software/starfish-client` / `starfish-sdk`
+
+#### Added
+- **`ByteSealer`** — structural interface `{ sealBytes(bytes, aad?): Promise<Uint8Array>; openBytes(blob, aad?): Promise<Uint8Array> }`.  Satisfied by `KeyringEncryptor` from `@drakkar.software/starfish-keyring` and any compatible cipher adapter. Exported from the `starfish-client` package so consumers do not need to depend on `starfish-keyring` for the type.
+- **`sealAndPushBlob(client, sealer, path, bytes, opts?)`** — seals `bytes` with `sealer.sealBytes` (AAD bound to the document key) and pushes the resulting ciphertext via `client.pushBlob` with `Content-Type: application/octet-stream`. `opts.aad` overrides the default AAD (which defaults to the document key — path with `/push/` stripped). `opts.maxBytes` throws a `RangeError` before sealing if `bytes.length` exceeds the limit; note that AES-256-GCM adds ~28 bytes of overhead to the ciphertext size. **Callers with existing sealed data MUST pass the same explicit `aad` they used when sealing** for back-compat.
+- **`pullAndOpenBlob(client, sealer, path, opts?)`** — pulls the sealed blob via `client.pullBlob` and unseals it with `sealer.openBytes`. Default `aad` is the document key (path with `/pull/` stripped), matching the seal-side default for round-trip correctness. Same `opts.aad` back-compat rule applies.
+- **`stripPushPrefix(path)`** — now exported from the client package (was previously internal). Strips the `/push/` action prefix from a push path to produce the bare document key.
+- `SealAndPushBlobOptions`, `PullAndOpenBlobOptions` option types.
+
 ## 3.0.0-alpha.42
 
 ### CI / release

@@ -84,7 +84,7 @@ Both `read` and `write` accept the same set of values — independently:
 
 ### Why `encryption: "none"` is forced
 
-`createParquetCollection` always sets `encryption: "none"`. Delegated encryption (`"delegated"`) stores AES-256-GCM ciphertext on S3; DuckDB cannot decrypt it.  If you need encrypted Parquet, encrypt the bytes yourself before calling `pushParquet` / `push_parquet` and decrypt after `pullParquet` / `pull_parquet`.
+`createParquetCollection` always sets `encryption: "none"`. Delegated encryption (`"delegated"`) stores AES-256-GCM ciphertext on S3; DuckDB cannot decrypt it.  If you need E2EE Parquet, use `createSealedParquetCollection` — see [E2EE Parquet](#e2ee-parquet-createsealed) below.
 
 ### Rate limiting
 
@@ -306,9 +306,101 @@ from starfish_sdk import PARQUET_MIME_TYPE, PARQUET_MIME_TYPES
 
 ---
 
+---
+
+## E2EE Parquet (`createSealedParquetCollection`) {#e2ee-parquet-createsealed}
+
+Use `createSealedParquetCollection` when **privacy is more important than DuckDB-over-S3 queryability**. The client AES-256-GCM-seals the Parquet bytes under the space keyring CEK (AAD bound to the storage path) before pushing; the server and S3 bucket only ever store opaque ciphertext.
+
+```
+Client                          Starfish Server          S3 / MinIO
+──────                          ───────────────          ──────────
+sealAndPushBlob(enc, parquetBytes)  ──POST──►  auth + MIME check  putBytes(key, ciphertext)
+                                ◄──hash──  (cap-cert write)      ──────────────────────►
+                                                                        │ (ciphertext only)
+pullAndOpenBlob(enc)  ◄──────────────────────────────────────────  GetObject
+     │
+     ▼
+DuckDB-WASM (client-side, after unsealing)
+```
+
+**Trade-off:** the stored bytes are NOT valid Parquet files — DuckDB `read_parquet('s3://…')` will fail because it reads raw ciphertext. Clients must pull → unseal → load into DuckDB-WASM (or another in-process engine) to query.
+
+### Server configuration
+
+```ts
+import {
+  createSealedParquetCollection,
+} from "@drakkar.software/starfish-server"
+
+const col = createSealedParquetCollection({
+  name: "private-datasets",
+  storagePath: "spaces/{spaceId}/objects/parquet-enc/{objectId}",
+  read: ["space:member"],   // only space members may read
+  write: ["space:member"],  // only space members may write
+  maxBodyBytes: 67_108_864, // 64 MiB
+})
+```
+
+```python
+from starfish_server import create_sealed_parquet_collection
+
+col = create_sealed_parquet_collection(
+    name="private-datasets",
+    storage_path="spaces/{spaceId}/objects/parquet-enc/{objectId}",
+    read=["space:member"],
+    write=["space:member"],
+    max_body_bytes=67_108_864,
+)
+```
+
+The factory has the **same option semantics** as `createParquetCollection` (`read`/`write` access modes, `rateLimit`, `maxBodyBytes`, `cacheDurationMs`, auto-`listable` from path), with two differences:
+
+- `read` defaults to `"authenticated"` instead of `"public"` — E2EE data should not be world-downloadable by default.
+- `allowedMimeTypes` is `["application/octet-stream"]` instead of `PARQUET_MIME_TYPES` — the server stores opaque ciphertext, not readable Parquet.
+
+### Client seal/unseal
+
+Use `sealAndPushBlob` and `pullAndOpenBlob` from `@drakkar.software/starfish-client` with a `KeyringEncryptor` (from `@drakkar.software/starfish-keyring`):
+
+```ts
+import {
+  sealAndPushBlob,
+  pullAndOpenBlob,
+} from "@drakkar.software/starfish-client"
+
+// Obtain a KeyringEncryptor from the space keyring (omitted for brevity)
+const enc: ByteSealer = createKeyringEncryptor(keyring, kemKeys, { trustedAdders })
+
+// Seal and upload (objectId is any unique ID you mint for this file)
+const objectId = "my-dataset-v1"
+const storagePath = `spaces/${spaceId}/objects/parquet-enc/${objectId}`
+await sealAndPushBlob(client, enc, `/push/${storagePath}`, parquetBytes, {
+  aad: storagePath, // MUST be stable — used for back-compat on subsequent opens
+})
+
+// Pull and unseal
+const plaintext = await pullAndOpenBlob(client, enc, `/pull/${storagePath}`, {
+  aad: storagePath,
+})
+// plaintext is the original Parquet bytes — load into DuckDB-WASM to query
+```
+
+**AAD:** the `aad` value is bound into the AES-GCM tag; mismatching it on open throws a decryption error. When `aad` is omitted, both `sealAndPushBlob` and `pullAndOpenBlob` derive it from the document key (path with `/push/` or `/pull/` stripped), so the default round-trips correctly for matching push/pull path pairs. Always pass an explicit, stable `aad` when you need to preserve access to already-sealed blobs across upgrades.
+
+### When to use which factory
+
+| Requirement | Use |
+|---|---|
+| Server-side / S3-direct DuckDB queries | `createParquetCollection` |
+| E2EE (server never sees plaintext) | `createSealedParquetCollection` + `sealAndPushBlob`/`pullAndOpenBlob` |
+| E2EE **and** DuckDB-over-S3 | Not currently supported (Parquet Modular Encryption is not implemented) |
+
+---
+
 ## Related
 
 - [Binary Collections](/data-modeling/binary-collections) — the underlying storage mechanism
-- [StarfishClient](/client-core/starfish-client) — `pushParquet` / `pullParquet` method signatures
+- [StarfishClient](/client-core/starfish-client) — `pushParquet` / `pullParquet` / `sealAndPushBlob` / `pullAndOpenBlob`
 - [Storage](/server/storage) — configuring S3ObjectStore
 - [Rate Limiting](/server/rate-limiting) — per-action rate limits on Parquet collections

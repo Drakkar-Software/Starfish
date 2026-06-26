@@ -80,6 +80,7 @@ from starfish_server.enrichers.identity import make_identity_role_enricher
 from starfish_server.router.route_builder import resolve_document_key
 from starfish_server.parquet import (
     create_parquet_collection,
+    create_sealed_parquet_collection,
     duckdb_read_parquet_sql,
     DuckdbParquetSqlResult,
     ParquetAccessMode,
@@ -209,6 +210,7 @@ __all__ = [
     # Parquet / DuckDB
     "resolve_document_key",
     "create_parquet_collection",
+    "create_sealed_parquet_collection",
     "duckdb_read_parquet_sql",
     "DuckdbParquetSqlResult",
     "ParquetAccessMode",

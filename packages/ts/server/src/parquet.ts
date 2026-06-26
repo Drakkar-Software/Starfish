@@ -184,6 +184,71 @@ export function createParquetCollection(opts: ParquetCollectionOptions): Collect
 }
 
 // ---------------------------------------------------------------------------
+// createSealedParquetCollection
+// ---------------------------------------------------------------------------
+
+/**
+ * Options for {@link createSealedParquetCollection}.
+ *
+ * Identical shape to {@link ParquetCollectionOptions} — the same read/write
+ * role modes, rate-limiting, max size, and cache-duration knobs apply.
+ */
+export type SealedParquetCollectionOptions = ParquetCollectionOptions
+
+/**
+ * Builds a {@link CollectionConfig} preset for **client-sealed** Parquet
+ * datasets (E2EE / end-to-end encrypted).
+ *
+ * Use this when you want the server to store opaque ciphertext rather than
+ * readable Parquet bytes. The client AES-256-GCM-seals the Parquet file under
+ * the space keyring CEK (AAD bound to the storage path) before uploading, and
+ * unseals it after downloading. The server and S3 bucket never see plaintext.
+ *
+ * **Trade-off:** because the stored bytes are ciphertext, they are **not**
+ * valid Parquet files — DuckDB cannot read them via `read_parquet('s3://…')`.
+ * Use {@link createParquetCollection} instead when server-side / S3-direct
+ * DuckDB querying is the goal; use this variant when the priority is E2EE and
+ * clients query locally (e.g. DuckDB-WASM after unsealing).
+ *
+ * Compared to {@link createParquetCollection}, the differences are:
+ * - `read` defaults to `"authenticated"` (not `"public"`) — E2EE data should
+ *   not be world-downloadable by default.
+ * - `allowedMimeTypes: ["application/octet-stream"]` — the sealed bytes are
+ *   opaque binary, not Parquet MIME typed.
+ *
+ * @throws {Error} if both `read` and `write` are `"none"`.
+ *
+ * @example
+ * ```ts
+ * createSealedParquetCollection({
+ *   name: "private-datasets",
+ *   storagePath: "spaces/{spaceId}/objects/parquet-enc/{objectId}",
+ *   read: ["space:member"],
+ *   write: ["space:member"],
+ *   maxBodyBytes: 67_108_864,
+ * })
+ * ```
+ */
+export function createSealedParquetCollection(opts: SealedParquetCollectionOptions): CollectionConfig {
+  const { name, read = "authenticated", write = "authenticated" } = opts
+
+  if (read === "none" && write === "none") {
+    throw new Error(
+      `createSealedParquetCollection("${name}"): both read and write are "none" — ` +
+        "the collection would be completely inaccessible. " +
+        'Set at least one to "public", "authenticated", or a custom role array.',
+    )
+  }
+
+  return {
+    // Build the full config via createParquetCollection (same logic, same fields),
+    // then override only the MIME allowlist — sealed bytes are opaque binary.
+    ...createParquetCollection({ ...opts, read, write }),
+    allowedMimeTypes: ["application/octet-stream"],
+  }
+}
+
+// ---------------------------------------------------------------------------
 // duckdbReadParquetSql
 // ---------------------------------------------------------------------------
 

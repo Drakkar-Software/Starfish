@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { createParquetCollection, duckdbReadParquetSql, resolveDocumentKey } from "../src/parquet.js"
+import { createParquetCollection, createSealedParquetCollection, duckdbReadParquetSql, resolveDocumentKey } from "../src/parquet.js"
 import { PARQUET_MIME_TYPE, PARQUET_MIME_TYPES } from "@drakkar.software/starfish-protocol"
 import { validateConfig } from "../src/config/validate.js"
 import { createSyncRouter, type SyncRouterOptions, type AuthResult } from "../src/router/route-builder.js"
@@ -384,5 +384,176 @@ describe("Parquet push/pull integration (MemoryObjectStore)", () => {
     const pullRes = await app.request("/pull/datasets/alice/file.parquet")
     const body = await pullRes.arrayBuffer()
     expect(new Uint8Array(body)).toEqual(new Uint8Array(bytes2))
+  })
+})
+
+// ---------------------------------------------------------------------------
+// createSealedParquetCollection — config factory
+// ---------------------------------------------------------------------------
+
+describe("createSealedParquetCollection", () => {
+  it("defaults: authenticated read+write, no rate limit, 256 MB (E2EE preset is not public by default)", () => {
+    const col = createSealedParquetCollection({
+      name: "enc-datasets",
+      storagePath: "enc/{owner}/{objectId}",
+    })
+    expect(col.name).toBe("enc-datasets")
+    // E2EE preset defaults to authenticated read (not public).
+    expect(col.readRoles).toEqual(["cap:read:enc-datasets"])
+    expect(col.writeRoles).toEqual(["cap:write:enc-datasets"])
+    expect(col.encryption).toBe("none")
+    expect(col.maxBodyBytes).toBe(256 * 1024 * 1024)
+    expect(col.allowedMimeTypes).toEqual(["application/octet-stream"])
+    expect(col.rateLimit).toBeNull()
+  })
+
+  it("forces allowedMimeTypes to application/octet-stream (NOT Parquet MIME types)", () => {
+    const col = createSealedParquetCollection({ name: "x", storagePath: "x/{id}" })
+    expect(col.allowedMimeTypes).toEqual(["application/octet-stream"])
+    expect(col.allowedMimeTypes).not.toContain("application/vnd.apache.parquet")
+  })
+
+  it("forces encryption:'none'", () => {
+    const col = createSealedParquetCollection({ name: "x", storagePath: "x/{id}" })
+    expect(col.encryption).toBe("none")
+  })
+
+  it("read:'public' → readRoles=['public']", () => {
+    const col = createSealedParquetCollection({ name: "x", storagePath: "x/{id}", read: "public", write: "authenticated" })
+    expect(col.readRoles).toEqual(["public"])
+    expect(col.pushOnly).toBeUndefined()
+  })
+
+  it("read:'authenticated' → readRoles=['cap:read:x']", () => {
+    const col = createSealedParquetCollection({ name: "x", storagePath: "x/{id}", read: "authenticated", write: "public" })
+    expect(col.readRoles).toEqual(["cap:read:x"])
+  })
+
+  it("read:'none' → pushOnly:true", () => {
+    const col = createSealedParquetCollection({ name: "x", storagePath: "x/{id}", read: "none", write: "public" })
+    expect(col.pushOnly).toBe(true)
+    expect(col.pullOnly).toBeUndefined()
+  })
+
+  it("write:'none' → pullOnly:true", () => {
+    const col = createSealedParquetCollection({ name: "x", storagePath: "x/{id}", read: "public", write: "none" })
+    expect(col.pullOnly).toBe(true)
+    expect(col.pushOnly).toBeUndefined()
+  })
+
+  it("custom string[] roles are passed verbatim", () => {
+    const col = createSealedParquetCollection({
+      name: "x",
+      storagePath: "x/{id}",
+      read: ["space:member"],
+      write: ["space:member"],
+    })
+    expect(col.readRoles).toEqual(["space:member"])
+    expect(col.writeRoles).toEqual(["space:member"])
+  })
+
+  it("throws when both read and write are 'none'", () => {
+    expect(() =>
+      createSealedParquetCollection({ name: "x", storagePath: "x/{id}", read: "none", write: "none" }),
+    ).toThrowError(/both read and write are "none"/)
+  })
+
+  it("auto-enables listable when last storagePath segment is a {param}", () => {
+    const col = createSealedParquetCollection({ name: "x", storagePath: "spaces/{spaceId}/enc/{objectId}" })
+    expect(col.listable).toBe(true)
+  })
+
+  it("does NOT enable listable when last segment is not a {param}", () => {
+    const col = createSealedParquetCollection({ name: "x", storagePath: "spaces/{spaceId}/enc/fixed" })
+    expect(col.listable).toBeFalsy()
+  })
+
+  it("maxBodyBytes override", () => {
+    const col = createSealedParquetCollection({ name: "x", storagePath: "x/{id}", maxBodyBytes: 67_108_864 })
+    expect(col.maxBodyBytes).toBe(67_108_864)
+  })
+
+  it("cacheDurationMs is forwarded", () => {
+    const col = createSealedParquetCollection({ name: "x", storagePath: "x/{id}", cacheDurationMs: 60_000 })
+    expect(col.cacheDurationMs).toBe(60_000)
+  })
+
+  it("resulting config passes validateConfig", () => {
+    const col = createSealedParquetCollection({
+      name: "private-datasets",
+      storagePath: "spaces/{spaceId}/objects/parquet-enc/{objectId}",
+      read: ["space:member"],
+      write: ["space:member"],
+      maxBodyBytes: 67_108_864,
+    })
+    const config: SyncConfig = { version: 1, collections: [col] }
+    const errors = validateConfig(config)
+    expect(errors).toEqual([])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Integration: sealed collection accepts octet-stream bytes
+// ---------------------------------------------------------------------------
+
+describe("createSealedParquetCollection push/pull integration", () => {
+  it("pushes octet-stream bytes and pulls them back", async () => {
+    const col = createSealedParquetCollection({
+      name: "enc-datasets",
+      storagePath: "enc/{spaceId}/{objectId}",
+      read: ["space:member"],
+      write: ["space:member"],
+    })
+    const store = new MemoryObjectStore(new Map())
+    const config: SyncConfig = { version: 1, collections: [col] }
+    const opts: SyncRouterOptions = {
+      store,
+      config,
+      roleResolver: async (): Promise<AuthResult> => ({
+        identity: "user-1",
+        roles: ["space:member"],
+      }),
+    }
+    const app = createSyncRouter(opts)
+
+    // AES-GCM sealed bytes (simulated: just opaque binary)
+    const sealedBytes = new Uint8Array([0xca, 0xfe, 0xba, 0xbe, 0x00, 0x01, 0x02])
+
+    const pushRes = await app.request("/push/enc/space-1/obj-1", {
+      method: "POST",
+      headers: { "Content-Type": "application/octet-stream" },
+      body: sealedBytes,
+    })
+    expect(pushRes.status).toBe(200)
+
+    const pullRes = await app.request("/pull/enc/space-1/obj-1")
+    expect(pullRes.status).toBe(200)
+    const body = await pullRes.arrayBuffer()
+    expect(new Uint8Array(body)).toEqual(sealedBytes)
+  })
+
+  it("rejects Parquet MIME type (sealed collection is octet-stream only)", async () => {
+    const col = createSealedParquetCollection({
+      name: "enc-datasets",
+      storagePath: "enc/{spaceId}/{objectId}",
+    })
+    const store = new MemoryObjectStore(new Map())
+    const config: SyncConfig = { version: 1, collections: [col] }
+    const opts: SyncRouterOptions = {
+      store,
+      config,
+      roleResolver: async (): Promise<AuthResult> => ({
+        identity: "user-1",
+        roles: ["public", "cap:write:enc-datasets"],
+      }),
+    }
+    const app = createSyncRouter(opts)
+
+    const res = await app.request("/push/enc/space-1/obj-1", {
+      method: "POST",
+      headers: { "Content-Type": PARQUET_MIME_TYPE },
+      body: PARQUET_BYTES,
+    })
+    expect(res.status).toBe(415)
   })
 })

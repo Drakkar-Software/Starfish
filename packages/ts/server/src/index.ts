@@ -101,9 +101,11 @@ export { generateOpenApiSpec } from "./openapi.js"
 // Parquet / DuckDB
 export {
   createParquetCollection,
+  createSealedParquetCollection,
   duckdbReadParquetSql,
   type ParquetAccessMode,
   type ParquetCollectionOptions,
+  type SealedParquetCollectionOptions,
   type DuckdbParquetSqlOptions,
   type DuckdbParquetSqlResult,
   PARQUET_MIME_TYPE,

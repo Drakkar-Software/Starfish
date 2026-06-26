@@ -9,6 +9,7 @@ from httpx import AsyncClient, ASGITransport
 from starfish_protocol.constants import PARQUET_MIME_TYPE, PARQUET_MIME_TYPES
 from starfish_server import (
     create_parquet_collection,
+    create_sealed_parquet_collection,
     duckdb_read_parquet_sql,
     resolve_document_key,
     PARQUET_MIME_TYPE as SERVER_PARQUET_MIME_TYPE,
@@ -359,3 +360,178 @@ async def test_parquet_last_write_wins():
         )
         pull_resp = await client.get("/pull/datasets/user-1/file.parquet")
         assert pull_resp.content == bytes_v2
+
+
+# ---------------------------------------------------------------------------
+# create_sealed_parquet_collection — config factory
+# ---------------------------------------------------------------------------
+
+
+class TestCreateSealedParquetCollection:
+    def test_defaults(self):
+        col = create_sealed_parquet_collection(
+            name="enc-datasets", storage_path="enc/{spaceId}/{objectId}"
+        )
+        assert col.name == "enc-datasets"
+        # E2EE preset defaults to authenticated read (not public).
+        assert col.read_roles == ["cap:read:enc-datasets"]
+        assert col.write_roles == ["cap:write:enc-datasets"]
+        assert col.encryption == "none"
+        assert col.max_body_bytes == 256 * 1024 * 1024
+        assert col.allowed_mime_types == ["application/octet-stream"]
+        assert col.rate_limit is None
+
+    def test_allowed_mime_types_is_octet_stream_not_parquet(self):
+        col = create_sealed_parquet_collection(name="x", storage_path="x/{id}")
+        assert col.allowed_mime_types == ["application/octet-stream"]
+        assert "application/vnd.apache.parquet" not in col.allowed_mime_types
+
+    def test_forces_encryption_none(self):
+        col = create_sealed_parquet_collection(name="x", storage_path="x/{id}")
+        assert col.encryption == "none"
+
+    def test_read_public(self):
+        col = create_sealed_parquet_collection(
+            name="x", storage_path="x/{id}", read="public", write="authenticated"
+        )
+        assert col.read_roles == ["public"]
+        assert col.push_only is None
+
+    def test_read_authenticated(self):
+        col = create_sealed_parquet_collection(
+            name="x", storage_path="x/{id}", read="authenticated", write="public"
+        )
+        assert col.read_roles == ["cap:read:x"]
+
+    def test_read_none_sets_push_only(self):
+        col = create_sealed_parquet_collection(
+            name="x", storage_path="x/{id}", read="none", write="public"
+        )
+        assert col.push_only is True
+        assert col.pull_only is None
+
+    def test_write_none_sets_pull_only(self):
+        col = create_sealed_parquet_collection(
+            name="x", storage_path="x/{id}", read="public", write="none"
+        )
+        assert col.pull_only is True
+        assert col.push_only is None
+
+    def test_custom_role_list(self):
+        col = create_sealed_parquet_collection(
+            name="x",
+            storage_path="x/{id}",
+            read=["space:member"],
+            write=["space:member"],
+        )
+        assert col.read_roles == ["space:member"]
+        assert col.write_roles == ["space:member"]
+
+    def test_raises_when_both_none(self):
+        with pytest.raises(ValueError, match='both read and write are "none"'):
+            create_sealed_parquet_collection(
+                name="x", storage_path="x/{id}", read="none", write="none"
+            )
+
+    def test_auto_listable_when_last_segment_is_param(self):
+        col = create_sealed_parquet_collection(
+            name="x", storage_path="spaces/{spaceId}/enc/{objectId}"
+        )
+        assert col.listable is True
+
+    def test_no_listable_when_last_segment_is_literal(self):
+        col = create_sealed_parquet_collection(
+            name="x", storage_path="spaces/{spaceId}/enc/fixed"
+        )
+        assert not col.listable
+
+    def test_max_body_bytes_override(self):
+        col = create_sealed_parquet_collection(
+            name="x", storage_path="x/{id}", max_body_bytes=67_108_864
+        )
+        assert col.max_body_bytes == 67_108_864
+
+    def test_cache_duration_forwarded(self):
+        col = create_sealed_parquet_collection(
+            name="x", storage_path="x/{id}", cache_duration_ms=60_000
+        )
+        assert col.cache_duration_ms == 60_000
+
+    def test_passes_validate_config(self):
+        col = create_sealed_parquet_collection(
+            name="private-datasets",
+            storage_path="spaces/{spaceId}/objects/parquet-enc/{objectId}",
+            read=["space:member"],
+            write=["space:member"],
+            max_body_bytes=67_108_864,
+        )
+        errors = validate_config(SyncConfig(version=1, collections=[col]))
+        assert errors == []
+
+
+# ---------------------------------------------------------------------------
+# Integration: sealed collection accepts octet-stream, rejects parquet MIME
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+class TestSealedParquetCollectionIntegration:
+    async def test_pushes_octet_stream_and_pulls_back(self):
+        col = create_sealed_parquet_collection(
+            name="enc-datasets",
+            storage_path="enc/{spaceId}/{objectId}",
+            read=["space:member"],
+            write=["space:member"],
+        )
+        store = MemoryObjectStore()
+        config = SyncConfig(version=1, collections=[col])
+
+        async def role_resolver(request) -> AuthResult:
+            return AuthResult(identity="user-1", roles=["space:member"])
+
+        router = create_sync_router(
+            SyncRouterOptions(store=store, config=config, role_resolver=role_resolver)
+        )
+        app = FastAPI()
+        app.include_router(router)
+
+        # Simulated AES-GCM sealed bytes (opaque binary)
+        sealed = bytes([0xca, 0xfe, 0xba, 0xbe, 0x00, 0x01, 0x02])
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            push_resp = await client.post(
+                "/push/enc/space-1/obj-1",
+                content=sealed,
+                headers={"content-type": "application/octet-stream"},
+            )
+            assert push_resp.status_code == 200
+            pull_resp = await client.get("/pull/enc/space-1/obj-1")
+            assert pull_resp.status_code == 200
+            assert pull_resp.content == sealed
+
+    async def test_rejects_parquet_mime_type(self):
+        col = create_sealed_parquet_collection(
+            name="enc-datasets",
+            storage_path="enc/{spaceId}/{objectId}",
+        )
+        store = MemoryObjectStore()
+        config = SyncConfig(version=1, collections=[col])
+
+        async def role_resolver(request) -> AuthResult:
+            return AuthResult(
+                identity="user-1", roles=["public", "cap:write:enc-datasets"]
+            )
+
+        router = create_sync_router(
+            SyncRouterOptions(store=store, config=config, role_resolver=role_resolver)
+        )
+        app = FastAPI()
+        app.include_router(router)
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post(
+                "/push/enc/space-1/obj-1",
+                content=PARQUET_BYTES,
+                headers={"content-type": PARQUET_MIME_TYPE},
+            )
+            assert resp.status_code == 415

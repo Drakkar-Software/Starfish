@@ -10,7 +10,7 @@ export type {
 } from "@drakkar.software/starfish-protocol"
 export type { PullResult, PushSuccess, PullKeyringProjection } from "@drakkar.software/starfish-protocol"
 
-export { StarfishClient, pullWasFromCache } from "./client.js"
+export { StarfishClient, pullWasFromCache, stripPushPrefix } from "./client.js"
 export type {
   BlobPullResult,
   BlobPushResult,
@@ -20,6 +20,12 @@ export type {
   BatchPullResult,
   BatchPullEntry,
 } from "./client.js"
+export { sealAndPushBlob, pullAndOpenBlob } from "./blob-seal.js"
+export type {
+  ByteSealer,
+  SealAndPushBlobOptions,
+  PullAndOpenBlobOptions,
+} from "./blob-seal.js"
 export { PARQUET_MIME_TYPE, PARQUET_MIME_TYPES } from "@drakkar.software/starfish-protocol"
 export { SyncManager, AbortError } from "./sync.js"
 export type { SyncManagerOptions, SyncSigner } from "./sync.js"

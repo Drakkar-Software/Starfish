@@ -55,6 +55,7 @@ from starfish_server.router.route_builder import resolve_document_key
 __all__ = [
     "ParquetAccessMode",
     "create_parquet_collection",
+    "create_sealed_parquet_collection",
     "DuckdbParquetSqlResult",
     "duckdb_read_parquet_sql",
     "PARQUET_MIME_TYPE",
@@ -174,6 +175,86 @@ def create_parquet_collection(
         kwargs["pullOnly"] = True
 
     return CollectionConfig(**kwargs)
+
+
+# ---------------------------------------------------------------------------
+# create_sealed_parquet_collection
+# ---------------------------------------------------------------------------
+
+
+def create_sealed_parquet_collection(
+    *,
+    name: str,
+    storage_path: str,
+    read: ParquetAccessMode = "authenticated",
+    write: ParquetAccessMode = "authenticated",
+    rate_limit: "Literal['none'] | CollectionRateLimitConfig" = "none",
+    max_body_bytes: int = 256 * 1024 * 1024,
+    cache_duration_ms: int | None = None,
+) -> CollectionConfig:
+    """Build a :class:`~starfish_server.config.schema.CollectionConfig` preset
+    for **client-sealed** Parquet datasets (E2EE / end-to-end encrypted).
+
+    Use this when you want the server to store opaque ciphertext rather than
+    readable Parquet bytes.  The client AES-256-GCM-seals the Parquet file under
+    the space keyring CEK (AAD bound to the storage path) before uploading, and
+    unseals it after downloading.  The server and S3 bucket never see plaintext.
+
+    **Trade-off:** because the stored bytes are ciphertext, they are **not**
+    valid Parquet files — DuckDB cannot read them via ``read_parquet('s3://…')``.
+    Use :func:`create_parquet_collection` instead when server-side / S3-direct
+    DuckDB querying is the goal; use this variant when the priority is E2EE and
+    clients query locally (e.g. DuckDB-WASM after unsealing).
+
+    Compared to :func:`create_parquet_collection`, the differences are:
+
+    - ``read`` defaults to ``"authenticated"`` (not ``"public"``) — E2EE data
+      should not be world-downloadable by default.
+    - ``allowed_mime_types=["application/octet-stream"]`` — the sealed bytes are
+      opaque binary, not Parquet MIME typed.
+
+    Args:
+        name: Unique collection name.
+        storage_path: Template with ``{param}`` placeholders.
+        read: Who may pull.  Defaults to ``"authenticated"``.
+        write: Who may push.  Defaults to ``"authenticated"``.
+        rate_limit: ``"none"`` (default) or a
+            :class:`~starfish_server.config.schema.CollectionRateLimitConfig`.
+        max_body_bytes: Maximum push body size.  Default 256 MiB.
+        cache_duration_ms: ``Cache-Control: max-age`` duration (ms).
+
+    Raises:
+        ValueError: If both ``read`` and ``write`` are ``"none"``.
+
+    Example::
+
+        col = create_sealed_parquet_collection(
+            name="private-datasets",
+            storage_path="spaces/{spaceId}/objects/parquet-enc/{objectId}",
+            read=["space:member"],
+            write=["space:member"],
+            max_body_bytes=67_108_864,
+        )
+    """
+    if read == "none" and write == "none":
+        raise ValueError(
+            f'create_sealed_parquet_collection("{name}"): both read and write are "none" — '
+            "the collection would be completely inaccessible. "
+            'Set at least one to "public", "authenticated", or a custom role list.'
+        )
+
+    # Build via create_parquet_collection (same logic, same fields), then override
+    # only the MIME allowlist — sealed bytes are opaque binary, not Parquet MIME typed.
+    base = create_parquet_collection(
+        name=name,
+        storage_path=storage_path,
+        read=read,
+        write=write,
+        rate_limit=rate_limit,
+        max_body_bytes=max_body_bytes,
+        cache_duration_ms=cache_duration_ms,
+    )
+    return base.model_copy(update={"allowed_mime_types": ["application/octet-stream"]})
 
 
 # ---------------------------------------------------------------------------
