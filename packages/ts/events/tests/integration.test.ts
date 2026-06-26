@@ -105,6 +105,55 @@ describe("createEventsServerPlugin", () => {
     expect(rows[0]?.["distinct_id"]).toBe("user-abc")
   })
 
+  it("serves Parquet bytes on GET pull for JSON events collection", async () => {
+    const { app } = makeApp()
+
+    const pushRes = await app.request("/push/events/myapp/batch-pull", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ data: { events: [sampleEvent] }, baseHash: null }),
+    })
+    expect(pushRes.status).toBe(200)
+
+    const pullRes = await app.request("/pull/events/myapp/batch-pull", { method: "GET" })
+    expect(pullRes.status).toBe(200)
+    expect(pullRes.headers.get("content-type")).toBe("application/vnd.apache.parquet")
+    const buf = await pullRes.arrayBuffer()
+    expect(new Uint8Array(buf).slice(0, 4)).toEqual(new Uint8Array([0x50, 0x41, 0x52, 0x31]))
+  })
+
+  it("pull returns 304 on matching ETag (conditional GET)", async () => {
+    const { app } = makeApp()
+
+    await app.request("/push/events/myapp/batch-etag", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ data: { events: [sampleEvent] }, baseHash: null }),
+    })
+
+    const first = await app.request("/pull/events/myapp/batch-etag", { method: "GET" })
+    expect(first.status).toBe(200)
+    const etag = first.headers.get("etag")!
+    expect(etag).toBeTruthy()
+
+    const cond = await app.request("/pull/events/myapp/batch-etag", {
+      method: "GET",
+      headers: { "if-none-match": etag },
+    })
+    expect(cond.status).toBe(304)
+  })
+
+  it("pull falls through to JSON sync response when no batch was pushed", async () => {
+    // The sync protocol returns 200 with an empty-data envelope for missing documents.
+    const { app } = makeApp()
+    const pullRes = await app.request("/pull/events/myapp/nonexistent-batch", { method: "GET" })
+    expect(pullRes.status).toBe(200)
+    const body = await pullRes.json()
+    // JSON sync response: empty data object indicates no document written yet.
+    expect(typeof body).toBe("object")
+    expect(body.hash).toBeFalsy()
+  })
+
   it("handles an empty events array gracefully", async () => {
     const { app, store } = makeApp()
 

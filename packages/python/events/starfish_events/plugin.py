@@ -39,7 +39,13 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from starfish_protocol.constants import PARQUET_MIME_TYPE
-from starfish_protocol.plugins import PushHookContext, PushHookResult, ServerPlugin
+from starfish_protocol.plugins import (
+    InterceptPullResult,
+    PullHookContext,
+    PushHookContext,
+    PushHookResult,
+    ServerPlugin,
+)
 from starfish_server.router.route_builder import resolve_document_key
 
 from starfish_events.encode import encode_parquet
@@ -184,7 +190,33 @@ def create_events_server_plugin(
 
         return PushHookResult(action="respond", status=200, body={"hash": sha})
 
-    return ServerPlugin(name="starfish-events", intercept_push=_intercept_push)
+    async def _intercept_pull(ctx: PullHookContext) -> InterceptPullResult:
+        # Only handle the configured collection.
+        if ctx.collection != collection:
+            return InterceptPullResult(action="proceed")
+
+        # Resolve the same key the push hook wrote (storage_path + params + .parquet).
+        key = resolve_document_key(storage_path, dict(ctx.params))
+        if not key.endswith(".parquet"):
+            key += ".parquet"
+
+        result = await store.get_bytes(key)
+        if result is None:
+            return InterceptPullResult(action="proceed")
+
+        raw_bytes, content_type = result
+        return InterceptPullResult(
+            action="respond",
+            status=200,
+            body=raw_bytes,
+            content_type=content_type,
+        )
+
+    return ServerPlugin(
+        name="starfish-events",
+        intercept_push=_intercept_push,
+        intercept_pull=_intercept_pull,
+    )
 
 
 __all__ = ["create_events_server_plugin"]

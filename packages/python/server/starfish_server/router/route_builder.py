@@ -53,6 +53,7 @@ from starfish_server.plugins import (
     dispatch_after_write,
     dispatch_authorize,
     dispatch_before_pull,
+    dispatch_intercept_pull,
     dispatch_intercept_push,
     has_authorize_hook,
 )
@@ -329,6 +330,30 @@ def _to_list_prefix(storage_path: str, params: dict[str, str]) -> str:
     prefix_template = "/".join(segments[:-1])
     resolved = _resolve_document_key(prefix_template, params)
     return (resolved + "/") if resolved else ""
+
+
+def _binary_pull_response(
+    raw_bytes: bytes,
+    stored_content_type: str,
+    cache_duration_ms: int | None,
+    is_public: bool,
+    request_headers: Any,
+) -> Response:
+    """Build an HTTP response for a binary pull (Parquet / blob).
+
+    Computes a strong ETag, handles ``If-None-Match`` conditional requests,
+    and emits ``Cache-Control`` when *cache_duration_ms* is set.
+    """
+    binary_etag = f'"{hashlib.sha256(raw_bytes).hexdigest()}"'
+    if_none_match = request_headers.get("if-none-match")
+    if if_none_match == binary_etag:
+        return Response(status_code=304)
+    headers: dict[str, str] = {"ETag": binary_etag}
+    if cache_duration_ms is not None:
+        max_age = cache_duration_ms // 1000
+        directive = f"max-age={max_age}" if is_public else f"private, max-age={max_age}"
+        headers["Cache-Control"] = directive
+    return Response(content=raw_bytes, media_type=stored_content_type, headers=headers)
 
 
 def _validate_all_params(params: dict[str, str]) -> bool:
@@ -1000,21 +1025,31 @@ def _add_collection_routes(
                 if result is None:
                     return Response(status_code=404)
                 raw_bytes, stored_content_type = result
-                headers: dict[str, str] = {}
-                binary_etag = f'"{hashlib.sha256(raw_bytes).hexdigest()}"'
-                headers["ETag"] = binary_etag
-                if_none_match = request.headers.get("if-none-match")
-                if if_none_match == binary_etag:
-                    return Response(status_code=304)
-                if col.cache_duration_ms is not None:
-                    max_age = col.cache_duration_ms // 1000
-                    directive = (
-                        f"max-age={max_age}"
-                        if ROLE_PUBLIC in col.read_roles
-                        else f"private, max-age={max_age}"
+                return _binary_pull_response(
+                    raw_bytes,
+                    stored_content_type,
+                    col.cache_duration_ms,
+                    ROLE_PUBLIC in col.read_roles,
+                    request.headers,
+                )
+
+            # Let plugins intercept the pull and serve a binary response (e.g.
+            # an events plugin that stores Parquet instead of a JSON document).
+            if any(p.intercept_pull is not None for p in (opts.plugins or [])):
+                intercept_ctx = PullHookContext(
+                    collection=col.name,
+                    params=dict(params),
+                    namespace=namespace_name,
+                )
+                intercept_result = await dispatch_intercept_pull(opts.plugins, intercept_ctx)
+                if intercept_result.action == "respond":
+                    return _binary_pull_response(
+                        intercept_result.body or b"",
+                        intercept_result.content_type or "application/octet-stream",
+                        col.cache_duration_ms,
+                        ROLE_PUBLIC in col.read_roles,
+                        request.headers,
                     )
-                    headers["Cache-Control"] = directive
-                return Response(content=raw_bytes, media_type=stored_content_type, headers=headers)
 
             store = opts.store
             checkpoint_param = request.query_params.get(QUERY_CHECKPOINT)

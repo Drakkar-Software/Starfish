@@ -122,6 +122,37 @@ server-side at ingest time.
 
 ---
 
+## Pulling Parquet files
+
+A `GET /pull/<collection>/<params>` request returns the stored Parquet file for
+that key. The server sets `Content-Type: application/vnd.apache.parquet` and an
+`ETag` header computed from the file contents. Conditional GETs (`If-None-Match`)
+return `304 Not Modified` when the file hasn't changed.
+
+This lets admin clients or internal tooling download raw Parquet batches over the
+standard sync pull endpoint without any extra routes:
+
+```ts
+// TypeScript
+const res = await fetch("/pull/events/myapp/batch-abc", {
+  headers: { Authorization: `Bearer ${adminToken}` },
+})
+const buf = await res.arrayBuffer()
+// Pass to hyparquet, parquet-wasm, or save to disk
+```
+
+```python
+# Python
+import httpx
+r = httpx.get("/pull/events/myapp/batch-abc", headers={"Authorization": f"Bearer {admin_token}"})
+parquet_bytes = r.content  # write to file or pass to pyarrow
+```
+
+If no batch has been pushed for that key yet, the response falls through to the
+normal sync-protocol JSON response (200 with empty data).
+
+---
+
 ## Storage backends
 
 The plugin writes Parquet bytes through the abstract `ObjectStore` /

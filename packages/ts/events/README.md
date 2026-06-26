@@ -64,15 +64,32 @@ const syncRouter = createSyncRouter({
 })
 ```
 
+## Pull
+
+A `GET /pull/<collection>/<params>` request also returns the stored Parquet file
+for the matching key. The server responds with `Content-Type: application/vnd.apache.parquet`
+and a strong `ETag` header. Conditional GETs (`If-None-Match`) return `304 Not Modified`
+when the bytes haven't changed.
+
+```ts
+// After a push has been recorded:
+const res = await fetch("/pull/events/myapp/batch-abc")
+// res.headers.get("content-type") === "application/vnd.apache.parquet"
+const parquetBytes = await res.arrayBuffer()
+```
+
+If no batch was pushed for that key yet, the response falls through to the normal
+sync-protocol JSON response (200 with empty data).
+
 ## API
 
 ### `createEventsServerPlugin(opts): ServerPlugin`
 
 | Option | Type | Description |
 |---|---|---|
-| `store` | `ObjectStore` | Object store with `putBytes`. Pass the same instance as `createSyncRouter`. |
+| `store` | `ObjectStore` | Object store with `putBytes` / `getBytes`. Pass the same instance as `createSyncRouter`. |
 | `collection` | `string` | Name of the collection to intercept (e.g. `"events"`). |
-| `storagePath` | `string` | Storage-path template for the Parquet key. Supports `{param}` placeholders from the push URL. The `.parquet` extension is appended automatically if absent. |
+| `storagePath` | `string` | Storage-path template for the Parquet key. Supports `{param}` placeholders from the push/pull URL. The `.parquet` extension is appended automatically if absent. |
 
 The plugin adds `received_at` (ISO-8601 UTC) to every event row before encoding.
 

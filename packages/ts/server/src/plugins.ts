@@ -33,6 +33,7 @@ import type {
   WriteEvent,
   PullHookContext,
   PullHookResult,
+  PullInterceptResult,
   PushHookContext,
   PushHookResult,
   AuthorizeContext,
@@ -161,6 +162,25 @@ export async function dispatchInterceptPush(
   for (const p of plugins) {
     if (!p.interceptPush) continue
     const result = await p.interceptPush(ctx)
+    if (result.action !== "proceed") return result
+  }
+  return { action: "proceed" }
+}
+
+/**
+ * Run every plugin's `interceptPull` hook (in plugin-list order) and return the
+ * first `respond` directive, or `{ action: "proceed" }` if all proceed. Used by
+ * the pull route to let an extension serve a binary document for a JSON-typed
+ * collection (e.g. an events plugin storing Parquet).
+ */
+export async function dispatchInterceptPull(
+  plugins: ServerPlugin[] | undefined,
+  ctx: PullHookContext,
+): Promise<PullInterceptResult> {
+  if (!plugins) return { action: "proceed" }
+  for (const p of plugins) {
+    if (!p.interceptPull) continue
+    const result = await p.interceptPull(ctx)
     if (result.action !== "proceed") return result
   }
   return { action: "proceed" }

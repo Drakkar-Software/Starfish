@@ -78,6 +78,27 @@ def _build_app(store=None, *, extra_collections: list[CollectionConfig] | None =
     return app, store
 
 
+def _build_app_admin_read(store=None, *, extra_collections: list[CollectionConfig] | None = None):
+    """Like ``_build_app`` but the role resolver returns the ``admin`` role so
+    pull tests can read the admin-only events collection."""
+    store = store or MemoryObjectStore()
+    collections = [_EVENTS_COLLECTION] + (extra_collections or [])
+    config = SyncConfig(version=1, collections=collections)
+
+    async def _resolver(request: Request) -> AuthResult:
+        return AuthResult(identity=None, roles=["admin"])
+
+    plugin = create_events_server_plugin(
+        store=store, collection=COLLECTION, storage_path=STORAGE_PATH
+    )
+    router = create_sync_router(
+        SyncRouterOptions(store=store, config=config, role_resolver=_resolver, plugins=[plugin])
+    )
+    app = FastAPI()
+    app.include_router(router)
+    return app, store
+
+
 def _push_body(events: list[dict]) -> str:
     return json.dumps({"data": {"events": events}, "baseHash": None})
 
@@ -437,3 +458,84 @@ def test_construction_guard_raises_when_store_lacks_put_bytes():
             collection="events",
             storage_path="events/{app}/{batchId}",
         )
+
+
+# ---------------------------------------------------------------------------
+# Pull: interceptPull hook serves Parquet bytes
+# ---------------------------------------------------------------------------
+
+
+async def test_pull_returns_parquet_bytes_after_push():
+    """GET /pull/<collection>/... returns the stored Parquet file."""
+    app, _ = _build_app_admin_read()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        push_resp = await _push(client, "/push/events/myapp/batch-pull", [_SAMPLE_EVENT])
+        assert push_resp.status_code == 200
+
+        pull_resp = await client.get("/pull/events/myapp/batch-pull")
+
+    assert pull_resp.status_code == 200
+    assert pull_resp.headers["content-type"] == PARQUET_MIME_TYPE
+    assert pull_resp.content[:4] == b"PAR1", "response body must start with Parquet magic bytes"
+
+
+async def test_pull_etag_header_present():
+    """Pull response includes an ETag header."""
+    app, _ = _build_app_admin_read()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        await _push(client, "/push/events/myapp/batch-etag", [_SAMPLE_EVENT])
+        pull_resp = await client.get("/pull/events/myapp/batch-etag")
+
+    assert pull_resp.status_code == 200
+    assert "etag" in pull_resp.headers
+
+
+async def test_pull_304_on_matching_if_none_match():
+    """A conditional GET with the correct ETag returns 304 Not Modified."""
+    app, _ = _build_app_admin_read()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        await _push(client, "/push/events/myapp/batch-304", [_SAMPLE_EVENT])
+        pull_resp = await client.get("/pull/events/myapp/batch-304")
+        etag = pull_resp.headers["etag"]
+
+        cond_resp = await client.get(
+            "/pull/events/myapp/batch-304",
+            headers={"if-none-match": etag},
+        )
+
+    assert cond_resp.status_code == 304
+
+
+async def test_pull_falls_through_to_json_sync_when_no_batch_pushed():
+    """Pull for a batch that was never pushed falls through to the normal JSON pull.
+    The sync protocol returns 200 with an empty-data envelope for missing documents."""
+    app, _ = _build_app_admin_read()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        pull_resp = await client.get("/pull/events/myapp/nonexistent-batch")
+
+    # The plugin proceeds (no Parquet file); JSON handler returns 200 with empty envelope.
+    assert pull_resp.status_code == 200
+    body = pull_resp.json()
+    assert not body.get("hash")  # no document = no hash
+
+
+async def test_pull_other_collection_not_intercepted():
+    """The events plugin's interceptPull only fires for its configured collection."""
+    other_col = CollectionConfig(
+        name="other",
+        storagePath="other/{id}",
+        readRoles=["public"],
+        writeRoles=["public"],
+        encryption="none",
+        maxBodyBytes=1_000_000,
+        allowedMimeTypes=["application/json"],
+    )
+    app, store = _build_app(extra_collections=[other_col])
+    # Write a JSON doc to "other" directly
+    await store.put("other/doc-1", '{"data":{"x":1},"hash":"abc","ts":1}', content_type="application/json")
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        pull_resp = await client.get("/pull/other/doc-1")
+
+    # Normal JSON pull, not Parquet
+    assert pull_resp.status_code == 200
+    assert "application/json" in pull_resp.headers["content-type"]

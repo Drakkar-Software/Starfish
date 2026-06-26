@@ -67,15 +67,25 @@ router = create_sync_router(
 )
 ```
 
+## Pull
+
+A `GET /pull/<collection>/<params>` request also returns the stored Parquet file
+for the matching key. The server responds with `Content-Type: application/vnd.apache.parquet`
+and a strong `ETag` header. Conditional GETs (`If-None-Match`) return `304 Not Modified`
+when the bytes haven't changed.
+
+If no batch was pushed for that key yet, the response falls through to the normal
+sync-protocol JSON response (200 with empty data).
+
 ## API
 
 ### `create_events_server_plugin(*, store, collection, storage_path) -> ServerPlugin`
 
 | Parameter | Type | Description |
 |---|---|---|
-| `store` | `AbstractObjectStore` | Object store with `put_bytes`. Pass the same instance as `create_sync_router`. |
+| `store` | `AbstractObjectStore` | Object store with `put_bytes` / `get_bytes`. Pass the same instance as `create_sync_router`. |
 | `collection` | `str` | Name of the collection to intercept (e.g. `"events"`). |
-| `storage_path` | `str` | Storage-path template for the Parquet key. Supports `{param}` placeholders from the push URL. The `.parquet` extension is appended automatically if absent. |
+| `storage_path` | `str` | Storage-path template for the Parquet key. Supports `{param}` placeholders from the push/pull URL. The `.parquet` extension is appended automatically if absent. |
 
 The plugin adds `received_at` (ISO-8601 UTC) to every event row before encoding.
 

@@ -737,7 +737,7 @@ wheels = [
 
 [[package]]
 name = "starfish-events"
-version = "3.0.0a41"
+version = "3.0.0a43"
 source = { editable = "." }
 dependencies = [
     { name = "pyarrow" },
@@ -750,6 +750,12 @@ dev = [
     { name = "fastapi" },
     { name = "httpx" },
     { name = "pyarrow" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+]
+
+[package.dev-dependencies]
+dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
 ]
@@ -767,9 +773,15 @@ requires-dist = [
 ]
 provides-extras = ["dev"]
 
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=9.1.1" },
+    { name = "pytest-asyncio", specifier = ">=1.4.0" },
+]
+
 [[package]]
 name = "starfish-protocol"
-version = "3.0.0a40"
+version = "3.0.0a43"
 source = { editable = "../protocol" }
 dependencies = [
     { name = "argon2-cffi" },
@@ -787,7 +799,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "starfish-server"
-version = "3.0.0a40"
+version = "3.0.0a43"
 source = { editable = "../server" }
 dependencies = [
     { name = "aiofiles" },

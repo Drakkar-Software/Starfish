@@ -36,6 +36,7 @@ from starfish_protocol.plugins import (
     AuthorizeContext,
     AuthorizeResult,
     CapCertValidator,
+    InterceptPullResult,
     PullHookContext,
     PullHookResult,
     PushHookContext,
@@ -170,6 +171,31 @@ async def dispatch_intercept_push(
     return PushHookResult(action="proceed")
 
 
+async def dispatch_intercept_pull(
+    plugins: Iterable[ServerPlugin] | None,
+    ctx: PullHookContext,
+) -> InterceptPullResult:
+    """Run every plugin's ``intercept_pull`` hook (in plugin-list order) and
+    return the first ``respond`` directive, or ``proceed`` if all proceed.
+
+    Used by the pull route to let an extension serve a binary document for a
+    JSON-typed collection (e.g. an events plugin storing Parquet instead of
+    JSON).
+    """
+    if not plugins:
+        return InterceptPullResult(action="proceed")
+    for plugin in plugins:
+        hook = plugin.intercept_pull
+        if hook is None:
+            continue
+        result = hook(ctx)
+        if inspect.isawaitable(result):
+            result = await result
+        if result.action != "proceed":
+            return result
+    return InterceptPullResult(action="proceed")
+
+
 def has_authorize_hook(plugins: Iterable[ServerPlugin] | None) -> bool:
     """True when any plugin contributes an ``authorize`` hook.
 
@@ -214,6 +240,7 @@ __all__ = [
     "default_server_plugin",
     "dispatch_after_write",
     "dispatch_before_pull",
+    "dispatch_intercept_pull",
     "dispatch_intercept_push",
     "has_authorize_hook",
     "dispatch_authorize",

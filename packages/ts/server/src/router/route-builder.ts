@@ -67,7 +67,7 @@ import {
   ERROR_APPEND_PARAMS_NOT_SUPPORTED,
 } from "../constants.js"
 import type { ServerPlugin, WriteEvent } from "@drakkar.software/starfish-protocol"
-import { dispatchAfterWrite, dispatchBeforePull, dispatchInterceptPush, dispatchAuthorize, hasAuthorizeHook } from "../plugins.js"
+import { dispatchAfterWrite, dispatchBeforePull, dispatchInterceptPull, dispatchInterceptPush, dispatchAuthorize, hasAuthorizeHook } from "../plugins.js"
 import type { ServerLogger } from "../logger.js"
 import type { AuditLogger, AuditEntry } from "@drakkar.software/starfish-protocol"
 import { isExpired } from "../ttl.js"
@@ -212,6 +212,38 @@ function toListPrefix(storagePath: string, params: Record<string, string>): stri
 
 const LIST_DEFAULT_LIMIT = 100
 const LIST_MAX_LIMIT = 1000
+
+/** Build a binary pull HTTP response (Parquet / blob collections). */
+async function binaryPullResponse(
+  c: Context,
+  body: Uint8Array,
+  contentType: string,
+  cacheDurationMs: number | undefined,
+  isPublicRead: boolean,
+): Promise<Response> {
+  const headers = new Headers()
+  headers.set("Content-Type", contentType)
+
+  const cr = getCrypto()
+  const hashBuf = await cr.subtle.digest("SHA-256", body.buffer as ArrayBuffer)
+  const etag = Array.from(new Uint8Array(hashBuf))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("")
+  headers.set("ETag", `"${etag}"`)
+
+  const ifNoneMatch = c.req.header("if-none-match")
+  if (ifNoneMatch === `"${etag}"`) {
+    return new Response(null, { status: 304 })
+  }
+
+  if (cacheDurationMs != null) {
+    const maxAge = Math.floor(cacheDurationMs / 1000)
+    const directive = isPublicRead ? `max-age=${maxAge}` : `private, max-age=${maxAge}`
+    headers.set("Cache-Control", directive)
+  }
+
+  return new Response(body.buffer as ArrayBuffer, { status: 200, headers })
+}
 
 /** Default cap on collections per `/batch/pull` request (see `maxCollectionsPerBatch`). */
 const DEFAULT_MAX_BATCH_COLLECTIONS = 100
@@ -991,32 +1023,32 @@ function addCollectionRoutes(
         if (result == null) {
           return new Response(null, { status: 404 })
         }
-        const headers = new Headers()
-        headers.set("Content-Type", result.contentType)
+        return binaryPullResponse(
+          c,
+          result.body,
+          result.contentType,
+          col.cacheDurationMs,
+          col.readRoles.includes(ROLE_PUBLIC),
+        )
+      }
 
-        // ETag
-        const cr = getCrypto()
-        const hashBuf = await cr.subtle.digest("SHA-256", result.body.buffer as ArrayBuffer)
-        const etag = Array.from(new Uint8Array(hashBuf))
-          .map((b) => b.toString(16).padStart(2, "0"))
-          .join("")
-        headers.set("ETag", `"${etag}"`)
-
-        // ETag conditional request for binary collections
-        const ifNoneMatch = c.req.header("if-none-match")
-        if (ifNoneMatch === `"${etag}"`) {
-          return new Response(null, { status: 304 })
+      // Let plugins intercept the pull and serve a binary response (e.g. an
+      // events plugin that stores Parquet instead of a JSON document).
+      if (opts.plugins?.some((p) => p.interceptPull)) {
+        const interceptResult = await dispatchInterceptPull(opts.plugins, {
+          collection: col.name,
+          params,
+          ...(namespaceName != null && { namespace: namespaceName }),
+        })
+        if (interceptResult.action === "respond") {
+          return binaryPullResponse(
+            c,
+            interceptResult.body,
+            interceptResult.contentType,
+            col.cacheDurationMs,
+            col.readRoles.includes(ROLE_PUBLIC),
+          )
         }
-
-        if (col.cacheDurationMs != null) {
-          const maxAge = Math.floor(col.cacheDurationMs / 1000)
-          const directive = col.readRoles.includes(ROLE_PUBLIC)
-            ? `max-age=${maxAge}`
-            : `private, max-age=${maxAge}`
-          headers.set("Cache-Control", directive)
-        }
-
-        return new Response(result.body.buffer as ArrayBuffer, { status: 200, headers })
       }
 
       const store = opts.store

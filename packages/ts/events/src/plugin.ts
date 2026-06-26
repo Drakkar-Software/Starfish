@@ -32,6 +32,8 @@
 
 import type {
   ServerPlugin,
+  PullHookContext,
+  PullInterceptResult,
   PushHookContext,
   PushHookResult,
 } from "@drakkar.software/starfish-protocol"
@@ -169,6 +171,22 @@ export function createEventsServerPlugin(opts: EventsPluginOptions): ServerPlugi
       )
 
       return { action: "respond", status: 200, body: { hash } }
+    },
+
+    interceptPull: async (ctx: PullHookContext): Promise<PullInterceptResult> => {
+      // Only handle the configured collection.
+      if (ctx.collection !== collection) return { action: "proceed" }
+
+      if (!store.getBytes) return { action: "proceed" }
+
+      // Resolve the same key the push hook wrote (storagePath template + params + .parquet).
+      let key = resolveDocumentKey(storagePath, ctx.params)
+      if (!key.endsWith(".parquet")) key += ".parquet"
+
+      const result = await store.getBytes(key)
+      if (result == null) return { action: "proceed" }
+
+      return { action: "respond", status: 200, body: result.body, contentType: result.contentType }
     },
   }
 }

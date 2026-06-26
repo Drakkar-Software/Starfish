@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "starfish-events"
-version = "3.0.0a43"
+version = "3.0.0a44"
 description = "Starfish server plugin that intercepts JSON event-batch pushes and encodes them as Parquet on S3 (Python mirror of @drakkar.software/starfish-events)"
 requires-python = ">=3.11"
 dependencies = [
@@ -35,3 +35,9 @@ starfish-server = { path = "../server", editable = true }
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+]

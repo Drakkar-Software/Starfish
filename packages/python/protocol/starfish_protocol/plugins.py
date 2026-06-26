@@ -137,6 +137,27 @@ order; the first non-``proceed`` result wins."""
 
 
 @dataclass
+class InterceptPullResult:
+    """Directive an ``intercept_pull`` hook returns. ``proceed`` lets the pull
+    continue normally; ``respond`` short-circuits the pull with a binary
+    response body — the host converts it to an HTTP response with the
+    appropriate ETag / Cache-Control headers."""
+
+    action: Literal["proceed", "respond"]
+    status: int | None = None
+    body: bytes | None = None
+    content_type: str | None = None
+
+
+InterceptPullHook = Callable[["PullHookContext"], "InterceptPullResult | Awaitable[InterceptPullResult]"]
+"""Hook invoked before the JSON pull logic, after auth and the unsafe-key
+guard. Lets an extension serve a binary document for a JSON-typed collection
+(e.g. an events plugin that stores Parquet instead of JSON). Hosts call it
+for every pulled collection; plugins filter by ``ctx.collection``. Runs in
+plugin-list order; the first ``respond`` wins."""
+
+
+@dataclass
 class AuthorizeContext:
     """Context handed to a plugin's ``authorize`` hook. Framework-neutral (no
     FastAPI types). Unlike ``before_pull``/``intercept_push``, this fires for
@@ -213,6 +234,13 @@ class ServerPlugin:
     push or respond on its behalf (e.g. proxy the write to a primary).
     Additive. See :class:`PushHookContext`."""
 
+    intercept_pull: "InterceptPullHook | None" = None
+    """Invoked before the JSON pull logic, after auth and the unsafe-key guard.
+    Lets an extension serve a binary document for a JSON-typed collection (e.g.
+    an events plugin storing Parquet). Hosts call it for every pulled collection;
+    plugins filter by ``ctx.collection``. Runs in plugin-list order; the first
+    ``respond`` wins. Additive. See :class:`InterceptPullResult`."""
+
     authorize: "AuthorizeHook | None" = None
     """Invoked at the central authorization gate for every action (``pull``,
     ``push``, ``list``, incl. batch/bundle members), after roles are resolved
@@ -226,6 +254,7 @@ class ServerPlugin:
     (e.g. close a queue connection). Additive."""
 
 
+
 __all__ = [
     "CapCertValidator",
     "ServerPlugin",
@@ -237,6 +266,8 @@ __all__ = [
     "PushHookResult",
     "BeforePullHook",
     "InterceptPushHook",
+    "InterceptPullResult",
+    "InterceptPullHook",
     "AuthorizeContext",
     "AuthorizeResult",
     "AuthorizeHook",

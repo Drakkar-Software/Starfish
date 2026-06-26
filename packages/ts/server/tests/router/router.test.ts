@@ -667,6 +667,61 @@ describe("jsonDepthWithin — exact default boundary", () => {
   })
 })
 
+describe("interceptPull dispatch", () => {
+  it("calls interceptPull hook and serves a binary response", async () => {
+    const body = new Uint8Array([0x50, 0x41, 0x52, 0x31]) // PAR1 magic
+    const binaryPlugin = {
+      name: "binary-test",
+      interceptPull: async (ctx: { collection: string }) => {
+        if (ctx.collection !== "docs") return { action: "proceed" as const }
+        return { action: "respond" as const, status: 200, body, contentType: "application/octet-stream" }
+      },
+    }
+    const config: SyncConfig = {
+      version: 1,
+      collections: [
+        { name: "docs", storagePath: "docs/{id}", readRoles: ["public"], writeRoles: ["public"], encryption: "none", maxBodyBytes: 1_000_000, allowedMimeTypes: ["application/json"] },
+      ],
+    }
+    const app = createSyncRouter({
+      store: new MemoryObjectStore(new Map()),
+      config,
+      roleResolver: async () => ({ identity: undefined, roles: ["public"] }),
+      plugins: [binaryPlugin] as unknown as SyncRouterOptions["plugins"],
+    })
+    const res = await app.request("/pull/docs/any-id", { method: "GET" })
+    expect(res.status).toBe(200)
+    expect(res.headers.get("content-type")).toBe("application/octet-stream")
+    const buf = await res.arrayBuffer()
+    expect(new Uint8Array(buf)).toEqual(body)
+  })
+
+  it("proceeds to normal JSON pull when interceptPull returns proceed", async () => {
+    const proceedPlugin = {
+      name: "pass-through",
+      interceptPull: async () => ({ action: "proceed" as const }),
+    }
+    const config: SyncConfig = {
+      version: 1,
+      collections: [
+        { name: "docs", storagePath: "docs/{id}", readRoles: ["public"], writeRoles: ["public"], encryption: "none", maxBodyBytes: 1_000_000, allowedMimeTypes: ["application/json"] },
+      ],
+    }
+    const store = new MemoryObjectStore(new Map())
+    await store.put("docs/my-doc", JSON.stringify({ data: { x: 1 }, hash: "abc", ts: 1 }), { contentType: "application/json" })
+    const app = createSyncRouter({
+      store,
+      config,
+      roleResolver: async () => ({ identity: undefined, roles: ["public"] }),
+      plugins: [proceedPlugin] as unknown as SyncRouterOptions["plugins"],
+    })
+    const res = await app.request("/pull/docs/my-doc", { method: "GET" })
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.data).toEqual({ x: 1 })
+  })
+})
+
 describe("path params — Unicode / homograph / RTL containment", () => {
   // Identical ASCII-only `SAFE_PARAM` to the Python server; validateAllParams runs
   // before auth, so a spoofing identity never reaches the resolver or a storage key.

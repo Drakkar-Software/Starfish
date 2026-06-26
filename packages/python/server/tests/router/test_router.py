@@ -1126,3 +1126,99 @@ async def test_proxied_push_through_write_is_audited():
     assert len(push_records) == 1
     assert push_records[0].success is True
     assert push_records[0].status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# interceptPull dispatch
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_intercept_pull_hook_serves_binary_response():
+    """A plugin that returns action='respond' from intercept_pull is used as the
+    HTTP response body, bypassing the normal JSON pull logic."""
+    from starfish_protocol.plugins import ServerPlugin, InterceptPullResult
+
+    parquet_magic = b"PAR1" + b"\x00" * 4  # minimal fake Parquet marker
+
+    def _intercept_pull(ctx) -> InterceptPullResult:
+        if ctx.collection != "docs":
+            return InterceptPullResult(action="proceed")
+        return InterceptPullResult(
+            action="respond",
+            status=200,
+            body=parquet_magic,
+            content_type="application/octet-stream",
+        )
+
+    plugin = ServerPlugin(name="binary-test", intercept_pull=_intercept_pull)
+
+    config = SyncConfig(version=1, collections=[
+        CollectionConfig(
+            name="docs",
+            storagePath="docs/{id}",
+            readRoles=["public"],
+            writeRoles=["public"],
+            encryption="none",
+            maxBodyBytes=65536,
+            allowedMimeTypes=["application/json"],
+        ),
+    ])
+    store = MemoryObjectStore()
+
+    async def role_resolver(request: Request) -> AuthResult:
+        return AuthResult(identity=None, roles=["public"])
+
+    router = create_sync_router(
+        SyncRouterOptions(store=store, config=config, role_resolver=role_resolver, plugins=[plugin])
+    )
+    app = FastAPI()
+    app.include_router(router)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/pull/docs/any-id")
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/octet-stream"
+    assert resp.content[:4] == b"PAR1"
+
+
+@pytest.mark.asyncio
+async def test_intercept_pull_proceed_falls_through_to_json_pull():
+    """A plugin returning action='proceed' lets the normal JSON pull path run."""
+    from starfish_protocol.plugins import ServerPlugin, InterceptPullResult
+
+    plugin = ServerPlugin(
+        name="pass-through",
+        intercept_pull=lambda _ctx: InterceptPullResult(action="proceed"),
+    )
+
+    config = SyncConfig(version=1, collections=[
+        CollectionConfig(
+            name="docs",
+            storagePath="docs/{id}",
+            readRoles=["public"],
+            writeRoles=["public"],
+            encryption="none",
+            maxBodyBytes=65536,
+            allowedMimeTypes=["application/json"],
+        ),
+    ])
+    store = MemoryObjectStore()
+    await store.put("docs/my-doc", '{"data":{"x":1},"hash":"abc","ts":1}', content_type="application/json")
+
+    async def role_resolver(request: Request) -> AuthResult:
+        return AuthResult(identity=None, roles=["public"])
+
+    router = create_sync_router(
+        SyncRouterOptions(store=store, config=config, role_resolver=role_resolver, plugins=[plugin])
+    )
+    app = FastAPI()
+    app.include_router(router)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/pull/docs/my-doc")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["data"] == {"x": 1}

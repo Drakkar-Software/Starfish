@@ -1,5 +1,34 @@
 # Changelog
 
+## 3.0.0-alpha.44
+
+### `starfish-protocol` / `@drakkar.software/starfish-protocol`
+
+#### Added
+- **`PullInterceptResult`** — new discriminated-union type `{ action: "proceed" } | { action: "respond"; status; body: Uint8Array; contentType: string }`. Mirrors `PushHookResult` on the pull side.
+- **`InterceptPullHook`** — hook type `(ctx: PullHookContext) => PullInterceptResult | Promise<PullInterceptResult>`. Takes the same `PullHookContext` as `beforePull` (`collection`, `params`, `namespace`).
+- **`interceptPull?: InterceptPullHook`** field added to `ServerPlugin`. Invoked after auth and the path-traversal guard, before the JSON pull logic. Lets an extension serve a binary document for a JSON-typed collection. Runs in plugin-list order; the first `respond` wins. Additive — omit it for plugins that don't intercept pulls.
+
+### `starfish-server` / `@drakkar.software/starfish-server`
+
+#### Added
+- **`dispatchInterceptPull(plugins, ctx)`** — generic dispatcher that runs every plugin's `interceptPull` hook in list order and returns the first `respond` directive (or `proceed` if all proceed). Exported from both the TypeScript and Python server packages.
+
+#### Changed
+- Pull route now dispatches `interceptPull` generically after the binary-collection branch and before the JSON pull logic. No plugin names or conventions are hardcoded — the route-builder no longer references `starfish-events` or `.parquet`.
+- Python: extracted `_binary_pull_response` helper (de-duplicates the ETag / If-None-Match / Cache-Control block previously copy-pasted in the binary-collection and events branches).
+
+### `starfish-events` / `@drakkar.software/starfish-events`
+
+#### Added
+- **Pull support** — `GET /pull/<collection>/...` now returns the stored Parquet bytes directly (Content-Type `application/vnd.apache.parquet`). The plugin implements `interceptPull`: it resolves the same `{storagePath}.parquet` key used on push, reads the bytes from the object store, and returns them. ETag and conditional-GET (304) support is handled by the server's `binaryPullResponse` helper.
+
+#### Fixed
+- Restored accidentally removed import of `getCrypto`, `bytesToHex`, `PARQUET_MIME_TYPE` from `@drakkar.software/starfish-protocol` in the TypeScript plugin (the import was dropped in alpha.43, breaking the `interceptPush` hash computation at runtime).
+
+#### Removed
+- **`EVENTS_PLUGIN_NAME`**, **`resolveEventsParquetDocumentKey`**, **`isEventsPluginForCollection`**, **`hasEventsParquetPlugin`**, **`EventsServerPlugin`** — these were exported in alpha.43 for use by `starfish-server` but were never consumed outside that package. All events-specific logic is now self-contained in the plugin. The public API is unchanged: only `createEventsServerPlugin` and `EventsPluginOptions` are exported.
+
 ## 3.0.0-alpha.43
 
 ### `@drakkar.software/starfish-server` / `starfish-server`

@@ -240,6 +240,31 @@ export type InterceptPushHook = (
 ) => PushHookResult | Promise<PushHookResult>
 
 /**
+ * Directive an `interceptPull` hook returns. `proceed` lets the pull continue
+ * normally; `respond` short-circuits the pull with a binary response body — the
+ * host converts it to an HTTP response with the appropriate ETag / Cache-Control
+ * headers.
+ */
+export type PullInterceptResult =
+  | { action: "proceed" }
+  | { action: "respond"; status: number; body: Uint8Array; contentType: string }
+
+/**
+ * Hook invoked before the JSON pull logic, after auth and the unsafe-key guard.
+ * Lets an extension serve a binary document for a JSON-typed collection (e.g.
+ * an events plugin that stores Parquet instead of JSON). Hosts call it for every
+ * pulled collection; plugins filter by `ctx.collection`. Runs in plugin-list
+ * order; the first `respond` wins. Additive.
+ *
+ * The hook receives a {@link PullHookContext} — `collection`, `params`,
+ * `namespace` — which is sufficient to resolve the object-store key from the
+ * plugin's configured storage-path template.
+ */
+export type InterceptPullHook = (
+  ctx: PullHookContext,
+) => PullInterceptResult | Promise<PullInterceptResult>
+
+/**
  * Context handed to a plugin's `authorize` hook. Framework-neutral (no
  * Hono/FastAPI types). Unlike `beforePull`/`interceptPush`, this fires for
  * EVERY action (`pull`, `push`, `list`, including batch/bundle members), so an
@@ -318,6 +343,14 @@ export interface ServerPlugin {
    * Runs in plugin-list order; the first non-`proceed` result wins. Additive.
    */
   interceptPush?: InterceptPushHook
+  /**
+   * Invoked before the JSON pull logic, after auth and the unsafe-key guard.
+   * Lets an extension serve a binary document for a JSON-typed collection.
+   * Hosts call it for every pulled collection; plugins filter by
+   * `ctx.collection`. Runs in plugin-list order; the first `respond` wins.
+   * Additive. See {@link InterceptPullHook}.
+   */
+  interceptPull?: InterceptPullHook
   /**
    * Invoked at the central authorization gate for every action (`pull`,
    * `push`, `list`, incl. batch/bundle members), after roles are resolved and

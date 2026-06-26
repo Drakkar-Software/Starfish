@@ -42,6 +42,8 @@ export type {
   PushHookResult,
   BeforePullHook,
   InterceptPushHook,
+  PullInterceptResult,
+  InterceptPullHook,
   AuthorizeContext,
   AuthorizeResult,
   AuthorizeHook,
