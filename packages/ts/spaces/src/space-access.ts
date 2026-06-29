@@ -22,6 +22,7 @@
  */
 import type { Encryptor, StarfishClient } from "@drakkar.software/starfish-client"
 
+import { runCas } from "./cas-retry.js"
 import {
   buildEncryptor,
   makeSpaceClient,
@@ -50,6 +51,17 @@ export interface NodeAccessHandle {
   client: StarfishClient
   /** True when opened as the space OWNER (may seed / mint the space keyring). */
   isOwnerOpen: boolean
+  /**
+   * Atomically write a document: pull for hash → decrypt → mutate → encrypt → push.
+   * Retries up to 3× on ConflictError (same CAS semantics as `updateObjectIndex`).
+   * The mutator receives the current decrypted data (null for a new doc) and returns
+   * the next data to write, or null to skip the push (no-op).
+   */
+  push(
+    pullPath: string,
+    pushPath: string,
+    mutator: (cur: Record<string, unknown> | null) => Record<string, unknown> | null,
+  ): Promise<void>
 }
 
 const cache = new Map<string, Promise<NodeAccessHandle>>()
@@ -64,6 +76,33 @@ const spaceEncryptorCache = new Map<string, Promise<Encryptor | null>>()
 export function clearNodeAccessCache(): void {
   cache.clear()
   spaceEncryptorCache.clear()
+}
+
+/** Build a fully-featured `NodeAccessHandle` that owns CAS-push + encryption. */
+function makeHandle(
+  client: StarfishClient,
+  encryptor: Encryptor | null,
+  isOwnerOpen: boolean,
+): NodeAccessHandle {
+  return {
+    client,
+    encryptor,
+    isOwnerOpen,
+    push: async (pullPath, pushPath, mutator) => {
+      await runCas(async () => {
+        const res = await client.pull(pullPath).catch(() => null) as
+          | { data: Record<string, unknown>; hash: string }
+          | null
+        const cur = res?.data
+          ? (encryptor ? await encryptor.decrypt(res.data) : res.data)
+          : null
+        const next = mutator(cur)
+        if (next === null) return
+        const payload = encryptor ? await encryptor.encrypt(next) : next
+        await client.push(pushPath, payload, res?.hash ?? null)
+      })
+    },
+  }
 }
 
 /**
@@ -182,10 +221,10 @@ async function resolveNodeKeyringHandle(
   if (soft) {
     const encryptor = await buildNodeEncryptor(kr.client, krKeys, session, spaceId, nodeId, trustedAdders)
     if (!encryptor) return null
-    return { encryptor, client: contentClient, isOwnerOpen }
+    return makeHandle(contentClient, encryptor, isOwnerOpen)
   }
   const encryptor = await openNodeEncryptor(kr.client, krKeys, session, spaceId, nodeId, trustedAdders)
-  return { encryptor, client: contentClient, isOwnerOpen }
+  return makeHandle(contentClient, encryptor, isOwnerOpen)
 }
 
 /**
@@ -228,7 +267,7 @@ export function getNodeAccess(
 
     // Plaintext node — no keyring needed.
     if (!node.enc) {
-      return { encryptor: null, client, isOwnerOpen }
+      return makeHandle(client, null, isOwnerOpen)
     }
 
     // E2EE node — resolve the SPACE-WIDE keyring (cached per userId:spaceId).
@@ -250,7 +289,7 @@ export function getNodeAccess(
         spaceEncPromise = p2
       }
       const encryptor = await spaceEncPromise
-      return { encryptor, client, isOwnerOpen: false }
+      return makeHandle(client, encryptor, false)
     }
 
     // No access entry — owner mints/opens the keyring; non-owner errors.
@@ -270,7 +309,7 @@ export function getNodeAccess(
       session.layout.keyringPush(spaceId),
       ownerTrustedAdders(session),
     )
-    return { encryptor, client: session.contentClient, isOwnerOpen: true }
+    return makeHandle(session.contentClient, encryptor, true)
   })()
 
   cache.set(cacheKey, p)
