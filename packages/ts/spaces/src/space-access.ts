@@ -93,7 +93,7 @@ export function makeHandle(
         const res = await client.pull(pullPath).catch(() => null) as
           | { data: Record<string, unknown>; hash: string }
           | null
-        const baseHash = res?.hash || null
+        const baseHash = res?.hash ?? ""
         const cur = baseHash
           ? (encryptor ? await encryptor.decrypt(res!.data) : res!.data)
           : null

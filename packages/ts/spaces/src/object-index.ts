@@ -47,7 +47,7 @@ export async function pushIndexSeed(
   const res = await client.pull(session.layout.objIndexPull(spaceId)).catch(() => null)
   const existing = res?.data as Record<string, unknown> | undefined
   if (Array.isArray(existing?.objects)) return
-  await client.push(session.layout.objIndexPush(spaceId), buildIndexPayload(nodes), res?.hash || null)
+  await client.push(session.layout.objIndexPush(spaceId), buildIndexPayload(nodes), res?.hash ?? "")
 }
 
 /**
@@ -78,10 +78,15 @@ export async function updateObjectIndex(
   const client = getSpaceClient(spaceId, session)
   await runCas(async () => {
     const res = await client.pull(session.layout.objIndexPull(spaceId))
+    if (res.hash === "") {
+      // Temporary diagnostic: empty hash means the stored doc is missing or hash-less.
+      // Sending "" triggers the server's heal path (else: "" != "" → accept).
+      console.warn("[objindex] empty hash on _index — healing", spaceId)
+    }
     const cur = readIndexObjects(res?.data)
     const next = mutator(cur, Date.now())
     if (next === null) return
-    await client.push(session.layout.objIndexPush(spaceId), buildIndexPayload(next), res?.hash || null)
+    await client.push(session.layout.objIndexPush(spaceId), buildIndexPayload(next), res?.hash ?? "")
   })
 }
 

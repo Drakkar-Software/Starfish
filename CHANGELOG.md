@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.0.0-alpha.49
+
+### `starfish-spaces` / `@drakkar.software/starfish-spaces`
+
+#### Fixed
+- **`updateObjectIndex` + `makeHandle.push` — revert alpha.47 `|| null` regression** — alpha.47 changed `?? null` to `|| null` in the base-hash coercion (`object-index.ts`, `space-access.ts`), intending to normalise `""` → `null`. This broke the server's hash-less-doc heal path: the server stores `current_hash = ""` for corrupt/missing-envelope docs and returns `hash: ""` on pull. The client must echo `""` back so the push hits the `else: "" != ""` branch (no conflict → accept/heal). Sending `null` instead hits `base_hash is None and raw → 409` — which loops forever across all `runCas` retries. Fixed by reverting to `?? ""` (preserve `""`). The `cur = baseHash ? … : null` decrypt gate is unchanged: `""` is falsy, so a missing/empty doc still yields `cur = null` (the alpha.47 Bug-B fix for `decrypt({})` is preserved).
+
+#### Added
+- Temporary diagnostic log in `updateObjectIndex`: when the pulled `_index` hash is `""`, emits `[objindex] empty hash on _index — healing {spaceId}` so callers can confirm the heal path is taken and identify the origin of hash-less docs.
+
 ## 3.0.0-alpha.48
 
 ### `starfish-client` / `@drakkar.software/starfish-client`
