@@ -92,7 +92,19 @@ export function makeHandle(
     isOwnerOpen,
     push: async (pullPath, pushPath, mutator) => {
       await runCas(async ({ currentHash }) => {
-        const cached = getCachedDoc(pushPath)
+        let cached = getCachedDoc(pushPath)
+        // Cold in-memory cache (e.g. after a tab reload): seed the hash from the
+        // persistent read-through cache so we can reuse the last-known hash without
+        // a network pull. Returns null when no cache backend is configured or on a
+        // miss → falls through to the existing pull path unchanged.
+        // Only the hash is seeded — plaintext of E2EE docs is never stored.
+        if (!cached && !currentHash) {
+          const peeked = await client.peekCache(pullPath).catch(() => null)
+          if (peeked?.hash) {
+            noteHash(pullPath, peeked.hash)
+            cached = getCachedDoc(pushPath)
+          }
+        }
         if (cached && !currentHash) {
           // Warm cache, not a 409 retry: skip pull, reuse last-known hash.
           // cur=null is in-contract (same as the degraded-pull path below).

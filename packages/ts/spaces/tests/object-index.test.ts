@@ -31,12 +31,17 @@ import { clearDocCache } from "../src/doc-cache.js"
 let _counter = 0
 function nextSpaceId() { return `sp-objindex-test-${++_counter}` }
 
-function makeTestSession(pullResult: { data: Record<string, unknown>; hash: string }) {
+function makeTestSession(
+  pullResult: { data: Record<string, unknown>; hash: string },
+  peekResult?: { data: Record<string, unknown>; hash: string } | null,
+) {
   const pushSpy = vi.fn(async () => ({ hash: "H_new", timestamp: 1 }))
   const pullSpy = vi.fn(async () => pullResult)
+  const peekSpy = vi.fn(async () => peekResult ?? null)
   const client = {
     pull: pullSpy,
     push: pushSpy,
+    peekCache: peekSpy,
   } as unknown as StarfishClient
 
   // session.contentClient is used by getSpaceClient when no access entry is cached.
@@ -52,7 +57,7 @@ function makeTestSession(pullResult: { data: Record<string, unknown>; hash: stri
     keys: { edPriv: "deadbeef" },
   } as unknown as Session
 
-  return { session, pushSpy, pullSpy }
+  return { session, pushSpy, pullSpy, peekSpy }
 }
 
 beforeEach(() => clearDocCache())
@@ -177,5 +182,47 @@ describe("updateObjectIndex — warm-cache (octochat-style hash persistence)", (
     expect(calls).toHaveLength(3)
     const retryBaseHash = calls[2][2]
     expect(retryBaseHash).toBe("H_fresh")
+  })
+})
+
+describe("updateObjectIndex — peekCache seed (cross-reload persistence)", () => {
+  it("P1: cold doc-cache + peekCache hit → reuse persisted hash+data, pull never called", async () => {
+    const spaceId = nextSpaceId()
+    const existingNodes = [{ id: "n1", type: "wedding", access: "space", enc: true }]
+    const peekData = { v: 2, objects: existingNodes, updatedAt: 0 }
+    // pull would return this — but it must NOT be called when peekCache hits.
+    const { session, pushSpy, pullSpy, peekSpy } = makeTestSession(
+      { data: peekData, hash: "H_net" },          // pull result (must not be called)
+      { data: peekData, hash: "H_persisted" },    // peekCache result
+    )
+    pushSpy.mockResolvedValueOnce({ hash: "H_after", timestamp: 1 })
+
+    const receivedNodes: unknown[] = []
+    await updateObjectIndex(session, spaceId, (nodes, _now) => {
+      receivedNodes.push(...nodes)
+      return nodes
+    })
+
+    expect(peekSpy).toHaveBeenCalled()
+    expect(pullSpy).not.toHaveBeenCalled()                      // no network pull on reload
+    expect(receivedNodes).toHaveLength(1)                       // nodes from peeked data
+    expect((receivedNodes[0] as { id: string }).id).toBe("n1")
+    const [, , baseHash] = pushSpy.mock.calls[0]
+    expect(baseHash).toBe("H_persisted")                        // persisted hash reused
+  })
+
+  it("P2: cold doc-cache + peekCache miss → falls back to network pull (unchanged cold path)", async () => {
+    const spaceId = nextSpaceId()
+    const { session, pushSpy, pullSpy } = makeTestSession(
+      { data: { v: 2, objects: [], updatedAt: 0 }, hash: "H_network" },
+      null,   // peekCache miss
+    )
+    pushSpy.mockResolvedValueOnce({ hash: "H_after", timestamp: 1 })
+
+    await updateObjectIndex(session, spaceId, (nodes) => nodes)
+
+    expect(pullSpy).toHaveBeenCalledTimes(1)                    // still pulls on peek miss
+    const [, , baseHash] = pushSpy.mock.calls[0]
+    expect(baseHash).toBe("H_network")
   })
 })

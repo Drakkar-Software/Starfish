@@ -30,13 +30,16 @@ beforeEach(() => clearDocCache())
 
 function makeClient(
   pullResult: { data: Record<string, unknown>; hash: string } | null,
-): { client: StarfishClient; pushSpy: ReturnType<typeof vi.fn> } {
+  peekResult?: { data: Record<string, unknown>; hash: string } | null,
+): { client: StarfishClient; pushSpy: ReturnType<typeof vi.fn>; peekSpy: ReturnType<typeof vi.fn> } {
   const pushSpy = vi.fn(async () => ({ hash: "H_new", timestamp: 1 }))
+  const peekSpy = vi.fn(async () => peekResult ?? null)
   const client = {
     pull: vi.fn(async () => pullResult as unknown as Record<string, unknown>),
     push: pushSpy,
+    peekCache: peekSpy,
   } as unknown as StarfishClient
-  return { client, pushSpy }
+  return { client, pushSpy, peekSpy }
 }
 
 function makeEncryptor(): { encryptor: Encryptor; decryptSpy: ReturnType<typeof vi.fn> } {
@@ -186,5 +189,64 @@ describe("makeHandle.push — warm-cache (octochat-style hash persistence)", () 
     // Second push used the cached hash
     const [, , baseHash2] = pushSpy.mock.calls[1]
     expect(baseHash2).toBe("H_enc_2")
+  })
+})
+
+describe("makeHandle.push — peekCache seed (cross-reload persistence)", () => {
+  it("P1: cold doc-cache + peekCache hit → push reuses persisted hash, pull never called", async () => {
+    // Simulate a tab reload: doc-cache is empty, but the read-through cache has the last-known hash.
+    const { client, pushSpy, peekSpy } = makeClient(
+      { data: {}, hash: "H_network" },               // pull would return this (should not be called)
+      { data: {}, hash: "H_persisted" },             // peekCache returns the persisted hash
+    )
+    const pullSpy = (client as unknown as { pull: ReturnType<typeof vi.fn> }).pull
+    pushSpy.mockResolvedValueOnce({ hash: "H_after", timestamp: 1 })
+
+    const handle = makeHandle(client, null, false)
+    await handle.push("/pull/x", "/push/x", () => ({ v: 1 }))
+
+    expect(peekSpy).toHaveBeenCalledWith("/pull/x")
+    expect(pullSpy).not.toHaveBeenCalled()                     // no network pull on first push
+    const [, , baseHash] = pushSpy.mock.calls[0]
+    expect(baseHash).toBe("H_persisted")                       // persisted hash reused
+  })
+
+  it("P2: cold doc-cache + peekCache miss → falls back to network pull (unchanged cold path)", async () => {
+    // No peek result (cache miss or no cache configured) → normal network pull.
+    const { client, pushSpy } = makeClient(
+      { data: {}, hash: "H_network" },   // pull returns this
+      null,                               // peekCache returns null (miss)
+    )
+    const pullSpy = (client as unknown as { pull: ReturnType<typeof vi.fn> }).pull
+    pushSpy.mockResolvedValueOnce({ hash: "H_after", timestamp: 1 })
+
+    const handle = makeHandle(client, null, false)
+    await handle.push("/pull/x", "/push/x", () => ({ v: 1 }))
+
+    expect(pullSpy).toHaveBeenCalledTimes(1)                   // still pulls when peek misses
+    const [, , baseHash] = pushSpy.mock.calls[0]
+    expect(baseHash).toBe("H_network")
+  })
+
+  it("P3: encrypted doc — cold cache + peekCache hit → hash reused, plaintext never decrypted, mutator gets null", async () => {
+    // Even for E2EE docs, peekCache provides the hash without decrypting the ciphertext.
+    const { encryptor, decryptSpy } = makeEncryptor()
+    const { client, pushSpy, peekSpy } = makeClient(
+      { data: { _encrypted: "secret" }, hash: "H_net_enc" },   // pull result (should not be called)
+      { data: { _encrypted: "secret_persisted" }, hash: "H_persisted_enc" }, // peekCache result
+    )
+    const pullSpy = (client as unknown as { pull: ReturnType<typeof vi.fn> }).pull
+    pushSpy.mockResolvedValueOnce({ hash: "H_after_enc", timestamp: 1 })
+
+    const handle = makeHandle(client, encryptor, false)
+    const mutatorArgs: unknown[] = []
+    await handle.push("/pull/enc", "/push/enc", (cur) => { mutatorArgs.push(cur); return { replaced: true } })
+
+    expect(peekSpy).toHaveBeenCalled()
+    expect(pullSpy).not.toHaveBeenCalled()                     // no pull
+    expect(decryptSpy).not.toHaveBeenCalled()                  // no decrypt — hash only, not plaintext
+    expect(mutatorArgs[0]).toBeNull()                          // mutator gets null (full-replace contract)
+    const [, , baseHash] = pushSpy.mock.calls[0]
+    expect(baseHash).toBe("H_persisted_enc")                   // hash from peekCache
   })
 })

@@ -80,7 +80,18 @@ export async function updateObjectIndex(
   const pullPath = session.layout.objIndexPull(spaceId)
   const pushPath = session.layout.objIndexPush(spaceId)
   await runCas(async ({ currentHash }) => {
-    const cached = getCachedDoc(pushPath)
+    let cached = getCachedDoc(pushPath)
+    // Cold in-memory cache (e.g. after a tab reload): seed data+hash from the
+    // persistent read-through cache so we can skip the pull. The index is plaintext
+    // so caching both data and hash is safe. Returns null when no cache backend is
+    // configured or on a miss → falls through to the existing pull path.
+    if (!cached?.data && !currentHash) {
+      const peeked = await client.peekCache(pullPath).catch(() => null)
+      if (peeked?.hash && peeked.data) {
+        noteDoc(pullPath, peeked.hash, peeked.data as Record<string, unknown>)
+        cached = getCachedDoc(pushPath)
+      }
+    }
     let baseHash: string
     let cur: ObjectNode[]
     if (cached?.data && !currentHash) {

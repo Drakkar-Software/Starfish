@@ -1,5 +1,30 @@
 # Changelog
 
+## 3.0.0-alpha.52
+
+### `starfish-spaces` / `@drakkar.software/starfish-spaces`
+
+#### Fixed
+- **Cross-reload hash persistence — peekCache seed on cold `doc-cache`** — After a tab reload the in-memory `doc-cache` (alpha.51) is empty, which caused the cold path to fall back to a network pull. On a degraded Garage read (`hash=""`) that pull returned an empty hash, and the subsequent push sent `baseHash:""` → 409. Fixed by seeding the `doc-cache` from the persistent read-through cache (`client.peekCache(pullPath)`) at the top of both cold paths in `makeHandle.push` and `updateObjectIndex`. On a cache hit the hash (and, for the plaintext index, the data) is written into `doc-cache` and the push proceeds without a network pull — exactly like a warm in-session cache. E2EE safety preserved: only the hash is seeded for encrypted docs; the ciphertext is never decrypted. Falls back to the existing pull path when `peekCache` returns null (miss or no cache configured).
+- **Authenticated clients now default to the persistent read-through cache** — `makeSpaceClient` now passes `cache: opts.cache ?? defaultPullCache()`. `defaultPullCache()` wraps the `kvAdapter` installed via `configureSpaces()` in a `createKvPullCache` (TTL 30 days). This means every push and pull automatically write-throughs `{data, hash}` to the configured storage, so the persisted hashes survive tab reloads and process restarts. No config change required for apps that already call `configureSpaces({ kvAdapter })`. When no `kvAdapter` is configured the cache is undefined and behavior is unchanged.
+
+## 3.0.0-alpha.51
+
+### `starfish-spaces` / `@drakkar.software/starfish-spaces`
+
+#### Fixed
+- **Octochat-style per-doc hash cache — eliminate pull-before-every-write** — Previously `starfish-spaces` had no hash memory: every write pulled the doc fresh, and on a degraded Garage read (`hash=""`) pushed `baseHash:""` → 409 → `runCas` retry. Added a module-level in-memory `doc-cache` (verb-stripped path key) that notes the hash on every pull and push success. Warm cache: skip pull entirely, push with the last-known hash. 409 path: `runCas` re-enters the pull branch and adopts the authoritative `ConflictError.currentHash`. N node-content writes per snapshot go from N pulls + N pushes → 0 pulls + N pushes.
+- **Keyring fan-out eliminated** — The `getNodeAccess` owner branch previously called `ownerEnsureKeyring` once per encrypted node, bypassing the `spaceEncryptorCache` dedupe used by the member branch. Now both branches share the same cache keyed `${userId}:${spaceId}`. N enc-nodes → one `_keyring` pull per (user, space) per session.
+- **`ownerEnsureKeyring` — harden CAS semantics** — Rewritten to use `runCas` + `noteHash`. `baseHash` chain: `krRes?.hash || currentHash || getCachedDoc(...)?.hash || ""` (never `null`). On a concurrent-create 409, `runCas` re-pulls, finds the existing keyring, and returns the encryptor — same idempotency property as before.
+
+## 3.0.0-alpha.50
+
+### `starfish-client` / `@drakkar.software/starfish-client`
+
+#### Fixed
+- **CAS `currentHash` propagation** — On a 409 `hash_mismatch` response the server now returns `currentHash` in the error body. The client extracts it and passes it as the base hash for the next `runCas` attempt, eliminating a wasted re-pull round-trip in the conflict-retry path.
+- **Garage consistency mode** — Infrastructure config updated to use `consistency_mode = "consistent"` in garage.toml, eliminating stale reads under RF=3 that produced `hash=""` on pull (root cause of the empty-baseHash 409 storm observed in alpha.49).
+
 ## 3.0.0-alpha.49
 
 ### `starfish-spaces` / `@drakkar.software/starfish-spaces`

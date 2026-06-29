@@ -6,7 +6,7 @@
  * `makeAnonSpaceClient` with the connection parameters your app has already
  * resolved.
  */
-import { StarfishClient, StarfishHttpError } from "@drakkar.software/starfish-client"
+import { StarfishClient, StarfishHttpError, createKvPullCache } from "@drakkar.software/starfish-client"
 import type { BatchPullEntry, Encryptor, StarfishCapProvider, StarfishClientOptions } from "@drakkar.software/starfish-client"
 import { addCollectionRecipient, createKeyring, createKeyringEncryptor } from "@drakkar.software/starfish-keyring"
 import type { Keyring } from "@drakkar.software/starfish-keyring"
@@ -20,6 +20,7 @@ import { getCachedDoc, noteHash } from "./doc-cache.js"
 import { signKemSig } from "./request-verify.js"
 import { computeOwnerTrustedAdders } from "@drakkar.software/starfish-identities"
 import type { SpaceLayout } from "./config.js"
+import { getSpacesConfig } from "./config.js"
 
 // ── DeviceKeys ─────────────────────────────────────────────────────────────────
 
@@ -32,6 +33,23 @@ export interface DeviceKeys {
 }
 
 // ── Client construction ────────────────────────────────────────────────────────
+
+/**
+ * TTL for the read-through pull cache built from the configured `kvAdapter`.
+ * 30 days matches the example in the `createKvPullCache` documentation and is
+ * long enough to survive any reasonable reload cycle (device sleep, offline use).
+ */
+const CACHE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000
+
+/**
+ * Return a `PullCache` backed by the configured `kvAdapter`, or `undefined`
+ * when none has been installed via {@link configureSpaces}. Called lazily per
+ * client so the cache reflects the kvAdapter active at construction time.
+ */
+function defaultPullCache(): StarfishClientOptions["cache"] | undefined {
+  const kv = getSpacesConfig().kvAdapter
+  return kv ? createKvPullCache(kv, { maxAgeMs: CACHE_MAX_AGE_MS }) : undefined
+}
 
 /** Connection parameters for building a Starfish client. */
 export interface ClientOpts {
@@ -65,7 +83,11 @@ export function makeSpaceClient(cap: unknown, devEdPrivHex: string, opts: Client
     namespace: opts.namespace,
     capProvider: capProviderFor(cap, devEdPrivHex),
     fetch: opts.fetch,
-    cache: opts.cache,
+    // Use caller-supplied cache when provided; fall back to a cache built from the
+    // module-level kvAdapter (installed via configureSpaces) so push/pull results
+    // survive a tab reload and makeHandle.push / updateObjectIndex can seed their
+    // in-memory doc-cache from peekCache without an extra network pull.
+    cache: opts.cache ?? defaultPullCache(),
     cacheMaxAgeMs: opts.cacheMaxAgeMs,
     cacheFallbackStatuses: opts.cacheFallbackStatuses,
     onRevalidated: opts.onRevalidated,
