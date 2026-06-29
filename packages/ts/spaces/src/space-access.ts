@@ -78,8 +78,8 @@ export function clearNodeAccessCache(): void {
   spaceEncryptorCache.clear()
 }
 
-/** Build a fully-featured `NodeAccessHandle` that owns CAS-push + encryption. */
-function makeHandle(
+/** @internal Build a fully-featured `NodeAccessHandle` that owns CAS-push + encryption. */
+export function makeHandle(
   client: StarfishClient,
   encryptor: Encryptor | null,
   isOwnerOpen: boolean,
@@ -93,13 +93,14 @@ function makeHandle(
         const res = await client.pull(pullPath).catch(() => null) as
           | { data: Record<string, unknown>; hash: string }
           | null
-        const cur = res?.data
-          ? (encryptor ? await encryptor.decrypt(res.data) : res.data)
+        const baseHash = res?.hash || null
+        const cur = baseHash
+          ? (encryptor ? await encryptor.decrypt(res!.data) : res!.data)
           : null
         const next = mutator(cur)
         if (next === null) return
         const payload = encryptor ? await encryptor.encrypt(next) : next
-        await client.push(pushPath, payload, res?.hash ?? null)
+        await client.push(pushPath, payload, baseHash)
       })
     },
   }

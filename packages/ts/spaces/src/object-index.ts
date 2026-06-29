@@ -47,7 +47,7 @@ export async function pushIndexSeed(
   const res = await client.pull(session.layout.objIndexPull(spaceId)).catch(() => null)
   const existing = res?.data as Record<string, unknown> | undefined
   if (Array.isArray(existing?.objects)) return
-  await client.push(session.layout.objIndexPush(spaceId), buildIndexPayload(nodes), res?.hash ?? null)
+  await client.push(session.layout.objIndexPush(spaceId), buildIndexPayload(nodes), res?.hash || null)
 }
 
 /**
@@ -81,7 +81,7 @@ export async function updateObjectIndex(
     const cur = readIndexObjects(res?.data)
     const next = mutator(cur, Date.now())
     if (next === null) return
-    await client.push(session.layout.objIndexPush(spaceId), buildIndexPayload(next), res?.hash ?? null)
+    await client.push(session.layout.objIndexPush(spaceId), buildIndexPayload(next), res?.hash || null)
   })
 }
 
