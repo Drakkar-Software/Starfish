@@ -12,6 +12,7 @@ import type { ObjectNode } from "./config.js"
 import type { Session } from "./session.js"
 import { getSpaceClient } from "./space-access.js"
 import { runCas } from "./cas-retry.js"
+import { getCachedDoc, noteDoc } from "./doc-cache.js"
 
 /** Extract the `objects` array from a raw index doc body, or `[]` when absent/invalid. */
 function readIndexObjects(raw: unknown): ObjectNode[] {
@@ -76,15 +77,29 @@ export async function updateObjectIndex(
   mutator: (nodes: ObjectNode[], now: number) => ObjectNode[] | null,
 ): Promise<void> {
   const client = getSpaceClient(spaceId, session)
+  const pullPath = session.layout.objIndexPull(spaceId)
+  const pushPath = session.layout.objIndexPush(spaceId)
   await runCas(async ({ currentHash }) => {
-    const res = await client.pull(session.layout.objIndexPull(spaceId))
-    // Use the authoritative conflict hash if the pull returned stale "".
-    // This bypasses a Garage read-after-write gap without a second unreliable pull.
-    const baseHash = res?.hash || currentHash || ""
-    const cur = readIndexObjects(res?.data)
+    const cached = getCachedDoc(pushPath)
+    let baseHash: string
+    let cur: ObjectNode[]
+    if (cached?.data && !currentHash) {
+      // Warm cache, not a 409 retry: reuse cached data + hash — no pull.
+      baseHash = cached.hash
+      cur = readIndexObjects(cached.data)
+    } else {
+      // Cold cache OR 409 retry: pull fresh for data + authoritative hash.
+      const res = await client.pull(pullPath)
+      // Never push "" once we have a known good hash in the cache.
+      baseHash = res?.hash || currentHash || cached?.hash || ""
+      cur = readIndexObjects(res?.data)
+      if (res?.hash) noteDoc(pullPath, res.hash, res.data as Record<string, unknown>)
+    }
     const next = mutator(cur, Date.now())
     if (next === null) return
-    await client.push(session.layout.objIndexPush(spaceId), buildIndexPayload(next), baseHash)
+    const payload = buildIndexPayload(next)
+    const pushRes = await client.push(pushPath, payload, baseHash)
+    noteDoc(pushPath, pushRes.hash, payload)
   })
 }
 

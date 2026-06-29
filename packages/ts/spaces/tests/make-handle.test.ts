@@ -20,9 +20,13 @@
  * E4: A hash-less-but-existing doc (hash:"", data present) also sends "" as baseHash,
  *   triggering server heal (else: ""=="" → accept).
  */
-import { describe, it, expect, vi } from "vitest"
+import { describe, it, expect, vi, beforeEach } from "vitest"
 import type { StarfishClient, Encryptor } from "@drakkar.software/starfish-client"
+import { ConflictError } from "@drakkar.software/starfish-client"
 import { makeHandle } from "../src/space-access.js"
+import { clearDocCache } from "../src/doc-cache.js"
+
+beforeEach(() => clearDocCache())
 
 function makeClient(
   pullResult: { data: Record<string, unknown>; hash: string } | null,
@@ -115,5 +119,72 @@ describe("makeHandle.push — hash-less existing doc (E4 heal path)", () => {
     const [, , baseHash] = pushSpy.mock.calls[0]
     expect(baseHash).toBe("")      // "" echoed → server heals
     expect(baseHash).not.toBeNull() // null would deadlock
+  })
+})
+
+describe("makeHandle.push — warm-cache (octochat-style hash persistence)", () => {
+  it("H1: second push skips pull — reuses cached hash from first push success", async () => {
+    const { client, pushSpy } = makeClient({ data: { existing: true }, hash: "H_initial" })
+    const pullSpy = (client as unknown as { pull: ReturnType<typeof vi.fn> }).pull
+    pushSpy
+      .mockResolvedValueOnce({ hash: "H_after_first", timestamp: 1 })
+      .mockResolvedValueOnce({ hash: "H_after_second", timestamp: 2 })
+
+    const handle = makeHandle(client, null, false)
+    await handle.push("/pull/x", "/push/x", () => ({ v: 1 }))  // cold → pulls
+    await handle.push("/pull/x", "/push/x", () => ({ v: 2 }))  // warm → no pull
+
+    expect(pullSpy).toHaveBeenCalledTimes(1)
+    expect(pushSpy).toHaveBeenCalledTimes(2)
+    const [, , baseHash2] = pushSpy.mock.calls[1]
+    expect(baseHash2).toBe("H_after_first")  // reused from first push-success
+  })
+
+  it("H2: warm-cache 409 → re-pull + retry with authoritative hash", async () => {
+    // Warm the cache with a successful first push
+    const { client, pushSpy } = makeClient({ data: {}, hash: "H_initial" })
+    const pullSpy = (client as unknown as { pull: ReturnType<typeof vi.fn> }).pull
+    pushSpy.mockResolvedValueOnce({ hash: "H_cached", timestamp: 1 })
+    const handle = makeHandle(client, null, false)
+    await handle.push("/pull/x", "/push/x", () => ({ v: 1 }))
+    // Cache is now warm with H_cached.
+
+    // Second push: another device wrote → 409 ConflictError with H_fresh.
+    // After 409, runCas retries with currentHash="H_fresh" → falls into cold branch → re-pulls.
+    pullSpy.mockResolvedValue({ data: {}, hash: "H_fresh" })
+    pushSpy
+      .mockRejectedValueOnce(new ConflictError("H_fresh"))
+      .mockResolvedValueOnce({ hash: "H_after_retry", timestamp: 3 })
+
+    await handle.push("/pull/x", "/push/x", () => ({ v: 2 }))
+
+    expect(pullSpy).toHaveBeenCalledTimes(2)   // initial + 409 retry
+    const [, , retryHash] = pushSpy.mock.calls[2]
+    expect(retryHash).toBe("H_fresh")           // must use authoritative conflict hash
+  })
+
+  it("H3: encrypted warm cache never stores plaintext — mutator gets null, payload is encrypted", async () => {
+    const { encryptor, decryptSpy } = makeEncryptor()
+    const { client, pushSpy } = makeClient({ data: { _encrypted: "secret" }, hash: "H_enc" })
+    pushSpy.mockResolvedValueOnce({ hash: "H_enc_2", timestamp: 1 })
+    const handle = makeHandle(client, encryptor, false)
+    // First push: cold → pull → decrypt → mutate (get plaintext) → encrypt → push → cache hash only
+    await handle.push("/pull/x", "/push/x", (cur) => ({ ...cur as object, updated: true }))
+
+    // Second push: warm cache → mutator receives null (no plaintext cached), no pull, no decrypt
+    const mutatorArg: unknown[] = []
+    pushSpy.mockResolvedValueOnce({ hash: "H_enc_3", timestamp: 2 })
+    await handle.push("/pull/x", "/push/x", (cur) => {
+      mutatorArg.push(cur)
+      return { replaced: true }
+    })
+
+    // Only one decrypt (from the cold-cache first call)
+    expect(decryptSpy).toHaveBeenCalledTimes(1)
+    // Second push: mutator got null (plaintext not cached)
+    expect(mutatorArg[0]).toBeNull()
+    // Second push used the cached hash
+    const [, , baseHash2] = pushSpy.mock.calls[1]
+    expect(baseHash2).toBe("H_enc_2")
   })
 })

@@ -15,6 +15,8 @@ import type { SignableMethod } from "@drakkar.software/starfish-protocol"
 
 import { SpaceAccessError } from "./space-access-error.js"
 import { NodeAccessRevokedError } from "./node-access-revoked-error.js"
+import { runCas } from "./cas-retry.js"
+import { getCachedDoc, noteHash } from "./doc-cache.js"
 import { signKemSig } from "./request-verify.js"
 import { computeOwnerTrustedAdders } from "@drakkar.software/starfish-identities"
 import type { SpaceLayout } from "./config.js"
@@ -140,11 +142,11 @@ export async function buildEncryptor(
   }
 }
 
-const ENSURE_KEYRING_MAX_ATTEMPTS = 3
-
 /**
  * Owner-side: create a per-node keyring if missing, then return an encryptor.
- * Uses a CAS retry loop to survive concurrent creates from multiple devices.
+ * Uses runCas to survive concurrent creates from multiple devices.
+ * On a 409, runCas re-pulls; if the concurrent create landed first, the re-pull
+ * returns the existing keyring and we skip the create block — same as a successful open.
  */
 export async function ownerEnsureKeyring(
   client: StarfishClient,
@@ -153,9 +155,7 @@ export async function ownerEnsureKeyring(
   keyringPushPath: string,
   trustedAdders: string[] = [keys.edPub],
 ): Promise<Encryptor> {
-  let attempt = 0
-  while (attempt < ENSURE_KEYRING_MAX_ATTEMPTS) {
-    attempt++
+  return runCas(async ({ currentHash }) => {
     const krRes = await client.pull(keyringPullPath).catch(() => null)
     let keyring = krRes?.data as unknown as Keyring | undefined
     if (!keyring || !keyring.epochs) {
@@ -163,13 +163,10 @@ export async function ownerEnsureKeyring(
         { subKemHex: keys.kemPub },
       ])
       keyring = created.keyring
-      try {
-        await client.push(keyringPushPath, keyring as unknown as Record<string, unknown>, krRes?.hash ?? null)
-      } catch (pushErr) {
-        const msg = pushErr instanceof Error ? pushErr.message : String(pushErr)
-        if (/409|412|conflict|hash mismatch|stale/i.test(msg) && attempt < ENSURE_KEYRING_MAX_ATTEMPTS) continue
-        throw pushErr
-      }
+      // Never push null/empty hash — use authoritative conflict hash or cache fallback.
+      const baseHash = krRes?.hash || currentHash || getCachedDoc(keyringPushPath)?.hash || ""
+      const pushRes = await client.push(keyringPushPath, keyring as unknown as Record<string, unknown>, baseHash)
+      noteHash(keyringPushPath, pushRes.hash)
     }
     const enc = await createKeyringEncryptor(
       keyring,
@@ -177,8 +174,7 @@ export async function ownerEnsureKeyring(
       { trustedAdders },
     )
     return enc as unknown as Encryptor
-  }
-  throw new Error("ownerEnsureKeyring: max retries exceeded (hash conflict loop)")
+  })
 }
 
 /** True when the error indicates the recipient is already present (idempotent). */

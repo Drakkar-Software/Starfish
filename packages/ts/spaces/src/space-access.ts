@@ -23,6 +23,7 @@
 import type { Encryptor, StarfishClient } from "@drakkar.software/starfish-client"
 
 import { runCas } from "./cas-retry.js"
+import { clearDocCache, getCachedDoc, noteHash } from "./doc-cache.js"
 import {
   buildEncryptor,
   makeSpaceClient,
@@ -72,10 +73,11 @@ const cache = new Map<string, Promise<NodeAccessHandle>>()
 // Null results and rejections are NOT cached (access state may change within a session).
 const spaceEncryptorCache = new Map<string, Promise<Encryptor | null>>()
 
-/** Drop every cached handle and space encryptor (on account switch — keys are per-identity). */
+/** Drop every cached handle, space encryptor, and doc hash (on account switch — keys are per-identity). */
 export function clearNodeAccessCache(): void {
   cache.clear()
   spaceEncryptorCache.clear()
+  clearDocCache()
 }
 
 /** @internal Build a fully-featured `NodeAccessHandle` that owns CAS-push + encryption. */
@@ -90,22 +92,37 @@ export function makeHandle(
     isOwnerOpen,
     push: async (pullPath, pushPath, mutator) => {
       await runCas(async ({ currentHash }) => {
+        const cached = getCachedDoc(pushPath)
+        if (cached && !currentHash) {
+          // Warm cache, not a 409 retry: skip pull, reuse last-known hash.
+          // cur=null is in-contract (same as the degraded-pull path below).
+          // Sole consumer: pushNodeContent — a full-replace mutator (() => content)
+          // that does not read cur. E2EE content is never stored in the cache.
+          const next = mutator(null)
+          if (next === null) return
+          const payload = encryptor ? await encryptor.encrypt(next) : next
+          const pushRes = await client.push(pushPath, payload, cached.hash)
+          noteHash(pushPath, pushRes.hash)
+          return
+        }
+        // Cold cache OR 409 retry: pull fresh for the hash (and data for merge-style mutators).
         const res = await client.pull(pullPath).catch(() => null) as
           | { data: Record<string, unknown>; hash: string }
           | null
         const pulledHash = res?.hash ?? ""
-        // Use the authoritative conflict hash if the pull returned stale "".
-        // This bypasses a Garage read-after-write gap without a second unreliable pull.
+        if (pulledHash) noteHash(pullPath, pulledHash)
+        // Never push "" once we have a known good hash in the cache.
         // When the pull is stale (pulledHash=""), cur stays null — the stale data is
         // unreliable, and callers must tolerate null as "create fresh".
-        const baseHash = pulledHash || currentHash || ""
+        const baseHash = pulledHash || currentHash || cached?.hash || ""
         const cur = pulledHash
           ? (encryptor ? await encryptor.decrypt(res!.data) : res!.data)
           : null
         const next = mutator(cur)
         if (next === null) return
         const payload = encryptor ? await encryptor.encrypt(next) : next
-        await client.push(pushPath, payload, baseHash)
+        const pushRes = await client.push(pushPath, payload, baseHash)
+        noteHash(pushPath, pushRes.hash)
       })
     },
   }
@@ -308,13 +325,27 @@ export function getNodeAccess(
           : "You don't have access to this node.",
       )
     }
-    const encryptor = await ownerEnsureKeyring(
-      session.contentClient,
-      session.keys,
-      spacePullPath,
-      session.layout.keyringPush(spaceId),
-      ownerTrustedAdders(session),
-    )
+    // Cache the owner's keyring resolution per (userId, spaceId) — same dedup as the
+    // member branch above — so N enc-nodes don't cause N concurrent _keyring pulls.
+    // The in-flight promise also serializes concurrent first-callers (acts as the lock).
+    const spaceEncKey = `${session.userId}:${spaceId}`
+    let spaceEncPromise = spaceEncryptorCache.get(spaceEncKey)
+    if (!spaceEncPromise) {
+      const raw = ownerEnsureKeyring(
+        session.contentClient,
+        session.keys,
+        spacePullPath,
+        session.layout.keyringPush(spaceId),
+        ownerTrustedAdders(session),
+      )
+      const p2: Promise<Encryptor | null> = raw.catch((err: unknown) => {
+        spaceEncryptorCache.delete(spaceEncKey)
+        throw err
+      }) as Promise<Encryptor | null>
+      spaceEncryptorCache.set(spaceEncKey, p2)
+      spaceEncPromise = p2
+    }
+    const encryptor = await spaceEncPromise
     return makeHandle(session.contentClient, encryptor, true)
   })()
 

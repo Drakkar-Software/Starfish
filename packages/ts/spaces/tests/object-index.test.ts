@@ -19,10 +19,12 @@
  * U3: mutator returning null → no push (idempotency guard)
  * U4: mutator receives existing nodes from pull data
  */
-import { describe, it, expect, vi } from "vitest"
+import { describe, it, expect, vi, beforeEach } from "vitest"
 import type { StarfishClient } from "@drakkar.software/starfish-client"
+import { ConflictError } from "@drakkar.software/starfish-client"
 import type { Session } from "../src/session.js"
 import { updateObjectIndex } from "../src/object-index.js"
+import { clearDocCache } from "../src/doc-cache.js"
 
 // Use a unique spaceId per test so the space-access-store cache
 // never returns a stale entry (keyed by spaceId).
@@ -52,6 +54,8 @@ function makeTestSession(pullResult: { data: Record<string, unknown>; hash: stri
 
   return { session, pushSpy, pullSpy }
 }
+
+beforeEach(() => clearDocCache())
 
 describe("updateObjectIndex — baseHash contract", () => {
   it("U1: sends baseHash='' (not null) when pull returns hash:'' — enables server heal path", async () => {
@@ -119,5 +123,59 @@ describe("updateObjectIndex — baseHash contract", () => {
     // Push should have been called with the real hash from pull
     const [, , baseHash] = pushSpy.mock.calls[0]
     expect(baseHash).toBe("H2")
+  })
+})
+
+describe("updateObjectIndex — warm-cache (octochat-style hash persistence)", () => {
+  it("W1: second call reuses cached hash — no second pull", async () => {
+    const spaceId = nextSpaceId()
+    const { session, pushSpy, pullSpy } = makeTestSession({
+      data: { v: 2, objects: [], updatedAt: 0 },
+      hash: "H_initial",
+    })
+    // pushSpy returns H_new on first call, H_newer on second
+    pushSpy
+      .mockResolvedValueOnce({ hash: "H_new", timestamp: 1 })
+      .mockResolvedValueOnce({ hash: "H_newer", timestamp: 2 })
+
+    await updateObjectIndex(session, spaceId, (nodes) => nodes)  // cold → pulls, caches H_new
+    await updateObjectIndex(session, spaceId, (nodes) => nodes)  // warm → no pull, uses H_new
+
+    expect(pullSpy).toHaveBeenCalledTimes(1)   // only the first call pulled
+    expect(pushSpy).toHaveBeenCalledTimes(2)
+    const [, , baseHash1] = pushSpy.mock.calls[0]
+    const [, , baseHash2] = pushSpy.mock.calls[1]
+    expect(baseHash1).toBe("H_initial")        // first push used the pulled hash
+    expect(baseHash2).toBe("H_new")            // second push used the cached hash from first push
+  })
+
+  it("W2: stale-cache 409 → re-pull with authoritative hash → retry succeeds", async () => {
+    const spaceId = nextSpaceId()
+    // First call: cold cache → pull → push → warm cache
+    const { session, pushSpy, pullSpy } = makeTestSession({
+      data: { v: 2, objects: [], updatedAt: 0 },
+      hash: "H_initial",
+    })
+    pushSpy.mockResolvedValueOnce({ hash: "H_cached", timestamp: 1 })
+    await updateObjectIndex(session, spaceId, (nodes) => nodes)
+    // Cache is now warm: { hash: "H_cached" }
+
+    // Second call: another device wrote → server now has H_fresh.
+    // Push throws ConflictError (409) with currentHash="H_fresh" on first try,
+    // then succeeds on retry (after re-pull).
+    pullSpy.mockResolvedValue({ data: { v: 2, objects: [], updatedAt: 0 }, hash: "H_fresh" })
+    pushSpy
+      .mockRejectedValueOnce(new ConflictError("H_fresh"))
+      .mockResolvedValueOnce({ hash: "H_after_retry", timestamp: 3 })
+
+    await updateObjectIndex(session, spaceId, (nodes) => nodes)
+
+    // The 409 must have triggered a re-pull (second pull call)
+    expect(pullSpy).toHaveBeenCalledTimes(2)
+    // Retry push carries the authoritative hash from the conflict / re-pull
+    const calls = pushSpy.mock.calls
+    expect(calls).toHaveLength(3)
+    const retryBaseHash = calls[2][2]
+    expect(retryBaseHash).toBe("H_fresh")
   })
 })
