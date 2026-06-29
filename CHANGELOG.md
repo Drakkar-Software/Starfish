@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.0.0-alpha.47
+
+### `starfish-spaces` / `@drakkar.software/starfish-spaces`
+
+#### Fixed
+- **`NodeAccessHandle.push` — encrypted nodes could never be created** — When a doc does not exist, the server returns `{ data: {}, hash: "" }`. The previous implementation gated the decrypt call on `res?.data` (truthy for `{}`), causing `encryptor.decrypt({})` to throw "Encrypted payload is too short" for every `enc:true` node on its first push. Since `runCas` only retries `ConflictError`, this propagated silently and no encrypted content (17 of 19 fiance node types) could ever reach the server. Fixed by gating decrypt on `baseHash` (the pulled `hash` field coerced with `|| null`): an empty hash means the doc is absent → `cur = null`, no decrypt.
+- **`baseHash: ""` sent on first push** — `res?.hash ?? null` preserves `""` (nullish coalescing is a no-op for empty strings). Changed to `|| null` so `""` is correctly coerced to `null` (create semantics). Same fix applied in `updateObjectIndex` and `pushIndexSeed`.
+
 ## 3.0.0-alpha.46
 
 ### `starfish-spaces` / `@drakkar.software/starfish-spaces`
