@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.0.0-alpha.45
+
+### `starfish-spaces` / `@drakkar.software/starfish-spaces`
+
+#### Added
+- **`autoProfile` option** — `buildSession`, `buildLinkedSession`, `deriveSession`, and `sessionFromPersisted` now accept an `autoProfile?: boolean` option (default: `true`, no behavioral change for existing callers). When set to `false`, the automatic profile bootstrap (`ensurePseudo` + `ensureProfileKeys`) is skipped entirely during session construction and the display name falls back to the `name` option or a derived `user-{id}` string. Useful for apps that do not use the profile feature and want to avoid the extra network round-trips (and the HTTP 409 CAS race that arises when multiple concurrent `deriveSession` calls bootstrap the same account simultaneously).
+  - `BuildSessionOpts.autoProfile?: boolean`
+  - `BuildLinkedSessionOpts.autoProfile?: boolean`
+  - `deriveSession` opts: `autoProfile?: boolean`
+  - `sessionFromPersisted` opts: `autoProfile?: boolean`
+
 ## 3.0.0-alpha.44
 
 ### `starfish-protocol` / `@drakkar.software/starfish-protocol`
