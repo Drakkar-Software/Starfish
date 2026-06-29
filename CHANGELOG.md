@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.0.0-alpha.46
+
+### `starfish-spaces` / `@drakkar.software/starfish-spaces`
+
+#### Added
+- **`push()` method on `NodeAccessHandle`** — callers no longer need to hand-roll the pull-for-hash → decrypt → mutate → encrypt → push CAS loop. The handle now exposes:
+  ```ts
+  handle.push(pullPath, pushPath, mutator)
+  ```
+  where `mutator` receives the current decrypted document data (`null` for a new doc) and returns the next data to write (`null` for a no-op). Encryption/decryption and CAS conflict-retry (up to 3×, via `runCas`) are handled transparently. This eliminates the footgun where passing a hardcoded `null` `baseHash` produced a `hash_mismatch` 409 on every push after the first write.
+
 ## 3.0.0-alpha.45
 
 ### `starfish-spaces` / `@drakkar.software/starfish-spaces`
