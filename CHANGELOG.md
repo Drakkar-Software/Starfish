@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.0.0-alpha.48
+
+### `starfish-client` / `@drakkar.software/starfish-client`
+
+#### Fixed
+- **`pull()` — add `cache: "no-store"` to fetch options** — Without this, browsers (and CDN/proxy layers) could serve stale GET responses for `/pull/…` routes. A stale response returns an old `hash`, causing the subsequent `push` to receive a `baseHash` that no longer matches the server's current state → 409 `hash_mismatch`. All retries see the same cached response, exhausting `runCas`'s retry budget. `cache: "no-store"` forces a fresh network request on every pull.
+
+### `starfish-spaces` / `@drakkar.software/starfish-spaces`
+
+#### Fixed
+- **`updateObjectIndex` — pull failures no longer cascade into 409s** — Previously the pull inside `runCas` was wrapped in `.catch(() => null)`. Any pull failure (network error, 5xx, CORS rejection) silently returned `null` → `baseHash = null` → push with `null` as `baseHash` → server has existing doc → 409 `hash_mismatch`. Since `runCas` retries on `ConflictError`, this produced three additional 409 round-trips before finally failing. Now the pull is unwrapped; a pull failure propagates as a non-`ConflictError` and `runCas` stops immediately (one request instead of four).
+
 ## 3.0.0-alpha.47
 
 ### `starfish-spaces` / `@drakkar.software/starfish-spaces`

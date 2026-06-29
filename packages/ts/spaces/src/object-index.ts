@@ -77,7 +77,7 @@ export async function updateObjectIndex(
 ): Promise<void> {
   const client = getSpaceClient(spaceId, session)
   await runCas(async () => {
-    const res = await client.pull(session.layout.objIndexPull(spaceId)).catch(() => null)
+    const res = await client.pull(session.layout.objIndexPull(spaceId))
     const cur = readIndexObjects(res?.data)
     const next = mutator(cur, Date.now())
     if (next === null) return

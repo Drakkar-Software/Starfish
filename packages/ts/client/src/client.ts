@@ -449,6 +449,7 @@ export class StarfishClient {
       res = await this.fetch(url, {
         method: "GET",
         headers: { [HEADER_ACCEPT]: "application/json", ...authHeaders },
+        cache: "no-store",
       })
     } catch (err) {
       // The TRANSPORT failed (offline / DNS / timeout) — fall back to the last
