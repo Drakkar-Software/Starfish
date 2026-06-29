@@ -1,8 +1,15 @@
 import type { CapCert, PullResult } from "@drakkar.software/starfish-protocol"
 
-/** Push conflict error (HTTP 409). */
+/** Push conflict error (HTTP 409).
+ *
+ * `currentHash` is the authoritative server hash at conflict time, returned by
+ * the server in the 409 body.  Clients can use it as `baseHash` on the next
+ * retry instead of re-pulling, bypassing any read-after-write staleness in the
+ * storage backend (e.g. Garage RF>1 replication lag).  Empty string means the
+ * server could not read the current hash (corrupt/missing doc).
+ */
 export class ConflictError extends Error {
-  constructor() {
+  constructor(public readonly currentHash: string = "") {
     super("hash_mismatch")
     this.name = "ConflictError"
   }

@@ -25,6 +25,8 @@ async def test_first_push_with_non_null_base_hash_fails():
     result = await push(store, "col/doc1", {"a": 1}, "wrong-hash")
     assert isinstance(result, PushConflict)
     assert result.error == "hash_mismatch"
+    # a45: conflict carries current_hash; doc is missing so current_hash is "" (same as pull).
+    assert result.current_hash == ""
 
 
 @pytest.mark.asyncio
@@ -40,20 +42,26 @@ async def test_second_push_with_correct_base_hash_succeeds():
 @pytest.mark.asyncio
 async def test_second_push_with_wrong_base_hash_fails():
     store = MemoryObjectStore()
-    await push(store, "col/doc1", {"a": 1}, None)
+    r1 = await push(store, "col/doc1", {"a": 1}, None)
 
     r2 = await push(store, "col/doc1", {"a": 2}, "wrong-hash")
     assert isinstance(r2, PushConflict)
     assert r2.error == "hash_mismatch"
+    # a45: conflict carries the authoritative stored hash so clients can retry immediately.
+    assert r2.current_hash == r1.hash, (
+        f"current_hash must match the stored hash H1={r1.hash!r}, got {r2.current_hash!r}"
+    )
 
 
 @pytest.mark.asyncio
 async def test_second_push_with_null_base_hash_fails():
     store = MemoryObjectStore()
-    await push(store, "col/doc1", {"a": 1}, None)
+    r1 = await push(store, "col/doc1", {"a": 1}, None)
 
     r2 = await push(store, "col/doc1", {"a": 2}, None)
     assert isinstance(r2, PushConflict)
+    # a45: current_hash is the stored hash even when baseHash=None.
+    assert r2.current_hash == r1.hash
 
 
 @pytest.mark.asyncio

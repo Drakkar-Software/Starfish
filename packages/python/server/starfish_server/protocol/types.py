@@ -50,8 +50,17 @@ class StoredDocument:
 
 @dataclass
 class PushConflict:
-    """Failed push result due to hash mismatch."""
+    """Failed push result due to hash mismatch.
 
+    ``current_hash`` is the hash the server read under the per-key write lock —
+    the authoritative current value at conflict time.  Clients can use it as
+    ``baseHash`` on the next retry, bypassing a potentially-stale pull when the
+    storage backend has a read-after-write consistency gap (e.g. Garage RF>1).
+    Empty string means the stored doc was missing or corrupt (same semantics as
+    a pull that returns ``hash=""`).
+    """
+
+    current_hash: str = field(default="")
     error: str = field(default="hash_mismatch")
 
 

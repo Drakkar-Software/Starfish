@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "starfish-protocol"
-version = "3.0.0a44"
+version = "3.0.0a50"
 description = "Shared protocol primitives for the Starfish sync protocol"
 requires-python = ">=3.11"
 dependencies = [

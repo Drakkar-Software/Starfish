@@ -103,13 +103,14 @@ async def _push_locked(
             )
             # Treat as empty — current_hash stays "" which allows recovery via baseHash=""
 
-    # Hash check
+    # Hash check — include current_hash in the conflict response so the client
+    # can retry with the authoritative hash without a second (potentially stale) pull.
     if base_hash is None:
         if raw:
-            return PushConflict(error=ERROR_HASH_MISMATCH)
+            return PushConflict(current_hash=current_hash)
     else:
         if base_hash != current_hash:
-            return PushConflict(error=ERROR_HASH_MISMATCH)
+            return PushConflict(current_hash=current_hash)
 
     now = time.time_ns() // 1_000_000
     new_hash = precomputed_hash if precomputed_hash is not None else compute_hash(new_data)

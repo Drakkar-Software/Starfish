@@ -76,17 +76,15 @@ export async function updateObjectIndex(
   mutator: (nodes: ObjectNode[], now: number) => ObjectNode[] | null,
 ): Promise<void> {
   const client = getSpaceClient(spaceId, session)
-  await runCas(async () => {
+  await runCas(async ({ currentHash }) => {
     const res = await client.pull(session.layout.objIndexPull(spaceId))
-    if (res.hash === "") {
-      // Temporary diagnostic: empty hash means the stored doc is missing or hash-less.
-      // Sending "" triggers the server's heal path (else: "" != "" → accept).
-      console.warn("[objindex] empty hash on _index — healing", spaceId)
-    }
+    // Use the authoritative conflict hash if the pull returned stale "".
+    // This bypasses a Garage read-after-write gap without a second unreliable pull.
+    const baseHash = res?.hash || currentHash || ""
     const cur = readIndexObjects(res?.data)
     const next = mutator(cur, Date.now())
     if (next === null) return
-    await client.push(session.layout.objIndexPush(spaceId), buildIndexPayload(next), res?.hash ?? "")
+    await client.push(session.layout.objIndexPush(spaceId), buildIndexPayload(next), baseHash)
   })
 }
 

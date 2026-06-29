@@ -803,7 +803,8 @@ export class StarfishClient {
     })
 
     if (res.status === 409) {
-      throw new ConflictError()
+      const conflict = await res.json().catch(() => null) as { currentHash?: string } | null
+      throw new ConflictError(conflict?.currentHash ?? "")
     }
     if (!res.ok) {
       throw new StarfishHttpError(res.status, await res.text())

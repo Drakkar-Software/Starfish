@@ -481,6 +481,7 @@ async def handle_sync_push(
     result = await push(store, document_key, sanitized, base_hash, author, skip_timestamps, skip_storage, context=context)
 
     if not isinstance(result, PushSuccess):
-        return JSONResponse({"error": ERROR_HASH_MISMATCH}, status_code=409)
+        # Include currentHash so clients can retry without a second (potentially stale) pull.
+        return JSONResponse({"error": ERROR_HASH_MISMATCH, "currentHash": result.current_hash}, status_code=409)
 
     return JSONResponse({"hash": result.hash, "timestamp": result.timestamp})

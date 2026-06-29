@@ -89,12 +89,17 @@ export function makeHandle(
     encryptor,
     isOwnerOpen,
     push: async (pullPath, pushPath, mutator) => {
-      await runCas(async () => {
+      await runCas(async ({ currentHash }) => {
         const res = await client.pull(pullPath).catch(() => null) as
           | { data: Record<string, unknown>; hash: string }
           | null
-        const baseHash = res?.hash ?? ""
-        const cur = baseHash
+        const pulledHash = res?.hash ?? ""
+        // Use the authoritative conflict hash if the pull returned stale "".
+        // This bypasses a Garage read-after-write gap without a second unreliable pull.
+        // When the pull is stale (pulledHash=""), cur stays null — the stale data is
+        // unreliable, and callers must tolerate null as "create fresh".
+        const baseHash = pulledHash || currentHash || ""
+        const cur = pulledHash
           ? (encryptor ? await encryptor.decrypt(res!.data) : res!.data)
           : null
         const next = mutator(cur)

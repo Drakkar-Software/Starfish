@@ -916,7 +916,13 @@ async def test_conflict_on_stale_hash():
             headers={"content-type": "application/json"},
         )
     assert resp.status_code == 409
-    assert resp.json()["error"] == "hash_mismatch"
+    body = resp.json()
+    assert body["error"] == "hash_mismatch"
+    # a45: 409 body includes currentHash so clients can retry without a stale pull.
+    assert "currentHash" in body, "409 body must include currentHash (a45 CAS fix)"
+    assert isinstance(body["currentHash"], str), "currentHash must be a string"
+    # The first push landed with a real hash; "wrong-hash" conflicts against it.
+    assert len(body["currentHash"]) == 64, "currentHash must be the stored 64-char hex hash"
 
 
 
