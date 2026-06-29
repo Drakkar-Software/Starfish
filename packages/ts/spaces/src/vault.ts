@@ -113,15 +113,17 @@ export function rootIdentityOf(s: { userId: string; keys: DerivedIdentity["keys"
 export async function sessionFromPersisted(
   p: PersistedSession,
   clientOpts: ClientOpts,
-  opts?: { sharedNamespace?: string },
+  opts?: { sharedNamespace?: string; autoProfile?: boolean },
 ): Promise<Session> {
   const sharedNamespace = opts?.sharedNamespace
+  const autoProfile = opts?.autoProfile
   if (p.capCert && p.derived) {
     return buildLinkedSession({
       identity: { userId: p.derived.userId, keys: p.derived.keys, capCert: p.capCert },
       name: p.name,
       clientOpts,
       sharedNamespace,
+      autoProfile,
     })
   }
   if (p.derived) {
@@ -132,12 +134,13 @@ export async function sessionFromPersisted(
         name: p.name,
         clientOpts,
         sharedNamespace,
+        autoProfile,
       })
     } catch {
       /* cached keys unusable — fall through to full re-derivation */
     }
   }
-  if (p.seed) return deriveSession(p.seed, clientOpts, { name: p.name, sharedNamespace })
+  if (p.seed) return deriveSession(p.seed, clientOpts, { name: p.name, sharedNamespace, autoProfile })
   throw new Error("Persisted account has neither usable derived keys nor a recovery seed.")
 }
 

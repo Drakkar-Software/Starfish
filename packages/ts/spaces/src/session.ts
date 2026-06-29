@@ -123,6 +123,14 @@ export interface BuildSessionOpts {
   sharedNamespace?: string
   /** Config overrides (layout, constants). Falls back to module-level config from `configureSpaces()`. */
   config?: SpacesConfig
+  /**
+   * Whether to automatically fetch and bootstrap the user's public profile doc
+   * (`user/{userId}/profile`) during session construction.
+   * Defaults to `true`. Set to `false` to skip the profile pull/write entirely
+   * (useful when the app does not use the profile feature and wants to avoid
+   * the extra network round-trips).
+   */
+  autoProfile?: boolean
 }
 
 /**
@@ -136,6 +144,7 @@ export async function buildSession({
   clientOpts,
   sharedNamespace,
   config,
+  autoProfile = true,
 }: BuildSessionOpts): Promise<Session> {
   const cfg = resolveConfig({ ...getSpacesConfig(), ...config })
   const layout = cfg.layout
@@ -155,8 +164,10 @@ export async function buildSession({
     : contentClient
 
   const fallback = name?.trim() || `user-${userId.slice(0, 6)}`
-  const displayName = await ensurePseudo(accountClient, userId, layout, fallback).catch(() => fallback)
-  void ensureProfileKeys(accountClient, userId, layout, keys).catch(() => {})
+  const displayName = autoProfile
+    ? await ensurePseudo(accountClient, userId, layout, fallback).catch(() => fallback)
+    : fallback
+  if (autoProfile) void ensureProfileKeys(accountClient, userId, layout, keys).catch(() => {})
 
   return {
     userId,
@@ -195,6 +206,8 @@ export interface BuildLinkedSessionOpts {
   clientOpts: ClientOpts
   sharedNamespace?: string
   config?: SpacesConfig
+  /** See {@link BuildSessionOpts.autoProfile}. */
+  autoProfile?: boolean
 }
 
 /**
@@ -208,6 +221,7 @@ export async function buildLinkedSession({
   clientOpts,
   sharedNamespace,
   config,
+  autoProfile = true,
 }: BuildLinkedSessionOpts): Promise<Session> {
   const cfg = resolveConfig({ ...getSpacesConfig(), ...config })
   const layout = cfg.layout
@@ -224,7 +238,9 @@ export async function buildLinkedSession({
     : contentClient
 
   const fallback = name?.trim() || `user-${userId.slice(0, 6)}`
-  const displayName = await ensurePseudo(accountClient, userId, layout, fallback).catch(() => fallback)
+  const displayName = autoProfile
+    ? await ensurePseudo(accountClient, userId, layout, fallback).catch(() => fallback)
+    : fallback
 
   return {
     userId,
@@ -258,7 +274,7 @@ export async function buildLinkedSession({
 export async function deriveSession(
   seedWords: string[],
   clientOpts: ClientOpts,
-  opts?: { name?: string; sharedNamespace?: string; config?: SpacesConfig },
+  opts?: { name?: string; sharedNamespace?: string; config?: SpacesConfig; autoProfile?: boolean },
 ): Promise<Session> {
   const passphrase = seedWords.join(" ").trim()
   const creds = await bootstrapRootIdentity(passphrase)
@@ -269,5 +285,6 @@ export async function deriveSession(
     clientOpts,
     sharedNamespace: opts?.sharedNamespace,
     config: opts?.config,
+    autoProfile: opts?.autoProfile,
   })
 }
