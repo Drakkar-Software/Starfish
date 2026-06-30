@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.0.0-alpha.55
+
+### `starfish-spaces` / `@drakkar.software/starfish-spaces`
+
+#### Fixed
+- **`readNodeWithLinkCap` / `writeNodeWithLinkCap` — path corrected to canonical `objects/n/{nodeId}/content`** — Since the initial commit (alpha.31), both helpers hard-coded the path `objects/{nodeId}/objinv`, which matches no server `storage_path` and falls outside the signed cap scope (`objects/n/{nodeId}/**` / collection `objinv`). The server registered `objinv` at `objects/n/{nodeId}/content` (matching `fiance-sdk`'s `objInvPush`/`objInvPull`), so every guest read of the public wedding page 404'd, and every RSVP write silently 404'd (swallowed as `rsvpError`). Fixed by changing both path templates to `` `/…/objects/n/${token.nodeId}/content` ``.
+- **`readNodeWithLinkCap` — 404 returns `null` instead of throwing** — A node whose content has never been pushed (e.g. newly created public page, not yet edited) now reads as absent (`null`) rather than throwing `readNodeWithLinkCap failed: HTTP 404`. Callers can distinguish "not published yet" from a real error and show a graceful state.
+
 ## 3.0.0-alpha.54
 
 ### `starfish-spaces` / `@drakkar.software/starfish-spaces`

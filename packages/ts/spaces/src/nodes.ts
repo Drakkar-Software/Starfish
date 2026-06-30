@@ -505,10 +505,11 @@ export async function readNodeWithLinkCap(
   opts: { baseUrl: string; namespace: string },
 ): Promise<unknown> {
   // Build a minimal session-like object for buildAuthHeaders
-  const path = `/pull/spaces/${token.spaceId}/objects/${token.nodeId}/objinv`
+  const path = `/pull/spaces/${token.spaceId}/objects/n/${token.nodeId}/content`
   const headers = await buildAuthHeaders(token.cap, token.key, "GET", path)
   const url = opts.baseUrl + (opts.namespace ? `/v1/${opts.namespace}` : "") + path
   const res = await fetch(url, { method: "GET", headers })
+  if (res.status === 404) return null
   if (!res.ok) throw new Error(`readNodeWithLinkCap failed: HTTP ${res.status}`)
   const json = await res.json() as { data?: unknown }
   return json.data ?? null
@@ -523,7 +524,7 @@ export async function writeNodeWithLinkCap(
   opts: { baseUrl: string; namespace: string },
   baseHash: string | null = null,
 ): Promise<void> {
-  const path = `/push/spaces/${token.spaceId}/objects/${token.nodeId}/objinv`
+  const path = `/push/spaces/${token.spaceId}/objects/n/${token.nodeId}/content`
   const headers = await buildAuthHeaders(token.cap, token.key, "POST", path)
   const url = opts.baseUrl + (opts.namespace ? `/v1/${opts.namespace}` : "") + path
   const res = await fetch(url, {
