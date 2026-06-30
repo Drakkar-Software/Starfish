@@ -77,15 +77,61 @@ describe("readNodeWithLinkCap", () => {
 })
 
 describe("writeNodeWithLinkCap", () => {
-  it("L4: POSTs to objects/n/{nodeId}/content", async () => {
+  it("L4: POSTs to objects/n/{nodeId}/content with baseHash:\"\" on first write", async () => {
     const fetchSpy = mockFetch(200, {})
     vi.stubGlobal("fetch", fetchSpy)
 
-    await writeNodeWithLinkCap(STUB_TOKEN, { rsvpStatus: "ACCEPTED" }, OPTS, null)
+    await writeNodeWithLinkCap(STUB_TOKEN, { rsvpStatus: "ACCEPTED" }, OPTS)
 
     const [url, init] = fetchSpy.mock.calls[0]
     expect(url).toContain(`/objects/n/${NODE_ID}/content`)
     expect(url).not.toContain(`/objects/${NODE_ID}/objinv`)
     expect(init?.method).toBe("POST")
+    const sentBody = JSON.parse(init?.body as string)
+    expect(sentBody.baseHash).toBe("")
+  })
+
+  it("L5: 409 then 200 — adopts server currentHash and retries", async () => {
+    const HASH = "abc123"
+    let call = 0
+    const fetchSpy = vi.fn(async () => {
+      call++
+      if (call === 1) {
+        return { ok: false, status: 409, json: async () => ({ currentHash: HASH }) }
+      }
+      return { ok: true, status: 200, json: async () => ({}) }
+    })
+    vi.stubGlobal("fetch", fetchSpy)
+
+    await writeNodeWithLinkCap(STUB_TOKEN, { rsvpStatus: "ACCEPTED" }, OPTS)
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
+    const firstBody = JSON.parse(fetchSpy.mock.calls[0][1]?.body as string)
+    expect(firstBody.baseHash).toBe("")
+    const secondBody = JSON.parse(fetchSpy.mock.calls[1][1]?.body as string)
+    expect(secondBody.baseHash).toBe(HASH)
+  })
+
+  it("L6: persistent 409 — throws after MAX_ATTEMPTS (3)", async () => {
+    const fetchSpy = vi.fn(async () => ({
+      ok: false,
+      status: 409,
+      json: async () => ({ currentHash: "stuck" }),
+    }))
+    vi.stubGlobal("fetch", fetchSpy)
+
+    await expect(
+      writeNodeWithLinkCap(STUB_TOKEN, { rsvpStatus: "ACCEPTED" }, OPTS),
+    ).rejects.toThrow("writeNodeWithLinkCap: conflict after retries")
+
+    expect(fetchSpy).toHaveBeenCalledTimes(3)
+  })
+
+  it("L7: non-409 HTTP error — throws immediately", async () => {
+    vi.stubGlobal("fetch", mockFetch(403, {}))
+
+    await expect(
+      writeNodeWithLinkCap(STUB_TOKEN, { rsvpStatus: "ACCEPTED" }, OPTS),
+    ).rejects.toThrow("writeNodeWithLinkCap failed: HTTP 403")
   })
 })

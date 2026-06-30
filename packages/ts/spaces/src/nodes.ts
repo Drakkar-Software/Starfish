@@ -517,20 +517,37 @@ export async function readNodeWithLinkCap(
 
 /**
  * Write to an invite node's objinv content using only a link token (no Session required).
+ *
+ * Uses optimistic-concurrency: seeds baseHash="" and adopts the server's `currentHash`
+ * from the 409 response body on conflict, retrying up to MAX_ATTEMPTS times. This means:
+ * - First write (doc absent): `"" → 200 (create)`.
+ * - Subsequent writes: `"" → 409(H) → H → 200`.
+ * - Degraded stored hash `""`: `"" == "" → 200 (heal)`.
+ * No read permission is required — works with write-only caps.
  */
 export async function writeNodeWithLinkCap(
   token: NodeInviteLinkToken,
   body: unknown,
   opts: { baseUrl: string; namespace: string },
-  baseHash: string | null = null,
 ): Promise<void> {
+  const MAX_ATTEMPTS = 3
   const path = `/push/spaces/${token.spaceId}/objects/n/${token.nodeId}/content`
-  const headers = await buildAuthHeaders(token.cap, token.key, "POST", path)
   const url = opts.baseUrl + (opts.namespace ? `/v1/${opts.namespace}` : "") + path
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { ...headers, "Content-Type": "application/json" },
-    body: JSON.stringify({ data: body, baseHash }),
-  })
-  if (!res.ok) throw new Error(`writeNodeWithLinkCap failed: HTTP ${res.status}`)
+  let baseHash = ""
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    const headers = await buildAuthHeaders(token.cap, token.key, "POST", path)
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify({ data: body, baseHash }),
+    })
+    if (res.ok) return
+    if (res.status === 409) {
+      const conflict = await res.json().catch(() => null) as { currentHash?: string } | null
+      baseHash = conflict?.currentHash ?? ""
+      continue
+    }
+    throw new Error(`writeNodeWithLinkCap failed: HTTP ${res.status}`)
+  }
+  throw new Error("writeNodeWithLinkCap: conflict after retries")
 }

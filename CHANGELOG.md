@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.0.0-alpha.56
+
+### `starfish-spaces` / `@drakkar.software/starfish-spaces`
+
+#### Fixed
+- **`writeNodeWithLinkCap` — optimistic-concurrency CAS loop (fixes guest RSVP submit)** — Previously, the function made a single raw push with `baseHash: null`. The server's contract rejects `null` with 409 whenever the doc already exists, so every RSVP submit failed after the owner pre-seeded the node (the first write succeeded; every subsequent write 409'd). Fixed by seeding `baseHash: ""` and adopting the server's authoritative `currentHash` from the 409 response body, retrying up to 3 times. No read permission is required — works with write-only caps. Convergence: `"" → 409(H) → H → 200`; absent → `200 (create)`; degraded `hash:""` stored doc → `200 (heal)` on first attempt.
+
 ## 3.0.0-alpha.55
 
 ### `starfish-spaces` / `@drakkar.software/starfish-spaces`
