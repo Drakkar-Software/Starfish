@@ -8,6 +8,7 @@
 import { generateDeviceKeys } from "@drakkar.software/starfish-identities"
 import type { ScopePreset } from "@drakkar.software/starfish-identities"
 import { mintMemberCap, evictMember } from "@drakkar.software/starfish-sharing"
+import type { MintOpts } from "@drakkar.software/starfish-sharing"
 import type { CapCert, RevocationEntry, RevocationList } from "@drakkar.software/starfish-protocol"
 import type { StarfishClient } from "@drakkar.software/starfish-client"
 
@@ -27,8 +28,8 @@ export const adderOf = (session: Session) => ({
 })
 
 /** Mint a member cap signed by the session, for `subject` over one collection + scope. */
-export const mintCap = (session: Session, subject: CapSubject, collection: string, scope: ScopePreset): Promise<unknown> =>
-  mintMemberCap(session.keys.edPriv, session.keys.edPub, subject, collection, scope)
+export const mintCap = (session: Session, subject: CapSubject, collection: string, scope: ScopePreset, opts?: MintOpts): Promise<unknown> =>
+  mintMemberCap(session.keys.edPriv, session.keys.edPub, subject, collection, scope, opts)
 
 /** The retained `{ nonce, exp }` for a freshly-minted cap, or undefined if it carries none. */
 export function capNonce(cap: unknown): { nonce: string; exp: number } | undefined {

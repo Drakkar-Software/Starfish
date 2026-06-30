@@ -397,12 +397,13 @@ export async function createNodeInviteLink(
   node: { enc?: boolean },
   write: boolean,
   origin: string,
-  opts: { isolated?: boolean } = {},
+  opts: { isolated?: boolean; ttlSec?: number; nbf?: number; expiresAt?: number } = {},
 ): Promise<{ token: NodeInviteLinkToken; link: string }> {
   const { ek, userId: ephemeralUserId, subject } = await ephemeralSubject(session)
 
   const isolated = !!opts.isolated
   const perNodeKeyring = !!node.enc && isolated
+  const capOpts = { ttlSec: opts.ttlSec, nbf: opts.nbf, expiresAt: opts.expiresAt }
 
   if (!isolated) {
     await addSpaceMember(session.accountClient, spaceId, session.userId, ephemeralUserId, session)
@@ -416,17 +417,17 @@ export async function createNodeInviteLink(
   let keyringCap: unknown
   if (perNodeKeyring) {
     await ensureNodeKeyringRecipient(session, spaceId, nodeId, recipientFor(ek.kemPub, ephemeralUserId))
-    keyringCap = await mintCap(session, subject, "nodekeyring", session.layout.nodeKeyringScope(spaceId, nodeId))
+    keyringCap = await mintCap(session, subject, "nodekeyring", session.layout.nodeKeyringScope(spaceId, nodeId), capOpts)
   }
 
   const cap =
     node.enc && !perNodeKeyring
-      ? await mintCap(session, subject, "content", session.layout.spaceMemberScope(spaceId, write))
-      : await mintCap(session, subject, "objinv", session.layout.nodeMemberScope(spaceId, nodeId, write))
+      ? await mintCap(session, subject, "content", session.layout.spaceMemberScope(spaceId, write), capOpts)
+      : await mintCap(session, subject, "objinv", session.layout.nodeMemberScope(spaceId, nodeId, write), capOpts)
 
   let streamCap: unknown
   if (!node.enc || perNodeKeyring) {
-    streamCap = await mintCap(session, subject, "objinvlog", session.layout.nodeStreamScope(spaceId, nodeId, write))
+    streamCap = await mintCap(session, subject, "objinvlog", session.layout.nodeStreamScope(spaceId, nodeId, write), capOpts)
   }
 
   const token: NodeInviteLinkToken = {
