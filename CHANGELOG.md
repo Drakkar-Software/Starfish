@@ -1,5 +1,24 @@
 # Changelog
 
+## 3.0.0-alpha.60
+
+### `starfish-spaces` / `@drakkar.software/starfish-spaces` (alpha.60)
+
+#### Fixed
+
+- **`updateSpacesDoc` / `updateSpacesExtraField` — unrecoverable `_spaces` 409 on join (and on every boot when a web service worker caches `/pull/` GETs)** — Both `_spaces` CAS writers used `staleWhileRevalidate` on every pull attempt and ignored the `runCas` `currentHash` hint, so each retry re-pushed the same stale hash → guaranteed repeated `ConflictError: hash_mismatch`. The `_access` twin `updateSpaceAccess` already had the correct pattern; `_spaces` writers now match it:
+  - **Warm branch on attempt 0 only:** reuse the in-memory `getCachedDoc(pushPath)` entry (updated on every successful push); fall through to fresh pull if absent.
+  - **Cold-branch `peekCache` seed on attempt 0:** when the in-memory cache is cold and no `currentHash` hint exists, call `client.peekCache(pullPath)` to seed the last-good hash from the persistent read-through cache — recovers when the live pull is degraded (`hash:""` due to Garage RF>1 read-after-write lag).
+  - **Fresh network-first pull on every retry:** `client.pull(pullPath)` (no `staleWhileRevalidate`) so the retry's `baseHash` is always consistent with freshly-read content. The TypeScript sync server's 409 body carries no `currentHash`, so convergence comes entirely from the fresh pull, not the hint.
+  - **`noteDoc` after every successful push** keeps the warm cache populated for subsequent writes.
+  - One change fixes all `_spaces` writers: `writeSpaces` (owner provisioning), `addJoinedSpaceWithLinkAccess` (joiner at join time), `recoverSpaceAccess` backfill (`members.ts:306`), `removeJoinedSpace` / `reorderSpaces` / `moveSpace`, and `updateSpacesExtraField`.
+
+- **`runCas` — `attempt` field on `CasHint`, jittered exponential backoff, `MAX_ATTEMPTS` 3 → 5** — `CasHint` gains an `attempt` field (0-indexed, passed to every `fn` call) so callers can gate warm-cache-only paths to the first attempt and unconditionally force a fresh pull on retries. Jittered exponential backoff is now inserted between attempts (`min(80 × 2^attempt, 800) ms + up to 25 % jitter`, matching the `SyncManager.push` loop in `starfish-client`) to give lagging replicas time to converge. `MAX_ATTEMPTS` bumped 3 → 5 for headroom now that attempts are spaced out. Existing zero-arg / `{currentHash}` callbacks are unaffected.
+
+#### Tests
+- 7 new / updated tests in `tests/cas-retry.test.ts`: `attempt` field increments correctly and is passed to `fn`; `currentHash` from 409 is threaded to the next call; backoff timers fire between attempts (`vi.useFakeTimers` + `vi.runAllTimersAsync`); `MAX_ATTEMPTS` (now 5) is honored.
+- 5 new tests in `tests/registry.test.ts` (describe block `updateSpacesDoc / writeSpaces — CAS hardening`): regression (no `staleWhileRevalidate` in write paths), converges-after-409 (retry's fresh pull gets the advanced hash), degraded-read recovery (`hash:""` → `peekCache` seed used as `baseHash`), warm-cache fast-path (no pull on second write), and no-op when mutator returns `cur`.
+
 ## 3.0.0-alpha.59
 
 ### `starfish-keyring` / `@drakkar.software/starfish-keyring` (alpha.59)
