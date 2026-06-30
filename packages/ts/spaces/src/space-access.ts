@@ -146,7 +146,7 @@ export function makeHandle(
  * to `session.contentClient` (identity-level, server authorizes by role). Shared by every
  * resolver below.
  */
-function resolveEntryClient(
+export function resolveEntryClient(
   entry: SpaceAccessEntry | null | undefined,
   session: Session,
 ): { client: StarfishClient; capIss?: string } {
@@ -156,6 +156,7 @@ function resolveEntryClient(
         baseUrl: session.baseUrl,
         namespace: session.namespace,
       }),
+      capIss: (entry.cap as { iss?: string })?.iss,
     }
   }
   if (entry?.kind === "member") {
@@ -173,7 +174,7 @@ function resolveEntryClient(
 
 /** Trusted-adder set for opening a space keyring: the cap issuer, else the registry
  *  owner, else the session's own owner keys. */
-function resolveTrustedAdders(
+export function resolveTrustedAdders(
   capIss: string | undefined,
   reg: { owner: string | null } | null | undefined,
   session: Session,

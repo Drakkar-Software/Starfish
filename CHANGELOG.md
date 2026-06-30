@@ -1,5 +1,18 @@
 # Changelog
 
+## 3.0.0-alpha.61
+
+### `starfish-spaces` / `@drakkar.software/starfish-spaces` (alpha.61)
+
+#### Fixed
+
+- **`resolveEntryClient` — link-joined members rejected by every keyring entry ("not a trusted adder")** — A space member who joins via an invite link (`kind:"link"` access entry) decrypts content as the *ephemeral* identity that `createSpaceInviteLink` adds to the space keyring (`addedBy` = the link-minter's edPub). But `resolveEntryClient`'s `link` branch never returned `capIss`, unlike the `member` branch which does (`capIss: cap.iss`). With `capIss` missing, `resolveTrustedAdders` fell back to `reg.owner` — a 32-hex **userId hash**, never equal to a 64-hex edPub — or to the joiner's own `ownerTrustedAdders(session)` (rooted at the joiner's *own* edPub on a fresh seed session). Neither path ever reached the actual owner edPub that signed every keyring entry, so `createKeyringEncryptor` rejected every entry as untrusted (`[starfish:keyring] skipping epoch … addedBy … is not a trusted adder`) and `openEncryptor` threw `SpaceAccessError("You're not a recipient of this node's keyring — ask the owner to invite you.")` for every node, on both read and write. The member-cap invite flow (`acceptSpaceInvite`, `kind:"member"`) was unaffected — only link-based joins hit this.
+  - `resolveEntryClient`'s `link` branch now returns `capIss: (entry.cap as { iss?: string })?.iss`, mirroring the `member` branch. `LinkAccessPayload.cap` is already a parsed object (unlike the member entry's JSON-stringified `cap: string`), so no `JSON.parse` is needed. `mintMemberCap` sets `cap.iss` to the link-minter's edPub by construction, so this is exactly the owner key that signed the corresponding keyring entries.
+  - `resolveEntryClient` and `resolveTrustedAdders` are now exported from `space-access.ts` (previously module-private) to allow direct unit testing of the trust-resolution logic without faking crypto/keyring internals.
+
+#### Tests
+- 5 new tests in `tests/resolve-entry-client.test.ts`: link entry surfaces `capIss` from `entry.cap.iss` (the fix, R1); member entry still surfaces `capIss` from parsed cap JSON — unchanged behavior (R2); no entry → no `capIss` (R3); `resolveTrustedAdders` with a link entry's `capIss` includes the owner edPub that signed the keyring entry (R4); without `capIss` (pre-fix shape), the owner's edPub is unreachable via `reg.owner` or the joiner's own owner-trust set — documents the exact failure mode closed by the fix (R5).
+
 ## 3.0.0-alpha.60
 
 ### `starfish-spaces` / `@drakkar.software/starfish-spaces` (alpha.60)
