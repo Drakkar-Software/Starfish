@@ -1,5 +1,23 @@
 # Changelog
 
+## 3.0.0-alpha.58
+
+### `starfish-spaces` / `@drakkar.software/starfish-spaces`
+
+#### Fixed
+- **`readNodeWithLinkCap` / `writeNodeWithLinkCap` — per-request signature mismatch (host + namespaced path)** — Both helpers were signing the Ed25519 per-request signature with `host: ""` and the un-namespaced inner path (`/pull/spaces/…`), while the server verifies against the real inbound host (e.g. `dev-sync.drakkar.software`) and the ASGI path after the proxy `/sync` mount is stripped (e.g. `/v1/fiance/pull/spaces/…`). The canonical signing input `stableStringify({m,p,b,h,ts,nonce})` bound `h:""` and `p:"/pull/…"` on the client but `h:"dev-sync.drakkar.software"` and `p:"/v1/fiance/pull/…"` on the server → `CapAuthError(401, "bad request signature")` for every node-link-cap guest request. `StarfishClient` (owner sync) was unaffected because it already signs via `signingHost()` + `applyNamespace`.
+  - `buildAuthHeaders` now accepts two additional optional params: `host` (default `""` — preserves external-caller back-compat) and `body` (for writes).
+  - `readNodeWithLinkCap` computes `pathAndQuery = /v1/{namespace}{inner}` and `host = new URL(baseUrl).host`, then passes both to `buildAuthHeaders`.
+  - `writeNodeWithLinkCap` does the same and additionally signs over the serialized JSON payload (`JSON.stringify({data, baseHash})`) to satisfy the server's body-hash check for `application/json` writes (`cap_resolver.py:574`). The same `payload` string is sent as the `fetch` body, guaranteeing signed bytes === sent bytes.
+  - Regression tests added (L8/L9) asserting the exact signing args and fetch URL shape.
+
+## 3.0.0-alpha.57
+
+### `starfish-spaces` / `@drakkar.software/starfish-spaces`
+
+#### Added
+- **`createNodeInviteLink` — `ttlSec` / `nbf` / `expiresAt` passthrough** — The function's `opts` parameter now accepts three optional cap-expiry fields (`ttlSec`, `nbf`, `expiresAt`). All four internal `mintCap` call sites receive a `capOpts` object built from these fields, which `mintMemberCap` already accepted. Callers that omit the new fields get the unchanged 30-day default. The `addSpaceMember` roster write is untouched, so the fix is entirely additive. Use case: long-lived public-page share links (e.g. `ttlSec: 5 * 365 * 24 * 3600` for a ~5-year cap with `nbf` backdated 1 h to absorb owner clock skew).
+
 ## 3.0.0-alpha.56
 
 ### `starfish-spaces` / `@drakkar.software/starfish-spaces`
