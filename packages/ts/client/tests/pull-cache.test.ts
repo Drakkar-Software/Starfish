@@ -190,6 +190,38 @@ describe("push write-through to pull cache", () => {
     expect(pushed).toBe(true)
     // No cache was configured — the client should not throw.
   })
+
+  it("does not overwrite a good cached hash when a degraded pull returns hash:\"\"", async () => {
+    // Scenario: previous session persisted a good hash via push write-through.
+    // On reload the server returns hash:"" (degraded/corrupt-envelope read).
+    // The good hash must survive so peekCache still returns it for the next write.
+    const cache = memCache()
+    let mode: "good" | "degraded" = "good"
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      const method = (init as RequestInit | undefined)?.method ?? "GET"
+      if (method !== "GET") return jsonResponse({ hash: "h_pushed", timestamp: 2 })
+      if (mode === "good") return jsonResponse({ data: { v: 1 }, hash: "h_good", timestamp: 1 })
+      return jsonResponse({ data: {}, hash: "", timestamp: 0 })  // degraded server read
+    })
+    const client = new StarfishClient({ baseUrl: "https://h", fetch: fetchMock as unknown as typeof fetch, cache })
+
+    // A previous session's successful push primed the cache with a real hash.
+    await client.push("/push/doc", { v: 1 }, "h_prev")
+    expect((JSON.parse(cache.store.get("/pull/doc")!) as { hash: string }).hash).toBe("h_pushed")
+
+    // On reload the server is degraded — pull returns hash:"".
+    mode = "degraded"
+    const degraded = await client.pull("/pull/doc").catch(() => null)
+    expect((degraded as { hash: string } | null)?.hash).toBe("")
+
+    // The cache entry must be UNCHANGED — the degraded read must not poison it.
+    const cached = JSON.parse(cache.store.get("/pull/doc")!) as { hash: string }
+    expect(cached.hash).toBe("h_pushed")  // good hash survives
+
+    // peekCache still returns the good hash.
+    const peeked = await client.peekCache("/pull/doc")
+    expect(peeked?.hash).toBe("h_pushed")
+  })
 })
 
 describe("stale-while-revalidate (cacheFallbackStatuses)", () => {

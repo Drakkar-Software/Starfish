@@ -180,14 +180,30 @@ export async function ownerEnsureKeyring(
   return runCas(async ({ currentHash }) => {
     const krRes = await client.pull(keyringPullPath).catch(() => null)
     let keyring = krRes?.data as unknown as Keyring | undefined
+    let baseHash = krRes?.hash || ""
+    // Cold/degraded pull (e.g. after a tab reload where the server returns hash:""): recover
+    // the keyring from the persistent read-through cache instead of destructively re-creating
+    // it. The keyring envelope is server-plaintext (KEM-wrapped keys inside), so reading its
+    // data from the cache is safe. Without this, the re-create branch below would 409 on the
+    // first attempt and — on the runCas retry when currentHash is set — could overwrite the
+    // real keyring with an empty one (member lockout / data loss).
+    if (!keyring || !keyring.epochs) {
+      const peeked = await client.peekCache(keyringPullPath).catch(() => null)
+      const pk = peeked?.data as unknown as Keyring | undefined
+      if (pk?.epochs) {
+        keyring = pk
+        baseHash = baseHash || peeked?.hash || ""
+        if (peeked?.hash) noteHash(keyringPushPath, peeked.hash)
+      }
+    }
     if (!keyring || !keyring.epochs) {
       const created = await createKeyring({ edPrivHex: keys.edPriv, edPubHex: keys.edPub }, [
         { subKemHex: keys.kemPub },
       ])
       keyring = created.keyring
       // Never push null/empty hash — use authoritative conflict hash or cache fallback.
-      const baseHash = krRes?.hash || currentHash || getCachedDoc(keyringPushPath)?.hash || ""
-      const pushRes = await client.push(keyringPushPath, keyring as unknown as Record<string, unknown>, baseHash)
+      const bh = baseHash || currentHash || getCachedDoc(keyringPushPath)?.hash || ""
+      const pushRes = await client.push(keyringPushPath, keyring as unknown as Record<string, unknown>, bh)
       noteHash(keyringPushPath, pushRes.hash)
     }
     const enc = await createKeyringEncryptor(

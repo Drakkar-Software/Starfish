@@ -1,5 +1,23 @@
 # Changelog
 
+## 3.0.0-alpha.53
+
+### `starfish-spaces` / `@drakkar.software/starfish-spaces`
+
+#### Fixed
+- **`ownerEnsureKeyring` — peekCache seed prevents destructive keyring re-creation on degraded pull** — When the server returns `{ data:{}, hash:"" }` (a corrupt-envelope / degraded read) and the in-memory doc-cache is cold (e.g. after a tab reload), `ownerEnsureKeyring` incorrectly concluded the keyring was missing and re-created it. On the first `runCas` attempt this produced a `baseHash:""` → 409; on the retry, `currentHash` was now populated so the empty re-created keyring could push successfully and **overwrite the real keyring** (latent member-lockout / data-loss). Fixed by calling `client.peekCache(keyringPullPath)` after a non-`epochs` pull result: if the cache holds a keyring with `epochs`, it is used directly (no `createKeyring`, no push) and the encryptor is built from the cached data.
+- **`pushIndexSeed` — fall back to peekCache hash on degraded creation pull** — `pushIndexSeed` (create-time, idempotent) pushed `baseHash:""` after a degraded pull, which would 409 if the index doc already exists server-side. Now falls back to `getCachedDoc(pushPath)?.hash` then `client.peekCache(pullPath)?.hash` before defaulting to `""`, completing the "never push empty baseHash" invariant for all index writes.
+
+#### Note
+- **Requires `@drakkar.software/starfish-client >= 3.0.0-alpha.51`** — the anti-poison `writeCache` guard (alpha.51) is required for the peekCache seeds above to see non-empty hashes after a boot-time degraded pull. With alpha.50, a degraded read would overwrite the good cached hash and the seeds would find `hash:""` → fall through to the network pull path.
+
+## 3.0.0-alpha.51
+
+### `starfish-client` / `@drakkar.software/starfish-client`
+
+#### Fixed
+- **`writeCache` — never cache an empty hash (anti-poison guard)** — The pull write-through (`client.ts:writeCache`) was unconditional: a degraded server read returning `{ data:{}, hash:"" }` would overwrite a good hash previously stored by a successful push, poisoning the persistent cache. The next `peekCache` call then returned `hash:""`, causing the `updateObjectIndex` / `ownerEnsureKeyring` seeds to skip (they require a non-empty hash) and fall through to a network pull — which degraded again → `baseHash:""` → 409. Fixed by adding `if (!result.hash) return` at the top of `writeCache`, so only pulls with a real server hash are persisted. Push results always carry a real server-generated hash, so the guard only affects degraded pull paths.
+
 ## 3.0.0-alpha.52
 
 ### `starfish-spaces` / `@drakkar.software/starfish-spaces`

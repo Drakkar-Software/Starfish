@@ -500,6 +500,12 @@ export class StarfishClient {
     result: { data: Record<string, unknown>; hash: string; timestamp: number },
   ): void {
     if (!this.cache) return
+    // Never persist a degraded/absent result: an empty hash is what the server returns for
+    // a corrupt or missing envelope doc. Caching it would poison a good previously-stored
+    // hash (e.g. written by a successful push), causing the next peekCache read to return
+    // hash:"" and the next push to send baseHash:"" → 409. Push always carries the server's
+    // real hash, so skipping here only affects degraded-read paths (pull write-throughs).
+    if (!result.hash) return
     // Track the newest document timestamp written so revalidateLoop can check
     // staleness synchronously (without an async cache read adding extra ticks).
     if (result.timestamp > (this.latestCacheTimestamp.get(cacheKey) ?? -1)) {

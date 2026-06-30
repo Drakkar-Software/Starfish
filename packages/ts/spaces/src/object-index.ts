@@ -45,10 +45,20 @@ export async function pushIndexSeed(
   session: Session,
   nodes: ObjectNode[] = [],
 ): Promise<void> {
-  const res = await client.pull(session.layout.objIndexPull(spaceId)).catch(() => null)
+  const pullPath = session.layout.objIndexPull(spaceId)
+  const pushPath = session.layout.objIndexPush(spaceId)
+  const res = await client.pull(pullPath).catch(() => null)
   const existing = res?.data as Record<string, unknown> | undefined
   if (Array.isArray(existing?.objects)) return
-  await client.push(session.layout.objIndexPush(spaceId), buildIndexPayload(nodes), res?.hash ?? "")
+  // Fall back to the persistent cache when the pull returns a degraded hash:"".
+  // Without this, a space-creation push with baseHash:"" would 409 if the index
+  // doc exists but the server returns a corrupt envelope (hash:"").
+  let baseHash = res?.hash || getCachedDoc(pushPath)?.hash || ""
+  if (!baseHash) {
+    const peeked = await client.peekCache(pullPath).catch(() => null)
+    if (peeked?.hash) baseHash = peeked.hash
+  }
+  await client.push(pushPath, buildIndexPayload(nodes), baseHash)
 }
 
 /**
