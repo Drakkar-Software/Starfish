@@ -88,20 +88,61 @@ function pushPathFor(collectionName: string): string {
 }
 
 /**
+ * Returns `true` when `k` is a well-formed Keyring (has both `epochs` and
+ * `currentEpoch`). A degraded server `200` returns `{ data: {}, hash: "" }`,
+ * which fails this check so we can retry rather than crash downstream.
+ */
+function isWellFormed(k: unknown): k is Keyring {
+  return (
+    !!k &&
+    typeof k === "object" &&
+    !!(k as Keyring).epochs &&
+    (k as Keyring).currentEpoch !== undefined
+  )
+}
+
+/**
  * Pulls the current keyring document. Returns `null` if no keyring exists yet
  * (HTTP 404). Any other error propagates.
+ *
+ * The sync server may return a degraded `200` (`{ data: {}, hash: "" }`) for a
+ * document that was just written but has not yet propagated (read-after-write
+ * lag). To handle this gracefully the function retries with brief backoff delays,
+ * then falls back to the local `peekCache` snapshot that the owner-ensure push
+ * warmed immediately before this call. Only after all recovery paths are
+ * exhausted does it return `null`, which the caller maps to a clear
+ * "create the keyring first" error.
  */
 async function pullKeyring(
   client: StarfishClient,
   collectionName: string,
 ): Promise<{ keyring: Keyring; hash: string } | null> {
-  try {
-    const result = await client.pull(pullPathFor(collectionName))
-    return { keyring: result.data as unknown as Keyring, hash: result.hash }
-  } catch (err) {
-    if (err instanceof StarfishHttpError && err.status === 404) return null
-    throw err
+  const path = pullPathFor(collectionName)
+  let lastHash = ""
+
+  for (const delay of [0, 150, 400, 900]) {
+    if (delay) await new Promise<void>((r) => setTimeout(r, delay))
+    let result
+    try {
+      result = await client.pull(path)
+    } catch (err) {
+      if (err instanceof StarfishHttpError && err.status === 404) return null
+      throw err
+    }
+    if (isWellFormed(result.data)) {
+      return { keyring: result.data as unknown as Keyring, hash: result.hash }
+    }
+    if (result.hash) lastHash = result.hash
   }
+
+  // All retries returned a degraded/empty doc. Fall back to the last-synced
+  // local snapshot — the ownerEnsureKeyring push warmed this cache immediately
+  // before addSpaceKeyringRecipient runs.
+  const peeked = await client.peekCache(path).catch(() => null)
+  if (peeked && isWellFormed(peeked.data)) {
+    return { keyring: peeked.data as unknown as Keyring, hash: peeked.hash || lastHash }
+  }
+  return null
 }
 
 /**
@@ -113,6 +154,11 @@ async function recoverCurrentCek(
   adderKemPriv: string,
   trustedAdders?: Set<string>,
 ): Promise<Uint8Array> {
+  // Defense in depth: pullKeyring already guards against malformed docs, but
+  // protect here too in case recoverCurrentCek is ever called via another path.
+  if (!keyring || !keyring.epochs || keyring.currentEpoch === undefined) {
+    throw new Error("Keyring is malformed (missing epochs/currentEpoch) — degraded read")
+  }
   const epochKey = String(keyring.currentEpoch)
   const epoch = keyring.epochs[epochKey]
   if (!epoch) {

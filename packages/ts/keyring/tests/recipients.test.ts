@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, vi } from "vitest"
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest"
 import { configurePlatform } from "@drakkar.software/starfish-protocol"
 import { x25519, ed25519 } from "@noble/curves/ed25519.js"
 import {
@@ -52,11 +52,20 @@ function makeParty(): TestParty {
   }
 }
 
+interface MockStore {
+  data: Keyring | Record<string, never>
+  hash: string
+}
+
 /** Mock StarfishClient that stores a single Keyring document in memory keyed by path. */
 function makeMockClient(initial?: { path: string; data: Keyring; hash: string }) {
-  const store = new Map<string, { data: Keyring; hash: string }>()
+  const store = new Map<string, MockStore>()
   if (initial) store.set(initial.path, { data: initial.data, hash: initial.hash })
   let counter = initial ? 1 : 0
+
+  // peekCache stores a separate "last known good" snapshot (simulates the owner-ensure push).
+  const cache = new Map<string, MockStore>()
+  if (initial) cache.set(initial.path, { data: initial.data, hash: initial.hash })
 
   const client = {
     pull: vi.fn(async (path: string) => {
@@ -68,11 +77,17 @@ function makeMockClient(initial?: { path: string; data: Keyring; hash: string })
       counter += 1
       const hash = `h${counter}`
       store.set(path, { data: data as unknown as Keyring, hash })
+      cache.set(path, { data: data as unknown as Keyring, hash })
       return { hash, timestamp: 2000 }
+    }),
+    peekCache: vi.fn(async (path: string) => {
+      const entry = cache.get(path)
+      if (!entry) return null
+      return { data: entry.data as unknown as Record<string, unknown>, hash: entry.hash, timestamp: 500 }
     }),
   } as unknown as StarfishClient
 
-  return { client, store }
+  return { client, store, cache }
 }
 
 // ── keyringPathFor ────────────────────────────────────────────────────────────
@@ -369,6 +384,129 @@ it("preserves existing recipients", async () => {
         { trustedAdders: [admin.edPub] },
       ),
     ).rejects.toThrow(/duplicate/)
+  })
+})
+
+// ── pullKeyring — degraded-read resilience ────────────────────────────────────
+// These tests use fake timers so the retry delays (0/150/400/900ms) run
+// instantly and the suite stays fast.
+
+describe("pullKeyring resilience (via addRecipient)", () => {
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
+
+  it("retries and succeeds when the first pull returns a degraded empty doc", async () => {
+    const admin = makeParty()
+    const charlie = makeParty()
+    const { keyring } = await createKeyring(
+      { edPrivHex: admin.edPriv, edPubHex: admin.edPub },
+      [{ subKemHex: admin.kemPub }],
+    )
+    const path = `/pull/${keyringPathFor("vault")}`
+    const pushPath = `/push/${keyringPathFor("vault")}`
+
+    // First pull returns degraded {}; second (and later) returns the real keyring.
+    let pullCount = 0
+    const store = new Map<string, MockStore>([[path, { data: keyring, hash: "h-real" }]])
+    const client = {
+      pull: vi.fn(async (p: string) => {
+        if (p !== path) throw new StarfishHttpError(404, "not found")
+        pullCount++
+        if (pullCount === 1) return { data: {} as Record<string, unknown>, hash: "", timestamp: 1000 }
+        return { data: store.get(p)!.data as unknown as Record<string, unknown>, hash: store.get(p)!.hash, timestamp: 1000 }
+      }),
+      push: vi.fn(async (p: string, data: Record<string, unknown>) => {
+        const hash = "h-pushed"
+        store.set(p, { data: data as unknown as Keyring, hash })
+        return { hash, timestamp: 2000 }
+      }),
+      peekCache: vi.fn(async () => null),
+    } as unknown as StarfishClient
+
+    const promise = addRecipientToCollection(
+      client,
+      "vault",
+      { subKem: charlie.kemPub },
+      { edPriv: admin.edPriv, edPub: admin.edPub, kemPriv: admin.kemPriv },
+      { trustedAdders: [admin.edPub] },
+    )
+    await vi.runAllTimersAsync()
+    await promise
+
+    // pull was retried (called more than once)
+    expect((client.pull as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(1)
+    // charlie was added successfully
+    const stored = store.get(pushPath)!.data as Keyring
+    expect(stored.epochs["1"].wrappedKeys.some((e) => e.subKem === charlie.kemPub)).toBe(true)
+  })
+
+  it("falls back to peekCache when all retries return a degraded doc", async () => {
+    const admin = makeParty()
+    const charlie = makeParty()
+    const { keyring } = await createKeyring(
+      { edPrivHex: admin.edPriv, edPubHex: admin.edPub },
+      [{ subKemHex: admin.kemPub }],
+    )
+    const pushPath = `/push/${keyringPathFor("vault")}`
+    const store = new Map<string, MockStore>()
+
+    const client = {
+      // All pulls return degraded {} (simulates prolonged propagation lag)
+      pull: vi.fn(async () => ({ data: {} as Record<string, unknown>, hash: "", timestamp: 1000 })),
+      push: vi.fn(async (p: string, data: Record<string, unknown>) => {
+        const hash = "h-pushed"
+        store.set(p, { data: data as unknown as Keyring, hash })
+        return { hash, timestamp: 2000 }
+      }),
+      // peekCache returns the real keyring (owner-ensure push warmed it)
+      peekCache: vi.fn(async () => ({
+        data: keyring as unknown as Record<string, unknown>,
+        hash: "h-cache",
+        timestamp: 500,
+      })),
+    } as unknown as StarfishClient
+
+    const promise = addRecipientToCollection(
+      client,
+      "vault",
+      { subKem: charlie.kemPub },
+      { edPriv: admin.edPriv, edPub: admin.edPub, kemPriv: admin.kemPriv },
+      { trustedAdders: [admin.edPub] },
+    )
+    await vi.runAllTimersAsync()
+    await promise
+
+    expect((client.peekCache as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(0)
+    const stored = store.get(pushPath)!.data as Keyring
+    expect(stored.epochs["1"].wrappedKeys.some((e) => e.subKem === charlie.kemPub)).toBe(true)
+  })
+
+  it("throws a clear error (not undefined['undefined']) when all retries AND peekCache are degraded", async () => {
+    const admin = makeParty()
+    const charlie = makeParty()
+
+    const client = {
+      pull: vi.fn(async () => ({ data: {} as Record<string, unknown>, hash: "", timestamp: 1000 })),
+      push: vi.fn(),
+      peekCache: vi.fn(async () => null),
+    } as unknown as StarfishClient
+
+    const promise = addRecipientToCollection(
+      client,
+      "vault",
+      { subKem: charlie.kemPub },
+      { edPriv: admin.edPriv, edPub: admin.edPub, kemPriv: admin.kemPriv },
+      { trustedAdders: [admin.edPub] },
+    )
+    // Capture rejection immediately so it's handled before timers fire.
+    const caught = promise.then(() => null, (e: unknown) => e as Error)
+    await vi.runAllTimersAsync()
+
+    const threw = await caught
+    expect(threw).toBeInstanceOf(Error)
+    // Must be a clear "no keyring" error, not the old `undefined["undefined"]` crash
+    expect((threw as Error).message).toMatch(/no keyring exists|Cannot add recipient/)
+    expect((threw as Error).message).not.toMatch(/Cannot read properties of undefined/)
   })
 })
 

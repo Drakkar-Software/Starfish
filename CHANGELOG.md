@@ -1,5 +1,21 @@
 # Changelog
 
+## 3.0.0-alpha.59
+
+### `starfish-keyring` / `@drakkar.software/starfish-keyring` (alpha.59)
+
+#### Fixed
+- **`pullKeyring` — degraded-read crash (`Cannot read properties of undefined (reading 'undefined')`)** — The sync server returns a degraded `200` (`{ data: {}, hash: "" }`) for a document that was just written but has not yet propagated (read-after-write lag). `pullKeyring` blindly cast `result.data` to `Keyring` without checking shape; `recoverCurrentCek` then evaluated `({}).epochs[String(undefined)]` = `undefined["undefined"]` → crash. This was the root cause of `createSpaceInviteLink` failing on first use.
+  - Added `isWellFormed` guard that checks `epochs` and `currentEpoch` are present before returning a pulled keyring.
+  - `pullKeyring` now retries up to 4 times with backoff delays (`0 / 150 / 400 / 900 ms`) until the keyring propagates. If all retries remain degraded, it falls back to the local `peekCache` snapshot (warmed by the preceding `ownerEnsureKeyring` push). If cache is also absent, it returns `null` (→ clear "create the keyring first" error instead of a crash).
+  - Added a defensive guard at the top of `recoverCurrentCek` for depth-in-defense: even if called via a future path that bypasses `pullKeyring`, a malformed keyring throws a clear message rather than `undefined["undefined"]`.
+  - **3 new tests** in `tests/recipients.test.ts` (with fake timers): retry success on first degraded pull, peekCache fallback when all retries degrade, and clear error when both paths fail.
+
+### `starfish-spaces` / `@drakkar.software/starfish-spaces` (alpha.59)
+
+#### Changed
+- Version bump only — re-pins `starfish-keyring` workspace dep to alpha.51 so the degraded-read fix reaches the `ensureSpaceKeyringRecipient` → `addSpaceKeyringRecipient` → `addRecipient` call path used by `createSpaceInviteLink`.
+
 ## 3.0.0-alpha.58
 
 ### `starfish-spaces` / `@drakkar.software/starfish-spaces`
