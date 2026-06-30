@@ -134,22 +134,67 @@ export async function readSpaces(client: StarfishClient, session: Session): Prom
   }
 }
 
+/**
+ * CAS-safe mutator for the user's `_spaces` doc (space list + caps + pubAccess).
+ * Mirrors `updateSpaceAccess`: warm branch from in-memory doc-cache on first attempt,
+ * fresh network pull on every retry (or when the cache is cold), plus `peekCache`
+ * seed to recover the last-good hash when the live pull is degraded (hash:"" due to
+ * Garage RF>1 read-after-write lag).
+ *
+ * The `attempt` field from CasHint gates the warm path: only on attempt === 0.
+ * On any retry the fresh pull is always forced, ensuring the pushed hash is
+ * consistent with freshly-read content. NOTE: the TypeScript sync server's 409
+ * body does NOT include a `currentHash`, so `hint.currentHash` is always ""; the
+ * fix therefore relies entirely on the fresh pull (not the hint) to converge.
+ */
 export function updateSpacesDoc(
   client: StarfishClient,
   session: Session,
   mutator: (cur: { spaces: Space[]; caps: CapMap; pubAccess: PubAccessMap }) => { spaces: Space[]; caps: CapMap; pubAccess: PubAccessMap },
 ): Promise<void> {
-  return runCas(async () => {
-    const doc = await pullSpacesDoc(client, session)
+  const pullPath = session.layout.spacesPull(session.userId)
+  const pushPath = session.layout.spacesPush(session.userId)
+  return runCas(async ({ currentHash, attempt }) => {
+    // Warm branch: reuse in-memory doc-cache (updated on every successful push in
+    // this session). Only on attempt 0 — retries always force a fresh pull.
+    let cached = getCachedDoc(pushPath)
+    if (attempt === 0 && !cached?.data && !currentHash && typeof client.peekCache === "function") {
+      // Cold branch: seed from the persistent read-through cache (survives reloads).
+      // If the live pull is degraded (hash:""), peekCache still holds the last-good
+      // hash from the previous session's successful push.
+      const peeked = await client.peekCache(pullPath).catch(() => null)
+      if (peeked?.hash && peeked.data) {
+        noteDoc(pullPath, peeked.hash, peeked.data as Record<string, unknown>)
+        cached = getCachedDoc(pushPath)
+      }
+    }
+    let doc: SpacesDoc
+    if (cached?.data && attempt === 0 && !currentHash) {
+      // Use the in-memory cache: content + hash are consistent from the last push.
+      doc = coerceSpacesDoc(cached.data, cached.hash)
+    } else {
+      // Retry or cache miss: fresh network-first pull — no staleWhileRevalidate.
+      const res = await client.pull(pullPath).catch((err: unknown) => {
+        if (err instanceof StarfishHttpError && err.status === 404) return null
+        throw err
+      })
+      // Prefer freshly-pulled hash; fall through to conflict hint or last-good cache.
+      const hash = res?.hash || currentHash || cached?.hash || null
+      doc = coerceSpacesDoc(res?.data as Record<string, unknown> | undefined, hash)
+      if (res?.hash) noteDoc(pullPath, res.hash, res.data as Record<string, unknown>)
+    }
     const cur = { spaces: doc.spaces, caps: doc.caps, pubAccess: doc.pubAccess }
     const next = mutator(cur)
     if (next === cur) return
-    await client.push(session.layout.spacesPush(session.userId), { v: 1 as const, ...toPayload({ ...doc, ...next }), }, doc.hash)
+    const payload = toPayload({ ...doc, ...next })
+    const pushRes = await client.push(pushPath, { v: 1 as const, ...payload }, doc.hash)
+    noteDoc(pushPath, pushRes.hash, payload)
   })
 }
 
 /**
  * Read-modify-CAS-write ONE app-specific (`extra`) field of the `_spaces` doc.
+ * Uses the same CAS-safe pattern as {@link updateSpacesDoc}.
  */
 export function updateSpacesExtraField<T>(
   client: StarfishClient,
@@ -157,12 +202,34 @@ export function updateSpacesExtraField<T>(
   key: string,
   mutator: (cur: T | undefined) => T | null,
 ): Promise<void> {
-  return runCas(async () => {
-    const doc = await pullSpacesDoc(client, session)
+  const pullPath = session.layout.spacesPull(session.userId)
+  const pushPath = session.layout.spacesPush(session.userId)
+  return runCas(async ({ currentHash, attempt }) => {
+    let cached = getCachedDoc(pushPath)
+    if (attempt === 0 && !cached?.data && !currentHash && typeof client.peekCache === "function") {
+      const peeked = await client.peekCache(pullPath).catch(() => null)
+      if (peeked?.hash && peeked.data) {
+        noteDoc(pullPath, peeked.hash, peeked.data as Record<string, unknown>)
+        cached = getCachedDoc(pushPath)
+      }
+    }
+    let doc: SpacesDoc
+    if (cached?.data && attempt === 0 && !currentHash) {
+      doc = coerceSpacesDoc(cached.data, cached.hash)
+    } else {
+      const res = await client.pull(pullPath).catch((err: unknown) => {
+        if (err instanceof StarfishHttpError && err.status === 404) return null
+        throw err
+      })
+      const hash = res?.hash || currentHash || cached?.hash || null
+      doc = coerceSpacesDoc(res?.data as Record<string, unknown> | undefined, hash)
+      if (res?.hash) noteDoc(pullPath, res.hash, res.data as Record<string, unknown>)
+    }
     const next = mutator(doc.extra[key] as T | undefined)
     if (next === null) return
     const payload = { ...toPayload(doc), [key]: next }
-    await client.push(session.layout.spacesPush(session.userId), { v: 1 as const, ...payload }, doc.hash)
+    const pushRes = await client.push(pushPath, { v: 1 as const, ...payload }, doc.hash)
+    noteDoc(pushPath, pushRes.hash, payload)
   })
 }
 

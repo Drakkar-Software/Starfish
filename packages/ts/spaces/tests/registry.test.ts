@@ -10,7 +10,7 @@ import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
 afterEach(() => vi.useRealTimers())
 import { StarfishClient, StarfishHttpError, ConflictError } from "@drakkar.software/starfish-client"
 import type { PullCache } from "@drakkar.software/starfish-client"
-import { readSpaces, addSpaceMember, removeSpaceMember } from "../src/registry.js"
+import { readSpaces, addSpaceMember, removeSpaceMember, writeSpaces, updateSpacesDoc } from "../src/registry.js"
 import { defaultSpaceLayout } from "../src/layout.js"
 import type { Session } from "../src/session.js"
 import { clearDocCache } from "../src/doc-cache.js"
@@ -117,6 +117,110 @@ describe("addSpaceMember / updateSpaceAccess — peekCache seed + runCas retry",
     const [, payload, baseHash] = pushSpy.mock.calls[0]
     expect(baseHash).toBe("H_cached")
     expect((payload as { members: string[] }).members).not.toContain(MEMBER)
+  })
+})
+
+// ── updateSpacesDoc / writeSpaces CAS hardening ────────────────────────────────
+
+const SPACES_PULL = defaultSpaceLayout.spacesPull("u1")
+
+function makeSpacesClient(opts: {
+  pull?: () => Promise<{ data: unknown; hash: string } | null>
+  push?: () => Promise<{ hash: string; timestamp: number }>
+  peek?: () => Promise<{ data: unknown; hash: string } | null>
+}): { client: unknown; pullSpy: ReturnType<typeof vi.fn>; pushSpy: ReturnType<typeof vi.fn>; peekSpy: ReturnType<typeof vi.fn> } {
+  const pullSpy = vi.fn(opts.pull ?? (async () => ({
+    data: { v: 1, spaces: [], caps: {}, pubAccess: {} }, hash: "H_good",
+  })))
+  const pushSpy = vi.fn(opts.push ?? (async () => ({ hash: "H_new", timestamp: 1 })))
+  const peekSpy = vi.fn(opts.peek ?? (async () => null))
+  return {
+    client: { pull: pullSpy, push: pushSpy, peekCache: peekSpy },
+    pullSpy, pushSpy, peekSpy,
+  }
+}
+
+function makeSpacesSession(): Session {
+  return { userId: "u1", layout: defaultSpaceLayout } as Session
+}
+
+describe("updateSpacesDoc / writeSpaces — CAS hardening (regression + convergence)", () => {
+  it("S1: regression — never calls pull() with staleWhileRevalidate (write paths must be network-first)", async () => {
+    vi.useFakeTimers()
+    const { client, pullSpy } = makeSpacesClient({})
+    const p = writeSpaces(client as never, makeSpacesSession(), [{ id: "sp1", name: "W", members: 1 }])
+    await vi.runAllTimersAsync()
+    await p
+    // pull must NOT be called with { staleWhileRevalidate: true } — that's the bug we fixed
+    for (const args of pullSpy.mock.calls) {
+      expect(args[1]).not.toEqual(expect.objectContaining({ staleWhileRevalidate: true }))
+    }
+  })
+
+  it("S2: converges after a 409 — retry does a fresh pull and succeeds", async () => {
+    vi.useFakeTimers()
+    let attempt = 0
+    const { client, pullSpy, pushSpy } = makeSpacesClient({
+      pull: async () => {
+        // First pull returns stale H0; second pull (on retry) returns advanced H1
+        return attempt === 0
+          ? { data: { v: 1, spaces: [], caps: {}, pubAccess: {} }, hash: "H0" }
+          : { data: { v: 1, spaces: [], caps: {}, pubAccess: {} }, hash: "H1" }
+      },
+      push: async () => {
+        if (++attempt === 1) throw new ConflictError("", 409)  // no currentHash (TS server)
+        return { hash: "H_new", timestamp: 1 }
+      },
+    })
+    const p = writeSpaces(client as never, makeSpacesSession(), [{ id: "sp1", name: "W", members: 1 }])
+    await vi.runAllTimersAsync()
+    await expect(p).resolves.toBeUndefined()
+    expect(pushSpy).toHaveBeenCalledTimes(2)
+    // Second push must use H1 (the fresh pull hash), not H0 (the stale one)
+    const secondBaseHash = pushSpy.mock.calls[1][2]
+    expect(secondBaseHash).toBe("H1")
+    // Fresh pull was triggered on retry (second pull call without staleWhileRevalidate)
+    expect(pullSpy).toHaveBeenCalledTimes(2)
+  })
+
+  it("S3: degraded pull (hash:'') + peekCache hit → push uses the good cached hash", async () => {
+    vi.useFakeTimers()
+    const { client, pushSpy, peekSpy } = makeSpacesClient({
+      pull: async () => ({ data: {}, hash: "" }),  // degraded server read
+      peek: async () => ({ data: { v: 1, spaces: [], caps: {}, pubAccess: {} }, hash: "H_cached" }),
+    })
+    const p = writeSpaces(client as never, makeSpacesSession(), [{ id: "sp1", name: "W", members: 1 }])
+    await vi.runAllTimersAsync()
+    await p
+    expect(peekSpy).toHaveBeenCalledWith(SPACES_PULL)
+    expect(pushSpy).toHaveBeenCalledTimes(1)
+    const baseHash = pushSpy.mock.calls[0][2]
+    expect(baseHash).toBe("H_cached")  // good cached hash, not ""
+  })
+
+  it("S4: warm in-memory cache is used on first attempt (no pull call)", async () => {
+    vi.useFakeTimers()
+    const { client, pullSpy, pushSpy } = makeSpacesClient({})
+    // Pre-populate the doc-cache by running one successful write first
+    const p1 = writeSpaces(client as never, makeSpacesSession(), [])
+    await vi.runAllTimersAsync()
+    await p1
+    pullSpy.mockClear()  // reset call count
+    // Second write should use the warm cache — no pull needed
+    const p2 = writeSpaces(client as never, makeSpacesSession(), [{ id: "sp2", name: "W2", members: 1 }])
+    await vi.runAllTimersAsync()
+    await p2
+    expect(pullSpy).not.toHaveBeenCalled()
+    expect(pushSpy).toHaveBeenCalledTimes(2)
+  })
+
+  it("S5: mutator returning cur (no change) skips push", async () => {
+    vi.useFakeTimers()
+    const { client, pushSpy } = makeSpacesClient({})
+    const p = updateSpacesDoc(client as never, makeSpacesSession(), (cur) => cur)
+    await vi.runAllTimersAsync()
+    await p
+    expect(pushSpy).not.toHaveBeenCalled()
   })
 })
 
