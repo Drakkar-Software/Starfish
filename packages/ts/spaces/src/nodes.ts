@@ -505,10 +505,11 @@ export async function readNodeWithLinkCap(
   token: NodeInviteLinkToken,
   opts: { baseUrl: string; namespace: string },
 ): Promise<unknown> {
-  // Build a minimal session-like object for buildAuthHeaders
-  const path = `/pull/spaces/${token.spaceId}/objects/n/${token.nodeId}/content`
-  const headers = await buildAuthHeaders(token.cap, token.key, "GET", path)
-  const url = opts.baseUrl + (opts.namespace ? `/v1/${opts.namespace}` : "") + path
+  const inner = `/pull/spaces/${token.spaceId}/objects/n/${token.nodeId}/content`
+  const pathAndQuery = (opts.namespace ? `/v1/${opts.namespace}` : "") + inner
+  const url = opts.baseUrl + pathAndQuery
+  const host = new URL(opts.baseUrl).host
+  const headers = await buildAuthHeaders(token.cap, token.key, "GET", pathAndQuery, host)
   const res = await fetch(url, { method: "GET", headers })
   if (res.status === 404) return null
   if (!res.ok) throw new Error(`readNodeWithLinkCap failed: HTTP ${res.status}`)
@@ -532,15 +533,18 @@ export async function writeNodeWithLinkCap(
   opts: { baseUrl: string; namespace: string },
 ): Promise<void> {
   const MAX_ATTEMPTS = 3
-  const path = `/push/spaces/${token.spaceId}/objects/n/${token.nodeId}/content`
-  const url = opts.baseUrl + (opts.namespace ? `/v1/${opts.namespace}` : "") + path
+  const inner = `/push/spaces/${token.spaceId}/objects/n/${token.nodeId}/content`
+  const pathAndQuery = (opts.namespace ? `/v1/${opts.namespace}` : "") + inner
+  const url = opts.baseUrl + pathAndQuery
+  const host = new URL(opts.baseUrl).host
   let baseHash = ""
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-    const headers = await buildAuthHeaders(token.cap, token.key, "POST", path)
+    const payload = JSON.stringify({ data: body, baseHash })
+    const headers = await buildAuthHeaders(token.cap, token.key, "POST", pathAndQuery, host, payload)
     const res = await fetch(url, {
       method: "POST",
       headers: { ...headers, "Content-Type": "application/json" },
-      body: JSON.stringify({ data: body, baseHash }),
+      body: payload,
     })
     if (res.ok) return
     if (res.status === 409) {

@@ -6,9 +6,13 @@
  * L2: 404 response → returns null (no throw).
  * L3: non-404 error → throws.
  * L4: writeNodeWithLinkCap POSTs to objects/n/{nodeId}/content.
+ * L8: readNodeWithLinkCap signs with the namespaced path and real host (regression for
+ *     the host:""/un-namespaced-path 401 bug).
+ * L9: writeNodeWithLinkCap signs with the namespaced path, real host, and the JSON payload.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { readNodeWithLinkCap, writeNodeWithLinkCap } from "../src/nodes.js"
+import { buildAuthHeaders } from "../src/client.js"
 import type { NodeInviteLinkToken } from "../src/token-types.js"
 
 // Stub buildAuthHeaders so we don't need real cryptographic keys in tests.
@@ -133,5 +137,70 @@ describe("writeNodeWithLinkCap", () => {
     await expect(
       writeNodeWithLinkCap(STUB_TOKEN, { rsvpStatus: "ACCEPTED" }, OPTS),
     ).rejects.toThrow("writeNodeWithLinkCap failed: HTTP 403")
+  })
+})
+
+// ── Signing-regression tests ────────────────────────────────────────────────
+// These lock the fix for the host:""/un-namespaced-path 401 bug.
+// The server verifies against (host = real netloc, pathAndQuery = namespaced path).
+// "buildAuthHeaders" is still mocked; we only check the ARGUMENTS it receives.
+
+describe("request-signing: host + namespaced path (regression L8/L9)", () => {
+  const EXPECTED_READ_PATH = `/v1/${OPTS.namespace}/pull/spaces/${SPACE_ID}/objects/n/${NODE_ID}/content`
+  const EXPECTED_WRITE_PATH = `/v1/${OPTS.namespace}/push/spaces/${SPACE_ID}/objects/n/${NODE_ID}/content`
+  const EXPECTED_HOST = new URL(OPTS.baseUrl).host // "sync.example.com"
+
+  it("L8 read: buildAuthHeaders receives namespaced pathAndQuery and real host", async () => {
+    vi.stubGlobal("fetch", mockFetch(200, { data: { ok: true } }))
+
+    await readNodeWithLinkCap(STUB_TOKEN, OPTS)
+
+    const mockBuild = vi.mocked(buildAuthHeaders)
+    expect(mockBuild).toHaveBeenCalledOnce()
+    const [, , method, pathAndQuery, host] = mockBuild.mock.calls[0]
+    expect(method).toBe("GET")
+    expect(pathAndQuery).toBe(EXPECTED_READ_PATH)
+    expect(host).toBe(EXPECTED_HOST)
+  })
+
+  it("L8 read: fetch URL uses namespaced path (no signing mismatch)", async () => {
+    const fetchSpy = mockFetch(200, { data: null })
+    vi.stubGlobal("fetch", fetchSpy)
+
+    await readNodeWithLinkCap(STUB_TOKEN, OPTS)
+
+    const [url] = fetchSpy.mock.calls[0]
+    expect(url).toBe(`${OPTS.baseUrl}${EXPECTED_READ_PATH}`)
+  })
+
+  it("L9 write: buildAuthHeaders receives namespaced path, real host, and JSON payload", async () => {
+    vi.stubGlobal("fetch", mockFetch(200, {}))
+
+    const data = { rsvpStatus: "ACCEPTED" }
+    await writeNodeWithLinkCap(STUB_TOKEN, data, OPTS)
+
+    const mockBuild = vi.mocked(buildAuthHeaders)
+    expect(mockBuild).toHaveBeenCalledOnce()
+    const [, , method, pathAndQuery, host, body] = mockBuild.mock.calls[0]
+    expect(method).toBe("POST")
+    expect(pathAndQuery).toBe(EXPECTED_WRITE_PATH)
+    expect(host).toBe(EXPECTED_HOST)
+    // body arg must be the exact JSON string sent over the wire
+    expect(JSON.parse(body as string)).toEqual({ data, baseHash: "" })
+  })
+
+  it("L9 write: fetch URL uses namespaced path and body matches signed payload", async () => {
+    const fetchSpy = mockFetch(200, {})
+    vi.stubGlobal("fetch", fetchSpy)
+
+    const data = { rsvpStatus: "ACCEPTED" }
+    await writeNodeWithLinkCap(STUB_TOKEN, data, OPTS)
+
+    const [url, init] = fetchSpy.mock.calls[0]
+    expect(url).toBe(`${OPTS.baseUrl}${EXPECTED_WRITE_PATH}`)
+    // The body sent to fetch must match the body passed to buildAuthHeaders.
+    const mockBuild = vi.mocked(buildAuthHeaders)
+    const signedBody = mockBuild.mock.calls[0][5]
+    expect(init?.body).toBe(signedBody)
   })
 })

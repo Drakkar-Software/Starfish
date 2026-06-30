@@ -467,9 +467,11 @@ export async function buildAuthHeaders(
   devEdPrivHex: string,
   method: string,
   pathAndQuery: string,
+  host = "",
+  body?: Uint8Array | string,
 ): Promise<Record<string, string>> {
   const { sig, ts, nonce } = await signRequest(
-    { method: method as SignableMethod, pathAndQuery, host: "" },
+    { method: method as SignableMethod, pathAndQuery, host, body },
     devEdPrivHex,
   )
   const capJson = stableStringify(cap as Record<string, unknown>)
