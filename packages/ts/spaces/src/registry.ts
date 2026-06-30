@@ -15,6 +15,7 @@ import { randomId } from "@drakkar.software/starfish-protocol"
 import type { Session } from "./session.js"
 import { seedSpaceObjectIndex } from "./object-index.js"
 import { runCas } from "./cas-retry.js"
+import { getCachedDoc, noteDoc } from "./doc-cache.js"
 
 /** Owner-set, SHARED space identity, persisted in the `_access` registry doc
  *  (plaintext — NOT E2EE). `image` is a data URI. All fields optional for back-compat. */
@@ -266,6 +267,21 @@ export async function readSpaceAccessBatch(
   return result
 }
 
+/** Build the plaintext `_access` doc payload (shared by create-path and CAS updates). */
+function buildSpaceAccessPayload(
+  owner: string,
+  members: string[],
+  meta?: SpaceMeta,
+): Record<string, unknown> {
+  const name = meta?.name?.trim() || undefined
+  const image = meta?.image || undefined
+  return {
+    v: 1, owner, members,
+    ...(name ? { name } : {}),
+    ...(image ? { image } : {}),
+  }
+}
+
 export async function writeSpaceAccess(
   client: StarfishClient,
   spaceId: string,
@@ -275,17 +291,59 @@ export async function writeSpaceAccess(
   session: Session,
   meta?: SpaceMeta,
 ): Promise<void> {
-  const name = meta?.name?.trim() || undefined
-  const image = meta?.image || undefined
-  await client.push(
-    session.layout.spaceAccessPush(spaceId),
-    {
-      v: 1, owner, members,
-      ...(name ? { name } : {}),
-      ...(image ? { image } : {}),
-    },
-    hash,
-  )
+  await client.push(session.layout.spaceAccessPush(spaceId), buildSpaceAccessPayload(owner, members, meta), hash)
+}
+
+/**
+ * CAS-safe mutator for the `_access` doc (owner/members/meta).
+ * Mirrors `updateObjectIndex`: warm branch from in-memory doc-cache, cold branch with
+ * `peekCache` seed (recovers the last-good hash from the persistent read-through cache
+ * when the live pull returns hash:"" due to a Garage degraded read), and `runCas` retry
+ * on 409. This prevents the un-retried `hash_mismatch` that `addSpaceMember` (called by
+ * `createNodeInviteLink` on every public-page share) hit after a tab reload.
+ */
+async function updateSpaceAccess(
+  client: StarfishClient,
+  spaceId: string,
+  session: Session,
+  mutator: (cur: SpaceEntry) => { owner: string; members: string[]; meta?: SpaceMeta } | null,
+): Promise<void> {
+  const pullPath = session.layout.spaceAccessPull(spaceId)
+  const pushPath = session.layout.spaceAccessPush(spaceId)
+  await runCas(async ({ currentHash }) => {
+    // Warm branch: reuse the in-memory doc-cache entry (already populated by a previous
+    // pull/push in this session). Skip on conflict retry — currentHash is authoritative then.
+    let cached = getCachedDoc(pushPath)
+    if (!cached?.data && !currentHash && typeof client.peekCache === "function") {
+      // Cold branch: seed from the persistent read-through cache (survives tab reloads).
+      // If the live pull is degraded (hash:""), peekCache still holds the last-good hash
+      // from the previous session's successful push → warm branch path on the next iteration.
+      const peeked = await client.peekCache(pullPath).catch(() => null)
+      if (peeked?.hash && peeked.data) {
+        noteDoc(pullPath, peeked.hash, peeked.data as Record<string, unknown>)
+        cached = getCachedDoc(pushPath)
+      }
+    }
+    let baseHash: string
+    let cur: SpaceEntry
+    if (cached?.data && !currentHash) {
+      baseHash = cached.hash
+      cur = parseSpaceAccess(cached.data, cached.hash)
+    } else {
+      const res = await client.pull(pullPath).catch((err: unknown) => {
+        if (err instanceof StarfishHttpError && err.status === 404) return null
+        throw err
+      })
+      baseHash = res?.hash || currentHash || cached?.hash || ""
+      cur = parseSpaceAccess(res?.data as { owner?: unknown; members?: unknown; name?: unknown; image?: unknown } | undefined, res?.hash ?? null)
+      if (res?.hash) noteDoc(pullPath, res.hash, res.data as Record<string, unknown>)
+    }
+    const next = mutator(cur)
+    if (next === null) return
+    const payload = buildSpaceAccessPayload(next.owner, next.members, next.meta)
+    const pushRes = await client.push(pushPath, payload, baseHash)
+    noteDoc(pushPath, pushRes.hash, payload)
+  })
 }
 
 export async function addSpaceMember(
@@ -295,9 +353,11 @@ export async function addSpaceMember(
   memberUserId: string,
   session: Session,
 ): Promise<void> {
-  const { owner, members, name, image, hash } = await readSpaceAccess(client, spaceId, session)
-  if (memberUserId === (owner ?? ownerUserId) || members.includes(memberUserId)) return
-  await writeSpaceAccess(client, spaceId, owner ?? ownerUserId, [...members, memberUserId], hash, session, { name, image })
+  await updateSpaceAccess(client, spaceId, session, (cur) => {
+    const owner = cur.owner ?? ownerUserId
+    if (memberUserId === owner || cur.members.includes(memberUserId)) return null
+    return { owner, members: [...cur.members, memberUserId], meta: { name: cur.name, image: cur.image } }
+  })
 }
 
 /** Remove a member from the space roster (used for link revocation). */
@@ -307,17 +367,14 @@ export async function removeSpaceMember(
   memberUserId: string,
   session: Session,
 ): Promise<void> {
-  const { owner, members, name, image, hash } = await readSpaceAccess(client, spaceId, session)
-  if (!members.includes(memberUserId)) return
-  await writeSpaceAccess(
-    client,
-    spaceId,
-    owner ?? memberUserId,
-    members.filter((m) => m !== memberUserId),
-    hash,
-    session,
-    { name, image },
-  )
+  await updateSpaceAccess(client, spaceId, session, (cur) => {
+    if (!cur.members.includes(memberUserId)) return null
+    return {
+      owner: cur.owner ?? memberUserId,
+      members: cur.members.filter((m) => m !== memberUserId),
+      meta: { name: cur.name, image: cur.image },
+    }
+  })
 }
 
 /** Invitee/owner-side: drop a space from the identity's own list + forget its cap

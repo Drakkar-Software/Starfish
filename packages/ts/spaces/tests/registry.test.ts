@@ -5,14 +5,15 @@
  * returns the cached _spaces doc instantly (when a cache is configured) and
  * that it still swallows 404 on a miss.
  */
-import { describe, it, expect, vi, afterEach } from "vitest"
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
 
 afterEach(() => vi.useRealTimers())
-import { StarfishClient, StarfishHttpError } from "@drakkar.software/starfish-client"
+import { StarfishClient, StarfishHttpError, ConflictError } from "@drakkar.software/starfish-client"
 import type { PullCache } from "@drakkar.software/starfish-client"
-import { readSpaces } from "../src/registry.js"
+import { readSpaces, addSpaceMember, removeSpaceMember } from "../src/registry.js"
 import { defaultSpaceLayout } from "../src/layout.js"
 import type { Session } from "../src/session.js"
+import { clearDocCache } from "../src/doc-cache.js"
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -37,6 +38,87 @@ function makeSession(userId = "u1"): Pick<Session, "userId" | "layout"> {
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
+
+const SPACE = "sp1"
+const OWNER = "owner1"
+const MEMBER = "member1"
+const NEW_MEMBER = "member2"
+const ACCESS_PULL = defaultSpaceLayout.spaceAccessPull(SPACE)
+const ACCESS_PUSH = defaultSpaceLayout.spaceAccessPush(SPACE)
+
+function makeAccessClient(opts: {
+  pull?: () => Promise<{ data: unknown; hash: string } | null>
+  push?: () => Promise<{ hash: string; timestamp: number }>
+  peek?: () => Promise<{ data: unknown; hash: string } | null>
+}): { client: unknown; pullSpy: ReturnType<typeof vi.fn>; pushSpy: ReturnType<typeof vi.fn>; peekSpy: ReturnType<typeof vi.fn> } {
+  const pullSpy = vi.fn(opts.pull ?? (async () => ({
+    data: { v: 1, owner: OWNER, members: [MEMBER] }, hash: "H_good",
+  })))
+  const pushSpy = vi.fn(opts.push ?? (async () => ({ hash: "H_new", timestamp: 1 })))
+  const peekSpy = vi.fn(opts.peek ?? (async () => null))
+  return {
+    client: { pull: pullSpy, push: pushSpy, peekCache: peekSpy },
+    pullSpy, pushSpy, peekSpy,
+  }
+}
+
+function makeAccessSession(): Pick<Session, "userId" | "layout"> {
+  return { userId: OWNER, layout: defaultSpaceLayout }
+}
+
+beforeEach(() => clearDocCache())
+
+describe("addSpaceMember / updateSpaceAccess — peekCache seed + runCas retry", () => {
+  it("A1: degraded pull (hash:'') + peekCache hit → push uses the good cached hash", async () => {
+    const { client, pushSpy, peekSpy } = makeAccessClient({
+      pull: async () => ({ data: {}, hash: "" }),         // degraded server read
+      peek: async () => ({ data: { v: 1, owner: OWNER, members: [MEMBER] }, hash: "H_cached" }),
+    })
+    await addSpaceMember(client as never, SPACE, OWNER, NEW_MEMBER, makeAccessSession() as Session)
+
+    expect(peekSpy).toHaveBeenCalledWith(ACCESS_PULL)
+    expect(pushSpy).toHaveBeenCalledTimes(1)
+    const [, payload, baseHash] = pushSpy.mock.calls[0]
+    expect(baseHash).toBe("H_cached")            // good cached hash, not ""
+    expect((payload as { members: string[] }).members).toContain(NEW_MEMBER)
+  })
+
+  it("A2: 409 on first push → runCas retries with currentHash and succeeds", async () => {
+    let attempt = 0
+    const { client, pushSpy } = makeAccessClient({
+      pull: async () => ({ data: { v: 1, owner: OWNER, members: [MEMBER] }, hash: "H_good" }),
+      push: async () => {
+        if (++attempt === 1) throw new ConflictError("H_conflict")
+        return { hash: "H_new", timestamp: 1 }
+      },
+    })
+    // Should not throw — runCas absorbs the first 409 and retries.
+    await expect(addSpaceMember(client as never, SPACE, OWNER, NEW_MEMBER, makeAccessSession() as Session)).resolves.toBeUndefined()
+    expect(pushSpy).toHaveBeenCalledTimes(2)
+  })
+
+  it("A3: member already present → mutator returns null → no push", async () => {
+    const { client, pushSpy } = makeAccessClient({
+      pull: async () => ({ data: { v: 1, owner: OWNER, members: [MEMBER, NEW_MEMBER] }, hash: "H_good" }),
+    })
+    await addSpaceMember(client as never, SPACE, OWNER, NEW_MEMBER, makeAccessSession() as Session)
+    expect(pushSpy).not.toHaveBeenCalled()
+  })
+
+  it("A4: removeSpaceMember with degraded pull + peekCache hit → push uses cached hash", async () => {
+    const { client, pushSpy, peekSpy } = makeAccessClient({
+      pull: async () => ({ data: {}, hash: "" }),
+      peek: async () => ({ data: { v: 1, owner: OWNER, members: [MEMBER] }, hash: "H_cached" }),
+    })
+    await removeSpaceMember(client as never, SPACE, MEMBER, makeAccessSession() as Session)
+
+    expect(peekSpy).toHaveBeenCalled()
+    expect(pushSpy).toHaveBeenCalledTimes(1)
+    const [, payload, baseHash] = pushSpy.mock.calls[0]
+    expect(baseHash).toBe("H_cached")
+    expect((payload as { members: string[] }).members).not.toContain(MEMBER)
+  })
+})
 
 describe("readSpaces staleWhileRevalidate", () => {
   it("returns the cached _spaces doc immediately and fires background revalidation", async () => {

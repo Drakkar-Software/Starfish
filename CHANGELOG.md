@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.0.0-alpha.54
+
+### `starfish-spaces` / `@drakkar.software/starfish-spaces`
+
+#### Fixed
+- **`addSpaceMember`/`removeSpaceMember` — `runCas` + `peekCache` seed for `_access` doc** — The `_access` writer was the last unguarded CAS path: it did a bare `readSpaceAccess` (pull) + `writeSpaceAccess` (push) with no retry on conflict and no cache recovery. A degraded pull (`hash:""`) produced an un-retried `hash_mismatch` (409) that bubbled straight to `handleShare` as `ConflictError: hash_mismatch`. Fixed by introducing `updateSpaceAccess` (mirrors `updateObjectIndex`) with `runCas`, in-memory doc-cache warm branch, cold-path `peekCache` seed (reads the last-good hash from the persistent read-through cache), and a `baseHash` fallback chain. `addSpaceMember`/`removeSpaceMember` are now thin mutators over this helper. `writeSpaceAccess` is kept unchanged for the `createSpace` `hash=null` fresh-create path.
+- **`writeProfile` — `runCas` + `peekCache` seed (latent data-loss prevention)** — A degraded live pull (`hash:""`, `data:{}`) caused `writeProfile` to (1) push a stale `baseHash` → 409, and (2) merge the patch against `{}` instead of the real cached data — dropping avatar, keys, and other fields. Wrapped in `runCas` + `peekCache` recovery: if the pull is degraded and the persistent cache has the profile, the real data is used for the merge and the cached hash for the push.
+- **`ensurePseudo`/`ensureProfileKeys` — peekCache guard against destructive overwrites** — Both boot-time callers decide whether to write based on the same pull result. Without the guard, a degraded pull made `ensurePseudo` conclude the pseudo was absent and overwrite it with the fallback, and `ensureProfileKeys` re-publish already-set keys. Both now consult `peekCache` before acting, so a degraded network read never triggers a write that already-cached data proves is unnecessary.
+
+#### Note
+- **Requires `@drakkar.software/starfish-client >= 3.0.0-alpha.51`** — the anti-poison `writeCache` guard is what keeps the persistent pull cache clean; without it, `peekCache` would return the degraded `hash:""` and the seed would be skipped.
+
 ## 3.0.0-alpha.53
 
 ### `starfish-spaces` / `@drakkar.software/starfish-spaces`

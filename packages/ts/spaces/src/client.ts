@@ -367,21 +367,43 @@ export async function readProfiles(
   return out
 }
 
-/** Merge a patch into the caller's own profile doc. */
+/**
+ * Merge a patch into the caller's own profile doc.
+ * Wrapped in `runCas` + `peekCache` seed so a degraded live pull (hash:"") doesn't
+ * drop existing fields (avatar/keys) and doesn't push a stale `baseHash` → 409.
+ */
 export async function writeProfile(
   client: StarfishClient,
   userId: string,
   layout: SpaceLayout,
   patch: { pseudo?: string; avatar?: string | null; edPub?: string; kemPub?: string; kemSig?: string },
 ): Promise<void> {
-  const current = await client.pull(layout.profilePull(userId)).catch(() => null)
-  const base = (current?.data as Record<string, unknown> | undefined) ?? {}
-  const next: Record<string, unknown> = { ...base, ...patch, v: 1 }
-  if (next.avatar == null) delete next.avatar
-  await client.push(layout.profilePush(userId), next, current?.hash ?? null)
+  const pullPath = layout.profilePull(userId)
+  const pushPath = layout.profilePush(userId)
+  await runCas(async ({ currentHash }) => {
+    const current = await client.pull(pullPath).catch(() => null)
+    let data = current?.data as Record<string, unknown> | undefined
+    let baseHash = current?.hash || currentHash || ""
+    if ((!data || !current?.hash) && !currentHash && typeof client.peekCache === "function") {
+      // Cold/degraded pull: recover the last-good data+hash from the persistent cache.
+      const peeked = await client.peekCache(pullPath).catch(() => null)
+      if (peeked?.hash && peeked.data) {
+        data = peeked.data as Record<string, unknown>
+        baseHash = baseHash || peeked.hash
+      }
+    }
+    const next: Record<string, unknown> = { ...(data ?? {}), ...patch, v: 1 }
+    if (next.avatar == null) delete next.avatar
+    const pushRes = await client.push(pushPath, next, baseHash)
+    noteHash(pushPath, pushRes.hash)
+  })
 }
 
-/** Seed the caller's profile pseudo only when none exists yet. */
+/**
+ * Seed the caller's profile pseudo only when none exists yet.
+ * Consults `peekCache` before concluding the pseudo is absent, so a degraded pull
+ * doesn't trigger a destructive overwrite with the fallback value.
+ */
 export async function ensurePseudo(
   client: StarfishClient,
   userId: string,
@@ -389,8 +411,14 @@ export async function ensurePseudo(
   fallback: string,
 ): Promise<string> {
   try {
-    const res = await client.pull(layout.profilePull(userId)).catch(() => null)
-    const data = (res?.data ?? null) as Record<string, unknown> | null
+    const pullPath = layout.profilePull(userId)
+    const res = await client.pull(pullPath).catch(() => null)
+    let data = (res?.data ?? null) as Record<string, unknown> | null
+    // Degraded pull (hash:""): check the persistent cache before treating pseudo as absent.
+    if ((!data || !res?.hash) && typeof client.peekCache === "function") {
+      const peeked = await client.peekCache(pullPath).catch(() => null)
+      if (peeked?.hash && peeked.data) data = peeked.data as Record<string, unknown>
+    }
     const existing = typeof data?.pseudo === "string" ? data.pseudo.trim() : null
     if (existing) return existing
     await writeProfile(client, userId, layout, { pseudo: fallback })
@@ -403,6 +431,8 @@ export async function ensurePseudo(
 /**
  * Publish this identity's public Ed + KEM keys in its profile (one-time, idempotent).
  * Also writes `kemSig` so paired devices can include it in their identity links.
+ * Consults `peekCache` before deciding keys are absent, so a degraded pull doesn't
+ * re-publish keys over an already-populated profile.
  */
 export async function ensureProfileKeys(
   client: StarfishClient,
@@ -411,8 +441,14 @@ export async function ensureProfileKeys(
   keys: { edPub: string; kemPub: string; edPriv: string },
 ): Promise<void> {
   try {
-    const res = await client.pull(layout.profilePull(userId)).catch(() => null)
-    const data = (res?.data ?? null) as Record<string, unknown> | null
+    const pullPath = layout.profilePull(userId)
+    const res = await client.pull(pullPath).catch(() => null)
+    let data = (res?.data ?? null) as Record<string, unknown> | null
+    // Degraded pull (hash:""): check the persistent cache before deciding keys are absent.
+    if ((!data || !res?.hash) && typeof client.peekCache === "function") {
+      const peeked = await client.peekCache(pullPath).catch(() => null)
+      if (peeked?.hash && peeked.data) data = peeked.data as Record<string, unknown>
+    }
     if (data && typeof data.edPub === "string" && typeof data.kemPub === "string") return
     const kemSig = signKemSig(keys)
     await writeProfile(client, userId, layout, { edPub: keys.edPub, kemPub: keys.kemPub, kemSig })
