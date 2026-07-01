@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "starfish-entitlements"
-version = "3.0.0a50"
+version = "3.0.0a62"
 description = "Starfish entitlements extension (per-user feature-slug role enrichment for the server, plus a client-side entitlement reader)"
 requires-python = ">=3.11"
 dependencies = [

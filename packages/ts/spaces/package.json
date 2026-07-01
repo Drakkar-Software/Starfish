@@ -1,6 +1,6 @@
 {
   "name": "@drakkar.software/starfish-spaces",
-  "version": "3.0.0-alpha.61",
+  "version": "3.0.0-alpha.62",
   "repository": {
     "type": "git",
     "url": "https://github.com/Drakkar-Software/starfish.git",
@@ -21,12 +21,12 @@
     }
   },
   "dependencies": {
-    "@drakkar.software/starfish-protocol": "workspace:*",
     "@drakkar.software/starfish-client": "workspace:*",
-    "@drakkar.software/starfish-keyring": "workspace:*",
-    "@drakkar.software/starfish-sharing": "workspace:*",
     "@drakkar.software/starfish-identities": "workspace:*",
+    "@drakkar.software/starfish-keyring": "workspace:*",
+    "@drakkar.software/starfish-protocol": "workspace:*",
     "@drakkar.software/starfish-server": "workspace:*",
+    "@drakkar.software/starfish-sharing": "workspace:*",
     "@noble/curves": "^2.2.0",
     "@noble/hashes": "^2.0.0",
     "@scure/bip39": "^1.5.4"

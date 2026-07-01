@@ -1,6 +1,6 @@
 {
   "name": "@drakkar.software/starfish-sharing",
-  "version": "3.0.0-alpha.50",
+  "version": "3.0.0-alpha.62",
   "repository": {
     "type": "git",
     "url": "https://github.com/Drakkar-Software/starfish.git",
@@ -21,9 +21,9 @@
     }
   },
   "dependencies": {
-    "@drakkar.software/starfish-protocol": "workspace:*",
     "@drakkar.software/starfish-client": "workspace:*",
-    "@drakkar.software/starfish-keyring": "workspace:*"
+    "@drakkar.software/starfish-keyring": "workspace:*",
+    "@drakkar.software/starfish-protocol": "workspace:*"
   },
   "scripts": {
     "build": "node build.mjs && tsc -p tsconfig.build.json",
