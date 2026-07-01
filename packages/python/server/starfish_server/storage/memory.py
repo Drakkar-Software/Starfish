@@ -53,7 +53,11 @@ class MemoryObjectStore(AbstractObjectStore):
         limit: int | None = None,
         context: StoreContext | None = None,  # noqa: ARG002
     ) -> list[str]:
-        keys = sorted(k for k in self._data if k.startswith(prefix))
+        # Union both dicts: put() and put_bytes() share one logical key
+        # namespace (same as the real S3/filesystem backends), so a
+        # binary-written key must be listable too.
+        all_keys = set(self._data) | set(self._binary)
+        keys = sorted(k for k in all_keys if k.startswith(prefix))
         if start_after:
             keys = [k for k in keys if k > start_after]
         if limit:

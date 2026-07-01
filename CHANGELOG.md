@@ -1,5 +1,24 @@
 # Changelog
 
+## 3.0.0-alpha.62
+
+### `starfish-events` / `@drakkar.software/starfish-events` (alpha.62)
+
+#### Added
+- **Server-assigned, lexicographically-sortable batch ids** — `createEventsServerPlugin` / `create_events_server_plugin` no longer trusts the client-supplied `{batchId}` URL segment as the storage key. The plugin now mints its own id — `<13-digit epoch-ms>-<4-digit per-ms counter>-<6-hex random>` — from the same server-clock instant already used to stamp `received_at`, and overrides the last `storagePath` segment with it before writing. This closes a real incremental-listing bug in the SunGlasses analytics dashboard: batch ids were previously random UUID v4s minted client-side (one per flush, on end-user devices), so `GET /list/<collection>/<app>`'s ascending lexicographic order had no relationship to write order, and — worse — batches come from many devices with untrusted, possibly-skewed clocks, so even a client-minted *timestamp* id could sort before an already-resumed cursor and be silently missed forever. A single server clock removes that failure mode: ascending key order now doubles as a correct chronological cursor (within one server process — multi-instance deployments still need the caller's own already-downloaded-files dedup as a safety net, same as before).
+  - New `generateSortableBatchId` (TS, `sortable-id.ts`) / `generate_sortable_batch_id` (Python, `sortable_id.py`) — pure id generator, exported for direct use/testing.
+  - `storagePath`'s last segment must be a `{param}` (already true for every documented example); this is now validated at plugin-construction time (`lastPathParamName` / `_last_path_param_name`) instead of assumed, so a misconfigured template fails fast at startup.
+  - Pull (`interceptPull`) is unaffected — callers already address batches by the id they learned from a prior push response or `/list`, and the pull hook resolves the same key shape either way.
+
+#### Tests
+- TS: `tests/integration.test.ts` rewritten to discover the server-assigned id via `/list` rather than assuming the client-supplied id was used; added coverage for strictly-ascending ids across successive pushes and `?after=` cursor resumption.
+- Python: `tests/test_integration.py` — same treatment, plus a construction-time guard test for a `storage_path` missing a trailing `{param}` segment.
+
+### `starfish-server` / `@drakkar.software/starfish-server` (alpha.62)
+
+#### Fixed
+- **`MemoryObjectStore.listKeys` / `list_keys` blind to `putBytes`/`put_bytes`-written keys** — `MemoryObjectStore` keeps binary and string writes in separate maps, but `listKeys`/`list_keys` only ever scanned the string map. Any collection combining `listable: true` with a binary-writing plugin (e.g. `starfish-events`, or any `createParquetCollection` consumer) was untestable against the in-memory store: `/list` always returned zero items for keys written via `putBytes`, even though real `S3ObjectStore` and `FilesystemObjectStore` backends — which use one physical namespace regardless of write path — never had this gap. `listKeys`/`list_keys` now union both maps before filtering/sorting, matching the real backends and the `ObjectStore` interface's documented "every key under prefix" contract.
+
 ## 3.0.0-alpha.61
 
 ### `starfish-spaces` / `@drakkar.software/starfish-spaces` (alpha.61)

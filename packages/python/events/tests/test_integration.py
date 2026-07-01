@@ -6,6 +6,13 @@ Uses a real ``create_sync_router`` + ``MemoryObjectStore`` to exercise the full
 
 Each test gets a fresh store + app (via the ``_build_app`` factory) so state
 never bleeds between tests.
+
+Note on batch ids: the plugin assigns the server-side, lexicographically-
+sortable batch id — the client's ``{batchId}`` URL segment is discarded (see
+``starfish_events/plugin.py`` and ``sortable_id.py``). Most tests below
+discover the actual stored key via ``store.list_keys()`` (or the HTTP
+``/list`` route, for the tests that exercise that path end-to-end) rather than
+assuming the client-supplied id was used.
 """
 
 from __future__ import annotations
@@ -44,6 +51,9 @@ _EVENTS_COLLECTION = CollectionConfig(
     encryption="none",
     maxBodyBytes=8_000_000,
     allowedMimeTypes=["application/json"],
+    # Lets tests (and the SunGlasses dashboard) discover server-assigned batch
+    # ids via /list.
+    listable=True,
 )
 
 _SAMPLE_EVENT = {
@@ -80,7 +90,7 @@ def _build_app(store=None, *, extra_collections: list[CollectionConfig] | None =
 
 def _build_app_admin_read(store=None, *, extra_collections: list[CollectionConfig] | None = None):
     """Like ``_build_app`` but the role resolver returns the ``admin`` role so
-    pull tests can read the admin-only events collection."""
+    pull/list tests can read the admin-only events collection."""
     store = store or MemoryObjectStore()
     collections = [_EVENTS_COLLECTION] + (extra_collections or [])
     config = SyncConfig(version=1, collections=collections)
@@ -117,6 +127,23 @@ def _decode_parquet(raw: bytes) -> list[dict]:
     df = table.to_pydict()
     n = table.num_rows
     return [{col: df[col][i] for col in df} for i in range(n)]
+
+
+async def _stored_key(store, prefix: str = "events/myapp/") -> str:
+    """Discover the single server-assigned stored key under *prefix* by going
+    straight to the store (mirrors how the dashboard discovers batch ids via
+    the HTTP /list route, without the HTTP round-trip). Only valid when the
+    test pushed exactly one batch under that prefix."""
+    keys = await store.list_keys(prefix)
+    assert len(keys) == 1, f"expected exactly one stored key under {prefix!r}, got {keys!r}"
+    return keys[0]
+
+
+async def _list_items(client: AsyncClient, path: str, after: str | None = None) -> dict:
+    qs = f"?limit=10&after={after}" if after else "?limit=10"
+    resp = await client.get(f"{path}{qs}")
+    assert resp.status_code == 200
+    return resp.json()
 
 
 # ---------------------------------------------------------------------------
@@ -157,7 +184,7 @@ async def test_hash_equals_sha256_of_stored_bytes():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await _push(client, "/push/events/myapp/batch-1", [_SAMPLE_EVENT])
 
-    stored = await store.get_bytes("events/myapp/batch-1.parquet")
+    stored = await store.get_bytes(await _stored_key(store))
     assert stored is not None
     raw_bytes, _ = stored
     expected_hash = hashlib.sha256(raw_bytes).hexdigest()
@@ -169,7 +196,7 @@ async def test_stored_parquet_has_par1_magic_at_start():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         await _push(client, "/push/events/myapp/batch-1", [_SAMPLE_EVENT])
 
-    stored = await store.get_bytes("events/myapp/batch-1.parquet")
+    stored = await store.get_bytes(await _stored_key(store))
     raw_bytes, _ = stored
     assert raw_bytes[:4] == b"PAR1"
 
@@ -179,7 +206,7 @@ async def test_stored_parquet_has_par1_magic_at_end():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         await _push(client, "/push/events/myapp/batch-1", [_SAMPLE_EVENT])
 
-    stored = await store.get_bytes("events/myapp/batch-1.parquet")
+    stored = await store.get_bytes(await _stored_key(store))
     raw_bytes, _ = stored
     assert raw_bytes[-4:] == b"PAR1"
 
@@ -189,7 +216,7 @@ async def test_stored_parquet_has_correct_content_type():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         await _push(client, "/push/events/myapp/batch-1", [_SAMPLE_EVENT])
 
-    stored = await store.get_bytes("events/myapp/batch-1.parquet")
+    stored = await store.get_bytes(await _stored_key(store))
     _, content_type = stored
     assert content_type == PARQUET_MIME_TYPE
 
@@ -199,8 +226,22 @@ async def test_parquet_key_has_dot_parquet_extension():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         await _push(client, "/push/events/myapp/batch-1", [_SAMPLE_EVENT])
 
-    stored = await store.get_bytes("events/myapp/batch-1.parquet")
-    assert stored is not None, "Parquet file should be stored at the .parquet-suffixed key"
+    key = await _stored_key(store)
+    assert key.endswith(".parquet")
+
+
+async def test_batch_id_is_server_assigned_not_client_supplied():
+    """The client's {batchId} URL segment must never become the storage key."""
+    app, store = _build_app()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await _push(client, "/push/events/myapp/client-supplied-id", [_SAMPLE_EVENT])
+
+    assert resp.status_code == 200
+    assert (await store.get_bytes("events/myapp/client-supplied-id.parquet")) is None
+
+    key = await _stored_key(store)
+    batch_id = key.removeprefix("events/myapp/").removesuffix(".parquet")
+    assert re.fullmatch(r"\d{13}-\d{4}-[0-9a-f]{6}", batch_id), f"unexpected batch id shape: {batch_id!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -213,7 +254,7 @@ async def test_parquet_roundtrip_correct_event_values():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         await _push(client, "/push/events/myapp/batch-1", [_SAMPLE_EVENT])
 
-    raw_bytes, _ = await store.get_bytes("events/myapp/batch-1.parquet")
+    raw_bytes, _ = await store.get_bytes(await _stored_key(store))
     rows = _decode_parquet(raw_bytes)
     assert len(rows) == 1
     row = rows[0]
@@ -232,7 +273,7 @@ async def test_parquet_schema_has_all_ten_columns():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         await _push(client, "/push/events/myapp/batch-1", [_SAMPLE_EVENT])
 
-    raw_bytes, _ = await store.get_bytes("events/myapp/batch-1.parquet")
+    raw_bytes, _ = await store.get_bytes(await _stored_key(store))
     schema = pq.read_schema(io.BytesIO(raw_bytes))
     assert schema.names == list(COLUMNS)
 
@@ -244,7 +285,7 @@ async def test_received_at_stamped_server_side():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         await _push(client, "/push/events/myapp/batch-1", [event_with_received_at])
 
-    raw_bytes, _ = await store.get_bytes("events/myapp/batch-1.parquet")
+    raw_bytes, _ = await store.get_bytes(await _stored_key(store))
     rows = _decode_parquet(raw_bytes)
     assert rows[0]["received_at"] != "CLIENT_VALUE_SHOULD_BE_OVERWRITTEN"
     assert rows[0]["received_at"] != ""  # must be a real timestamp
@@ -255,7 +296,7 @@ async def test_received_at_is_valid_iso8601_utc():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         await _push(client, "/push/events/myapp/batch-1", [_SAMPLE_EVENT])
 
-    raw_bytes, _ = await store.get_bytes("events/myapp/batch-1.parquet")
+    raw_bytes, _ = await store.get_bytes(await _stored_key(store))
     rows = _decode_parquet(raw_bytes)
     received_at = rows[0]["received_at"]
     # e.g. "2024-06-01T10:00:01.000Z"
@@ -271,7 +312,7 @@ async def test_missing_event_fields_default_to_empty_string_in_parquet():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         await _push(client, "/push/events/myapp/batch-1", [partial_event])
 
-    raw_bytes, _ = await store.get_bytes("events/myapp/batch-1.parquet")
+    raw_bytes, _ = await store.get_bytes(await _stored_key(store))
     rows = _decode_parquet(raw_bytes)
     assert rows[0]["event"] == "minimal_event"
     assert rows[0]["event_type"] == ""
@@ -293,7 +334,7 @@ async def test_multi_event_batch_all_rows_preserved():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         await _push(client, "/push/events/myapp/batch-1", events)
 
-    raw_bytes, _ = await store.get_bytes("events/myapp/batch-1.parquet")
+    raw_bytes, _ = await store.get_bytes(await _stored_key(store))
     rows = _decode_parquet(raw_bytes)
     assert len(rows) == 5
     assert [r["event"] for r in rows] == [f"event_{i}" for i in range(5)]
@@ -309,7 +350,7 @@ async def test_multi_event_batch_events_in_order():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         await _push(client, "/push/events/myapp/batch-1", events)
 
-    raw_bytes, _ = await store.get_bytes("events/myapp/batch-1.parquet")
+    raw_bytes, _ = await store.get_bytes(await _stored_key(store))
     rows = _decode_parquet(raw_bytes)
     assert [r["event"] for r in rows] == ["first", "second", "third"]
 
@@ -332,7 +373,7 @@ async def test_empty_events_batch_writes_valid_parquet_with_zero_rows():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         await _push(client, "/push/events/myapp/batch-empty", [])
 
-    stored = await store.get_bytes("events/myapp/batch-empty.parquet")
+    stored = await store.get_bytes(await _stored_key(store))
     assert stored is not None
     raw_bytes, _ = stored
     assert raw_bytes[:4] == b"PAR1"
@@ -346,15 +387,19 @@ async def test_empty_events_batch_writes_valid_parquet_with_zero_rows():
 
 
 async def test_hash_is_deterministic_for_same_received_at():
-    """Encode + hash is deterministic: same events + same received_at → same Parquet bytes → same hash."""
+    """Encode + hash is deterministic: same events + same received_at → same Parquet bytes → same hash.
+
+    The batch id itself is NOT part of the hash (the hash covers only the
+    encoded Parquet rows), so it's fine — and expected — for the two batches
+    below to land at different server-assigned ids.
+    """
     from datetime import datetime, timezone
     from unittest.mock import patch
 
     fixed_time = datetime(2024, 6, 1, 10, 0, 1, 123_000, timezone.utc)
+    fixed_ns = int(fixed_time.timestamp() * 1_000_000_000)
 
-    with patch("starfish_events.plugin.datetime") as mock_dt:
-        mock_dt.now.return_value = fixed_time
-
+    with patch("starfish_events.plugin.time.time_ns", return_value=fixed_ns):
         app1, store1 = _build_app()
         app2, store2 = _build_app()
 
@@ -410,7 +455,7 @@ async def test_missing_events_key_treated_as_empty_not_error():
             headers={"Content-Type": "application/json"},
         )
     assert resp.status_code == 200
-    stored = await store.get_bytes("events/myapp/batch-1.parquet")
+    stored = await store.get_bytes(await _stored_key(store))
     assert stored is not None
     raw_bytes, _ = stored
     assert pq.read_table(io.BytesIO(raw_bytes)).num_rows == 0
@@ -446,7 +491,7 @@ async def test_other_collection_not_intercepted_default_json_write_occurs():
 
 
 # ---------------------------------------------------------------------------
-# Construction-time guard
+# Construction-time guards
 # ---------------------------------------------------------------------------
 
 
@@ -460,19 +505,35 @@ def test_construction_guard_raises_when_store_lacks_put_bytes():
         )
 
 
+def test_construction_guard_raises_when_storage_path_missing_param_segment():
+    """storage_path must end with a {param} segment (that's where the server-
+    assigned batch id is substituted)."""
+    with pytest.raises(ValueError, match=r"\{param\}"):
+        create_events_server_plugin(
+            store=MemoryObjectStore(),
+            collection="events",
+            storage_path="events/{app}/fixed",
+        )
+
+
 # ---------------------------------------------------------------------------
 # Pull: interceptPull hook serves Parquet bytes
 # ---------------------------------------------------------------------------
 
 
 async def test_pull_returns_parquet_bytes_after_push():
-    """GET /pull/<collection>/... returns the stored Parquet file."""
-    app, _ = _build_app_admin_read()
+    """GET /pull/<collection>/... returns the stored Parquet file, addressed
+    by the id learned from /list."""
+    app, store = _build_app_admin_read()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         push_resp = await _push(client, "/push/events/myapp/batch-pull", [_SAMPLE_EVENT])
         assert push_resp.status_code == 200
 
-        pull_resp = await client.get("/pull/events/myapp/batch-pull")
+        listing = await _list_items(client, "/list/events/myapp")
+        assert len(listing["items"]) == 1
+        batch_id = listing["items"][0].removesuffix(".parquet")
+
+        pull_resp = await client.get(f"/pull/events/myapp/{batch_id}")
 
     assert pull_resp.status_code == 200
     assert pull_resp.headers["content-type"] == PARQUET_MIME_TYPE
@@ -481,10 +542,11 @@ async def test_pull_returns_parquet_bytes_after_push():
 
 async def test_pull_etag_header_present():
     """Pull response includes an ETag header."""
-    app, _ = _build_app_admin_read()
+    app, store = _build_app_admin_read()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         await _push(client, "/push/events/myapp/batch-etag", [_SAMPLE_EVENT])
-        pull_resp = await client.get("/pull/events/myapp/batch-etag")
+        batch_id = (await _stored_key(store)).removeprefix("events/myapp/").removesuffix(".parquet")
+        pull_resp = await client.get(f"/pull/events/myapp/{batch_id}")
 
     assert pull_resp.status_code == 200
     assert "etag" in pull_resp.headers
@@ -492,14 +554,15 @@ async def test_pull_etag_header_present():
 
 async def test_pull_304_on_matching_if_none_match():
     """A conditional GET with the correct ETag returns 304 Not Modified."""
-    app, _ = _build_app_admin_read()
+    app, store = _build_app_admin_read()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         await _push(client, "/push/events/myapp/batch-304", [_SAMPLE_EVENT])
-        pull_resp = await client.get("/pull/events/myapp/batch-304")
+        batch_id = (await _stored_key(store)).removeprefix("events/myapp/").removesuffix(".parquet")
+        pull_resp = await client.get(f"/pull/events/myapp/{batch_id}")
         etag = pull_resp.headers["etag"]
 
         cond_resp = await client.get(
-            "/pull/events/myapp/batch-304",
+            f"/pull/events/myapp/{batch_id}",
             headers={"if-none-match": etag},
         )
 
@@ -539,3 +602,47 @@ async def test_pull_other_collection_not_intercepted():
     # Normal JSON pull, not Parquet
     assert pull_resp.status_code == 200
     assert "application/json" in pull_resp.headers["content-type"]
+
+
+# ---------------------------------------------------------------------------
+# Listing: /list route reflects server-assigned, chronologically-sortable ids
+# ---------------------------------------------------------------------------
+
+
+async def test_successive_pushes_have_strictly_ascending_ids_in_list_order():
+    app, store = _build_app_admin_read()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        for _ in range(5):
+            resp = await _push(client, "/push/events/myapp/ignored", [_SAMPLE_EVENT])
+            assert resp.status_code == 200
+
+        listing = await _list_items(client, "/list/events/myapp")
+
+    assert listing["hasMore"] is False
+    items = listing["items"]
+    assert len(items) == 5
+    # Ascending lexicographic order from the store IS the insertion (chronological) order.
+    assert items == sorted(items)
+    # No duplicate ids even for pushes issued back-to-back within the same millisecond.
+    assert len(set(items)) == 5
+
+
+async def test_list_after_cursor_resumes_only_new_batches():
+    app, store = _build_app_admin_read()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        await _push(client, "/push/events/myapp/ignored-1", [_SAMPLE_EVENT])
+        first = await _list_items(client, "/list/events/myapp")
+        assert len(first["items"]) == 1
+        cursor = first["items"][0]
+
+        # No new pushes yet — resuming from the cursor returns nothing.
+        idle = await _list_items(client, "/list/events/myapp", after=cursor)
+        assert idle["items"] == []
+        assert idle["hasMore"] is False
+
+        await _push(client, "/push/events/myapp/ignored-2", [_SAMPLE_EVENT])
+
+        resumed = await _list_items(client, "/list/events/myapp", after=cursor)
+
+    assert len(resumed["items"]) == 1
+    assert resumed["items"][0] != cursor

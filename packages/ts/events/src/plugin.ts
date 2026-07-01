@@ -24,6 +24,15 @@
  * the storagePath template). DuckDB's `read_parquet('s3://…/**‌/*.parquet')`
  * glob treats all files under the prefix as one logical dataset.
  *
+ * ## Batch id
+ *
+ * The plugin — not the client — assigns the final `{batchId}` path segment: a
+ * server-clock-derived, lexicographically-sortable id (see `sortable-id.ts`).
+ * The client's URL still carries a `{batchId}` placeholder value, but it's
+ * discarded. This makes the `/list` route's ascending key order double as a
+ * chronological cursor, which a client-minted id can't guarantee — batches
+ * come from many end-user devices with untrusted, possibly-skewed clocks.
+ *
  * ## Privacy
  *
  * Never log `distinct_id`, `properties`, or `context`. Log counts only.
@@ -41,6 +50,7 @@ import { getCrypto, bytesToHex, PARQUET_MIME_TYPE } from "@drakkar.software/star
 import type { ObjectStore } from "@drakkar.software/starfish-server"
 import { resolveDocumentKey } from "@drakkar.software/starfish-server"
 import { encodeParquet } from "./encode.js"
+import { generateSortableBatchId } from "./sortable-id.js"
 
 /** Options for {@link createEventsServerPlugin}. */
 export interface EventsPluginOptions {
@@ -60,8 +70,11 @@ export interface EventsPluginOptions {
 
   /**
    * Storage-path template for the output Parquet key.
-   * Supports `{param}` placeholders resolved from the push URL's path params.
-   * Example: `"events/{app}/{batchId}"` → `"events/myapp/<uuid>"`
+   * Supports `{param}` placeholders resolved from the push URL's path params,
+   * except the **last** segment, which must be a `{param}` too but is always
+   * overridden with a server-assigned sortable batch id (see "Batch id" above)
+   * rather than the client-supplied value.
+   * Example: `"events/{app}/{batchId}"` → `"events/myapp/<server-assigned-id>"`
    *
    * The plugin appends `.parquet` when the resolved key doesn't already end
    * with it, so you can omit the extension from the template.
@@ -113,6 +126,11 @@ export function createEventsServerPlugin(opts: EventsPluginOptions): ServerPlugi
     )
   }
 
+  // The last storagePath segment names the batch-id param (e.g. "{batchId}" in
+  // "events/{app}/{batchId}"). Resolved once at construction so a misconfigured
+  // template fails fast at startup rather than on the first push.
+  const batchIdParam = lastPathParamName(storagePath)
+
   return {
     name: "starfish-events",
 
@@ -137,8 +155,11 @@ export function createEventsServerPlugin(opts: EventsPluginOptions): ServerPlugi
         }
       }
 
-      // Stamp ingest time server-side (never log events contents).
-      const receivedAt = new Date().toISOString()
+      // Stamp ingest time server-side (never log events contents). The batch id
+      // below is minted from this same instant, so the filename and
+      // `received_at` agree.
+      const now = Date.now()
+      const receivedAt = new Date(now).toISOString()
       const rows = events.map((e) => ({ ...e, received_at: receivedAt }))
 
       // Encode to Parquet.
@@ -151,8 +172,14 @@ export function createEventsServerPlugin(opts: EventsPluginOptions): ServerPlugi
         return { action: "reject", status: 500, error: "Parquet encoding failed" }
       }
 
-      // Resolve the output key from the storagePath template + URL params.
-      let key = resolveDocumentKey(storagePath, ctx.params)
+      // Resolve the output key from the storagePath template + URL params, but
+      // override the batch-id param with a server-assigned, lexicographically-
+      // sortable id — never the client-supplied one. Batches arrive from many
+      // end-user devices with untrusted clocks, so only a single server clock
+      // can make the /list route's ascending key order a correct chronological
+      // cursor.
+      const serverBatchId = generateSortableBatchId(now)
+      let key = resolveDocumentKey(storagePath, { ...ctx.params, [batchIdParam]: serverBatchId })
       if (!key.endsWith(".parquet")) key += ".parquet"
 
       // Write to the object store. Failure propagates as 500 so the client
@@ -189,4 +216,17 @@ export function createEventsServerPlugin(opts: EventsPluginOptions): ServerPlugi
       return { action: "respond", status: 200, body: result.body, contentType: result.contentType }
     },
   }
+}
+
+/** Extract the `{param}` name from the last `storagePath` segment (e.g. "batchId" from "{batchId}"). */
+function lastPathParamName(storagePath: string): string {
+  const lastSegment = storagePath.split("/").pop() ?? ""
+  const match = /^\{([^}]+)\}$/.exec(lastSegment)
+  if (!match) {
+    throw new Error(
+      `[starfish-events] storagePath "${storagePath}" must end with a {param} segment ` +
+        '(e.g. "events/{app}/{batchId}")',
+    )
+  }
+  return match[1]!
 }

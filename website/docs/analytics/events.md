@@ -112,13 +112,37 @@ would encode empty files. Use `allowedMimeTypes: ["application/json"]` (TS) or
 ## One file per batch
 
 Parquet's column-footer format makes in-place append impractical. Each push
-writes a unique file (the `{batchId}` placeholder resolves to the UUID in the
-push URL). DuckDB's glob `read_parquet('s3://…/**/*.parquet')` treats all files
-under the prefix as one logical dataset — so you can query the full history
-without knowing individual file names.
+writes a unique file. DuckDB's glob `read_parquet('s3://…/**/*.parquet')` treats
+all files under the prefix as one logical dataset — so you can query the full
+history without knowing individual file names.
 
 The plugin stamps every row with a `received_at` column (ISO-8601 UTC) set
 server-side at ingest time.
+
+---
+
+## Batch id & incremental listing
+
+The plugin — not the client — assigns the final `{batchId}` path segment: a
+server-clock-derived, lexicographically-sortable id (13-digit epoch-ms + a
+per-ms counter + a random suffix, e.g. `1782933157690-0000-735223`). The push
+URL's `{batchId}` value is discarded; the client learns the real id later, by
+listing.
+
+This makes incremental sync possible: if the collection is `listable: true`
+(TS) / `listable=True` (Python), `GET /list/<collection>/<app>` returns stored
+batch ids in ascending lexicographic order — which, because the id is
+server-clock-derived, is also chronological order. A dashboard or sync client
+can persist the last-seen id and pass it back as `?after=<id>` on the next
+poll to fetch only batches written since then, instead of re-listing from the
+beginning every time.
+
+A client-minted id can't provide that guarantee: batches are pushed from many
+end-user devices with untrusted, possibly-skewed clocks, so a lexicographic
+cursor over client timestamps could permanently miss a batch from a
+clock-skewed-slow device. Ordering is guaranteed only *within one server
+process* — multiple sync-server instances each mint their own monotonic
+sequence.
 
 ---
 
@@ -130,11 +154,13 @@ that key. The server sets `Content-Type: application/vnd.apache.parquet` and an
 return `304 Not Modified` when the file hasn't changed.
 
 This lets admin clients or internal tooling download raw Parquet batches over the
-standard sync pull endpoint without any extra routes:
+standard sync pull endpoint without any extra routes. `batchId` below is whatever
+`GET /list/events/myapp` returned — not a value the pusher controls (see
+[Batch id & incremental listing](#batch-id--incremental-listing) above):
 
 ```ts
 // TypeScript
-const res = await fetch("/pull/events/myapp/batch-abc", {
+const res = await fetch("/pull/events/myapp/1782933157690-0000-735223", {
   headers: { Authorization: `Bearer ${adminToken}` },
 })
 const buf = await res.arrayBuffer()
@@ -144,7 +170,7 @@ const buf = await res.arrayBuffer()
 ```python
 # Python
 import httpx
-r = httpx.get("/pull/events/myapp/batch-abc", headers={"Authorization": f"Bearer {admin_token}"})
+r = httpx.get("/pull/events/myapp/1782933157690-0000-735223", headers={"Authorization": f"Bearer {admin_token}"})
 parquet_bytes = r.content  # write to file or pass to pyarrow
 ```
 

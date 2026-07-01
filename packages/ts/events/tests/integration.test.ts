@@ -44,6 +44,8 @@ const config: SyncConfig = {
       maxBodyBytes: 8_000_000,
       // JSON-typed so interceptPush receives a populated rawBody
       allowedMimeTypes: ["application/json"],
+      // Lets the dashboard/tests discover server-assigned batch ids via /list.
+      listable: true,
     },
   ],
 }
@@ -72,23 +74,43 @@ const sampleEvent = {
   dt: "2024-06-01",
 }
 
+async function pushSample(app: ReturnType<typeof makeApp>["app"], clientBatchId: string, events = [sampleEvent]) {
+  return app.request(`/push/events/myapp/${clientBatchId}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ data: { events }, baseHash: null }),
+  })
+}
+
+/** List the events/myapp collection and return the raw stored filenames (with .parquet). */
+async function listStoredFiles(app: ReturnType<typeof makeApp>["app"], after?: string) {
+  const qs = after ? `?limit=10&after=${encodeURIComponent(after)}` : "?limit=10"
+  const res = await app.request(`/list/events/myapp${qs}`)
+  expect(res.status).toBe(200)
+  return (await res.json()) as { items: string[]; hasMore: boolean }
+}
+
 describe("createEventsServerPlugin", () => {
-  it("returns 200 and stores a Parquet file on a valid push", async () => {
+  it("stores a Parquet file at a server-assigned sortable id, ignoring the client's batchId", async () => {
     const { app, store } = makeApp()
 
-    const res = await app.request("/push/events/myapp/batch-1", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ data: { events: [sampleEvent] }, baseHash: null }),
-    })
+    const res = await pushSample(app, "client-supplied-id")
 
     expect(res.status).toBe(200)
     const body = (await res.json()) as { hash: string }
     expect(typeof body.hash).toBe("string")
     expect(body.hash.length).toBe(64) // 32-byte SHA-256 as hex
 
-    // The stored key should exist in the object store.
-    const stored = await store.getBytes!("events/myapp/batch-1.parquet")
+    // The client's own id is NOT used as the storage key.
+    expect(await store.getBytes!("events/myapp/client-supplied-id.parquet")).toBeNull()
+
+    // Discover the actual stored id via /list — the same path the dashboard uses.
+    const { items } = await listStoredFiles(app)
+    expect(items).toHaveLength(1)
+    const storedFile = items[0]!
+    expect(storedFile).toMatch(/^\d{13}-\d{4}-[0-9a-f]{6}\.parquet$/)
+
+    const stored = await store.getBytes!(`events/myapp/${storedFile}`)
     expect(stored).not.toBeNull()
     expect(stored!.contentType).toBe("application/vnd.apache.parquet")
 
@@ -105,17 +127,17 @@ describe("createEventsServerPlugin", () => {
     expect(rows[0]?.["distinct_id"]).toBe("user-abc")
   })
 
-  it("serves Parquet bytes on GET pull for JSON events collection", async () => {
+  it("serves Parquet bytes on GET pull, addressed by the id learned from /list", async () => {
     const { app } = makeApp()
 
-    const pushRes = await app.request("/push/events/myapp/batch-pull", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ data: { events: [sampleEvent] }, baseHash: null }),
-    })
+    const pushRes = await pushSample(app, "client-id-ignored")
     expect(pushRes.status).toBe(200)
 
-    const pullRes = await app.request("/pull/events/myapp/batch-pull", { method: "GET" })
+    const { items } = await listStoredFiles(app)
+    expect(items).toHaveLength(1)
+    const batchId = items[0]!.replace(/\.parquet$/, "")
+
+    const pullRes = await app.request(`/pull/events/myapp/${batchId}`, { method: "GET" })
     expect(pullRes.status).toBe(200)
     expect(pullRes.headers.get("content-type")).toBe("application/vnd.apache.parquet")
     const buf = await pullRes.arrayBuffer()
@@ -125,18 +147,16 @@ describe("createEventsServerPlugin", () => {
   it("pull returns 304 on matching ETag (conditional GET)", async () => {
     const { app } = makeApp()
 
-    await app.request("/push/events/myapp/batch-etag", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ data: { events: [sampleEvent] }, baseHash: null }),
-    })
+    await pushSample(app, "client-id-ignored")
+    const { items } = await listStoredFiles(app)
+    const batchId = items[0]!.replace(/\.parquet$/, "")
 
-    const first = await app.request("/pull/events/myapp/batch-etag", { method: "GET" })
+    const first = await app.request(`/pull/events/myapp/${batchId}`, { method: "GET" })
     expect(first.status).toBe(200)
     const etag = first.headers.get("etag")!
     expect(etag).toBeTruthy()
 
-    const cond = await app.request("/pull/events/myapp/batch-etag", {
+    const cond = await app.request(`/pull/events/myapp/${batchId}`, {
       method: "GET",
       headers: { "if-none-match": etag },
     })
@@ -157,15 +177,13 @@ describe("createEventsServerPlugin", () => {
   it("handles an empty events array gracefully", async () => {
     const { app, store } = makeApp()
 
-    const res = await app.request("/push/events/myapp/batch-empty", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ data: { events: [] }, baseHash: null }),
-    })
+    const res = await pushSample(app, "client-id-ignored", [])
 
     expect(res.status).toBe(200)
     // Parquet file still written (zero rows)
-    const stored = await store.getBytes!("events/myapp/batch-empty.parquet")
+    const { items } = await listStoredFiles(app)
+    expect(items).toHaveLength(1)
+    const stored = await store.getBytes!(`events/myapp/${items[0]}`)
     expect(stored).not.toBeNull()
     const rows = await parquetReadObjects({ file: toAsyncBuffer(stored!.body.buffer as ArrayBuffer) })
     expect(rows).toHaveLength(0)
@@ -180,14 +198,12 @@ describe("createEventsServerPlugin", () => {
       { ...sampleEvent, message_id: "msg-003", event: "form_submitted" },
     ]
 
-    const res = await app.request("/push/events/myapp/batch-multi", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ data: { events }, baseHash: null }),
-    })
+    const res = await pushSample(app, "client-id-ignored", events)
 
     expect(res.status).toBe(200)
-    const stored = await store.getBytes!("events/myapp/batch-multi.parquet")
+    const { items } = await listStoredFiles(app)
+    expect(items).toHaveLength(1)
+    const stored = await store.getBytes!(`events/myapp/${items[0]}`)
     expect(stored).not.toBeNull()
     const rows = await parquetReadObjects({ file: toAsyncBuffer(stored!.body.buffer as ArrayBuffer) })
     expect(rows).toHaveLength(3)
@@ -260,5 +276,49 @@ describe("createEventsServerPlugin", () => {
     expect(() =>
       createEventsServerPlugin({ store: storeLite, collection: "events", storagePath: "events/{x}/{y}" }),
     ).toThrow("putBytes")
+  })
+
+  it("throws at construction when storagePath doesn't end with a {param} segment", () => {
+    const store = new MemoryObjectStore()
+    expect(() =>
+      createEventsServerPlugin({ store, collection: "events", storagePath: "events/{app}/fixed" }),
+    ).toThrow("{param}")
+  })
+
+  it("assigns strictly ascending sortable ids across successive pushes, listed in insertion order", async () => {
+    const { app } = makeApp()
+
+    for (let i = 0; i < 5; i++) {
+      const res = await pushSample(app, "ignored")
+      expect(res.status).toBe(200)
+    }
+
+    const { items, hasMore } = await listStoredFiles(app)
+    expect(hasMore).toBe(false)
+    expect(items).toHaveLength(5)
+    // Ascending lexicographic order from the store IS the insertion (chronological) order.
+    expect(items).toEqual([...items].sort())
+    // No duplicate ids even for pushes issued back-to-back within the same tick.
+    expect(new Set(items).size).toBe(5)
+  })
+
+  it("resumes /list via `after` so only batches pushed since the cursor are returned", async () => {
+    const { app } = makeApp()
+
+    await pushSample(app, "ignored-1")
+    const { items: firstItems } = await listStoredFiles(app)
+    expect(firstItems).toHaveLength(1)
+    const cursor = firstItems[0]!
+
+    // No new pushes yet — resuming from the cursor returns nothing.
+    const idle = await listStoredFiles(app, cursor)
+    expect(idle.items).toHaveLength(0)
+    expect(idle.hasMore).toBe(false)
+
+    await pushSample(app, "ignored-2")
+
+    const resumed = await listStoredFiles(app, cursor)
+    expect(resumed.items).toHaveLength(1)
+    expect(resumed.items[0]).not.toBe(cursor)
   })
 })

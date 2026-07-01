@@ -24,7 +24,11 @@ export class MemoryObjectStore implements ObjectStore {
     opts?: { startAfter?: string; limit?: number },
     _context?: StoreContext,
   ): Promise<string[]> {
-    let keys = [...this._data.keys()].filter((k) => k.startsWith(prefix)).sort()
+    // Union both maps: put() and putBytes() share one logical key namespace
+    // (same as the real S3/filesystem backends), so a binary-written key must
+    // be listable too.
+    const allKeys = new Set<string>([...this._data.keys(), ...this._binary.keys()])
+    let keys = [...allKeys].filter((k) => k.startsWith(prefix)).sort()
     if (opts?.startAfter) {
       keys = keys.filter((k) => k > opts.startAfter!)
     }

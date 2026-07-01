@@ -737,7 +737,7 @@ wheels = [
 
 [[package]]
 name = "starfish-events"
-version = "3.0.0a43"
+version = "3.0.0a50"
 source = { editable = "." }
 dependencies = [
     { name = "pyarrow" },
@@ -781,7 +781,7 @@ dev = [
 
 [[package]]
 name = "starfish-protocol"
-version = "3.0.0a43"
+version = "3.0.0a50"
 source = { editable = "../protocol" }
 dependencies = [
     { name = "argon2-cffi" },
@@ -799,7 +799,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "starfish-server"
-version = "3.0.0a43"
+version = "3.0.0a50"
 source = { editable = "../server" }
 dependencies = [
     { name = "aiofiles" },

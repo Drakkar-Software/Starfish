@@ -25,6 +25,15 @@ the storage-path template). DuckDB's
 ``read_parquet('s3://…/**/*.parquet')`` glob treats all files under the prefix
 as one logical dataset.
 
+Batch id
+--------
+The plugin — not the client — assigns the final ``{batchId}`` path segment: a
+server-clock-derived, lexicographically-sortable id (see ``sortable_id.py``).
+The client's URL still carries a ``{batchId}`` placeholder value, but it's
+discarded. This makes the ``/list`` route's ascending key order double as a
+chronological cursor, which a client-minted id can't guarantee — batches come
+from many end-user devices with untrusted, possibly-skewed clocks.
+
 Privacy
 -------
 Never log ``distinct_id``, ``properties``, or ``context``.  Log counts only.
@@ -35,6 +44,8 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
+import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -49,11 +60,14 @@ from starfish_protocol.plugins import (
 from starfish_server.router.route_builder import resolve_document_key
 
 from starfish_events.encode import encode_parquet
+from starfish_events.sortable_id import generate_sortable_batch_id
 
 if TYPE_CHECKING:
     from starfish_server.storage.base import AbstractObjectStore
 
 _log = logging.getLogger(__name__)
+
+_LAST_PATH_PARAM_RE = re.compile(r"^\{([^}]+)\}$")
 
 
 def _supports_binary(store: object) -> bool:
@@ -67,6 +81,19 @@ def _supports_binary(store: object) -> bool:
     from starfish_server.storage.base import AbstractObjectStore as _Base
 
     return type(store).put_bytes is not _Base.put_bytes
+
+
+def _last_path_param_name(storage_path: str) -> str:
+    """Extract the ``{param}`` name from the last ``storage_path`` segment
+    (e.g. ``"batchId"`` from ``"{batchId}"``)."""
+    last_segment = storage_path.rstrip("/").split("/")[-1]
+    match = _LAST_PATH_PARAM_RE.match(last_segment)
+    if not match:
+        raise ValueError(
+            f'[starfish-events] storage_path "{storage_path}" must end with a '
+            '{param} segment (e.g. "events/{app}/{batchId}")'
+        )
+    return match.group(1)
 
 
 def create_events_server_plugin(
@@ -86,10 +113,15 @@ def create_events_server_plugin(
         Example: ``"events"``.
     :param storage_path: Storage-path template for the output Parquet key.
         Supports ``{param}`` placeholders resolved from the push URL's path
-        params.  Example: ``"events/{app}/{batchId}"`` →
-        ``"events/myapp/<uuid>"``.  The plugin appends ``.parquet`` when the
-        resolved key does not already end with it.
+        params, except the **last** segment, which must be a ``{param}`` too
+        but is always overridden with a server-assigned sortable batch id
+        (see "Batch id" above) rather than the client-supplied value.
+        Example: ``"events/{app}/{batchId}"`` →
+        ``"events/myapp/<server-assigned-id>"``.  The plugin appends
+        ``.parquet`` when the resolved key does not already end with it.
     :raises TypeError: When *store* does not override ``put_bytes``.
+    :raises ValueError: When *storage_path* doesn't end with a ``{param}``
+        segment.
 
     Example wiring::
 
@@ -130,6 +162,11 @@ def create_events_server_plugin(
             "MemoryObjectStore."
         )
 
+    # The last storage_path segment names the batch-id param (e.g. "{batchId}"
+    # in "events/{app}/{batchId}"). Resolved once at construction so a
+    # misconfigured template fails fast at startup rather than on first push.
+    batch_id_param = _last_path_param_name(storage_path)
+
     async def _intercept_push(ctx: PushHookContext) -> PushHookResult:
         # Only intercept the configured collection; let everything else proceed.
         if ctx.collection != collection:
@@ -148,8 +185,11 @@ def create_events_server_plugin(
                 error="Invalid JSON body — expected { data: { events: [...] }, baseHash }",
             )
 
-        # Stamp ingest time server-side. Never log event contents.
-        dt_now = datetime.now(timezone.utc)
+        # Stamp ingest time server-side. Never log event contents. The batch id
+        # below is minted from this same instant, so the filename and
+        # received_at agree.
+        now_ms = time.time_ns() // 1_000_000
+        dt_now = datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc)
         received_at = (
             dt_now.strftime("%Y-%m-%dT%H:%M:%S.")
             + f"{dt_now.microsecond // 1000:03d}Z"
@@ -163,8 +203,15 @@ def create_events_server_plugin(
             _log.error("[starfish-events] Parquet encoding failed: %s", exc)
             return PushHookResult(action="reject", status=500, error="Parquet encoding failed")
 
-        # Resolve the output key from the storagePath template + URL params.
-        key = resolve_document_key(storage_path, dict(ctx.params))
+        # Resolve the output key from the storage_path template + URL params,
+        # but override the batch-id param with a server-assigned,
+        # lexicographically-sortable id — never the client-supplied one.
+        # Batches arrive from many end-user devices with untrusted clocks, so
+        # only a single server clock can make the /list route's ascending key
+        # order a correct chronological cursor.
+        server_batch_id = generate_sortable_batch_id(now_ms)
+        params = {**dict(ctx.params), batch_id_param: server_batch_id}
+        key = resolve_document_key(storage_path, params)
         if not key.endswith(".parquet"):
             key += ".parquet"
 

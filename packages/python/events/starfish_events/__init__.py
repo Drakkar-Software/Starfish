@@ -11,10 +11,14 @@ Public surface
   hook encodes event batches as Parquet.
 - :func:`encode_parquet` — low-level encoder (exposed for testing and direct
   use).
+- :func:`generate_sortable_batch_id` — the server-assigned, lexicographically-
+  sortable id the plugin uses for each stored batch (exposed for testing and
+  direct use).
 - :data:`COLUMNS` — the fixed 10-column tuple that forms the Parquet schema.
 """
 
 from starfish_events.encode import COLUMNS, encode_parquet
+from starfish_events.sortable_id import generate_sortable_batch_id
 
 
 def __getattr__(name: str):
@@ -30,4 +34,9 @@ def __getattr__(name: str):
     raise AttributeError(f"module 'starfish_events' has no attribute {name!r}")
 
 
-__all__ = ["COLUMNS", "encode_parquet", "create_events_server_plugin"]
+__all__ = [
+    "COLUMNS",
+    "encode_parquet",
+    "generate_sortable_batch_id",
+    "create_events_server_plugin",
+]

@@ -22,8 +22,9 @@ pip install starfish-events
    your `SyncConfig`.
 2. Attach `create_events_server_plugin` to `create_sync_router`.
 3. Each push to that collection is intercepted: the JSON event batch is encoded as
-   Parquet and written via `store.put_bytes`. The default JSON document write is
-   short-circuited — **no JSON is persisted alongside the Parquet**.
+   Parquet and written via `store.put_bytes`, at a **server-assigned batch id**
+   (see [Batch id](#batch-id) below) — not the client's. The default JSON document
+   write is short-circuited — **no JSON is persisted alongside the Parquet**.
 
 One Parquet file is written per push (one file per batch). For S3-backed stores,
 DuckDB's `read_parquet('s3://…/**/*.parquet')` glob treats all files under the prefix
@@ -67,6 +68,27 @@ router = create_sync_router(
 )
 ```
 
+## Batch id
+
+The plugin — not the client — assigns the final `{batchId}` path segment: a
+server-clock-derived, lexicographically-sortable id (13-digit epoch-ms + a
+per-ms counter + a random suffix, e.g. `1782933157690-0000-735223`). The
+client's push URL still carries a `{batchId}` placeholder value, but it's
+discarded.
+
+This matters for **listing**: if the collection is also `listable=True`,
+`GET /list/<collection>/<app>` returns stored batch ids in ascending
+lexicographic order, which — because the id is server-clock-derived — is also
+chronological order. A caller can persist the last-seen id and pass it back as
+`?after=<id>` to fetch only batches written since then, instead of re-listing
+from the beginning every time. A client-minted id couldn't give that
+guarantee: batches are pushed from many end-user devices with untrusted,
+possibly-skewed clocks, so a lexicographic cursor over client timestamps could
+permanently miss a batch from a clock-skewed-slow device.
+
+Ordering is guaranteed only *within one server process* — multiple sync-server
+instances each mint their own monotonic sequence.
+
 ## Pull
 
 A `GET /pull/<collection>/<params>` request also returns the stored Parquet file
@@ -85,7 +107,7 @@ sync-protocol JSON response (200 with empty data).
 |---|---|---|
 | `store` | `AbstractObjectStore` | Object store with `put_bytes` / `get_bytes`. Pass the same instance as `create_sync_router`. |
 | `collection` | `str` | Name of the collection to intercept (e.g. `"events"`). |
-| `storage_path` | `str` | Storage-path template for the Parquet key. Supports `{param}` placeholders from the push/pull URL. The `.parquet` extension is appended automatically if absent. |
+| `storage_path` | `str` | Storage-path template for the Parquet key. Supports `{param}` placeholders from the push/pull URL, except the **last** segment (also required to be a `{param}`), which is always overridden with a server-assigned sortable batch id — see [Batch id](#batch-id). The `.parquet` extension is appended automatically if absent. |
 
 The plugin adds `received_at` (ISO-8601 UTC) to every event row before encoding.
 
