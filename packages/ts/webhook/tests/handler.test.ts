@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from "vitest"
+import { describe, it, expect, beforeAll, vi } from "vitest"
 import { webcrypto } from "node:crypto"
 import {
   configurePlatform,
@@ -16,7 +16,7 @@ import {
   type SyncConfig,
   type CollectionConfig,
 } from "@drakkar.software/starfish-server"
-import { createWebhookHandler, openSealedDocument, isSealedBlob, generateSpaceWriteKey } from "../src/index.js"
+import { createWebhookHandler, openSealedDocument, isSealedBlob, generateSpaceWriteKey, sealAad } from "../src/index.js"
 import type { SealedBlob } from "../src/index.js"
 
 beforeAll(() => {
@@ -153,8 +153,11 @@ describe("createWebhookHandler — forwards into the real push pipeline", () => 
     expect(isSealedBlob(stored)).toBe(true)
     expect(JSON.stringify(stored)).not.toContain("secret message")
 
-    // A member with the space private key recovers the original element, with provenance pinned.
-    const opened = await openSealedDocument(stored as SealedBlob, space.kemPrivHex, { requireSealer: sealer.pubHex })
+    // A member recovers the original element by pinning the webhook sealer AND
+    // reconstructing the destination aad from the document key + route id.
+    const opened = await openSealedDocument(stored as SealedBlob, space.kemPrivHex, sealer.pubHex, {
+      aad: sealAad(PUBSTREAM, "sealedHook"),
+    })
     expect(opened).toEqual({ t: "msg", e: { id: "m-1", authorId: "alice", text: "secret message" } })
   })
 })
@@ -248,5 +251,47 @@ describe("createWebhookHandler — pluggable auth (no static secret)", () => {
     })
     expect((await handler(bodyReq(null, { text: "x" }), "broken")).status).toBe(500)
     expect(dispatched).toBe(0)
+  })
+})
+
+describe("createWebhookHandler — replay-exposure warning", () => {
+  it("warns when an HMAC route has neither a timestamp header nor an authenticate hook", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      createWebhookHandler({
+        routes: { hmacOnly: { secret: "s", transform, target: `/push/${PUBSTREAM}` } },
+        dispatch: async () => new Response("{}"),
+      })
+      expect(warn).toHaveBeenCalledTimes(1)
+      expect(String(warn.mock.calls[0]![0])).toContain("hmacOnly")
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it("does not warn when a timestamp header bounds the replay window", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      createWebhookHandler({
+        routes: { tsRoute: { secret: "s", timestampHeader: "x-ts", transform, target: `/push/${PUBSTREAM}` } },
+        dispatch: async () => new Response("{}"),
+      })
+      expect(warn).not.toHaveBeenCalled()
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it("does not warn for a custom authenticate route (no HMAC secret)", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      createWebhookHandler({
+        routes: { authRoute: { authenticate: () => true, transform, target: `/push/${PUBSTREAM}` } },
+        dispatch: async () => new Response("{}"),
+      })
+      expect(warn).not.toHaveBeenCalled()
+    } finally {
+      warn.mockRestore()
+    }
   })
 })

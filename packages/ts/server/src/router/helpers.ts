@@ -71,12 +71,98 @@ function isPublicIPv4(ip: string): boolean {
   if (parts.length !== 4) return false
   const first = parseInt(parts[0]!, 10)
   const second = parseInt(parts[1]!, 10)
-  if (first === 0) return false                                // 0.0.0.0/8
-  if (first === 10) return false                               // 10.0.0.0/8
-  if (first === 127) return false                              // 127.0.0.0/8
-  if (first === 169 && second === 254) return false            // 169.254.0.0/16 link-local
-  if (first === 172 && second >= 16 && second <= 31) return false  // 172.16.0.0/12
-  if (first === 192 && second === 168) return false            // 192.168.0.0/16
+  const third = parseInt(parts[2]!, 10)
+  // Mirror the exact set Python's `ipaddress` classifies as non-global (is_private
+  // / is_loopback / is_link_local), plus RFC 6598 CGNAT (100.64.0.0/10) which
+  // `ipaddress` omits — so both languages block the identical set.
+  if (first === 0) return false                                       // 0.0.0.0/8
+  if (first === 10) return false                                      // 10.0.0.0/8
+  if (first === 100 && second >= 64 && second <= 127) return false    // 100.64.0.0/10 CGNAT (RFC 6598)
+  if (first === 127) return false                                     // 127.0.0.0/8 loopback
+  if (first === 169 && second === 254) return false                   // 169.254.0.0/16 link-local
+  if (first === 172 && second >= 16 && second <= 31) return false     // 172.16.0.0/12
+  if (first === 192 && second === 0 && third === 0) return false      // 192.0.0.0/24 IETF protocol assignments
+  if (first === 192 && second === 0 && third === 2) return false      // 192.0.2.0/24 TEST-NET-1
+  if (first === 192 && second === 168) return false                   // 192.168.0.0/16
+  if (first === 198 && (second === 18 || second === 19)) return false // 198.18.0.0/15 benchmarking
+  if (first === 198 && second === 51 && third === 100) return false   // 198.51.100.0/24 TEST-NET-2
+  if (first === 203 && second === 0 && third === 113) return false    // 203.0.113.0/24 TEST-NET-3
+  if (first >= 240) return false                                      // 240.0.0.0/4 reserved incl. 255.255.255.255
+  return true
+}
+
+/**
+ * A DNS resolver: given a hostname, return the list of IP address strings it
+ * resolves to. Supplied so {@link validateUrlNotPrivateAsync} can be tested and
+ * so edge runtimes can inject their own resolver. When omitted, Node's
+ * `dns.promises.lookup` is used; a runtime without it degrades gracefully.
+ */
+export type DnsResolver = (host: string) => Promise<string[]>
+
+async function defaultDnsResolver(host: string): Promise<string[] | null> {
+  try {
+    const dns = await import("node:dns/promises")
+    const results = await dns.lookup(host, { all: true })
+    return results.map((r) => r.address)
+  } catch {
+    // Either no resolver in this runtime, or the lookup itself failed
+    // (NXDOMAIN etc.). Both degrade to "could not verify" (see caller).
+    return null
+  }
+}
+
+/**
+ * SSRF guard that ALSO resolves DNS: rejects a URL whose host is a literal
+ * private/loopback address (via the synchronous {@link validateUrlNotPrivate}
+ * fast pre-filter) OR whose hostname resolves to any private/loopback/link-
+ * local/reserved address. Use this for untrusted outbound URLs (webhooks,
+ * replica peers) — the string-only check is NOT sufficient there, because a
+ * public-looking name can resolve to an internal address.
+ *
+ * TOCTOU / DNS-rebinding caveat: the address checked here can differ from the
+ * one the eventual `fetch` connects to (the name can be re-resolved). This check
+ * closes the "name that always resolves internal" hole but cannot, by itself,
+ * defeat an attacker who flips the record between check and use; pin the resolved
+ * IP (connect to it directly) for full protection.
+ *
+ * Degrades gracefully: when no resolver is available, or resolution fails, the
+ * synchronous string verdict stands (returns `true` for a public-looking host).
+ */
+export async function validateUrlNotPrivateAsync(
+  url: string,
+  resolver?: DnsResolver,
+): Promise<boolean> {
+  // Fast pre-filter: a literal private/loopback host is rejected without any DNS.
+  if (!validateUrlNotPrivate(url)) return false
+
+  let bare: string
+  try {
+    const hostname = new URL(url).hostname
+    if (!hostname) return false
+    bare = hostname.startsWith("[") ? hostname.slice(1, -1) : hostname
+  } catch {
+    return false
+  }
+
+  let addresses: string[] | null
+  if (resolver) {
+    try {
+      addresses = await resolver(bare)
+    } catch {
+      return true // resolution failed → let the caller's request surface the error
+    }
+  } else {
+    addresses = await defaultDnsResolver(bare)
+  }
+  // No resolver / no results → cannot verify; keep the (passing) string verdict.
+  if (!addresses || addresses.length === 0) return true
+
+  for (const addr of addresses) {
+    // Re-run the literal classifier on each resolved address (reuses the full
+    // IPv4 + IPv6 logic). Bracket IPv6 so `new URL` parses it as a host.
+    const hostForCheck = addr.includes(":") ? `[${addr}]` : addr
+    if (!validateUrlNotPrivate(`http://${hostForCheck}/`)) return false
+  }
   return true
 }
 

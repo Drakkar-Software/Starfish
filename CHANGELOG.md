@@ -1,5 +1,93 @@
 # Changelog
 
+## 3.0.0-alpha.63
+
+Security- and parity-hardening release: a full TS+Python security and code review of the library produced 37 verified findings, all remediated here. Fixes are cross-language (both implementations) unless noted. **Two breaking API changes** are called out below (pairing-bundle install and webhook sealed-open now require an explicit trust argument).
+
+### `starfish-protocol` / `@drakkar.software/starfish-protocol` (alpha.63)
+
+#### Fixed
+- **ReDoS on the authorization hot path via cap-cert path globs** — `pathGlobMatch` / `path_glob_match` compiled an untrusted cap-cert `scope.paths` glob into a regex (`*`->`[^/]*`, `**`->`.*`) and ran it for every pull/push/list authorization. A self-signed cap carrying a many-`*` glob (e.g. `x/` + `*a` x40) forced super-polynomial backtracking on a crafted non-matching path, saturating the single event-loop thread (~116s CPU for one request in testing). Replaced with a linear, backtrack-free two-pointer matcher; matching semantics are unchanged for ordinary paths.
+- **`**` glob divergence over line terminators** — the regex `**`->`.*` matched line terminators differently in JS (excludes `\r`, `\n`, `\u2028`, `\u2029`) vs Python (excludes only `\n`), so a `**` deny rule was evadable on one server but not the other for keys containing those characters. The new linear matcher treats `**` as "any character" identically in both languages.
+- **Cross-language link fragments were mutually undecodable** — `encodeLinkFragment` (TS) encoded only the token while Python + the published `base64url.json` vector encode `[origin, path, token]`; and `decode_link_fragment` (Python) passed the whole array to validators that expect the token dict (so link decode was actually broken). Both now emit the canonical `base64url(JSON([origin, path, token]))` form and recover the token before validating; locked by the cross-language vector on both sides.
+- **`decode_link_fragment` accepted a `None` validator result** (Python) — a validator returning `None` (shape mismatch) now raises `ValueError` like the TS null-return convention, instead of returning `None` for callers to subscript.
+- **Lenient hex/base64 decoding diverged from Python's strict decoders** — the Ed25519 suite hex decode (Python) now rejects non-hex/whitespace input (matching the TS `^[0-9a-fA-F]*$` regex) instead of relying on `bytes.fromhex` silently stripping whitespace; the pure-JS base64 fallback (RN/Hermes) now rejects non-alphabet characters (matching Python's `validate=True`) instead of silently skipping them, so both languages agree on which cap-cert nonces/signatures are well-formed.
+
+### `starfish-server` / `@drakkar.software/starfish-server` (alpha.63)
+
+#### Fixed
+- **JSON config loader silently dropped `rootOnly` / `listable` / `restrictions`** (TS) — `parseCollection` omitted these `CollectionConfig` fields and `parseConfigJson` dropped namespace/server-level `restrictions`, so a JSON config enforced these authorization controls on Python (Pydantic) but not TS (e.g. a `rootOnly: true` collection was reachable by any matching non-root cap). The loader now parses all of them and fails closed, matching Python.
+- **`objectSchema` validation failed open on runtimes without `require()`** (TS) — `validateObjectSchema` returned `null` (skipping validation) when Ajv could not be `require`d (ESM/Workers/Deno) and `setAjv` was not called; it now fails closed (HTTP 500) so a schema-bearing collection never accepts unvalidated writes.
+- **Rate limiter trusted the client-controlled leftmost `X-Forwarded-For` hop** — the IP bucket was derived from the spoofable leftmost XFF entry, letting an attacker mint a fresh bucket per request. Added a `trustedProxyHops` / `trusted_proxy_hops` option (default 0 = ignore XFF and bucket by socket peer); at N>0 the Nth-from-right entry is used.
+- **`appendItem` had no cross-instance concurrency control** — the append read-modify-write had no compare-and-swap, so two instances sharing a bucket silently dropped each other's elements. Added an optional CAS capability to `ObjectStore` (implemented on the in-memory store), wrapped the single-document head write in a bounded CAS retry, and surfaced a conflict (`AppendConcurrencyError`) instead of silently overwriting. (Segmented/chunked layout and S3/filesystem/kv adapters retain last-write-wins — documented.)
+- **SSRF guard did no DNS resolution** — added `validateUrlNotPrivateAsync` / `validate_url_not_private_async` that resolve the host and reject when any resolved address is private/reserved (with a documented rebinding caveat); the synchronous string check remains a fast pre-filter.
+- **`isPublicIPv4` missed reserved ranges Python blocked** — the TS classifier now blocks the full set (incl. `100.64.0.0/10` CGNAT, `192.0.2.0/24`, `198.18.0.0/15`, `240.0.0.0/4`, `255.255.255.255`); Python adds `100.64.0.0/10`. Both languages now block the identical set.
+- **Binary and append-only push paths skipped the `isUnsafeDocumentKey` guard** — the traversal guard applied on pull now also runs after `resolveDocumentKey` on the binary/append/JSON push paths (both languages), returning 400 before any store write.
+- **`duckdbReadParquetSql` embedded the S3 secret in returned SQL** — the secret is no longer in the redactable `sql`/`configSql`; it lives only in a clearly-marked `credentialSql`/`runnableSql` field, and the doc examples were scrubbed of real-looking secrets. (Single-quote escaping unchanged — there was no SQL injection.)
+
+### `starfish-keyring` / `@drakkar.software/starfish-keyring` (alpha.63)
+
+#### Fixed
+- **JSON encrypt path omitted the epoch AAD binding (cross-language interop break)** (TS) — Python binds the epoch into the AES-GCM AAD on the `{_encrypted, _epoch}` path (`aad = str(epoch)`) but TS passed no `additionalData`, so the two could not open each other's payloads. TS now binds `additionalData = String(epoch)` on encrypt and decrypt, byte-for-byte with Python; locked by a cross-language known-answer test on both sides.
+- **Empty-string `aad` produced a self-inconsistent `v=1` blob** (Python) — `seal` used truthiness for the AAD but identity (`is not None`) for the `v` marker, so `aad=""` yielded a `v=1` blob with no bound AAD (un-openable by TS). The `v` marker now uses the same truthiness test, matching TS.
+
+### `starfish-identities` / `@drakkar.software/starfish-identities` (alpha.63)
+
+#### Changed
+- **BREAKING: pairing-bundle install now requires explicit root trust** — `installPairingBundle` / `install_pairing_bundle` previously trusted ANY root when the caller passed neither an expected root nor a confirmation (a confused-deputy risk). Callers must now supply `expectedRootEdPub` (pin) or `confirmUnpinnedRoot` / `confirm_unpinned_root` (first-contact confirmation callback), else the call throws. One-way `installProvisionedDevice` / `install_provisioned_device` auto-acknowledges first-contact (the blob arrives over an already-trusted channel).
+
+#### Fixed
+- **Root-identity derivation did not NFC-normalize the passphrase** — `argon2idStretch` / `_argon2id_stretch` now NFC-normalize before UTF-8 encoding (matching the seal path), so precomposed vs decomposed spellings of the same passphrase derive one identity instead of silently locking a device out. (No-op on ASCII; locked derivation vectors unchanged.)
+- **`parse_pairing_qr` lacked field validation** (Python) — now rejects missing/non-string `devEdPub`/`devKemPub`/`qrNonce` with `ValueError` (matching TS) instead of raising `KeyError`/flowing bad types into decoding.
+
+### `starfish-spaces` / `@drakkar.software/starfish-spaces` (alpha.63)
+
+Python-side parity repairs bringing several features to match their working TS twins.
+
+#### Fixed
+- **Revocation was never submitted** — `evict_keyring_member` ignored the caller's `submitRevocation` callback (always used a no-op), so an evicted member's signed `RevocationList` was never POSTed. The callback is now threaded through eviction, so the server can reject the evicted cap immediately (matching TS).
+- **`unseal_from_self` skipped the self-signed check** — it now rejects a blob whose `entry.addedBy` is not the account's own key before decrypting (matching TS), closing a path where a hostile server could substitute an attacker-sealed link-access credential.
+- **Sync `account_seal` functions were `await`ed and read as objects** — `join_space_by_link`, `recover_space_access`, and the resource-request inbox awaited synchronous seal functions, read dict results as attributes, and called `seal_to_recipient` with the wrong argument order; these features raised at runtime and are now functional. (Fixed the same latent bug in `join_node_by_link`.)
+- **`add_space_member` / `remove_space_member` did read-then-write without CAS** — both now run inside `run_cas`, re-reading the roster each attempt (matching TS), so concurrent roster mutations no longer fail/leak under contention.
+- **Inbox sender-authenticity (`addedBy`) check was fail-open** — the request/grant/reject scans skipped the check when `addedBy` was falsy; they now reject a missing `addedBy` (fail-closed, matching TS).
+- **`run_cas` had fewer attempts and no backoff** — raised to 5 attempts with jittered exponential backoff (matching TS `runCas`), improving reliability under replica read-after-write lag.
+
+### `starfish-client` / `@drakkar.software/starfish-client` / `starfish-sdk` (alpha.63)
+
+#### Added
+- **Opt-in document-author verification on `SyncManager`** — a `verifyAuthor` / `verify_author` policy (mirroring `AppendLogCursor`) verifies the pulled `authorSignature` over `docAuthorCanonicalInput(documentKey, data)` against the declared/pinned author before accepting a snapshot. Default off; documents the trust model where a `none`-mode collection otherwise trusts the server for authorship.
+
+#### Fixed
+- **Python `SyncManager.pull` ignored the configured `on_conflict` resolver** — the incremental-pull path hardcoded `deep_merge`; it now routes through `on_conflict` like TS, so a custom resolver is honored on pull (no silent loss of local items).
+- **Python `append_anonymous` omitted the author signature** — an optional signer parameter now attaches `sign_append_author` output (`authorPubkey`/`authorSignature`) like the TS client.
+- **SSE data-line whitespace stripping diverged** — TS (`trimStart`) and Python (`lstrip(" ")`) now both strip exactly one leading space per the WHATWG SSE spec, producing byte-identical frame payloads.
+
+### `starfish-webhook` / `@drakkar.software/starfish-webhook` (alpha.63)
+
+#### Changed
+- **BREAKING: `openSealedDocument` now requires the expected sealer pubkey** — sealer pinning was previously an optional `requireSealer` (fail-open), letting any writer forge webhook-origin messages. `openSealedDocument(blob, recipientKemPrivHex, requireSealer, opts?)` now takes the expected sealer as a required argument.
+
+#### Fixed
+- **Sealed writes now bind an AAD context** — `sealDocument`/`openSealedDocument` derive an `aad` from the destination (document key + webhook id), so a sealed blob cannot be relocated to another document/route and a legacy no-AAD blob is rejected by the keyring `v:1` guard.
+- **Replay exposure surfaced** — `createWebhookHandler` now warns at construction when an HMAC route has neither a timestamp header nor an `authenticate` hook (documenting the default-off replay window and recommended baseline).
+
+### `starfish-queuing` / `@drakkar.software/starfish-queuing` (alpha.63)
+
+#### Fixed
+- **Broker subject validation used substring `.test()`** (TS) — a custom non-anchored `subjectIdPattern` allowed NATS metacharacters (e.g. `abc.*>evil` matched on the `abc` substring). TS now full-matches, mirroring Python's `fullmatch`.
+
+### `starfish-entitlements` / `@drakkar.software/starfish-entitlements` (alpha.63)
+
+#### Fixed
+- **Anonymous callers were not short-circuited** (Python) — the role enricher now returns no roles for an empty identity (matching TS), instead of querying `users//entitlements` and potentially granting a role to every unauthenticated caller.
+- **Corrupt-document handling diverged** — a literal-`null` entitlement document now yields empty roles (no throw) in both languages.
+
+### `starfish-events` / `@drakkar.software/starfish-events` (alpha.63)
+
+#### Fixed
+- **Parquet cell coercion of non-string values diverged** — objects/arrays/booleans now serialize to one canonical form (compact JSON with sorted keys) in both languages, so mixed-backend DuckDB datasets are consistent.
+- **Docstring example made the PII-bearing events collection publicly readable** (TS) — the `@example` now uses `readRoles: ["admin"]` (matching Python and the READMEs), with a note that the events collection must not be publicly readable.
+
 ## 3.0.0-alpha.62
 
 ### `starfish-events` / `@drakkar.software/starfish-events` (alpha.62)

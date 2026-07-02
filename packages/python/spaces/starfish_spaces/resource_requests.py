@@ -55,7 +55,7 @@ async def _try_unseal_inbox(
 ) -> Optional[str]:
     try:
         aad = _inbox_aad(session, session.user_id, shard, mkind or default_kind)
-        return await unseal_from_recipient(session, sealed, aad)
+        return unseal_from_recipient(session.keys, sealed, aad)
     except Exception:
         return None
 
@@ -76,10 +76,10 @@ async def _seal_append(
 
     shard = inbox_shard()
     aad = _inbox_aad(session, recipient_user_id, shard, kind)
-    sealed = await seal_to_recipient(session, recipient_kem_pub, json.dumps(obj), aad)
+    sealed = seal_to_recipient(session.keys, "", recipient_kem_pub, json.dumps(obj), aad)
 
     element: dict[str, Any] = {
-        "sealed": {"v": sealed.v, "ct": sealed.ct, "wks": sealed.wks},  # type: ignore[attr-defined]
+        "sealed": sealed,
         "ts": int(_time.time() * 1000),
         "mkind": kind,
     }
@@ -235,8 +235,9 @@ async def scan_resource_requests(
             return
 
         # Verify sender authenticity from the sealed entry's addedBy field.
+        # Fail-closed: a missing/empty addedBy is treated as a mismatch.
         added_by = sealed.get("addedBy") or (sealed.get("entry", {}) or {}).get("addedBy")
-        if added_by and added_by != requester["edPub"]:
+        if added_by != requester["edPub"]:
             return
 
         if (await session.user_id_from_ed_pub(requester["edPub"])) != requester["userId"]:
@@ -365,7 +366,7 @@ async def scan_resource_grants(
         req_id = msg["reqId"]
         expected_owner = _req_id_owner_store.get(req_id)
         added_by = sealed.get("addedBy") or (sealed.get("entry", {}) or {}).get("addedBy")
-        if expected_owner and added_by and added_by != expected_owner:
+        if expected_owner and added_by != expected_owner:
             return
         if req_id in seen:
             return
@@ -394,7 +395,7 @@ async def scan_resource_rejects(
         req_id = msg["reqId"]
         expected_owner = _req_id_owner_store.get(req_id)
         added_by = sealed.get("addedBy") or (sealed.get("entry", {}) or {}).get("addedBy")
-        if expected_owner and added_by and added_by != expected_owner:
+        if expected_owner and added_by != expected_owner:
             return
         if req_id in seen:
             return

@@ -27,7 +27,7 @@ from starfish_protocol.cap import sign_cap_cert
 from starfish_protocol.request_signing import sign_request
 from starfish_server.auth.nonce_cache import create_in_memory_nonce_cache
 from starfish_server.auth.revocation_store import create_in_memory_revocation_store
-from starfish_server.config.schema import CollectionConfig, SyncConfig
+from starfish_server.config.schema import AppendOnlyConfig, CollectionConfig, SyncConfig
 from starfish_server.router.cap_resolver import create_cap_cert_role_resolver
 from starfish_server.router.helpers import is_unsafe_document_key, validate_path_segment
 from starfish_server.router.route_builder import SyncRouterOptions, create_sync_router
@@ -100,6 +100,21 @@ def _signed_get(path: str, k: _Keys, cert: dict) -> dict[str, str]:
     }
 
 
+def _signed_post(path: str, body: bytes, content_type: str, k: _Keys, cert: dict) -> dict[str, str]:
+    # Blob (non-JSON) uploads are signed over an EMPTY body per the cap-resolver
+    # convention; JSON writes sign the real body.
+    is_blob = content_type.split(";")[0].strip().lower() != "application/json"
+    signing_body = b"" if is_blob else body
+    sig = sign_request("POST", path, signing_body, k.ed_priv_hex, host="test")
+    return {
+        "Authorization": _cap_header(cert),
+        "Content-Type": content_type,
+        "X-Starfish-Sig": sig.sig,
+        "X-Starfish-Ts": str(sig.ts),
+        "X-Starfish-Nonce": sig.nonce,
+    }
+
+
 def _build_app() -> FastAPI:
     config = SyncConfig(
         version=1,
@@ -132,6 +147,19 @@ def _build_app() -> FastAPI:
                 encryption="none",
                 maxBodyBytes=1_000_000,
                 allowedMimeTypes=["application/json"],
+            ),
+            # Append-only collection (-> the append_item push branch). Author
+            # signature is disabled so a push reaches the append logic without extra
+            # crypto — the traversal guard runs BEFORE that logic regardless.
+            CollectionConfig(
+                name="log",
+                storagePath="log/{slot}",
+                readRoles=["cap:read:log"],
+                writeRoles=["cap:write:log"],
+                encryption="none",
+                maxBodyBytes=1_000_000,
+                allowedMimeTypes=["application/json"],
+                appendOnly=AppendOnlyConfig(type="by_timestamp", requireAuthorSignature=False),
             ),
         ],
     )
@@ -208,4 +236,52 @@ async def test_bundle_pull_clean_param_yields_bundle() -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         path = "/pull/room/r1"
         r = await client.get(path, headers=_signed_get(path, k, cert))
+        assert r.status_code == 200, r.text
+
+
+@pytest.mark.asyncio
+async def test_binary_push_rejects_traversal() -> None:
+    k = _make_keys(0x81)
+    cert = _device_cert(k, ["files"])
+    app = _build_app()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        path = f"/push/files/{_TRAVERSAL}"
+        body = b"binary-bytes"
+        r = await client.post(path, content=body, headers=_signed_post(path, body, "application/octet-stream", k, cert))
+        assert r.status_code == 400, r.text
+
+
+@pytest.mark.asyncio
+async def test_binary_push_clean_param_reaches_store() -> None:
+    k = _make_keys(0x82)
+    cert = _device_cert(k, ["files"])
+    app = _build_app()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        path = "/push/files/s1"
+        body = b"binary-bytes"
+        r = await client.post(path, content=body, headers=_signed_post(path, body, "application/octet-stream", k, cert))
+        assert r.status_code == 200, r.text
+
+
+@pytest.mark.asyncio
+async def test_append_push_rejects_traversal() -> None:
+    k = _make_keys(0x91)
+    cert = _device_cert(k, ["log"])
+    app = _build_app()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        path = f"/push/log/{_TRAVERSAL}"
+        body = json.dumps({"data": {"msg": "hi"}}).encode("utf-8")
+        r = await client.post(path, content=body, headers=_signed_post(path, body, "application/json", k, cert))
+        assert r.status_code == 400, r.text
+
+
+@pytest.mark.asyncio
+async def test_append_push_clean_param_reaches_append_logic() -> None:
+    k = _make_keys(0x92)
+    cert = _device_cert(k, ["log"])
+    app = _build_app()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        path = "/push/log/s1"
+        body = json.dumps({"data": {"msg": "hi"}}).encode("utf-8")
+        r = await client.post(path, content=body, headers=_signed_post(path, body, "application/json", k, cert))
         assert r.status_code == 200, r.text

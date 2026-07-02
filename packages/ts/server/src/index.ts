@@ -59,6 +59,8 @@ export {
   handleSyncPush,
   validatePathSegment,
   validateUrlNotPrivate,
+  validateUrlNotPrivateAsync,
+  type DnsResolver,
   deepSanitize,
 } from "./router/helpers.js"
 export {

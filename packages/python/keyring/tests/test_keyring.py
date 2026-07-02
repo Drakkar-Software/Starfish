@@ -320,6 +320,25 @@ def test_keyring_encryptor_round_trip_between_two_recipients(actors):
     assert enc2.decrypt(payload) == {"hello": "world", "n": 7}
 
 
+def test_keyring_encryptor_json_epoch_aad_is_cross_language_locked() -> None:
+    # Locked cross-language conformance for the JSON encrypt path. The epoch is
+    # bound into the AES-GCM AAD in BOTH languages (``aad = str(epoch)``); this
+    # hardcoded payload (produced here, decoded by the TS keyring's matching KAT)
+    # pins the format so neither side can silently drop the AAD and make
+    # legitimately-encrypted content mutually undecodable.
+    dev1 = V["fixtures"]["alice_dev_1"]
+    alice = V["fixtures"]["alice_root"]
+    keyring = Keyring.from_dict(V["keyring"])
+    enc = create_keyring_encryptor(
+        keyring, dev1["kemPub"], dev1["kemPriv"], trusted_adders=[alice["edPub"]]
+    )
+    payload = {
+        "_encrypted": "Wh7uu8fYN2KL6GQ+Sc99TuKZPltOSjdAygadUF2ET388WIkBqq4w2TucvqSGw7ZkjQkRPaWN",
+        "_epoch": 1,
+    }
+    assert enc.decrypt(payload) == {"hello": "world", "n": 7}
+
+
 def test_keyring_encryptor_seals_and_opens_binary_blobs_with_path_aad(actors):
     """Cross-language parity for binary-attachment sealing.
 

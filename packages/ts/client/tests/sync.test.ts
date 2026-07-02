@@ -1,8 +1,8 @@
 import { describe, it, expect, vi } from "vitest"
 import type { Encryptor } from "@drakkar.software/starfish-protocol"
-import { deepMerge } from "@drakkar.software/starfish-protocol"
+import { deepMerge, signDocAuthor } from "@drakkar.software/starfish-protocol"
 import { StarfishClient } from "../src/client.js"
-import { SyncManager } from "../src/sync.js"
+import { SyncManager, DocAuthorError } from "../src/sync.js"
 import { createUnionMerge } from "../src/resolvers.js"
 import { ConflictError } from "../src/types.js"
 import type { PullResponse, PushSuccess } from "../src/types.js"
@@ -772,6 +772,140 @@ describe("SyncManager bootstrap-window — advanced interaction edges", () => {
       { items: seedItems },       // local = seeded snapshot
       { items: [{ id: "a" }] },  // remote = first live pull
     )
+  })
+})
+
+// ── verifyAuthor (opt-in document author verification) ────────────────────────
+//
+// Regression: SyncManager.pull/ingest accepted whatever data the server returned
+// without checking the author signature it also returns, so a malicious server
+// could forge authorship/content on none-mode collections. verifyAuthor mirrors
+// AppendLogCursor.verifyAuthor: opt-in, default OFF (unchanged behavior).
+
+describe("SyncManager verifyAuthor", () => {
+  // A real Ed25519 keypair (same one used by anonymous-append.test.ts).
+  const AUTHOR = {
+    edPrivHex: "1133557799bbddff1133557799bbddff1133557799bbddff1133557799bbddff",
+    edPubHex: "062f2ba3c6a5590364b0864d539af151907d09ea0b741b0811e0d761a059bda4",
+  }
+  const FOREIGN_PUB = "aa".repeat(32)
+
+  // Document key for "/pull/test" is "test" — must match what the writer signed.
+  function signed(data: Record<string, unknown>, signOver: Record<string, unknown> = data) {
+    const { authorPubkey, authorSignature } = signDocAuthor(
+      "test",
+      signOver,
+      AUTHOR.edPubHex,
+      AUTHOR.edPrivHex,
+    )
+    return { data, hash: "h1", timestamp: 100, authorPubkey, authorSignature }
+  }
+
+  it("accepts a correctly-signed snapshot when enabled", async () => {
+    const client = mockClient({ pull: (async () => signed({ key: "value" })) as any })
+    const sync = new SyncManager({
+      client,
+      pullPath: "/pull/test",
+      pushPath: "/push/test",
+      verifyAuthor: true,
+    })
+    const result = await sync.pull()
+    expect(result.data).toEqual({ key: "value" })
+    expect(sync.getData()).toEqual({ key: "value" })
+    expect(sync.getCheckpoint()).toBe(100)
+  })
+
+  it("rejects a forged snapshot (signature over different data) and mutates no state", async () => {
+    // Server tampers with data but replays a signature made over the original.
+    const client = mockClient({
+      pull: (async () => signed({ key: "tampered" }, { key: "original" })) as any,
+    })
+    const sync = new SyncManager({
+      client,
+      pullPath: "/pull/test",
+      pushPath: "/push/test",
+      verifyAuthor: true,
+    })
+    await expect(sync.pull()).rejects.toBeInstanceOf(DocAuthorError)
+    expect(sync.getData()).toEqual({})
+    expect(sync.getCheckpoint()).toBe(0)
+  })
+
+  it("rejects a snapshot missing author fields when enabled", async () => {
+    const client = mockClient({
+      pull: (async () => ({ data: { key: "v" }, hash: "h1", timestamp: 100 })) as any,
+    })
+    const sync = new SyncManager({
+      client,
+      pullPath: "/pull/test",
+      pushPath: "/push/test",
+      verifyAuthor: true,
+    })
+    await expect(sync.pull()).rejects.toBeInstanceOf(DocAuthorError)
+  })
+
+  it("rejects a foreign author when expectedAuthorPubkey is pinned", async () => {
+    const client = mockClient({ pull: (async () => signed({ key: "value" })) as any })
+    const sync = new SyncManager({
+      client,
+      pullPath: "/pull/test",
+      pushPath: "/push/test",
+      verifyAuthor: { expectedAuthorPubkey: FOREIGN_PUB },
+    })
+    await expect(sync.pull()).rejects.toBeInstanceOf(DocAuthorError)
+  })
+
+  it("accepts a matching pinned author (hex compared case-insensitively)", async () => {
+    const client = mockClient({ pull: (async () => signed({ key: "value" })) as any })
+    const sync = new SyncManager({
+      client,
+      pullPath: "/pull/test",
+      pushPath: "/push/test",
+      verifyAuthor: { expectedAuthorPubkey: AUTHOR.edPubHex.toUpperCase() },
+    })
+    const result = await sync.pull()
+    expect(result.data).toEqual({ key: "value" })
+  })
+
+  it("default (disabled) accepts an unsigned snapshot — behavior unchanged", async () => {
+    const client = mockClient({
+      pull: (async () => ({ data: { key: "value" }, hash: "h1", timestamp: 100 })) as any,
+    })
+    const sync = new SyncManager({ client, pullPath: "/pull/test", pushPath: "/push/test" })
+    const result = await sync.pull()
+    expect(result.data).toEqual({ key: "value" })
+  })
+
+  it("ingest also rejects a forged signature when enabled", async () => {
+    const client = mockClient()
+    const sync = new SyncManager({
+      client,
+      pullPath: "/pull/test",
+      pushPath: "/push/test",
+      verifyAuthor: true,
+    })
+    await expect(
+      sync.ingest({
+        data: { key: "x" },
+        hash: "h1",
+        timestamp: 100,
+        authorPubkey: AUTHOR.edPubHex,
+        authorSignature: "not-a-valid-signature",
+      }),
+    ).rejects.toBeInstanceOf(DocAuthorError)
+    expect(sync.getData()).toEqual({})
+  })
+
+  it("ingest accepts a correctly-signed snapshot when enabled", async () => {
+    const client = mockClient()
+    const sync = new SyncManager({
+      client,
+      pullPath: "/pull/test",
+      pushPath: "/push/test",
+      verifyAuthor: true,
+    })
+    await sync.ingest(signed({ key: "value" }))
+    expect(sync.getData()).toEqual({ key: "value" })
   })
 })
 

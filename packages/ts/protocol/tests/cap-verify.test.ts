@@ -389,4 +389,27 @@ describe("pathGlobMatch (scope-barrier matcher)", () => {
     expect(pathGlobMatch("notes", "notes/extra")).toBe(false)
     expect(pathGlobMatch("notes/*", "other/x")).toBe(false)
   })
+
+  it("resolves an adversarial many-star glob without catastrophic backtracking (ReDoS guard)", () => {
+    // A self-signed cap could carry `scope.paths: ['x/' + '*a'.repeat(40)]`; the
+    // old regex-compiled matcher backtracked super-polynomially on a forced
+    // non-match, freezing the auth hot path. The linear matcher stays bounded.
+    const glob = "x/" + "*a".repeat(40)
+    const target = "x/" + "b".repeat(60)
+    const start = Date.now()
+    expect(pathGlobMatch(glob, target)).toBe(false)
+    expect(Date.now() - start).toBeLessThan(1000)
+  })
+
+  it("treats `**` as spanning line terminators identically to Python (no deny evasion)", () => {
+    // A regex `.*` behaves differently across runtimes: JS `.` excludes
+    // \r \n \u2028 \u2029 without the `s` flag while Python `.` excludes only \n.
+    // The linear `**` = any-char rule keeps both languages in lockstep so a `**`
+    // deny cannot be dodged with a line-terminator character in the key.
+    expect(pathGlobMatch("a/**x", "a/\rx")).toBe(true)
+    expect(pathGlobMatch("a/**x", "a/\nx")).toBe(true)
+    expect(pathGlobMatch("a/**x", "a/\u2028x")).toBe(true)
+    expect(pathGlobMatch("a/**x", "a/\u2029x")).toBe(true)
+    expect(pathGlobMatch("notes/**", "notes/a\nb")).toBe(true)
+  })
 })

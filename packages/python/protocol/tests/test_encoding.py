@@ -75,12 +75,14 @@ def test_padding_mod2():
 # ── encode_link_fragment / decode_link_fragment round-trip ───────────────────
 
 def _space_invite_validate(tok):
-    if not isinstance(tok, list) or len(tok) != 3:
-        raise ValueError("bad shape")
-    origin, path, token = tok
-    if not isinstance(token, dict):
-        raise ValueError("bad token")
-    return {"origin": origin, "path": path, "token": token}
+    # ``decode_link_fragment`` recovers the token (the 3rd array element) and
+    # hands it here — matching the real spaces validators, which all expect the
+    # token dict, and the base64url.json vector's "decode recovers the token".
+    if not isinstance(tok, dict):
+        return None
+    if tok.get("type") != "space-invite":
+        return None
+    return tok
 
 
 def test_link_fragment_round_trip():
@@ -93,21 +95,41 @@ def test_link_fragment_round_trip():
 
     fragment = url.split("#", 1)[1]
     result = decode_link_fragment(fragment, _space_invite_validate)
+    assert result == token
 
-    assert result["origin"] == origin
-    assert result["path"] == path
-    assert result["token"] == token
+
+def test_link_fragment_emits_canonical_array_form():
+    # The fragment is base64url(JSON([origin, path, token])) — byte-identical to
+    # the TS encoder, so links are mutually decodable across languages.
+    import json
+
+    origin = "https://app.example.com"
+    path = "/join"
+    token = {"type": "space-invite", "id": "xyz123"}
+    fragment = encode_link_fragment(origin, path, token).split("#", 1)[1]
+    assert json.loads(from_base64url(fragment)) == [origin, path, token]
+
+
+def test_link_fragment_matches_cross_language_vector():
+    origin = "https://app.example.com"
+    path = "/spaces/sp-abc"
+    token = {"type": "space-invite", "id": "sp-abc", "expiresAt": 1900000000}
+    expected_fragment = (
+        "WyJodHRwczovL2FwcC5leGFtcGxlLmNvbSIsIi9zcGFjZXMvc3AtYWJjIix7InR5cGUiOiJz"
+        "cGFjZS1pbnZpdGUiLCJpZCI6InNwLWFiYyIsImV4cGlyZXNBdCI6MTkwMDAwMDAwMH1d"
+    )
+    assert encode_link_fragment(origin, path, token).split("#", 1)[1] == expected_fragment
 
 
 def test_decode_link_fragment_strips_hash_prefix():
     origin = "https://app.example.com"
     path = "/invite"
-    token = {"type": "member-invite", "id": "abc"}
+    token = {"type": "space-invite", "id": "abc"}
 
     url = encode_link_fragment(origin, path, token)
     fragment_with_hash = "#" + url.split("#", 1)[1]
     result = decode_link_fragment(fragment_with_hash, _space_invite_validate)
-    assert result["token"] == token
+    assert result == token
 
 
 def test_decode_link_fragment_raises_on_invalid():
@@ -115,9 +137,11 @@ def test_decode_link_fragment_raises_on_invalid():
         decode_link_fragment("not-valid-base64url!!!", _space_invite_validate)
 
 
-def test_decode_link_fragment_raises_on_bad_shape():
-    # Valid base64url but wrong shape
-    import json, base64
-    bad = base64.urlsafe_b64encode(json.dumps({"not": "a list"}).encode()).decode().rstrip("=")
+def test_decode_link_fragment_raises_on_none_return():
+    # A validator that returns None (shape mismatch) must raise, mirroring the TS
+    # null-return convention — not silently return None to the caller.
+    origin = "https://app.example.com"
+    token = {"type": "not-a-space-invite"}
+    fragment = encode_link_fragment(origin, "/join", token).split("#", 1)[1]
     with pytest.raises(ValueError):
-        decode_link_fragment(bad, _space_invite_validate)
+        decode_link_fragment(fragment, _space_invite_validate)

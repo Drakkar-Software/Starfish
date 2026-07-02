@@ -8,6 +8,8 @@ callers fail closed.
 
 from __future__ import annotations
 
+import re
+
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey,
@@ -23,6 +25,20 @@ _RAW_PUB = serialization.PublicFormat.Raw
 _RAW_PRIV = serialization.PrivateFormat.Raw
 _NO_ENC = serialization.NoEncryption()
 
+_HEX_RE = re.compile(r"[0-9a-fA-F]*")
+
+
+def _from_hex(value: str) -> bytes:
+    """Strict hex→bytes decode matching the TS ``hexToBytes`` regex
+    (``^[0-9a-fA-F]*$``). ``bytes.fromhex`` silently skips ASCII whitespace, so a
+    key/signature hex string with embedded spaces would be accepted here but
+    rejected by TS — a cross-language validation-decision split on the exact
+    inputs feeding signature verification. Reject non-hex/odd-length up front.
+    ``fullmatch`` (not ``$``) avoids the trailing-newline bypass."""
+    if _HEX_RE.fullmatch(value) is None or len(value) % 2 != 0:
+        raise ValueError("invalid hex")
+    return bytes.fromhex(value)
+
 
 def _assert_usable_shared_secret(secret: bytes) -> None:
     """Reject the all-zero X25519 shared secret produced against a low-order
@@ -34,7 +50,7 @@ def _assert_usable_shared_secret(secret: bytes) -> None:
 
 def sign(message: bytes, priv_hex: str) -> bytes:
     """Sign ``message`` with the signer's Ed25519 private key (hex)."""
-    priv = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(priv_hex))
+    priv = Ed25519PrivateKey.from_private_bytes(_from_hex(priv_hex))
     return priv.sign(message)
 
 
@@ -42,7 +58,7 @@ def verify(sig: bytes, message: bytes, pub_hex: str) -> bool:
     """Verify ``sig`` over ``message`` against ``pub_hex``. Returns ``False``,
     never raises."""
     try:
-        pub = Ed25519PublicKey.from_public_bytes(bytes.fromhex(pub_hex))
+        pub = Ed25519PublicKey.from_public_bytes(_from_hex(pub_hex))
         pub.verify(sig, message)
         return True
     except Exception:
@@ -51,8 +67,8 @@ def verify(sig: bytes, message: bytes, pub_hex: str) -> bool:
 
 def derive_shared_secret(priv_hex: str, peer_pub_hex: str) -> bytes:
     """X25519 ECDH: derive a 32-byte shared secret. Raises on a degenerate result."""
-    priv = X25519PrivateKey.from_private_bytes(bytes.fromhex(priv_hex))
-    peer = X25519PublicKey.from_public_bytes(bytes.fromhex(peer_pub_hex))
+    priv = X25519PrivateKey.from_private_bytes(_from_hex(priv_hex))
+    peer = X25519PublicKey.from_public_bytes(_from_hex(peer_pub_hex))
     shared = priv.exchange(peer)
     _assert_usable_shared_secret(shared)
     return shared
@@ -68,7 +84,7 @@ def generate_kem_keypair() -> tuple[str, str]:
 
 def kem_public(priv_hex: str) -> str:
     """Derive the X25519 public key (hex) from a private key (hex)."""
-    priv = X25519PrivateKey.from_private_bytes(bytes.fromhex(priv_hex))
+    priv = X25519PrivateKey.from_private_bytes(_from_hex(priv_hex))
     return priv.public_key().public_bytes(_RAW, _RAW_PUB).hex()
 
 

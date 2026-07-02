@@ -43,28 +43,52 @@ export function generateSpaceWriteKey(): SpaceWriteKey {
 }
 
 /**
+ * Derive the AAD context string that binds a sealed webhook document to its
+ * destination. The sealing webhook and the opening member both compute this from
+ * the same public facts — the destination document key and the webhook route id —
+ * so a blob sealed for one document/route cannot be relocated to another: the
+ * keyring's `v:1` guard rejects any open that supplies a different (or absent) aad.
+ */
+export function sealAad(documentKey: string, webhookId: string): string {
+  return `starfish-webhook:${webhookId}:${documentKey}`
+}
+
+/**
  * Seal a JSON document to a space write public key, signed by `sealer`. The result
  * is a plain JSON object (`{ entry, ct }`) safe to store in a `none` collection.
+ *
+ * Pass `aad` (see {@link sealAad}) to bind the ciphertext to its destination
+ * context; the resulting `v:1` blob can then only be opened by supplying the same
+ * aad, which stops it being relocated to another document/route.
  */
 export async function sealDocument(
   data: Record<string, unknown>,
   recipientKemPubHex: string,
   sealer: SealerKeys,
+  aad?: string,
 ): Promise<SealedBlob> {
-  return seal(JSON.stringify(data), recipientKemPubHex, sealer)
+  return seal(JSON.stringify(data), recipientKemPubHex, sealer, aad)
 }
 
 /**
  * Open a {@link sealDocument} blob with the space write PRIVATE key, returning the
- * parsed JSON. Pass `opts.requireSealer` (the webhook's Ed25519 pubkey hex) to pin
- * provenance — the open then throws unless the blob was sealed by that key.
+ * parsed JSON.
+ *
+ * `requireSealer` (the webhook's Ed25519 pubkey hex) is MANDATORY: the space write
+ * PUBLIC key is published, so anyone can seal to it with their own keypair. Pinning
+ * the expected sealer is what proves the message actually originated from the
+ * webhook rather than a forger — it must not be silently skippable.
+ *
+ * Pass `opts.aad` (see {@link sealAad}) when the blob was sealed with context
+ * binding (`v:1`); opening such a blob without the matching aad throws.
  */
 export async function openSealedDocument(
   blob: SealedBlob,
   recipientKemPrivHex: string,
-  opts: { requireSealer?: string } = {},
+  requireSealer: string,
+  opts: { aad?: string } = {},
 ): Promise<Record<string, unknown>> {
-  const bytes = await unseal(blob, recipientKemPrivHex, opts)
+  const bytes = await unseal(blob, recipientKemPrivHex, { requireSealer, aad: opts.aad })
   return JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>
 }
 

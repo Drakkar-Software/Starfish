@@ -68,6 +68,17 @@ describe("parseSseFrames", () => {
     expect(events).toEqual(["no-space"])
   })
 
+  it("strips exactly one leading space (a second space is payload)", () => {
+    // WHATWG SSE §9.2.6 removes ONE leading space — parity with the Python parser.
+    expect(parseSseFrames("data: foo\n\n", "").events).toEqual(["foo"])
+    expect(parseSseFrames("data:  foo\n\n", "").events).toEqual([" foo"])
+  })
+
+  it("preserves a leading tab after data: (only a space is stripped)", () => {
+    // trimStart() would wrongly drop the tab; the spec keeps it.
+    expect(parseSseFrames("data:\tfoo\n\n", "").events).toEqual(["\tfoo"])
+  })
+
   it("handles a frame split across exactly the blank-line boundary", () => {
     const { carry: c1 } = parseSseFrames("data: value\n", "")
     const { events } = parseSseFrames("\n", c1)

@@ -27,6 +27,16 @@ export interface RateLimiterOptions {
   /** Prefix prepended to every bucket key. REQUIRED when several limiters share one
    *  `kv` (e.g. per collection+action+dimension) so their counters don't collide. */
   keyPrefix?: string
+  /** Number of trusted reverse-proxy hops directly in front of this server. When
+   *  `0` (the default) the client-controlled `X-Forwarded-For` header is NOT
+   *  trusted for bucketing: the bucket falls back to the runtime socket/peer IP
+   *  (or a shared `"anonymous"` bucket when the runtime cannot supply one), so a
+   *  spoofed XFF cannot mint fresh buckets and slip the limit. When `> 0`, the
+   *  real client is taken as the Nth entry FROM THE RIGHT of XFF — each trusted
+   *  proxy appends the peer it received the request from, so the rightmost entry
+   *  is added by the closest proxy. Set this to the exact number of proxies you
+   *  operate; leave it `0` for direct/untrusted ingress. */
+  trustedProxyHops?: number
 }
 
 export class RateLimiter {
@@ -35,6 +45,7 @@ export class RateLimiter {
   private _bucketMode: RateLimitBucketMode
   private _kv: KVAdapter
   private _keyPrefix: string
+  private _trustedProxyHops: number
 
   constructor(
     windowMs: number = 60_000,
@@ -50,6 +61,34 @@ export class RateLimiter {
     // supplied (that backend owns its own capacity policy / TTL-based bounding).
     this._kv = opts.kv ?? createInMemoryKVAdapter({ maxKeys: maxBuckets })
     this._keyPrefix = opts.keyPrefix ?? ""
+    this._trustedProxyHops = opts.trustedProxyHops ?? 0
+  }
+
+  /**
+   * Resolve the IP component of the bucket key from the (client-controlled)
+   * `X-Forwarded-For` header and the runtime socket/peer IP. Identical logic to
+   * the Python `RateLimiter._resolve_ip_part`.
+   *
+   * With `trustedProxyHops === 0` (default) XFF is ignored entirely — a spoofed
+   * header cannot create a new bucket. With `N > 0` the Nth-from-right XFF entry
+   * (the real client behind N trusted proxies) is used; if the header is shorter
+   * than N, it is not trusted and the socket peer is used instead.
+   */
+  private _resolveIpPart(forwardedFor: string | null, clientIp: string | null): string {
+    if (this._trustedProxyHops > 0) {
+      const hops = forwardedFor
+        ? forwardedFor.split(",").map((h) => h.trim()).filter((h) => h.length > 0)
+        : []
+      if (hops.length >= this._trustedProxyHops) {
+        return hops[hops.length - this._trustedProxyHops]!
+      }
+      // Fewer hops than expected → the chain is not the trusted shape; fall back
+      // to the socket peer (coarse, but not attacker-spoofable).
+      return clientIp ?? "anonymous"
+    }
+    // Default: do NOT trust the client-controlled XFF. Bucket by the runtime
+    // socket/peer IP, sharing one "anonymous" bucket when unavailable.
+    return clientIp ?? "anonymous"
   }
 
   async check(
@@ -57,14 +96,15 @@ export class RateLimiter {
     forwardedFor: string | null = null,
     clientIp: string | null = null,
   ): Promise<{ error: string; status: number } | null> {
-    // Bucket-key precedence: in "identity" mode, authenticated identity → first
-    // X-Forwarded-For hop → direct client IP → shared "anonymous". In "ip" mode the
-    // identity is ignored and bucketing is by IP only. In "identity+ip" mode the key is
-    // the (identity, ip) pair, so one budget is kept per distinct combination. Identical
-    // to the Python RateLimiter; the only difference is which signals a runtime can supply
-    // (Hono has no portable socket IP, so TS callers pass clientIp=null — for "ip"/
-    // "identity+ip", requests with no X-Forwarded-For share the "anonymous" ip part).
-    const ipPart = (forwardedFor ? forwardedFor.split(",")[0]!.trim() : null) ?? clientIp ?? "anonymous"
+    // Bucket-key precedence: in "identity" mode, authenticated identity → resolved
+    // IP part → shared "anonymous". In "ip" mode the identity is ignored and
+    // bucketing is by the resolved IP only. In "identity+ip" mode the key is the
+    // (identity, ip) pair, so one budget is kept per distinct combination. The IP
+    // part is derived by `_resolveIpPart`, which by default ignores the spoofable
+    // X-Forwarded-For header (see `trustedProxyHops`). Identical to the Python
+    // RateLimiter; the only difference is which signals a runtime can supply (Hono
+    // has no portable socket IP, so TS callers pass clientIp=null).
+    const ipPart = this._resolveIpPart(forwardedFor, clientIp)
     let bucketKey: string
     if (this._bucketMode === "ip") {
       bucketKey = ipPart

@@ -51,6 +51,20 @@ describe("deriveRootIdentity — shape", () => {
     expect(a.keys.kemPriv).not.toBe(b.keys.kemPriv)
     expect(a.userId).not.toBe(b.userId)
   })
+
+  it("NFC-normalizes: precomposed and decomposed spellings derive one identity", async () => {
+    // Same passphrase spelled two ways: precomposed "é" (U+00E9) vs decomposed
+    // "e" + combining acute accent (U+0065 U+0301). Without NFC these derive two
+    // different root identities → silent cross-device lockout.
+    const precomposed = "café-passphrase"
+    const decomposed = "café-passphrase"
+    expect(precomposed).not.toBe(decomposed)
+    const a = await deriveRootIdentity(precomposed)
+    const b = await deriveRootIdentity(decomposed)
+    expect(a.keys.edPub).toBe(b.keys.edPub)
+    expect(a.userId).toBe(b.userId)
+    expect(a).toEqual(b)
+  })
 })
 
 describe("deriveRootIdentity / bootstrapRootIdentity — empty passphrase rejection", () => {

@@ -140,6 +140,13 @@ class SyncRouterOptions:
     # (e.g. Garage K2V) to enforce rate limits across server instances; counters are
     # namespaced per collection/action/dimension automatically.
     rate_limit_store: KVAdapter | None = None
+    # Number of trusted reverse-proxy hops directly in front of this server, used by
+    # every rate limiter to locate the real client IP in ``X-Forwarded-For``. Defaults
+    # to 0: the client-controlled XFF header is NOT trusted for bucketing (a spoofed
+    # header cannot mint fresh buckets). Set it to the exact number of proxies you
+    # operate to enable secure per-client IP bucketing. Mirrors the TS
+    # ``trustedProxyHops`` router option.
+    trusted_proxy_hops: int = 0
 
 
 from pydantic import BaseModel as _BaseModel
@@ -223,7 +230,7 @@ def _resolve_window_max(dim, rule, col_rl, global_rl) -> tuple[int, int] | None:
     return window_ms, max_requests
 
 
-def _build_rule_limiters(rule: RateLimitRule, col_rl, global_rl, kv, key_base) -> list[RateLimiter]:
+def _build_rule_limiters(rule: RateLimitRule, col_rl, global_rl, kv, key_base, trusted_proxy_hops: int = 0) -> list[RateLimiter]:
     """Build the list of limiters for one rule (single-counter, or two-independent).
 
     ``kv`` (when not None) is the shared counter store; ``key_base`` namespaces this rule's
@@ -235,17 +242,17 @@ def _build_rule_limiters(rule: RateLimitRule, col_rl, global_rl, kv, key_base) -
         if rule.identity is not None:
             r = _resolve_window_max(rule.identity, rule, col_rl, global_rl)
             if r is not None:
-                limiters.append(RateLimiter(r[0], r[1], bucket_mode="identity", kv=kv, key_prefix=f"{key_base}i:"))
+                limiters.append(RateLimiter(r[0], r[1], bucket_mode="identity", kv=kv, key_prefix=f"{key_base}i:", trusted_proxy_hops=trusted_proxy_hops))
         if rule.ip is not None:
             r = _resolve_window_max(rule.ip, rule, col_rl, global_rl)
             if r is not None:
-                limiters.append(RateLimiter(r[0], r[1], bucket_mode="ip", kv=kv, key_prefix=f"{key_base}p:"))
+                limiters.append(RateLimiter(r[0], r[1], bucket_mode="ip", kv=kv, key_prefix=f"{key_base}p:", trusted_proxy_hops=trusted_proxy_hops))
         return limiters
     # Single-counter form.
     r = _resolve_window_max(None, rule, col_rl, global_rl)
     if r is None:
         return []
-    return [RateLimiter(r[0], r[1], bucket_mode=rule.bucket or "identity", kv=kv, key_prefix=f"{key_base}s:")]
+    return [RateLimiter(r[0], r[1], bucket_mode=rule.bucket or "identity", kv=kv, key_prefix=f"{key_base}s:", trusted_proxy_hops=trusted_proxy_hops)]
 
 
 def _build_action_rate_limiters(
@@ -282,7 +289,7 @@ def _build_action_rate_limiters(
             )
         if rule is None:
             continue
-        limiters = _build_rule_limiters(rule, col_rl, global_rl, kv, f"{key_scope}:{action}:")
+        limiters = _build_rule_limiters(rule, col_rl, global_rl, kv, f"{key_scope}:{action}:", opts.trusted_proxy_hops)
         if limiters:
             result[action] = limiters
     return result
@@ -901,6 +908,14 @@ def _make_push_handler(
                 return JSONResponse(decision.body, status_code=decision.status)
 
         document_key = _resolve_document_key(col.storage_path, params)
+        # Guard the resolved key against traversal/injection BEFORE any store write.
+        # ``_validate_all_params`` only constrains each param's charset (it admits
+        # ``..``), so a ``..``-bearing param can compose a traversal key. The pull
+        # path guards here; the binary and append-only push paths write the store
+        # directly, so they must reject an unsafe resolved key too (mirrors
+        # handle_sync_pull).
+        if is_unsafe_document_key(document_key):
+            return JSONResponse({"error": "Invalid path parameter"}, status_code=400)
         push_ctx = StoreContext(
             collection=col.name,
             params=dict(params),

@@ -200,13 +200,17 @@ otherwise confirmed the remaining boundaries hold (or are documented footguns).
   can't post; fully evicting a member means removing them from the directory and/or
   revoking their cap. (The userId space was also widened 64→128 bits, so the identity
   binding underpinning all of this rests on 2^128, not 2^64, second-preimage resistance.)
-- **rendezvous root pin is a LIBRARY option** — `install_pairing_bundle` keeps
-  `expected_root_ed_pub` optional, so the library still permits an unpinned install.
-  The **app** closes this: `fetchAndBuildDeviceSession` makes `expectedRootEdPub`
-  **required** and throws without it, and the "Phone scans" UI now **disables the join
-  button until the root key is pasted** (the Playwright spec asserts this), so a user
-  can't even attempt an unpinned install. The out-of-band fingerprint-confirmation UX
-  (comparing the pasted key to one shown on the first device) is still a follow-up.
+- **rendezvous root pinning is mandatory (library + app)** — `install_pairing_bundle`
+  now **requires** either `expected_root_ed_pub` (a pin) or `confirm_unpinned_root`
+  (a first-contact acknowledgment callback). An unpinned install **raises** rather than
+  silently adopting whatever root signed the fetched bundle — previously a confused-
+  deputy / account-takeover vulnerability (an attacker could plant a bundle under their
+  own root in the public rendezvous slot). The **app** layers on top:
+  `fetchAndBuildDeviceSession` makes `expectedRootEdPub` **required** and throws before
+  it even fetches, and the "Phone scans" UI **disables the join button until the root
+  key is pasted** (the Playwright spec asserts this). The out-of-band fingerprint-
+  confirmation UX (comparing the pasted key to one shown on the first device) is still
+  a follow-up.
 - **`authorSignature` is not verified server-side** — by design (end-to-end): the
   server stores it verbatim and consumers verify. The test documents this property.
 - **TOFU room ownership** — a room's owner is whoever first creates its keyring; a
@@ -491,7 +495,8 @@ surfaces; each turned out robust with full TS↔Python parity:
 
 - **Pairing / rendezvous.** The QR/relay onboarding path. `install_pairing_bundle`
   verifies the cap-cert (signature + window + well-formedness), `kind=="device"`, `iss==rootEdPub`,
-  the optional `expected_root_ed_pub` pin, `sub`/`subKem`, and the optional `qrNonce` session
+  **mandatory root pinning** (`expected_root_ed_pub` **or** a `confirm_unpinned_root` first-contact
+  callback — an unpinned install now raises), `sub`/`subKem`, and the optional `qrNonce` session
   binding; `assemble_pairing_bundle` fails closed without an explicit `granted_scope` (the
   QR-supplied `requestedScope` is attacker-influenceable and a device cap is a root proxy); the
   relay request carries an Ed25519 proof-of-possession binding `devKemPub` to `devEdPub`. **Cleared:**

@@ -73,7 +73,16 @@ def decode_link_fragment(
         parsed = json.loads(from_base64url(raw))
     except Exception:
         raise ValueError(err_msg)
+    # Canonical form is [origin, path, token]; recover the token before
+    # validating. A bare (non-array) payload is tolerated for resilience against
+    # older single-value fragments.
+    token = parsed[2] if isinstance(parsed, list) and len(parsed) >= 3 else parsed
     try:
-        return validate(parsed)
+        result = validate(token)
     except Exception:
         raise ValueError(err_msg)
+    # A validator that returns ``None``/falsy signals a shape mismatch (the TS
+    # null-return convention); reject it identically instead of returning None.
+    if result is None:
+        raise ValueError(err_msg)
+    return result

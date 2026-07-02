@@ -9,7 +9,7 @@ import logging
 import re
 import socket
 import time
-from typing import Any
+from typing import Any, Awaitable, Callable
 from urllib.parse import urlparse
 
 from fastapi.responses import JSONResponse
@@ -96,8 +96,30 @@ def _parse_host_ip(hostname: str) -> "ipaddress._BaseAddress | None":
         return None
 
 
+# RFC 6598 shared address space (CGNAT). ``ipaddress`` does NOT flag this range
+# as private/global, so it slips past the is_private check — block it explicitly
+# for parity with the TypeScript guard (which lists 100.64.0.0/10 in isPublicIPv4).
+_CGNAT_NET = ipaddress.ip_network("100.64.0.0/10")
+
+
+def _addr_is_blocked(addr: "ipaddress._BaseAddress") -> bool:
+    """True when *addr* is private/loopback/link-local/reserved or CGNAT."""
+    if addr.is_private or addr.is_loopback or addr.is_link_local:
+        return True
+    # CGNAT check, including the IPv4-mapped IPv6 form (::ffff:100.64.x.y).
+    v4 = addr if isinstance(addr, ipaddress.IPv4Address) else getattr(addr, "ipv4_mapped", None)
+    if v4 is not None and v4 in _CGNAT_NET:
+        return True
+    return False
+
+
 def validate_url_not_private(url: str) -> bool:
-    """Return True if the URL does not point to a private/internal network."""
+    """Return True if the URL does not point to a private/internal network.
+
+    String-only guard: it inspects the literal host. It does NOT resolve DNS, so a
+    public-looking hostname that resolves to a private address still passes — use
+    :func:`validate_url_not_private_async` for untrusted URLs.
+    """
     try:
         parsed = urlparse(url)
         hostname = parsed.hostname
@@ -106,13 +128,66 @@ def validate_url_not_private(url: str) -> bool:
         if hostname in ("localhost", "127.0.0.1", "::1", "0.0.0.0"):
             return False
         addr = _parse_host_ip(hostname)
-        if addr is not None and (
-            addr.is_private or addr.is_loopback or addr.is_link_local
-        ):
+        if addr is not None and _addr_is_blocked(addr):
             return False
         return True
     except Exception:  # noqa: BLE001
         return False
+
+
+async def validate_url_not_private_async(
+    url: str,
+    resolver: "Callable[[str], Awaitable[list[str]]] | None" = None,
+) -> bool:
+    """SSRF guard that ALSO resolves DNS.
+
+    Rejects a URL whose host is a literal private/loopback address (via the
+    synchronous :func:`validate_url_not_private` fast pre-filter) OR whose
+    hostname resolves to any private/loopback/link-local/reserved/CGNAT address.
+    Use this for untrusted outbound URLs (webhooks, replica peers) — the
+    string-only check is NOT sufficient there, because a public-looking name can
+    resolve to an internal address.
+
+    TOCTOU / DNS-rebinding caveat: the address checked here can differ from the
+    one the eventual request connects to (the name can be re-resolved). This
+    closes the "name that always resolves internal" hole but cannot, by itself,
+    defeat an attacker who flips the record between check and use; pin the
+    resolved IP (connect to it directly) for full protection.
+
+    Degrades gracefully: when resolution fails, the synchronous string verdict
+    stands (returns True for a public-looking host). ``resolver`` (host → list of
+    IP strings) is injectable for testing / custom runtimes; when omitted,
+    ``asyncio.get_event_loop().getaddrinfo`` is used.
+    """
+    # Fast pre-filter: a literal private/loopback host is rejected without any DNS.
+    if not validate_url_not_private(url):
+        return False
+
+    hostname = urlparse(url).hostname
+    if not hostname:
+        return False
+    # An IP literal was already fully classified by the synchronous pre-filter.
+    if _parse_host_ip(hostname) is not None:
+        return True
+
+    try:
+        if resolver is not None:
+            addresses = await resolver(hostname)
+        else:
+            loop = asyncio.get_event_loop()
+            infos = await loop.getaddrinfo(hostname, None)
+            addresses = [info[4][0] for info in infos]
+    except Exception:  # noqa: BLE001 — resolution failed → let the caller's request surface it
+        return True
+
+    if not addresses:
+        return True
+
+    for ip in addresses:
+        host_for_check = f"[{ip}]" if ":" in ip else ip
+        if not validate_url_not_private(f"http://{host_for_check}/"):
+            return False
+    return True
 
 
 def validate_path_segment(value: str) -> bool:

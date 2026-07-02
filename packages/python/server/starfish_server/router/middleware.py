@@ -40,6 +40,7 @@ class RateLimiter:
         bucket_mode: str = "identity",
         kv: KVAdapter | None = None,
         key_prefix: str = "",
+        trusted_proxy_hops: int = 0,
     ) -> None:
         self._window_ms = window_ms
         self._max_requests = max_requests
@@ -48,6 +49,39 @@ class RateLimiter:
         # is supplied (that backend owns its own capacity policy / TTL-based bounding).
         self._kv = kv or create_in_memory_kv_adapter(max_keys=max_buckets)
         self._key_prefix = key_prefix
+        # Number of trusted reverse-proxy hops directly in front of this server.
+        # ``0`` (default) means the client-controlled ``X-Forwarded-For`` header is
+        # NOT trusted for bucketing — the socket peer is used instead, so a spoofed
+        # XFF cannot mint fresh buckets. ``N > 0`` takes the client as the Nth entry
+        # FROM THE RIGHT of XFF (each trusted proxy appends the peer it received the
+        # request from). Identical semantics to the TS ``trustedProxyHops`` option.
+        self._trusted_proxy_hops = trusted_proxy_hops
+
+    def _resolve_ip_part(
+        self, forwarded_for: str | None, client_ip: str | None
+    ) -> str:
+        """Resolve the IP component of the bucket key. Identical to the TS
+        ``RateLimiter._resolveIpPart``.
+
+        With ``trusted_proxy_hops == 0`` (default) XFF is ignored entirely — a
+        spoofed header cannot create a new bucket. With ``N > 0`` the Nth-from-right
+        XFF entry (the real client behind N trusted proxies) is used; if the header
+        is shorter than N, it is not trusted and the socket peer is used instead.
+        """
+        if self._trusted_proxy_hops > 0:
+            hops = (
+                [h.strip() for h in forwarded_for.split(",") if h.strip()]
+                if forwarded_for
+                else []
+            )
+            if len(hops) >= self._trusted_proxy_hops:
+                return hops[len(hops) - self._trusted_proxy_hops]
+            # Fewer hops than expected → the chain is not the trusted shape; fall
+            # back to the socket peer (coarse, but not attacker-spoofable).
+            return client_ip or "anonymous"
+        # Default: do NOT trust the client-controlled XFF. Bucket by the runtime
+        # socket/peer IP, sharing one "anonymous" bucket when unavailable.
+        return client_ip or "anonymous"
 
     async def check(
         self,
@@ -57,20 +91,17 @@ class RateLimiter:
     ) -> JSONResponse | None:
         """Return an error response if the rate limit is exceeded.
 
-        Bucket-key precedence: in ``"identity"`` mode, authenticated identity → first
-        X-Forwarded-For hop → direct client IP → shared ``"anonymous"``. In ``"ip"`` mode
-        the identity is ignored and bucketing is by IP only. In ``"identity+ip"`` mode the
-        key is the (identity, ip) pair. Identical to the TS RateLimiter; the only
-        difference is which signals a runtime supplies (the Python server can pass the
-        socket ``request.client.host`` as ``client_ip``; Hono cannot).
+        Bucket-key precedence: in ``"identity"`` mode, authenticated identity →
+        resolved IP part → shared ``"anonymous"``. In ``"ip"`` mode the identity is
+        ignored and bucketing is by the resolved IP only. In ``"identity+ip"`` mode
+        the key is the (identity, ip) pair. The IP part is derived by
+        ``_resolve_ip_part``, which by default ignores the spoofable
+        X-Forwarded-For header (see ``trusted_proxy_hops``). Identical to the TS
+        RateLimiter; the only difference is which signals a runtime supplies (the
+        Python server can pass the socket ``request.client.host`` as ``client_ip``;
+        Hono cannot).
         """
-        ip_part = None
-        if forwarded_for:
-            ip_part = forwarded_for.split(",")[0].strip()
-        if not ip_part and client_ip:
-            ip_part = client_ip
-        if not ip_part:
-            ip_part = "anonymous"
+        ip_part = self._resolve_ip_part(forwarded_for, client_ip)
 
         if self._bucket_mode == "ip":
             bucket_key = ip_part

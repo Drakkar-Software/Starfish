@@ -14,7 +14,7 @@ third-party formats.
 | Layer | Surface | What it does |
 |---|---|---|
 | **Transport** | `createWebhookHandler`, `verifyHmac` | Authenticate the caller (HMAC), transform the payload, forward a normal push into the write pipeline. |
-| **Sealed-write (E2EE)** | `generateSpaceWriteKey`, `sealDocument`, `openSealedDocument`, `isSealedBlob` | Let a keyless webhook encrypt into an E2EE space using only a published public key. |
+| **Sealed-write (E2EE)** | `generateSpaceWriteKey`, `sealAad`, `sealDocument`, `openSealedDocument`, `isSealedBlob` | Let a keyless webhook encrypt into an E2EE space using only a published public key. |
 
 ## How a write happens
 
@@ -77,6 +77,13 @@ Authentication is **required but pluggable** — give each route exactly one of:
 
 A route with neither is rejected (`500`) — there is no unauthenticated mode.
 
+**Replay:** plain HMAC over the raw body alone provides no replay protection — a
+captured valid request replays indefinitely, and there is no server-side seen-id
+store. The recommended baseline is a **`timestampHeader`** (bounds the replay
+window), or an **`authenticate`** hook that folds an idempotency/nonce header into
+its own check. `createWebhookHandler` logs a warning at construction for any HMAC
+route configured with neither.
+
 ```ts
 // Self-service: no operator secret. Hash a presented bearer token and look the
 // expected hash up in your own store, keyed by the route id.
@@ -114,8 +121,13 @@ never decrypt history. Sealed-write makes that possible:
    (e.g. wrapped into the space keyring).
 2. Set `seal: { recipientKemPubHex }` + a `sealer` keypair on the route. Each message
    is sealed at this edge, so a plain (`none`) collection stores only ciphertext —
-   the server never sees the cleartext.
-3. Members open it with `openSealedDocument(blob, privKey, { requireSealer })`.
+   the server never sees the cleartext. The handler binds each blob to its
+   destination via an AAD context (`sealAad(documentKey, webhookId)`), so a sealed
+   message cannot be relocated into another document/route.
+3. Members open it with `openSealedDocument(blob, privKey, sealerPubKey, { aad })`.
+   The **sealer pubkey is mandatory** — the write PUBLIC key is published, so pinning
+   the expected sealer is what proves a message actually came from the webhook rather
+   than a forger. Reconstruct the same `aad` with `sealAad(documentKey, webhookId)`.
 
 The webhook holds the public write key and its own signing key — it can encrypt to
 the space but cannot read anything sealed by anyone else. See

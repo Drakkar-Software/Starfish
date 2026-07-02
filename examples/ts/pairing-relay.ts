@@ -105,12 +105,24 @@ async function main() {
   const recoveredBundle = await readPairingResponse(encryptedResp, PAIRING_CODE)
   console.log("[new-device] received bundle, installing…")
 
-  const installed = await installPairingBundle(recoveredBundle, {
-    edPriv: bytesToHex(newDevEdPriv),
-    edPub: newDevEdPub,
-    kemPriv: bytesToHex(newDevKemPriv),
-    kemPub: newDevKemPub,
-  })
+  // Root pinning is MANDATORY: installPairingBundle throws unless it is told
+  // which root to trust (otherwise an attacker could hand the device a bundle
+  // signed by their OWN root and hijack the identity). This demo already knows
+  // the root's Ed25519 pubkey, so we pin it via `expectedRootEdPub`. In a real
+  // first-contact flow where the new device has never seen this root, pass
+  // `confirmUnpinnedRoot: (rootEdPub) => { /* show this fingerprint to the user
+  // and require explicit confirmation before returning true */ return true }`
+  // instead.
+  const installed = await installPairingBundle(
+    recoveredBundle,
+    {
+      edPriv: bytesToHex(newDevEdPriv),
+      edPub: newDevEdPub,
+      kemPriv: bytesToHex(newDevKemPriv),
+      kemPub: newDevKemPub,
+    },
+    { expectedRootEdPub: root.device.edPub },
+  )
 
   console.log("[new-device] paired; userId =", installed.credentials.userId)
   console.log("[new-device] CEKs recovered:", Object.keys(installed.ceks))

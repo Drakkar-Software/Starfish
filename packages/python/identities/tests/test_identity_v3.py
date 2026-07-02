@@ -64,3 +64,17 @@ def test_rejects_empty_passphrase() -> None:
         derive_root_identity("")
     with pytest.raises(ValueError):
         derive_root_identity("   ")
+
+
+def test_nfc_normalizes_passphrase_precomposed_equals_decomposed() -> None:
+    # Same passphrase spelled two ways: precomposed "é" (U+00E9) vs decomposed
+    # "e" + combining acute accent (U+0065 U+0301). Without NFC these derive two
+    # different root identities → silent cross-device lockout.
+    precomposed = "café-passphrase"
+    decomposed = "café-passphrase"
+    assert precomposed != decomposed
+    a = derive_root_identity(precomposed)
+    b = derive_root_identity(decomposed)
+    assert a.keys.ed_pub == b.keys.ed_pub
+    assert a.user_id == b.user_id
+    assert a == b

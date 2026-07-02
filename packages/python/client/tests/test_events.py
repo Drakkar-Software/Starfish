@@ -82,6 +82,24 @@ def test_empty_chunk_no_frames():
     assert carry == ""
 
 
+def test_data_line_strips_exactly_one_leading_space():
+    # WHATWG SSE §9.2.6: remove exactly ONE leading space after "data:" (parity
+    # with the TypeScript parser). json.loads tolerates any residual leading
+    # whitespace, so the parsed dict is identical either way — this pins the
+    # spec-compliant extraction so a switch to str.strip()/lstrip() (which would
+    # also eat a tab or extra spaces) does not silently diverge from TS.
+    one_space, _ = parse_sse_frames('data: {"v": 1}\n\n', "")
+    two_spaces, _ = parse_sse_frames('data:  {"v": 1}\n\n', "")
+    assert one_space == [{"v": 1}]
+    assert two_spaces == [{"v": 1}]
+
+
+def test_data_line_preserves_leading_tab():
+    # Only a leading SPACE is stripped; a tab is part of the payload.
+    frames, _ = parse_sse_frames('data:\t{"v": 2}\n\n', "")
+    assert frames == [{"v": 2}]
+
+
 def test_carry_preserved_across_comment_and_data():
     # First chunk: comment only — no frame yet
     frames1, carry1 = parse_sse_frames(": keep-alive\n", "")

@@ -454,8 +454,8 @@ function throwCoded(code: CapCertWellFormedCode, message: string): never {
 /**
  * Glob match used for cap-cert path semantics. `**` matches any run of
  * characters including slashes; a single `*` matches any run of non-slash
- * characters; all other regex specials are escaped literally. The pattern
- * must match the entire `target`.
+ * characters; every other character matches literally. The pattern must match
+ * the entire `target`.
  *
  * The `**` rule is mandatory for correctness, not convenience: the server's
  * request-path enforcement (`matchScopePath`) treats `**` as crossing
@@ -470,25 +470,55 @@ function throwCoded(code: CapCertWellFormedCode, message: string): never {
  * matcher the protocol uses.
  */
 export function pathGlobMatch(glob: string, target: string): boolean {
-  let re = ""
-  let i = 0
-  while (i < glob.length) {
-    const ch = glob[i]!
-    if (ch === "*" && glob[i + 1] === "*") {
-      re += ".*"
+  // Linear two-pointer matcher. A regex compiled from an attacker-controlled
+  // glob (`*`->`[^/]*`, `**`->`.*`) backtracks super-polynomially on a crafted
+  // non-match, and this runs on the auth hot path for every request, so it is a
+  // ReDoS sink. This matcher is O(len(glob) * len(target)) with no backtracking
+  // explosion. `**` matches any run of characters (incl. `/` and line
+  // terminators); `*` matches any run of non-`/` characters. Kept byte-for-byte
+  // identical to the Python `path_glob_match`.
+  // Tokens: 2 = `**`, 1 = `*`, otherwise a literal character.
+  const toks: Array<{ star: 0 | 1 | 2; c: string }> = []
+  for (let i = 0; i < glob.length; ) {
+    if (glob[i] === "*" && glob[i + 1] === "*") {
+      toks.push({ star: 2, c: "" })
       i += 2
-    } else if (ch === "*") {
-      re += "[^/]*"
-      i += 1
-    } else if (/[.+?^${}()|[\]\\]/.test(ch)) {
-      re += "\\" + ch
+    } else if (glob[i] === "*") {
+      toks.push({ star: 1, c: "" })
       i += 1
     } else {
-      re += ch
+      toks.push({ star: 0, c: glob[i]! })
       i += 1
     }
   }
-  return new RegExp("^" + re + "$").test(target)
+
+  let si = 0 // index into target
+  let ti = 0 // index into toks
+  let starTi = -1 // token index of the most recent star we can backtrack to
+  let starType: 1 | 2 = 1
+  let starMatch = 0 // target index the star began matching at
+  while (si < target.length) {
+    if (ti < toks.length && toks[ti]!.star === 0 && toks[ti]!.c === target[si]) {
+      si += 1
+      ti += 1
+    } else if (ti < toks.length && toks[ti]!.star !== 0) {
+      starTi = ti
+      starType = toks[ti]!.star as 1 | 2
+      starMatch = si
+      ti += 1
+    } else if (starTi !== -1) {
+      // Extend the previous star by one target character. A single `*` may not
+      // absorb a `/`; `**` absorbs anything.
+      if (starType === 1 && target[starMatch] === "/") return false
+      starMatch += 1
+      si = starMatch
+      ti = starTi + 1
+    } else {
+      return false
+    }
+  }
+  while (ti < toks.length && toks[ti]!.star !== 0) ti += 1
+  return ti === toks.length
 }
 
 /**

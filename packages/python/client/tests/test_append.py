@@ -269,3 +269,48 @@ async def test_append_sends_no_author_fields_without_cap_provider():
     body = json.loads(route.calls[0].request.content)
     assert "authorPubkey" not in body
     assert "authorSignature" not in body
+
+
+# --- client.append_anonymous ---
+
+@pytest.mark.asyncio
+async def test_append_anonymous_signs_when_signer_given():
+    import json
+    from starfish_protocol.append_author import verify_append_author
+
+    data = {"msg": "hi"}
+    signer = {"edPubHex": _KP_PUB, "edPrivHex": _KP_PRIV}
+    with respx.mock(base_url="https://api.example.com") as mock:
+        route = mock.post("/v1/push/inbox/alice/2024-01").mock(
+            return_value=httpx.Response(200, json={"hash": "h", "timestamp": 1})
+        )
+        async with StarfishClient(BASE) as client:
+            await client.append_anonymous("/push/inbox/alice/2024-01", data, signer)
+
+    request = route.calls[0].request
+    body = json.loads(request.content)
+    assert body["data"] == data
+    assert body["authorPubkey"] == _KP_PUB
+    # The server derives document_key="inbox/alice/2024-01" from the push path.
+    assert verify_append_author(
+        "inbox/alice/2024-01", data, body["authorPubkey"], body["authorSignature"]
+    ) is True
+    # Anonymous append carries no auth header.
+    assert "authorization" not in {k.lower() for k in request.headers.keys()}
+
+
+@pytest.mark.asyncio
+async def test_append_anonymous_omits_author_without_signer():
+    import json
+
+    with respx.mock(base_url="https://api.example.com") as mock:
+        route = mock.post("/v1/push/inbox/bob").mock(
+            return_value=httpx.Response(200, json={"hash": "h", "timestamp": 1})
+        )
+        async with StarfishClient(BASE) as client:
+            await client.append_anonymous("/push/inbox/bob", {"x": 1})
+
+    body = json.loads(route.calls[0].request.content)
+    assert body == {"data": {"x": 1}}
+    assert "authorPubkey" not in body
+    assert "authorSignature" not in body

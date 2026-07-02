@@ -55,7 +55,11 @@ def parse_sse_frames(
         data_lines: list[str] = []
         for line in part.split("\n"):
             if line.startswith("data:"):
-                data_lines.append(line[5:].lstrip(" "))
+                # WHATWG SSE §9.2.6: strip exactly ONE leading U+0020 SPACE after
+                # the colon (a tab or a second space is part of the payload). Keeps
+                # frame payloads byte-identical with the TypeScript parser.
+                value = line[5:]
+                data_lines.append(value[1:] if value.startswith(" ") else value)
             # id:, event:, retry:, and comment (:) lines are intentionally ignored.
         if data_lines:
             raw_data = "\n".join(data_lines)

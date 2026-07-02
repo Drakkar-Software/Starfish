@@ -27,7 +27,7 @@ export type {
   PullAndOpenBlobOptions,
 } from "./blob-seal.js"
 export { PARQUET_MIME_TYPE, PARQUET_MIME_TYPES } from "@drakkar.software/starfish-protocol"
-export { SyncManager, AbortError } from "./sync.js"
+export { SyncManager, AbortError, DocAuthorError } from "./sync.js"
 export type { SyncManagerOptions, SyncSigner } from "./sync.js"
 export { AppendLogCursor, AppendAuthorError, checkpointOf } from "./append-log.js"
 export type { AppendLogCursorOptions, AppendElement, AuthorVerifier, ElementErrorPolicy } from "./append-log.js"

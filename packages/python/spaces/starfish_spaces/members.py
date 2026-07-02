@@ -268,7 +268,7 @@ async def join_space_by_link(session: "Session", token: SpaceInviteLinkToken) ->
         "kemPub": token.get("kemPub"),
         "write": token.get("write", False),
     }
-    sealed = await seal_to_self(session, json.dumps(access_payload))
+    sealed = seal_to_self(session, json.dumps(access_payload))
     space = build_space(token["spaceId"], token.get("spaceName") or "")
     await add_joined_space_with_link_access(session.account_client, session, space, sealed)
     save_space_access_entry(token["spaceId"], {
@@ -327,7 +327,7 @@ async def recover_space_access(
             from starfish_spaces.config import SealedBlob as SealedBlobType
             sealed = sealed_blob if isinstance(sealed_blob, dict) else dict(sealed_blob)
             from starfish_spaces.account_seal import unseal_from_self as _unseal
-            raw = await _unseal(session, sealed)
+            raw = _unseal(session, sealed)
             parsed = json.loads(raw)
             if parsed.get("cap") and parsed.get("key"):
                 link_access[space_id] = parsed
@@ -349,8 +349,8 @@ async def recover_space_access(
         new_pub: dict[str, Any] = {}
         for id_, e in missing_links.items():
             payload = {"cap": e["cap"], "key": e["key"], "kemPriv": e.get("kemPriv"), "kemPub": e.get("kemPub"), "write": e.get("write", False)}
-            sealed = await seal_to_self(session, json.dumps(payload))
-            new_pub[id_] = {"v": sealed.v, "ct": sealed.ct, "wks": sealed.wks}  # type: ignore[attr-defined]
+            sealed = seal_to_self(session, json.dumps(payload))
+            new_pub[id_] = sealed
 
         await update_spaces_doc(session.account_client, session, lambda cur: {
             "spaces": cur["spaces"],
@@ -396,6 +396,7 @@ async def revoke_space_access(
         member_entry,
         opts["generation"],
         opts.get("priorRevoked"),
+        opts.get("submitRevocation"),
     )
 
     await remove_space_member(session.account_client, space_id, user_id, session)

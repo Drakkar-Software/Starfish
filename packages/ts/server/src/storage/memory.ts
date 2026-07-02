@@ -2,6 +2,24 @@ import type { ObjectStore, StoreContext } from "./base.js"
 
 const _globalData = new Map<string, string>()
 
+/**
+ * Content-derived version tag for compare-and-swap. It is store-internal (never
+ * crosses the wire, never compared across languages), so any stable hash works.
+ * Deriving it from content means MemoryObjectStore instances sharing one backing
+ * Map agree on the etag with zero extra shared state. (ABA is not a concern for
+ * `appendItem`: an append strictly grows the element count, so the head content
+ * never returns to a prior value.)
+ */
+function etagOfString(body: string): string {
+  // FNV-1a 32-bit, salted with length to shrink collision odds.
+  let h = 0x811c9dc5
+  for (let i = 0; i < body.length; i++) {
+    h ^= body.charCodeAt(i)
+    h = Math.imul(h, 0x01000193)
+  }
+  return `${body.length}-${(h >>> 0).toString(16)}`
+}
+
 export class MemoryObjectStore implements ObjectStore {
   private _data: Map<string, string>
   private _binary = new Map<string, Uint8Array>()
@@ -17,6 +35,27 @@ export class MemoryObjectStore implements ObjectStore {
 
   async put(key: string, body: string, _opts?: { contentType?: string; cacheControl?: string }, _context?: StoreContext): Promise<void> {
     this._data.set(key, body)
+  }
+
+  async getWithEtag(key: string, _context?: StoreContext): Promise<{ value: string; etag: string } | null> {
+    const value = this._data.get(key)
+    if (value === undefined) return null
+    return { value, etag: etagOfString(value) }
+  }
+
+  async putIfMatch(
+    key: string,
+    body: string,
+    expectedEtag: string | null,
+    _opts?: { contentType?: string; cacheControl?: string },
+    _context?: StoreContext,
+  ): Promise<string | null> {
+    const current = this._data.get(key)
+    const currentEtag = current === undefined ? null : etagOfString(current)
+    // Precondition failed → a concurrent writer changed the key. Do NOT overwrite.
+    if (currentEtag !== expectedEtag) return null
+    this._data.set(key, body)
+    return etagOfString(body)
   }
 
   async listKeys(

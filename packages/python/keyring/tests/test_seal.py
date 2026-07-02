@@ -184,6 +184,21 @@ def test_no_aad_blob_v_is_none() -> None:
     assert unseal_to_str(blob, me["kem_priv"]) == "plain"
 
 
+def test_empty_string_aad_behaves_like_no_aad() -> None:
+    """aad="" is treated as no context (matches TS truthiness): the blob has no
+    v=1 marker and round-trips via the no-aad open path — never a v=1 blob whose
+    tag mixed in no AAD (which TS could never open)."""
+    me = _make_identity()
+    blob = seal_to_self(
+        "empty-aad", me["kem_pub"],
+        sealer_ed_priv_hex=me["ed_priv"], sealer_ed_pub_hex=me["ed_pub"],
+        aad="",
+    )
+    assert blob.v is None
+    assert "v" not in blob.to_dict()
+    assert unseal_to_str(blob, me["kem_priv"]) == "empty-aad"
+
+
 def test_aad_unseal_to_str() -> None:
     """unseal_to_str propagates aad correctly."""
     me = _make_identity()

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Optional
 
@@ -119,7 +120,10 @@ class RootIdentity:
 
 def _argon2id_stretch(passphrase: str) -> bytes:
     return hash_secret_raw(
-        secret=passphrase.encode("utf-8"),
+        # NFC-normalize before stretching so composable Unicode (e.g. precomposed
+        # "é" U+00E9 vs decomposed U+0065 U+0301) derives one identity across
+        # devices. Matches the seal path (seal.py). NFC leaves ASCII unchanged.
+        secret=unicodedata.normalize("NFC", passphrase).encode("utf-8"),
         salt=ARGON2_SALT_UTF8,
         time_cost=ARGON2_ITERATIONS,
         memory_cost=ARGON2_MEMORY_KIB,

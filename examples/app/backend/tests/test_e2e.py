@@ -591,7 +591,9 @@ async def test_revoked_device_cap_denied(sdk):
         {"edPriv": root.device["edPriv"], "edPub": root.device["edPub"]}, parsed, {},
         AssemblePairingBundleOpts(granted_scope=parsed.requested_scope),
     )
-    device_cap = install_pairing_bundle(bundle, dev).credentials.cap_cert
+    device_cap = install_pairing_bundle(
+        bundle, dev, expected_root_ed_pub=root.root_ed_pub
+    ).credentials.cap_cert
     assert device_cap["kind"] == "device"
 
     dev_client = sdk(device_cap, dev["edPriv"])
@@ -673,7 +675,7 @@ async def test_pairing_second_device(sdk):
         {"edPriv": owner.creds.device["edPriv"], "edPub": owner.creds.device["edPub"]}, parsed, {},
         AssemblePairingBundleOpts(granted_scope=parsed.requested_scope),
     )
-    installed = install_pairing_bundle(bundle, dev)
+    installed = install_pairing_bundle(bundle, dev, expected_root_ed_pub=owner.creds.root_ed_pub)
     assert installed.credentials.user_id == owner.creds.user_id
 
     await add_collection_recipient(

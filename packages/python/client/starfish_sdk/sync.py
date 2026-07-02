@@ -5,7 +5,7 @@ import base64
 import random
 from typing import Any, Protocol
 
-from starfish_protocol.append_author import doc_author_canonical_input
+from starfish_protocol.append_author import doc_author_canonical_input, verify_doc_author
 from starfish_protocol.constants import (
     AUTHOR_PUBKEY_FIELD,
     AUTHOR_SIGNATURE_FIELD,
@@ -14,6 +14,7 @@ from starfish_protocol.constants import (
 from starfish_protocol.merge import deep_merge
 from starfish_protocol.types import PullResult
 from starfish_protocol.crypto import Encryptor
+from starfish_sdk.append_log import AuthorVerifier
 from starfish_sdk.client import StarfishClient
 from starfish_sdk.types import ConflictError, ConflictResolver
 
@@ -41,6 +42,14 @@ class AbortError(Exception):
         super().__init__("SyncManager was aborted")
 
 
+class DocAuthorError(Exception):
+    """Raised when a pulled document's author signature fails verification
+    (only when ``verify_author`` is enabled)."""
+
+    def __init__(self) -> None:
+        super().__init__("pulled document author verification failed")
+
+
 class SyncManager:
     """High-level sync manager with pull, push, and automatic conflict resolution.
 
@@ -58,6 +67,7 @@ class SyncManager:
         max_retries: int = 3,
         encryptor: Encryptor | None = None,
         signer: SyncSigner | None = None,
+        verify_author: bool | AuthorVerifier = False,
     ) -> None:
         self._client = client
         self._pull_path = pull_path
@@ -66,6 +76,10 @@ class SyncManager:
         self._max_retries = max_retries
         self._signer = signer
         self._encryptor: Encryptor | None = encryptor
+        self._verify_author = verify_author
+        # Reader derives the document key by stripping the ``/pull/`` action prefix —
+        # it must match the key the writer signed over (push strips ``/push/``).
+        self._document_key = pull_path.removeprefix("/pull/")
 
         self._last_hash: str | None = None
         self._last_checkpoint: int = 0
@@ -108,20 +122,58 @@ class SyncManager:
         if self._aborted:
             raise AbortError()
 
+        # Verify authorship over the raw (pre-decryption) data before accepting it.
+        self._verify_author_proof(result)
+
         if self._encryptor is not None:
-            decrypted = self._encryptor.decrypt(result.data)
+            incoming = self._encryptor.decrypt(result.data)
             if self._aborted:
                 raise AbortError()
-            self._local_data = decrypted
-            result.data = decrypted
-        elif self._last_checkpoint > 0:
-            self._local_data = deep_merge(self._local_data, result.data)
         else:
-            self._local_data = result.data
+            incoming = result.data
+
+        # Honor the configured conflict resolver against the established baseline —
+        # the same resolver the push-conflict path uses. The first pull (checkpoint 0)
+        # takes the snapshot wholesale; an incremental pull merges local + remote so a
+        # union/custom resolver does not drop local items on a shorter/stale snapshot.
+        if self._last_checkpoint > 0:
+            self._local_data = self._on_conflict(self._local_data, incoming)
+        else:
+            self._local_data = incoming
+        result.data = self._local_data
 
         self._last_hash = result.hash
         self._last_checkpoint = result.timestamp
         return result
+
+    def _verify_author_proof(self, result: PullResult) -> None:
+        """Verify a pulled snapshot's author signature over its RAW
+        (pre-decryption) ``data``, bound to the document key. Raises
+        :class:`DocAuthorError` on any failure. No-op when ``verify_author``
+        is disabled.
+
+        TRUST MODEL: with ``none``-mode collections the server returns the
+        document ``data`` alongside the author's Ed25519 ``author_pubkey`` /
+        ``author_signature``. Leaving ``verify_author`` off means the client
+        trusts the server not to forge content. Set it to ``True`` to require a
+        valid signature for the self-declared key, or pass
+        ``{"expected_author_pubkey": ...}`` to pin WHICH key must have signed.
+        """
+        v = self._verify_author
+        if not v:
+            return
+        expected: str | None = None
+        if isinstance(v, dict):
+            expected = v.get("expected_author_pubkey")
+        pub = result.author_pubkey
+        sig = result.author_signature
+        if not pub or not sig:
+            raise DocAuthorError()
+        # Public keys are hex (case-insensitive) — normalise before comparing.
+        if expected is not None and pub.lower() != expected.lower():
+            raise DocAuthorError()
+        if not verify_doc_author(self._document_key, result.data, pub, sig):
+            raise DocAuthorError()
 
     async def push(self, data: dict[str, Any]) -> dict[str, Any]:
         """Push data with automatic conflict resolution. Returns dict with hash and timestamp."""

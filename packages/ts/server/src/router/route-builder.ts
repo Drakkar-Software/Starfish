@@ -179,6 +179,13 @@ export interface SyncRouterOptions {
    *  {@link KVAdapter} (e.g. Garage K2V) to enforce rate limits across server instances;
    *  counters are namespaced per collection/action/dimension automatically. */
   rateLimitStore?: KVAdapter
+  /** Number of trusted reverse-proxy hops directly in front of this server, used by
+   *  every rate limiter to locate the real client IP in `X-Forwarded-For`. Defaults
+   *  to `0`: the client-controlled XFF header is NOT trusted for bucketing (a spoofed
+   *  header cannot mint fresh buckets). Set it to the exact number of proxies you
+   *  operate to enable secure per-client IP bucketing (`bucket: "ip"` / `"identity+ip"`
+   *  / an `ip` sub-limit). See {@link RateLimiterOptions.trustedProxyHops}. */
+  trustedProxyHops?: number
   /** Maximum total append elements across all entries in one batch pull request.
    * Guards against 100×maxPullLimit amplification. Default: 5000. */
   maxBatchAppendElements?: number
@@ -564,23 +571,24 @@ function buildRuleLimiters(
   globalRl: { windowMs: number; maxRequests: number } | undefined,
   kv: KVAdapter | undefined,
   keyBase: string,
+  trustedProxyHops: number,
 ): RateLimiter[] {
   // Two-independent form: a per-identity and/or per-ip dimension, each its own counter.
   if (rule.identity != null || rule.ip != null) {
     const limiters: RateLimiter[] = []
     if (rule.identity != null) {
       const r = resolveWindowMax(rule.identity, rule, colRl, globalRl)
-      if (r) limiters.push(new RateLimiter(r.windowMs, r.maxRequests, undefined, "identity", { kv, keyPrefix: `${keyBase}i:` }))
+      if (r) limiters.push(new RateLimiter(r.windowMs, r.maxRequests, undefined, "identity", { kv, keyPrefix: `${keyBase}i:`, trustedProxyHops }))
     }
     if (rule.ip != null) {
       const r = resolveWindowMax(rule.ip, rule, colRl, globalRl)
-      if (r) limiters.push(new RateLimiter(r.windowMs, r.maxRequests, undefined, "ip", { kv, keyPrefix: `${keyBase}p:` }))
+      if (r) limiters.push(new RateLimiter(r.windowMs, r.maxRequests, undefined, "ip", { kv, keyPrefix: `${keyBase}p:`, trustedProxyHops }))
     }
     return limiters
   }
   // Single-counter form.
   const r = resolveWindowMax(undefined, rule, colRl, globalRl)
-  return r ? [new RateLimiter(r.windowMs, r.maxRequests, undefined, rule.bucket ?? "identity", { kv, keyPrefix: `${keyBase}s:` })] : []
+  return r ? [new RateLimiter(r.windowMs, r.maxRequests, undefined, rule.bucket ?? "identity", { kv, keyPrefix: `${keyBase}s:`, trustedProxyHops })] : []
 }
 
 /**
@@ -614,7 +622,7 @@ function buildActionRateLimiters(
       rule = { windowMs: colRl.windowMs, maxRequests: colRl.maxRequests, bucket: colRl.bucket }
     }
     if (rule == null) continue
-    const limiters = buildRuleLimiters(rule, colRl, globalRl, kv, `${keyScope}:${action}:`)
+    const limiters = buildRuleLimiters(rule, colRl, globalRl, kv, `${keyScope}:${action}:`, opts.trustedProxyHops ?? 0)
     if (limiters.length > 0) result[action] = limiters
   }
   return result
@@ -905,11 +913,17 @@ function validateObjectSchema(
         if (!_ajvLoadWarned) {
           _ajvLoadWarned = true
           console.error(
-            "[Starfish] objectSchema is configured but ajv is not available. " +
-            "Install ajv or call setAjv() to provide an instance. Schema validation is DISABLED.",
+            "[Starfish] objectSchema is configured but ajv is not available " +
+            "(no require() in this runtime). Install ajv or call setAjv() to provide " +
+            "an instance. Failing the write CLOSED — the schema cannot be validated.",
           )
         }
-        return null
+        // Fail CLOSED: a collection declares objectSchema but no validator can be
+        // resolved. Rejecting the write is safer than silently skipping validation.
+        return {
+          body: { error: "Schema validation unavailable: no JSON Schema validator (install ajv or call setAjv)" },
+          status: 500,
+        }
       }
       const AjvModule = _require("ajv")
       const Ajv = AjvModule.default || AjvModule
@@ -919,11 +933,16 @@ function validateObjectSchema(
         _ajvLoadWarned = true
         console.error(
           "[Starfish] objectSchema is configured but ajv failed to load. " +
-          "Install ajv or call setAjv() to provide an instance. Schema validation is DISABLED.",
+          "Install ajv or call setAjv() to provide an instance. Failing the write " +
+          "CLOSED — the schema cannot be validated.",
           e,
         )
       }
-      return null
+      // Fail CLOSED (see above): do not let an unvalidated write proceed.
+      return {
+        body: { error: "Schema validation unavailable: no JSON Schema validator (install ajv or call setAjv)" },
+        status: 500,
+      }
     }
   }
   try {
@@ -1283,6 +1302,14 @@ function addCollectionRoutes(
       // bundle push path too); the resolved `roles` are passed via pushCtx below.
 
       const documentKey = resolveDocumentKey(col.storagePath, params)
+      // Guard the resolved key against traversal/injection BEFORE any store write.
+      // `validateAllParams` only constrains each param's charset (it admits `..`),
+      // so a `..`-bearing param can compose a traversal key. The pull path guards
+      // here; the binary and append-only push paths write the store directly, so
+      // they must reject an unsafe resolved key too (mirrors handleSyncPull).
+      if (isUnsafeDocumentKey(documentKey)) {
+        return c.json({ error: "Invalid path parameter" }, 400)
+      }
       const pushCtx: StoreContext = {
         collection: col.name,
         params,

@@ -19,6 +19,7 @@ export type { AuthResult } from "./auth.js"
 
 export {
   generateSpaceWriteKey,
+  sealAad,
   sealDocument,
   openSealedDocument,
   isSealedBlob,

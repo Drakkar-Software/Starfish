@@ -39,6 +39,9 @@ function parseCollection(raw: Record<string, unknown>): CollectionConfig {
     ttlMs: (raw["ttlMs"] as number) ?? undefined,
     fieldPermissions: (raw["fieldPermissions"] as Record<string, FieldPermission>) ?? undefined,
     keyringPath: (raw["keyringPath"] as string) ?? undefined,
+    listable: (raw["listable"] as boolean) ?? undefined,
+    rootOnly: (raw["rootOnly"] as boolean) ?? undefined,
+    restrictions: (raw["restrictions"] as CollectionConfig["restrictions"]) ?? undefined,
   }
 }
 
@@ -71,6 +74,9 @@ export function parseConfigJson(raw: string): SyncConfig {
               collections: (((ns as Record<string, unknown>)["collections"] as unknown[]) ?? []).map(
                 (c) => parseCollection(c as Record<string, unknown>),
               ),
+              restrictions:
+                ((ns as Record<string, unknown>)["restrictions"] as NamespaceConfig["restrictions"]) ??
+                undefined,
             },
           ]
         }),
@@ -92,6 +98,7 @@ export function parseConfigJson(raw: string): SyncConfig {
     rateLimit: parsed["rateLimit"]
       ? (parsed["rateLimit"] as SyncConfig["rateLimit"])
       : undefined,
+    restrictions: (parsed["restrictions"] as SyncConfig["restrictions"]) ?? undefined,
   }
   const errors = validateConfig(config)
   if (errors.length > 0) {

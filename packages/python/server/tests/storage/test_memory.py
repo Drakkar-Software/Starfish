@@ -190,3 +190,63 @@ async def test_custom_no_callbacks_returns_safe_defaults():
     await store.put("k", "v")  # no-op
     assert await store.list_keys("k") == []
     await store.delete("k")  # no-op
+
+
+# ---------------------------------------------------------------------------
+# Compare-and-swap (get_with_etag / put_if_match)
+# ---------------------------------------------------------------------------
+
+async def test_get_with_etag_missing_key(store):
+    assert await store.get_with_etag("missing") is None
+
+
+async def test_get_with_etag_stable_and_content_derived(store):
+    await store.put("k", "v0")
+    v1, e1 = await store.get_with_etag("k")
+    assert v1 == "v0"
+    _, e2 = await store.get_with_etag("k")
+    assert e2 == e1  # same content → same etag
+    await store.put("k", "v1")
+    _, e3 = await store.get_with_etag("k")
+    assert e3 != e1  # changed content → changed etag
+
+
+async def test_put_if_match_create_if_absent(store):
+    created = await store.put_if_match("k", "v0", None)
+    assert created is not None
+    assert await store.get_string("k") == "v0"
+    # A second create-if-absent must fail — the key now exists.
+    again = await store.put_if_match("k", "v1", None)
+    assert again is None
+    assert await store.get_string("k") == "v0"
+
+
+async def test_put_if_match_matches_and_rejects_stale(store):
+    await store.put("k", "v0")
+    _, etag = await store.get_with_etag("k")
+    ok = await store.put_if_match("k", "v1", etag)
+    assert ok is not None
+    # The old etag is now stale — a second write with it must fail.
+    stale = await store.put_if_match("k", "v2", etag)
+    assert stale is None
+    assert await store.get_string("k") == "v1"
+
+
+async def test_put_if_match_prevents_lost_update_across_instances():
+    """Two instances sharing one backing dict must not clobber each other."""
+    data: dict[str, str] = {}
+    a = MemoryObjectStore(data=data)
+    b = MemoryObjectStore(data=data)
+    await a.put("k", "v0")
+
+    # Both read the same state before either writes.
+    _, ea = await a.get_with_etag("k")
+    _, eb = await b.get_with_etag("k")
+
+    assert await a.put_if_match("k", "vA", ea) is not None  # first writer wins
+    assert await b.put_if_match("k", "vB", eb) is None  # conflict detected, not clobbered
+
+    # b re-reads and retries → its write now lands on top of vA.
+    _, eb2 = await b.get_with_etag("k")
+    assert await b.put_if_match("k", "vB", eb2) is not None
+    assert await a.get_string("k") == "vB"

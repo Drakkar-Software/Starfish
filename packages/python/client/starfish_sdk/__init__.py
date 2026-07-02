@@ -10,8 +10,8 @@ from starfish_sdk.types import (
 )
 from starfish_protocol import Encryptor, ENCRYPTED_KEY
 from starfish_protocol.constants import PARQUET_MIME_TYPE, PARQUET_MIME_TYPES
-from starfish_sdk.client import StarfishClient
-from starfish_sdk.sync import SyncManager, SyncSigner
+from starfish_sdk.client import StarfishClient, AppendAnonymousSigner
+from starfish_sdk.sync import SyncManager, SyncSigner, DocAuthorError
 from starfish_sdk.append_log import (
     AppendLogCursor,
     AppendAuthorError,
@@ -38,8 +38,10 @@ __all__ = [
     "Encryptor",
     "ENCRYPTED_KEY",
     "StarfishClient",
+    "AppendAnonymousSigner",
     "SyncManager",
     "SyncSigner",
+    "DocAuthorError",
     "AppendLogCursor",
     "AppendAuthorError",
     "AuthorVerifier",

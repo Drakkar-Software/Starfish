@@ -158,7 +158,10 @@ function recoverEvmAddress(digest: Uint8Array, signature: Uint8Array): string {
 async function argon2idStretch(passphrase: string): Promise<Uint8Array> {
   const enc = new TextEncoder()
   const result = await argon2id({
-    password: passphrase,
+    // NFC-normalize before stretching so composable Unicode (e.g. precomposed
+    // "é" U+00E9 vs decomposed U+0065 U+0301) derives one identity across
+    // devices. Matches the seal path (seal.ts). NFC leaves ASCII unchanged.
+    password: passphrase.normalize("NFC"),
     salt: enc.encode(ARGON2_PARAMS.saltUtf8),
     parallelism: ARGON2_PARAMS.parallelism,
     iterations: ARGON2_PARAMS.iterations,

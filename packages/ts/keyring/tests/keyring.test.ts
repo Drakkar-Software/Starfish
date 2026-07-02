@@ -423,6 +423,26 @@ describe("createKeyringEncryptor", () => {
     expect(decrypted).toEqual({ hello: "world", n: 7 })
   })
 
+  it("decrypts a Python-produced JSON payload (cross-language epoch-AAD KAT)", async () => {
+    // Locked cross-language conformance for the JSON encrypt path. The epoch is
+    // bound into the AES-GCM AAD in BOTH languages (`aad = String(epoch)`), so a
+    // payload sealed by the Python encryptor MUST open here. Before that binding
+    // was added on the TS side, TS passed no AAD and GCM tag verification failed,
+    // making legitimately-encrypted content mutually undecodable across languages.
+    // The payload below was produced by `starfish_keyring` (Python) from this
+    // same vector keyring for the object `{ hello: "world", n: 7 }`.
+    const enc = await createKeyringEncryptor(
+      V.keyring as unknown as Parameters<typeof createKeyringEncryptor>[0],
+      { kemPubHex: dev1.kemPub, kemPrivHex: dev1.kemPriv },
+      { trustedAdders: [alice.edPub] },
+    )
+    const pythonPayload = {
+      _encrypted: "Wh7uu8fYN2KL6GQ+Sc99TuKZPltOSjdAygadUF2ET388WIkBqq4w2TucvqSGw7ZkjQkRPaWN",
+      _epoch: 1,
+    }
+    expect(await enc.decrypt(pythonPayload)).toEqual({ hello: "world", n: 7 })
+  })
+
   it("sealBytes round-trips raw bytes across devices", async () => {
     const { keyring } = await createKeyring(
       { edPrivHex: alice.edPriv, edPubHex: alice.edPub },

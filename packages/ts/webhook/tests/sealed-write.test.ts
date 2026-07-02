@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll } from "vitest"
 import { configurePlatform, ed25519Suite } from "@drakkar.software/starfish-protocol"
 import {
   generateSpaceWriteKey,
+  sealAad,
   sealDocument,
   openSealedDocument,
   isSealedBlob,
@@ -31,8 +32,9 @@ describe("sealed-write (Option B)", () => {
     const blob = await sealDocument(message, space.kemPubHex, sealerKeys)
     expect(isSealedBlob(blob)).toBe(true)
 
-    // A member holds the PRIVATE write key and recovers the cleartext.
-    const opened = await openSealedDocument(blob, space.kemPrivHex)
+    // A member holds the PRIVATE write key and recovers the cleartext, pinning the
+    // webhook as the required sealer.
+    const opened = await openSealedDocument(blob, space.kemPrivHex, webhook.pubHex)
     expect(opened).toEqual(message)
   })
 
@@ -47,7 +49,7 @@ describe("sealed-write (Option B)", () => {
     const space = generateSpaceWriteKey()
     const other = generateSpaceWriteKey()
     const blob = await sealDocument({ text: "hi" }, space.kemPubHex, sealerKeys)
-    await expect(openSealedDocument(blob, other.kemPrivHex)).rejects.toThrow()
+    await expect(openSealedDocument(blob, other.kemPrivHex, webhook.pubHex)).rejects.toThrow()
   })
 
   it("pins provenance: requireSealer rejects a blob from a different signer", async () => {
@@ -56,14 +58,56 @@ describe("sealed-write (Option B)", () => {
 
     // Correct sealer pin opens.
     await expect(
-      openSealedDocument(blob, space.kemPrivHex, { requireSealer: webhook.pubHex }),
+      openSealedDocument(blob, space.kemPrivHex, webhook.pubHex),
     ).resolves.toEqual({ text: "hi" })
 
     // A different required sealer is rejected.
     const impostor = ed25519Suite.generateSignerKeypair()
     await expect(
-      openSealedDocument(blob, space.kemPrivHex, { requireSealer: impostor.pubHex }),
+      openSealedDocument(blob, space.kemPrivHex, impostor.pubHex),
     ).rejects.toThrow()
+  })
+
+  it("mandatory sealer pin: a blob sealed by a non-webhook key is rejected", async () => {
+    const space = generateSpaceWriteKey()
+    // The write PUBLIC key is published, so anyone can seal to it with their OWN
+    // signing key — pinning is what tells a genuine webhook message from a forgery.
+    const impostor = ed25519Suite.generateSignerKeypair()
+    const forged = await sealDocument({ text: "forged" }, space.kemPubHex, {
+      edPubHex: impostor.pubHex,
+      edPrivHex: impostor.privHex,
+    })
+    await expect(
+      openSealedDocument(forged, space.kemPrivHex, webhook.pubHex),
+    ).rejects.toThrow()
+
+    // A genuine webhook-sealed blob opens under the same pin.
+    const genuine = await sealDocument({ text: "genuine" }, space.kemPubHex, sealerKeys)
+    await expect(
+      openSealedDocument(genuine, space.kemPrivHex, webhook.pubHex),
+    ).resolves.toEqual({ text: "genuine" })
+  })
+
+  it("binds to a context via aad: a blob sealed for context A cannot be opened under context B", async () => {
+    const space = generateSpaceWriteKey()
+    const aadA = sealAad("events/roomA", "hook1")
+    const aadB = sealAad("events/roomB", "hook1")
+    const blob = await sealDocument({ text: "hi" }, space.kemPubHex, sealerKeys, aadA)
+
+    // Relocation to a different context is rejected.
+    await expect(
+      openSealedDocument(blob, space.kemPrivHex, webhook.pubHex, { aad: aadB }),
+    ).rejects.toThrow()
+
+    // A no-aad open of a context-bound (v:1) blob is rejected (downgrade guard).
+    await expect(
+      openSealedDocument(blob, space.kemPrivHex, webhook.pubHex),
+    ).rejects.toThrow()
+
+    // The matching context opens.
+    await expect(
+      openSealedDocument(blob, space.kemPrivHex, webhook.pubHex, { aad: aadA }),
+    ).resolves.toEqual({ text: "hi" })
   })
 
   it("isSealedBlob distinguishes sealed from plaintext documents", () => {

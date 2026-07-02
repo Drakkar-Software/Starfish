@@ -1,5 +1,6 @@
 """In-memory and callback-based object stores."""
 
+import hashlib
 import inspect
 from starfish_server.storage.base import AbstractObjectStore, StoreContext
 from typing import Any, Awaitable, Callable
@@ -7,6 +8,16 @@ from typing import Any, Awaitable, Callable
 
 # Module-level backing store shared across all MemoryObjectStore instances.
 _global_data: dict[str, str] = {}
+
+
+def _etag_of(body: str) -> str:
+    """Content-derived version tag for compare-and-swap. It is store-internal
+    (never crosses the wire, never compared across languages), so any stable hash
+    works. Deriving it from content means MemoryObjectStore instances sharing one
+    backing dict agree on the etag with zero extra shared state. (ABA is not a
+    concern for ``append_item``: an append strictly grows the element count, so
+    the head content never returns to a prior value.)"""
+    return hashlib.blake2b(body.encode("utf-8"), digest_size=16).hexdigest()
 
 
 class MemoryObjectStore(AbstractObjectStore):
@@ -44,6 +55,32 @@ class MemoryObjectStore(AbstractObjectStore):
         context: StoreContext | None = None,  # noqa: ARG002
     ) -> None:
         self._data[key] = body
+
+    async def get_with_etag(
+        self, key: str, *, context: StoreContext | None = None  # noqa: ARG002
+    ) -> tuple[str, str] | None:
+        value = self._data.get(key)
+        if value is None:
+            return None
+        return value, _etag_of(value)
+
+    async def put_if_match(
+        self,
+        key: str,
+        body: str,
+        expected_etag: str | None,
+        *,
+        content_type: str | None = None,  # noqa: ARG002 — interface parameter
+        cache_control: str | None = None,  # noqa: ARG002 — interface parameter
+        context: StoreContext | None = None,  # noqa: ARG002
+    ) -> str | None:
+        current = self._data.get(key)
+        current_etag = None if current is None else _etag_of(current)
+        # Precondition failed → a concurrent writer changed the key. Do NOT overwrite.
+        if current_etag != expected_etag:
+            return None
+        self._data[key] = body
+        return _etag_of(body)
 
     async def list_keys(
         self,

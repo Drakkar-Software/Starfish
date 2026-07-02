@@ -16,6 +16,7 @@ import {
   clearPairingBundle,
   fetchPairingBundle,
   installPairingBundle,
+  installProvisionedDevice,
   isSealedEnvelope,
   listDevices,
   openWithPassphrase,
@@ -653,7 +654,15 @@ export async function buildProvisionedDeviceSession(
     throw new Error("This doesn't look like a setup code from your first device.")
   }
   const keys = blob.keys
-  const installed = await installPairingBundle(blob.bundle as Parameters<typeof installPairingBundle>[0], keys)
+  // One-way provisioning: the device keys + bundle arrive together inside the
+  // setup code (optionally PIN-sealed above), a channel the user already trusts.
+  // installProvisionedDevice auto-acknowledges first-contact for exactly this
+  // case, so no separate root pin/confirm is needed here (unlike two-way pairing,
+  // where installPairingBundle now REQUIRES expectedRootEdPub / confirmUnpinnedRoot).
+  const installed = await installProvisionedDevice({
+    deviceKeys: keys,
+    bundle: blob.bundle,
+  } as Parameters<typeof installProvisionedDevice>[0])
   const cap = installed.credentials.capCert as unknown as { scope: { ops: string[] } }
   const chatClient = makeClient(installed.credentials.capCert, keys.edPriv)
   const encryptor = await buildEncryptor(chatClient, keys, blob.roomId)

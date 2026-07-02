@@ -110,30 +110,61 @@ def recipient_kem(cert: dict[str, Any]) -> str:
     return kem_pub_hex
 
 
-_GLOB_REGEX_SPECIALS = re.compile(r"[.+?^${}()|\[\]\\]")
-
-
 def path_glob_match(glob: str, target: str) -> bool:
     """Glob match used for cap-cert path semantics. See the TS ``pathGlobMatch``
-    helper for the rules. Mirrored byte-for-byte."""
-    out: list[str] = []
+    helper for the rules. Mirrored byte-for-byte.
+
+    Linear two-pointer matcher. Compiling an attacker-controlled glob to a regex
+    (``*`` -> ``[^/]*``, ``**`` -> ``.*``) backtracks super-polynomially on a
+    crafted non-match, and this runs on the auth hot path for every request, so
+    it is a ReDoS sink. This is O(len(glob) * len(target)) with no backtracking
+    explosion. ``**`` matches any run of characters (incl. ``/`` and line
+    terminators); ``*`` matches any run of non-``/`` characters."""
+    # Tokens: 2 = ``**``, 1 = ``*``, otherwise a literal character.
+    toks: list[tuple[int, str]] = []
     i = 0
     n = len(glob)
     while i < n:
         ch = glob[i]
         if ch == "*" and i + 1 < n and glob[i + 1] == "*":
-            out.append(".*")
+            toks.append((2, ""))
             i += 2
         elif ch == "*":
-            out.append("[^/]*")
-            i += 1
-        elif _GLOB_REGEX_SPECIALS.match(ch):
-            out.append("\\" + ch)
+            toks.append((1, ""))
             i += 1
         else:
-            out.append(ch)
+            toks.append((0, ch))
             i += 1
-    return re.fullmatch("".join(out), target) is not None
+
+    si = 0  # index into target
+    ti = 0  # index into toks
+    star_ti = -1  # token index of the most recent star we can backtrack to
+    star_type = 1
+    star_match = 0  # target index the star began matching at
+    n_toks = len(toks)
+    n_target = len(target)
+    while si < n_target:
+        if ti < n_toks and toks[ti][0] == 0 and toks[ti][1] == target[si]:
+            si += 1
+            ti += 1
+        elif ti < n_toks and toks[ti][0] != 0:
+            star_ti = ti
+            star_type = toks[ti][0]
+            star_match = si
+            ti += 1
+        elif star_ti != -1:
+            # Extend the previous star by one target character. A single ``*``
+            # may not absorb a ``/``; ``**`` absorbs anything.
+            if star_type == 1 and target[star_match] == "/":
+                return False
+            star_match += 1
+            si = star_match
+            ti = star_ti + 1
+        else:
+            return False
+    while ti < n_toks and toks[ti][0] != 0:
+        ti += 1
+    return ti == n_toks
 
 
 def is_root_device_cap(cert: dict[str, Any]) -> bool:

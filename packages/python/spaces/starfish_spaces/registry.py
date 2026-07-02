@@ -362,6 +362,32 @@ async def write_space_access(
     await client.push(session.layout.space_access_push(space_id), payload, hash)
 
 
+async def _update_space_access(
+    client: "StarfishClient",
+    space_id: str,
+    session: "Session",
+    mutator: Callable[["SpaceEntry"], Optional[dict[str, Any]]],
+) -> None:
+    """CAS read-modify-write the ``_access`` doc for ``space_id``.
+
+    ``mutator`` receives the freshly-read :class:`SpaceEntry` and returns either
+    ``{"owner", "members"}`` or ``None`` to skip the write.  Re-reads the current
+    hash + members on every retried attempt, so a stale-hash 409 on the first
+    pass is retried against the newest state (mirrors the TS ``updateSpaceAccess``).
+    """
+    async def attempt() -> None:
+        cur = await read_space_access(client, space_id, session)
+        nxt = mutator(cur)
+        if nxt is None:
+            return
+        await write_space_access(
+            client, space_id, nxt["owner"], nxt["members"], cur.hash, session,
+            {"name": cur.name, "image": cur.image},
+        )
+
+    await run_cas(attempt)
+
+
 async def add_space_member(
     client: "StarfishClient",
     space_id: str,
@@ -369,15 +395,14 @@ async def add_space_member(
     member_user_id: str,
     session: "Session",
 ) -> None:
-    """Add ``member_user_id`` to the space roster (idempotent)."""
-    entry = await read_space_access(client, space_id, session)
-    owner = entry.owner or owner_user_id
-    if member_user_id == owner or member_user_id in entry.members:
-        return
-    await write_space_access(
-        client, space_id, owner, [*entry.members, member_user_id], entry.hash, session,
-        {"name": entry.name, "image": entry.image}
-    )
+    """Add ``member_user_id`` to the space roster (idempotent, CAS-retried)."""
+    def mutator(cur: "SpaceEntry") -> Optional[dict[str, Any]]:
+        owner = cur.owner or owner_user_id
+        if member_user_id == owner or member_user_id in cur.members:
+            return None
+        return {"owner": owner, "members": [*cur.members, member_user_id]}
+
+    await _update_space_access(client, space_id, session, mutator)
 
 
 async def remove_space_member(
@@ -386,15 +411,14 @@ async def remove_space_member(
     member_user_id: str,
     session: "Session",
 ) -> None:
-    """Remove ``member_user_id`` from the space roster (idempotent)."""
-    entry = await read_space_access(client, space_id, session)
-    if member_user_id not in entry.members:
-        return
-    await write_space_access(
-        client, space_id, entry.owner or member_user_id,
-        [m for m in entry.members if m != member_user_id],
-        entry.hash, session, {"name": entry.name, "image": entry.image}
-    )
+    """Remove ``member_user_id`` from the space roster (idempotent, CAS-retried)."""
+    def mutator(cur: "SpaceEntry") -> Optional[dict[str, Any]]:
+        if member_user_id not in cur.members:
+            return None
+        return {"owner": cur.owner or member_user_id,
+                "members": [m for m in cur.members if m != member_user_id]}
+
+    await _update_space_access(client, space_id, session, mutator)
 
 
 # ── Registry join/remove helpers ──────────────────────────────────────────────

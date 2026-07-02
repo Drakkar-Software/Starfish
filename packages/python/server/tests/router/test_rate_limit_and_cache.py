@@ -28,6 +28,7 @@ def _build_app(
     global_rate_limit: RateLimitConfig | None = None,
     identity: str = "user-1",
     roles: list[str] | None = None,
+    trusted_proxy_hops: int = 0,
 ) -> tuple[FastAPI, MemoryObjectStore]:
     """Build a test app. ``roles`` defaults to empty list."""
     store = MemoryObjectStore()
@@ -41,7 +42,12 @@ def _build_app(
         return AuthResult(identity=identity, roles=roles or [])
 
     router = create_sync_router(
-        SyncRouterOptions(store=store, config=config, role_resolver=role_resolver),
+        SyncRouterOptions(
+            store=store,
+            config=config,
+            role_resolver=role_resolver,
+            trusted_proxy_hops=trusted_proxy_hops,
+        ),
     )
     app = FastAPI()
     app.include_router(router)
@@ -423,25 +429,55 @@ async def test_rate_limiter_bounds_bucket_count():
     assert await rl.check("k199") is None  # still under the limit either way
 
 
-async def test_rate_limiter_key_precedence_identity_xff_client_ip_anonymous():
-    # Identical precedence to the TS limiter; pins the convergence. (The runtimes differ
-    # only in which signals they can supply — the Python server passes the socket IP as
-    # client_ip, which Hono cannot.)
+async def test_rate_limiter_key_precedence_identity_socket_ip_anonymous():
+    # Default trusted_proxy_hops=0: the client-controlled X-Forwarded-For header is NOT
+    # trusted; bucketing falls back to the socket/peer IP or a shared "anonymous" bucket.
+    # Identical precedence to the TS limiter.
     rl = RateLimiter(window_ms=60_000, max_requests=1)
     assert await rl.check("user-1", "1.2.3.4", "5.6.7.8") is None  # identity wins
     assert await rl.check("user-1", "9.9.9.9", "8.8.8.8") is not None  # same identity bucket
-    assert await rl.check(None, "1.1.1.1, 2.2.2.2", None) is None  # first XFF hop
-    assert await rl.check(None, "1.1.1.1", None) is not None  # same first-hop bucket
-    assert await rl.check(None, None, "3.3.3.3") is None  # client IP when no identity/XFF
-    assert await rl.check(None, None, "3.3.3.3") is not None
+    assert await rl.check(None, None, "3.3.3.3") is None  # socket IP when no identity
+    assert await rl.check(None, "9.9.9.9", "3.3.3.3") is not None  # XFF ignored → same socket bucket
     assert await rl.check(None, None, None) is None  # shared anonymous fallback
-    assert await rl.check(None, None, None) is not None
+    assert await rl.check(None, "7.7.7.7", None) is not None  # spoofed XFF → still anonymous
+
+
+async def test_rate_limiter_default_ignores_spoofed_forwarded_for():
+    # The bypass this fix closes: without a trusted-proxy config, rotating
+    # X-Forwarded-For must not each time mint a brand-new bucket and escape the limit.
+    rl = RateLimiter(window_ms=60_000, max_requests=1)
+    assert await rl.check(None, "1.1.1.1", None) is None
+    assert await rl.check(None, "2.2.2.2", None) is not None  # spoofed XFF, same anonymous bucket
+    assert await rl.check(None, "3.3.3.3", None) is not None
+
+    rl2 = RateLimiter(window_ms=60_000, max_requests=1)
+    assert await rl2.check(None, "1.1.1.1", "9.9.9.9") is None
+    assert await rl2.check(None, "2.2.2.2", "9.9.9.9") is not None  # same socket peer
+
+
+async def test_rate_limiter_trusted_proxy_hops_picks_nth_from_right():
+    # One trusted proxy: the real client is the rightmost XFF entry; a spoofed leftmost
+    # entry cannot change the bucket.
+    rl = RateLimiter(window_ms=60_000, max_requests=1, bucket_mode="ip", trusted_proxy_hops=1)
+    assert await rl.check(None, "1.1.1.1, 9.9.9.9", None) is None  # client = "9.9.9.9"
+    assert await rl.check(None, "8.8.8.8, 9.9.9.9", None) is not None  # spoofed leftmost, still "9.9.9.9"
+    assert await rl.check(None, "8.8.8.8, 7.7.7.7", None) is None  # different real client "7.7.7.7"
+
+    # Two trusted proxies: the client is the 2nd entry from the right.
+    rl2 = RateLimiter(window_ms=60_000, max_requests=1, bucket_mode="ip", trusted_proxy_hops=2)
+    assert await rl2.check(None, "5.5.5.5, 6.6.6.6, 7.7.7.7", None) is None  # client = "6.6.6.6"
+    assert await rl2.check(None, "0.0.0.0, 6.6.6.6, 8.8.8.8", None) is not None  # still "6.6.6.6"
+
+    # XFF shorter than the hop count → not trusted; fall back to the socket peer.
+    rl3 = RateLimiter(window_ms=60_000, max_requests=1, bucket_mode="ip", trusted_proxy_hops=2)
+    assert await rl3.check(None, "1.1.1.1", "9.9.9.9") is None  # 1 hop < 2 → socket "9.9.9.9"
+    assert await rl3.check(None, "2.2.2.2", "9.9.9.9") is not None  # same socket peer
 
 
 async def test_rate_limiter_ip_mode_ignores_identity():
     # In "ip" mode, two identities sharing one IP collapse into one bucket. Mirrors the
-    # TS twin in middleware.test.ts.
-    rl = RateLimiter(window_ms=60_000, max_requests=1, bucket_mode="ip")
+    # TS twin in middleware.test.ts. trusted_proxy_hops=1 trusts the single-hop XFF.
+    rl = RateLimiter(window_ms=60_000, max_requests=1, bucket_mode="ip", trusted_proxy_hops=1)
     assert await rl.check("alice", "1.2.3.4", None) is None
     resp = await rl.check("bob", "1.2.3.4", None)
     assert resp is not None and resp.status_code == 429  # same IP, different identity
@@ -458,7 +494,8 @@ async def test_rate_limiter_ip_mode_uses_client_ip_then_anonymous():
 
 async def test_rate_limiter_identity_plus_ip_mode_keys_by_pair():
     # One budget per distinct (identity, ip) combination. Mirrors the TS twin.
-    rl = RateLimiter(window_ms=60_000, max_requests=1, bucket_mode="identity+ip")
+    # trusted_proxy_hops=1 trusts the single-hop XFF as the client IP.
+    rl = RateLimiter(window_ms=60_000, max_requests=1, bucket_mode="identity+ip", trusted_proxy_hops=1)
     assert await rl.check("alice", "1.1.1.1", None) is None
     assert await rl.check("alice", "1.1.1.1", None) is not None  # same pair exhausted
     assert await rl.check("alice", "2.2.2.2", None) is None  # same identity, different ip
@@ -473,7 +510,7 @@ async def test_check_rate_limiters_empty_is_unmetered():
 async def test_check_rate_limiters_rejects_if_either_dimension_trips():
     from starfish_server.router.middleware import check_rate_limiters
     id_limiter = RateLimiter(window_ms=60_000, max_requests=5, bucket_mode="identity")
-    ip_limiter = RateLimiter(window_ms=60_000, max_requests=1, bucket_mode="ip")
+    ip_limiter = RateLimiter(window_ms=60_000, max_requests=1, bucket_mode="ip", trusted_proxy_hops=1)
     limiters = [id_limiter, ip_limiter]
 
     assert await check_rate_limiters(limiters, "alice", "1.1.1.1") is None
@@ -575,9 +612,10 @@ async def test_each_action_keeps_its_own_counter():
 @pytest.mark.asyncio
 async def test_ip_bucket_separates_by_forwarded_for():
     # role_resolver returns a constant identity, so identity-bucketing would group all
-    # requests; "ip" mode must instead split by X-Forwarded-For.
+    # requests; "ip" mode must instead split by X-Forwarded-For. trusted_proxy_hops=1
+    # opts into trusting the single-hop XFF as the client IP.
     col = _listable_col(rate_limit={"push": {"windowMs": 60_000, "maxRequests": 1, "bucket": "ip"}})
-    app, _ = _build_app([col])
+    app, _ = _build_app([col], trusted_proxy_hops=1)
     push_path = "/push/users/user-1/items/item-1"
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -590,6 +628,23 @@ async def test_ip_bucket_separates_by_forwarded_for():
         r3 = await client.post(push_path, json={"data": {"v": 3}, "baseHash": r1.json()["hash"]},
                                headers={"content-type": "application/json", "x-forwarded-for": "2.2.2.2"})
         assert r3.status_code == 200  # different IP, fresh budget
+
+
+@pytest.mark.asyncio
+async def test_default_hops_ignores_spoofed_forwarded_for():
+    # With trusted_proxy_hops=0 (default) the client-controlled XFF is ignored; bucketing
+    # falls back to the constant socket peer, so a rotating XFF cannot bypass the limit.
+    col = _listable_col(rate_limit={"push": {"windowMs": 60_000, "maxRequests": 1, "bucket": "ip"}})
+    app, _ = _build_app([col])
+    push_path = "/push/users/user-1/items/item-1"
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r1 = await client.post(push_path, json={"data": {"v": 1}, "baseHash": None},
+                               headers={"content-type": "application/json", "x-forwarded-for": "1.1.1.1"})
+        assert r1.status_code == 200
+        r2 = await client.post(push_path, json={"data": {"v": 2}, "baseHash": r1.json()["hash"]},
+                               headers={"content-type": "application/json", "x-forwarded-for": "2.2.2.2"})
+        assert r2.status_code == 429  # spoofed XFF, same socket bucket
 
 
 def test_validation_rejects_unresolvable_rule():
@@ -610,8 +665,9 @@ def test_validation_accepts_rule_inheriting_window_from_global():
 @pytest.mark.asyncio
 async def test_composite_identity_plus_ip_bucket():
     # One budget per (identity, ip) pair; constant identity, varying ip → fresh budgets.
+    # trusted_proxy_hops=1 trusts the single-hop XFF as the client IP.
     col = _listable_col(rate_limit={"push": {"windowMs": 60_000, "maxRequests": 1, "bucket": "identity+ip"}})
-    app, _ = _build_app([col])
+    app, _ = _build_app([col], trusted_proxy_hops=1)
     push_path = "/push/users/user-1/items/item-1"
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -629,10 +685,11 @@ async def test_composite_identity_plus_ip_bucket():
 @pytest.mark.asyncio
 async def test_two_independent_limits_reject_if_either_trips():
     # identity <= 3, ip <= 1 within one window; identity constant across requests.
+    # trusted_proxy_hops=1 trusts the single-hop XFF as the client IP.
     col = _listable_col(
         rate_limit={"push": {"windowMs": 60_000, "identity": {"maxRequests": 3}, "ip": {"maxRequests": 1}}}
     )
-    app, _ = _build_app([col])
+    app, _ = _build_app([col], trusted_proxy_hops=1)
     push_path = "/push/users/user-1/items/item-1"
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:

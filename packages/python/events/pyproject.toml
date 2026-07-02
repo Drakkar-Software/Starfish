@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "starfish-events"
-version = "3.0.0a62"
+version = "3.0.0a63"
 description = "Starfish server plugin that intercepts JSON event-batch pushes and encodes them as Parquet on S3 (Python mirror of @drakkar.software/starfish-events)"
 requires-python = ">=3.11"
 dependencies = [

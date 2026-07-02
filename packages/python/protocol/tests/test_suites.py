@@ -32,6 +32,19 @@ def test_verify_fails_closed_on_malformed_inputs() -> None:
     assert ed25519_suite.verify(bytes(3), m, "aa" * 32) is False
 
 
+def test_verify_rejects_hex_with_embedded_whitespace() -> None:
+    # bytes.fromhex silently strips ASCII whitespace, so a key hex with embedded
+    # spaces would be accepted by Python but rejected by TS (regex ^[0-9a-fA-F]*$)
+    # — a cross-language accept/reject split on the inputs feeding verification.
+    # A real signing keypair whose pub hex is corrupted with a space must fail.
+    priv = Ed25519PrivateKey.generate()
+    priv_hex = priv.private_bytes(_RAW, _RAW_PRIV, _NO_ENC).hex()
+    pub_hex = priv.public_key().public_bytes(_RAW, _RAW_PUB).hex()
+    sig = ed25519_suite.sign(b"m", priv_hex)
+    spaced_pub = pub_hex[:8] + " " + pub_hex[8:]
+    assert ed25519_suite.verify(sig, b"m", spaced_pub) is False
+
+
 def test_x25519_ecdh_symmetric_and_rejects_low_order_peer() -> None:
     a_priv = X25519PrivateKey.generate()
     a_priv_hex = a_priv.private_bytes(_RAW, _RAW_PRIV, _NO_ENC).hex()

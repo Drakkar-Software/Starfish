@@ -150,6 +150,41 @@ class AppendLimitExceeded:
 AppendOutcome = PushSuccess | AppendConflict | AppendLimitExceeded
 
 
+# Max compare-and-swap attempts for a single-document append before the conflict
+# is surfaced. Only reached under genuine cross-instance contention (the in-process
+# per-key lock already serialises same-key writes, so a single instance never retries).
+_APPEND_CAS_MAX_ATTEMPTS = 5
+
+
+class AppendConcurrencyError(Exception):
+    """Raised by :func:`append_item` when a conflicting concurrent write from
+    another server instance (sharing the same bucket) is detected on every
+    compare-and-swap attempt. The append is NOT applied — the conflict is
+    surfaced rather than silently overwriting the other instance's write. The
+    caller may retry.
+
+    Only reachable when the store supports compare-and-swap
+    (:meth:`~starfish_server.storage.base.AbstractObjectStore.get_with_etag` +
+    :meth:`~starfish_server.storage.base.AbstractObjectStore.put_if_match`);
+    stores without it keep the previous last-write-wins behaviour."""
+
+    def __init__(self, document_key: str, attempts: int) -> None:
+        super().__init__(
+            f'append_item: concurrent write conflict on "{document_key}" persisted after '
+            f"{attempts} compare-and-swap attempts; the append was not applied. Retry the append."
+        )
+
+
+def _store_supports_cas(store: AbstractObjectStore) -> bool:
+    """True when ``store`` overrides BOTH conditional-write methods (so the
+    default NotImplementedError stubs are not in play)."""
+    cls = type(store)
+    return (
+        cls.get_with_etag is not AbstractObjectStore.get_with_etag
+        and cls.put_if_match is not AbstractObjectStore.put_if_match
+    )
+
+
 def _element_ts(el: Any) -> int:
     if isinstance(el, dict) and isinstance(el.get("ts"), int):
         return el["ts"]
@@ -250,71 +285,110 @@ async def _append_locked(
     author: "dict[str, str] | None" = None,
     context: "StoreContext | None" = None,
 ) -> AppendOutcome:
-    raw = await store.get_string(document_key, context=context)
+    # Cross-instance safety: when the store supports compare-and-swap, the
+    # single-document head write below becomes an atomic CAS that fails (and
+    # retries) instead of silently overwriting a concurrent instance's append.
+    # The in-process per-key lock already serialises same-key writes, so a single
+    # instance never hits a CAS failure — this path only engages when two
+    # instances share one bucket. Stores without CAS keep last-write-wins.
+    #
+    # RESIDUAL LIMITATION: only the single-document layout is CAS-protected. The
+    # segmented (chunked) layout still uses plain puts on its tail chunk, so two
+    # instances appending to the same open tail chunk can still clobber each
+    # other. Strict multi-instance guarantees there require either the
+    # single-document layout or a CAS-native backend with per-chunk conditional
+    # writes (a larger change deliberately left out here).
+    cas = _store_supports_cas(store)
 
-    head: dict[str, Any] | None = None
-    if raw:
-        try:
-            parsed = json.loads(raw)
-            head = parsed if isinstance(parsed, dict) else None
-        except (json.JSONDecodeError, ValueError) as exc:
-            logging.getLogger(__name__).error(
-                "Corrupt stored document at key %r: %s", document_key, exc
+    attempt = 0
+    while True:
+        attempt += 1
+        if cas:
+            got = await store.get_with_etag(document_key, context=context)
+            raw = got[0] if got else None
+            head_etag = got[1] if got else None
+        else:
+            raw = await store.get_string(document_key, context=context)
+            head_etag = None
+
+        head: dict[str, Any] | None = None
+        if raw:
+            try:
+                parsed = json.loads(raw)
+                head = parsed if isinstance(parsed, dict) else None
+            except (json.JSONDecodeError, ValueError) as exc:
+                logging.getLogger(__name__).error(
+                    "Corrupt stored document at key %r: %s", document_key, exc
+                )
+                head = None
+
+        is_seg = head is not None and head.get("seg") is True
+        existing_data: dict[str, Any] = (head.get("data") if head else None) or {}
+        existing = existing_data.get(append_field)
+        existing_arr = existing if isinstance(existing, list) else []
+        current_count = head.get("n", 0) if is_seg else len(existing_arr)
+
+        # Once a document is segmented it stays segmented, even if chunk_size was later
+        # removed from config — otherwise this append would write a fresh single-doc at
+        # the head key and orphan every existing chunk (silent data loss). Pull keys off
+        # the stored ``seg`` flag the same way.
+        if chunk_size is not None:
+            effective_chunk_size: int | None = chunk_size
+        elif is_seg:
+            effective_chunk_size = (head.get("chunkSize") if head else None) or APPEND_DEFAULT_CHUNK_SIZE
+        else:
+            effective_chunk_size = None
+
+        # Cap check first — never write past the configured limit.
+        if max_items is not None and current_count >= max_items:
+            return AppendLimitExceeded(limit=max_items)
+
+        if effective_chunk_size is not None:
+            # Segmented layout is not CAS-protected (see RESIDUAL LIMITATION above);
+            # runs once, plain puts, unchanged behaviour.
+            return await _append_chunked(
+                store, document_key, item, append_field, provided_ts, effective_chunk_size, head, is_seg, author, context,
             )
-            head = None
 
-    is_seg = head is not None and head.get("seg") is True
-    existing_data: dict[str, Any] = (head.get("data") if head else None) or {}
-    existing = existing_data.get(append_field)
-    existing_arr = existing if isinstance(existing, list) else []
-    current_count = head.get("n", 0) if is_seg else len(existing_arr)
+        # ---- single-document layout (legacy default) ----
+        arr = existing_arr
+        latest = _element_ts(arr[-1]) if arr else -1
 
-    # Once a document is segmented it stays segmented, even if chunk_size was later
-    # removed from config — otherwise this append would write a fresh single-doc at
-    # the head key and orphan every existing chunk (silent data loss). Pull keys off
-    # the stored ``seg`` flag the same way.
-    if chunk_size is not None:
-        effective_chunk_size: int | None = chunk_size
-    elif is_seg:
-        effective_chunk_size = (head.get("chunkSize") if head else None) or APPEND_DEFAULT_CHUNK_SIZE
-    else:
-        effective_chunk_size = None
+        now = time.time_ns() // 1_000_000
+        if provided_ts is not None:
+            if not (provided_ts > latest):
+                return AppendConflict(latest=latest)
+            ts = provided_ts
+        else:
+            ts = max(now, latest + 1)
 
-    # Cap check first — never write past the configured limit.
-    if max_items is not None and current_count >= max_items:
-        return AppendLimitExceeded(limit=max_items)
+        element: AppendElement = _make_append_element(ts, item, author)
+        new_arr = [*arr, element]
+        new_hash = compute_hash({"n": len(new_arr), "last": item})
 
-    if effective_chunk_size is not None:
-        return await _append_chunked(
-            store, document_key, item, append_field, provided_ts, effective_chunk_size, head, is_seg, author, context,
-        )
+        doc_out: dict[str, Any] = {
+            "v": DOCUMENT_VERSION,
+            "data": {**existing_data, append_field: new_arr},
+            "ts": ts,
+            "hash": new_hash,
+        }
+        body = json.dumps(doc_out)
 
-    # ---- single-document layout (legacy default; unchanged behaviour) ----
-    arr = existing_arr
-    latest = _element_ts(arr[-1]) if arr else -1
+        if cas:
+            new_etag = await store.put_if_match(
+                document_key, body, head_etag, content_type=CONTENT_TYPE_JSON, context=context
+            )
+            if new_etag is None:
+                # A concurrent instance changed the head between our read and our
+                # write. Re-read and retry rather than overwrite; surface the
+                # conflict if the contention persists past the retry budget.
+                if attempt >= _APPEND_CAS_MAX_ATTEMPTS:
+                    raise AppendConcurrencyError(document_key, attempt)
+                continue
+        else:
+            await store.put(document_key, body, content_type=CONTENT_TYPE_JSON, context=context)
 
-    now = time.time_ns() // 1_000_000
-    if provided_ts is not None:
-        if not (provided_ts > latest):
-            return AppendConflict(latest=latest)
-        ts = provided_ts
-    else:
-        ts = max(now, latest + 1)
-
-    element: AppendElement = _make_append_element(ts, item, author)
-    new_arr = [*arr, element]
-    new_hash = compute_hash({"n": len(new_arr), "last": item})
-
-    doc_out: dict[str, Any] = {
-        "v": DOCUMENT_VERSION,
-        "data": {**existing_data, append_field: new_arr},
-        "ts": ts,
-        "hash": new_hash,
-    }
-
-    await store.put(document_key, json.dumps(doc_out), content_type=CONTENT_TYPE_JSON, context=context)
-
-    return PushSuccess(hash=new_hash, timestamp=ts)
+        return PushSuccess(hash=new_hash, timestamp=ts)
 
 
 async def _append_chunked(

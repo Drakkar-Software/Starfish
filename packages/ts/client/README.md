@@ -127,6 +127,8 @@ import {
 
 `deriveCodeKey(code, salt, iterations?)` is the PBKDF2-HMAC-SHA256 (200 000 iterations by default) used by the relay flow.
 
+**Root pinning is mandatory.** `installPairingBundle(bundle, device, opts)` throws unless `opts` supplies either `expectedRootEdPub` (pin the account's known root pubkey) or `confirmUnpinnedRoot: (rootEdPub) => boolean` (a first-contact callback that surfaces the bundle's root for explicit user confirmation). Passing neither used to silently trust *any* root — a confused-deputy vulnerability that let an attacker provision the device into their own account. For one-way provisioning over an already-trusted channel use `installProvisionedDevice`, which auto-acknowledges first-contact.
+
 Full walkthroughs: [docs/ts/client/24-pairing.md](../../../docs/ts/client/24-pairing.md).
 
 ## Multi-recipient delegated encryption

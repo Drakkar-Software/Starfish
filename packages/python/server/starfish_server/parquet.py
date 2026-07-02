@@ -33,12 +33,13 @@ Example::
     s3_opts = S3StorageOptions(
         endpoint="http://localhost:9000",
         bucket="starfish",
-        access_key_id="minio",
-        secret_access_key="minio123",
+        access_key_id="<access-key-id>",
+        secret_access_key="<secret-access-key>",
     )
     key = resolve_document_key("datasets/{owner}/{dataset}", {"owner": "alice", "dataset": "sales.parquet"})
     result = duckdb_read_parquet_sql(s3=s3_opts, key=key)
-    print(result.sql)  # run in DuckDB
+    # result.sql is safe to log; result.runnable_sql (contains the secret) runs in DuckDB
+    print(result.runnable_sql)
 """
 
 from __future__ import annotations
@@ -273,13 +274,26 @@ class DuckdbParquetSqlResult:
     """``INSTALL httpfs;\\nLOAD httpfs;`` — run once per DuckDB session."""
 
     config_sql: str
-    """``SET s3_*`` configuration statements."""
+    """``SET s3_*`` configuration statements, EXCLUDING the secret access key.
+    Safe to log — the live secret lives only in :attr:`credential_sql`."""
+
+    credential_sql: str
+    """``SET s3_secret_access_key='…';`` — **contains a live S3 secret**.
+    Returned separately so it can be run without folding the credential into
+    :attr:`sql`. NEVER log this field."""
 
     read_sql: str
     """``SELECT * FROM read_parquet('…')`` statement."""
 
     sql: str
-    """All statements concatenated into one runnable script."""
+    """Redactable script (setup + config + read) with the secret access key
+    OMITTED — safe to log. Because it lacks the credential it is **not**
+    runnable on its own: run :attr:`credential_sql` in the same DuckDB session,
+    or use :attr:`runnable_sql`."""
+
+    runnable_sql: str
+    """Full runnable script (setup + config + credential + read) INCLUDING the
+    secret access key. **Contains a live S3 secret** — NEVER log this field."""
 
 
 def duckdb_read_parquet_sql(
@@ -312,10 +326,11 @@ def duckdb_read_parquet_sql(
         from starfish_server.storage.s3 import S3StorageOptions
 
         s3 = S3StorageOptions(endpoint="http://localhost:9000", bucket="data",
-                              access_key_id="minio", secret_access_key="minio123")
+                              access_key_id="<access-key-id>", secret_access_key="<secret-access-key>")
         key = resolve_document_key("analytics/{owner}/{report}",
                                    {"owner": "alice", "report": "q1.parquet"})
         result = duckdb_read_parquet_sql(s3=s3, key=key)
+        # result.sql is safe to log; result.runnable_sql (contains the secret) runs in DuckDB
 
         # Glob all reports by alice
         prefix = resolve_document_key("analytics/{owner}", {"owner": "alice"})
@@ -338,26 +353,37 @@ def duckdb_read_parquet_sql(
 
     setup_sql = "INSTALL httpfs;\nLOAD httpfs;"
 
+    # config_sql deliberately OMITS s3_secret_access_key so it (and ``sql``) stay
+    # safe to log. The secret is emitted only in the separate ``credential_sql``.
     config_lines = [
         f"SET s3_endpoint='{sq(host)}';",
         f"SET s3_access_key_id='{sq(s3.access_key_id)}';",
-        f"SET s3_secret_access_key='{sq(s3.secret_access_key)}';",
         f"SET s3_region='{sq(s3.region)}';",
         f"SET s3_url_style='{url_style}';",
         f"SET s3_use_ssl={str(use_ssl).lower()};",
     ]
     config_sql = "\n".join(config_lines)
 
+    # SECURITY: this statement embeds the live S3 secret access key. It is
+    # returned in its own field and never folded into ``sql``, so callers can run
+    # it in the DuckDB session without logging it. NEVER log ``credential_sql``.
+    credential_sql = f"SET s3_secret_access_key='{sq(s3.secret_access_key)}';"
+
     read_sql = f"SELECT * FROM read_parquet('{uri}');"
 
+    # Redactable (no secret) — safe to log; not runnable without credential_sql.
     sql = "\n".join([setup_sql, config_sql, read_sql])
+    # Full runnable script INCLUDING the secret — NEVER log.
+    runnable_sql = "\n".join([setup_sql, config_sql, credential_sql, read_sql])
 
     return DuckdbParquetSqlResult(
         uri=uri,
         setup_sql=setup_sql,
         config_sql=config_sql,
+        credential_sql=credential_sql,
         read_sql=read_sql,
         sql=sql,
+        runnable_sql=runnable_sql,
     )
 
 

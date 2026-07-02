@@ -2,7 +2,7 @@
 
 import base64
 import json
-from typing import Any
+from typing import Any, TypedDict
 from urllib.parse import quote
 
 import httpx
@@ -38,6 +38,17 @@ from starfish_sdk.types import (
 )
 
 APPEND_DEFAULT_FIELD = "items"
+
+
+class AppendAnonymousSigner(TypedDict):
+    """Ed25519 keypair (hex) that signs an anonymous append's author proof.
+
+    Mirrors the TypeScript ``appendAnonymous`` ``signer`` shape
+    (``{ edPubHex, edPrivHex }``) so both clients emit an identical body.
+    """
+
+    edPubHex: str
+    edPrivHex: str
 
 
 class StarfishClient:
@@ -691,22 +702,37 @@ class StarfishClient:
         self,
         path: str,
         data: dict[str, Any],
+        signer: "AppendAnonymousSigner | None" = None,
     ) -> PushSuccess:
         """Append an element to a public-write (anonymous) append collection.
 
-        Unlike :meth:`append`, this method sends NO authentication headers and
-        NO author signature, regardless of whether the client has a
-        ``cap_provider``. Use it for anonymous-append (``public_write``) inbox
-        collections where a cap would be rejected or is unnecessary.
+        Unlike :meth:`append`, this method sends NO authentication headers,
+        regardless of whether the client has a ``cap_provider``. Use it for
+        anonymous-append (``public_write``) inbox collections where a cap would
+        be rejected or is unnecessary.
+
+        When ``signer`` is given, an Ed25519 author proof is attached — mirroring
+        the TypeScript ``appendAnonymous`` — so the stored element is bound to the
+        sender's key for verification in the receive path (via
+        ``verify_append_author``). Omit it to send only ``{data}`` (backward
+        compatible: the author proof is optional on a public inbox).
 
         Args:
             path: The push endpoint path (e.g. "/push/inbox/alice/2024-03")
             data: The element payload (typically an encrypted blob dict).
+            signer: Optional Ed25519 keypair (hex) signing the author proof.
 
         Raises:
             StarfishHttpError: on a non-2xx response.
         """
         payload: dict[str, Any] = {DATA_FIELD: data}
+        if signer is not None:
+            document_key = path.removeprefix(PUSH_PATH_PREFIX)
+            signed = sign_append_author(
+                document_key, data, signer["edPubHex"], signer["edPrivHex"]
+            )
+            payload[AUTHOR_PUBKEY_FIELD] = signed[AUTHOR_PUBKEY_FIELD]
+            payload[AUTHOR_SIGNATURE_FIELD] = signed[AUTHOR_SIGNATURE_FIELD]
         body = json.dumps(payload)
         resp = await self._client.post(
             f"{self._base_url}{self._send_path(path)}",

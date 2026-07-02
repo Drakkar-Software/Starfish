@@ -91,16 +91,38 @@ describe("encodeLinkFragment / decodeLinkFragment", () => {
     expect(decodeLinkFragment(fragment, isSpaceToken)).toEqual(TOKEN)
   })
 
-  it("strips trailing slashes from origin", () => {
-    const url1 = encodeLinkFragment(ORIGIN + "/", PATH, TOKEN)
-    const url2 = encodeLinkFragment(ORIGIN, PATH, TOKEN)
-    expect(url1).toBe(url2)
+  it("strips trailing slashes from the origin in the URL prefix", () => {
+    const url = encodeLinkFragment(ORIGIN + "///", PATH, TOKEN)
+    expect(url.startsWith(`${ORIGIN}/join/space#`)).toBe(true)
+    // Token still round-trips regardless of how the origin was spelled.
+    expect(decodeLinkFragment(url.split("#")[1]!, isSpaceToken)).toEqual(TOKEN)
   })
 
-  it("handles a path with or without a leading slash", () => {
-    const url1 = encodeLinkFragment(ORIGIN, "/join", TOKEN)
-    const url2 = encodeLinkFragment(ORIGIN, "join", TOKEN)
-    expect(url1).toBe(url2)
+  it("normalizes a leading slash on the path in the URL prefix", () => {
+    expect(encodeLinkFragment(ORIGIN, "/join", TOKEN).startsWith(`${ORIGIN}/join#`)).toBe(true)
+    expect(encodeLinkFragment(ORIGIN, "join", TOKEN).startsWith(`${ORIGIN}/join#`)).toBe(true)
+  })
+
+  it("emits the canonical [origin, path, token] array form (cross-language parity)", () => {
+    // The fragment is base64url(JSON([origin, path, token])), byte-identical to
+    // Python; decode recovers the token. Before this, TS encoded the bare token
+    // and Python encoded the array, so links were mutually undecodable.
+    const url = encodeLinkFragment(ORIGIN, PATH, TOKEN)
+    const fragment = url.split("#")[1]!
+    expect(JSON.parse(fromBase64Url(fragment))).toEqual([ORIGIN, PATH, TOKEN])
+  })
+
+  it("matches the cross-language link-fragment test vector", () => {
+    const origin = "https://app.example.com"
+    const path = "/spaces/sp-abc"
+    const token = { type: "space-invite", id: "sp-abc", expiresAt: 1900000000 }
+    const expectedFragment =
+      "WyJodHRwczovL2FwcC5leGFtcGxlLmNvbSIsIi9zcGFjZXMvc3AtYWJjIix7InR5cGUiOiJzcGFjZS1pbnZpdGUiLCJpZCI6InNwLWFiYyIsImV4cGlyZXNBdCI6MTkwMDAwMDAwMH1d"
+    const url = encodeLinkFragment(origin, path, token)
+    const fragment = url.split("#")[1]!
+    expect(fragment).toBe(expectedFragment)
+    // And it decodes on this side.
+    expect(decodeLinkFragment(fragment, (t) => t as typeof token)).toEqual(token)
   })
 
   it("throws with the given errMsg on a malformed fragment", () => {
@@ -108,8 +130,8 @@ describe("encodeLinkFragment / decodeLinkFragment", () => {
   })
 
   it("throws when validation fails", () => {
-    // Encode a token that doesn't match the SpaceToken shape.
-    const badFrag = toBase64Url(JSON.stringify({ type: "node" }))
+    // Encode a token (via the canonical array form) that doesn't match SpaceToken.
+    const badFrag = encodeLinkFragment(ORIGIN, PATH, { type: "node" }).split("#")[1]!
     expect(() => decodeLinkFragment(badFrag, isSpaceToken, "bad link")).toThrow("bad link")
   })
 })

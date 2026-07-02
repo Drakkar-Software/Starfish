@@ -226,10 +226,29 @@ class TestDuckdbReadParquetSql:
         result = duckdb_read_parquet_sql(s3=S3_MINIO, key="k")
         assert "SET s3_endpoint='localhost:9000'" in result.config_sql
         assert "SET s3_access_key_id='minio'" in result.config_sql
-        assert "SET s3_secret_access_key='minio123'" in result.config_sql
         assert "SET s3_region='us-east-1'" in result.config_sql
         assert "SET s3_url_style='path'" in result.config_sql
         assert "SET s3_use_ssl=false" in result.config_sql
+        # The secret access key must never appear in the redactable config_sql.
+        assert "s3_secret_access_key" not in result.config_sql
+        assert "minio123" not in result.config_sql
+
+    def test_secret_excluded_from_redactable_sql(self):
+        result = duckdb_read_parquet_sql(s3=S3_MINIO, key="k")
+        # Redactable fields (safe to log) must not leak the secret.
+        assert "minio123" not in result.config_sql
+        assert "minio123" not in result.sql
+        assert "s3_secret_access_key" not in result.sql
+        # The credential lives only in the clearly-marked fields.
+        assert result.credential_sql == "SET s3_secret_access_key='minio123';"
+        assert "SET s3_secret_access_key='minio123'" in result.runnable_sql
+
+    def test_runnable_sql_concatenates_all_parts(self):
+        result = duckdb_read_parquet_sql(s3=S3_MINIO, key="k")
+        assert result.setup_sql in result.runnable_sql
+        assert result.config_sql in result.runnable_sql
+        assert result.credential_sql in result.runnable_sql
+        assert result.read_sql in result.runnable_sql
 
     def test_read_sql(self):
         result = duckdb_read_parquet_sql(s3=S3_MINIO, key="datasets/alice/q1.parquet")
@@ -265,12 +284,12 @@ class TestDuckdbReadParquetSql:
             access_key_id="aki'd",
         )
         result = duckdb_read_parquet_sql(s3=s3_with_quote, key="datasets/alice'x/q1.parquet")
-        # escaped forms must appear in the generated SQL
-        assert "sec''ret" in result.sql
-        assert "aki''d" in result.sql
-        assert "alice''x" in result.sql
+        # Check the full runnable script — it is the only field carrying the secret.
+        assert "sec''ret" in result.runnable_sql
+        assert "aki''d" in result.runnable_sql
+        assert "alice''x" in result.runnable_sql
         # raw unescaped single quotes must not appear inside any SQL string value
-        without_setup = result.sql.replace("INSTALL httpfs;\nLOAD httpfs;", "")
+        without_setup = result.runnable_sql.replace("INSTALL httpfs;\nLOAD httpfs;", "")
         import re
         lone_quotes = re.findall(r"(?<!')'(?!')", without_setup)
         # Only the structural quotes wrapping each SET value and read_parquet remain

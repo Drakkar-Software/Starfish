@@ -61,10 +61,13 @@ export function fromBase64Url(b64url: string): string {
 /**
  * Pack `token` into a shareable URL with the origin stripped from `path`.
  *
- * The token is JSON-serialised and base64url-encoded into the URL fragment:
+ * The canonical wire form (see `tests/test-vectors/base64url.json`) is
+ * `base64url(JSON.stringify([origin, path, token]))`, byte-identical to the
+ * Python `encode_link_fragment`, so a link minted by either language decodes on
+ * the other:
  *
  * ```
- * https://app.example.com/join#eyJ0eXBlIjoic3BhY2UiLCJpZCI6Ii4uLiJ9
+ * https://app.example.com/join#WyJodHRwczovL2FwcC5leGFtcGxlLmNvbSIsIi9qb2luIix7Li4ufV0
  * ```
  *
  * The origin is prepended so the result is a fully-qualified link; the caller
@@ -77,7 +80,7 @@ export function fromBase64Url(b64url: string): string {
 export function encodeLinkFragment(origin: string, path: string, token: unknown): string {
   const base = origin.replace(/\/+$/, "")
   const p = path.replace(/^\/+/, "")
-  return `${base}/${p}#${toBase64Url(JSON.stringify(token))}`
+  return `${base}/${p}#${toBase64Url(JSON.stringify([origin, path, token]))}`
 }
 
 /**
@@ -103,7 +106,11 @@ export function decodeLinkFragment<T>(
   } catch {
     throw new Error(errMsg)
   }
-  const result = validate(parsed)
+  // Canonical form is [origin, path, token]; recover the token before validating.
+  // A bare (non-array) payload is tolerated for resilience against older
+  // single-value fragments.
+  const token = Array.isArray(parsed) && parsed.length >= 3 ? parsed[2] : parsed
+  const result = validate(token)
   if (result === null || result === undefined) throw new Error(errMsg)
   return result
 }

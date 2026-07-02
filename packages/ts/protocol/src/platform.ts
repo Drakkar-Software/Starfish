@@ -151,8 +151,13 @@ function _decodePure(encoded: string): Uint8Array {
     bits = 0
   for (let i = 0; i < validLen; i++) {
     const code = encoded.charCodeAt(i)
-    const v = code < 128 ? _REVERSE[code] : -1
-    if (v < 0) continue
+    const v = code < 128 ? _REVERSE[code]! : -1
+    // Strict: reject any character outside the standard base64 alphabet, matching
+    // Python's `base64.b64decode(validate=True)`. The old lenient `continue`
+    // silently skipped junk bytes, so TS (on RN/Hermes, where this pure codec is
+    // active) and Python disagreed on which cap-cert nonces/signatures were
+    // structurally well-formed.
+    if (v < 0) throw new Error("invalid base64")
     buf = (buf << 6) | v
     bits += 6
     if (bits >= 8) {

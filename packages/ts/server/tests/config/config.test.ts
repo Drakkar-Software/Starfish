@@ -341,6 +341,52 @@ describe("parseConfigJson", () => {
     expect(config.namespaces?.["tenantA"]?.collections[0]?.name).toBe("settings")
   })
 
+  it("preserves rootOnly / listable / restrictions through a JSON round-trip (fail-closed authz)", () => {
+    // These authorization controls were silently dropped by the hand-written
+    // caster, so a JSON config enforced them on Python but not on TS. They must
+    // survive parse so the two servers make identical access decisions.
+    const restriction = { mode: "deny" as const, identities: ["deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"] }
+    const raw = JSON.stringify({
+      version: 1,
+      restrictions: [restriction],
+      collections: [
+        {
+          name: "admin",
+          storagePath: "admin/{identity}/{item}",
+          readRoles: ["cap:read:admin"],
+          writeRoles: ["cap:write:admin"],
+          encryption: "none",
+          maxBodyBytes: 1000000,
+          rootOnly: true,
+          listable: true,
+          restrictions: [restriction],
+        },
+      ],
+      namespaces: {
+        tenantA: {
+          restrictions: [restriction],
+          collections: [
+            {
+              name: "settings",
+              storagePath: "users/{identity}/settings",
+              readRoles: ["self"],
+              writeRoles: ["self"],
+              encryption: "none",
+              maxBodyBytes: 1000000,
+            },
+          ],
+        },
+      },
+    })
+    const config = parseConfigJson(raw)
+    const col = config.collections[0]!
+    expect(col.rootOnly).toBe(true)
+    expect(col.listable).toBe(true)
+    expect(col.restrictions).toEqual([restriction])
+    expect(config.restrictions).toEqual([restriction])
+    expect(config.namespaces?.["tenantA"]?.restrictions).toEqual([restriction])
+  })
+
   it("throws on invalid config", () => {
     const raw = JSON.stringify({
       version: 1,

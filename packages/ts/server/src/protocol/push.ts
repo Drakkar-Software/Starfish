@@ -29,9 +29,14 @@ function chain<T>(documentKey: string, run: () => Promise<T>): Promise<T> {
   // Run regardless of whether the previous link resolved or rejected.
   const current: Promise<T> = prev.then(run, run)
   writeChain.set(documentKey, current)
-  void current.finally(() => {
-    if (writeChain.get(documentKey) === current) writeChain.delete(documentKey)
-  })
+  // Cleanup runs off a separate branch; swallow its rejection so a rejected
+  // `run` (e.g. an AppendConcurrencyError) is delivered only via the returned
+  // `current` (awaited by the caller) and never as an unhandled rejection here.
+  void current
+    .finally(() => {
+      if (writeChain.get(documentKey) === current) writeChain.delete(documentKey)
+    })
+    .catch(() => {})
   return current
 }
 
@@ -137,6 +142,32 @@ export interface AppendLimitExceeded {
 }
 
 export type AppendOutcome = PushSuccess | AppendConflict | AppendLimitExceeded
+
+/** Max compare-and-swap attempts for a single-document append before the
+ *  conflict is surfaced. Only reached under genuine cross-instance contention
+ *  (the in-process {@link writeChain} already serialises same-key writes, so a
+ *  single instance never retries). */
+const APPEND_CAS_MAX_ATTEMPTS = 5
+
+/**
+ * Thrown by {@link appendItem} when a conflicting concurrent write from another
+ * server instance (sharing the same bucket) is detected on every compare-and-swap
+ * attempt. The append is NOT applied — the conflict is surfaced rather than
+ * silently overwriting the other instance's write. The caller may retry.
+ *
+ * Only reachable when the {@link ObjectStore} supports compare-and-swap
+ * ({@link ObjectStore.getWithEtag} + {@link ObjectStore.putIfMatch}); stores
+ * without it keep the previous last-write-wins behaviour.
+ */
+export class AppendConcurrencyError extends Error {
+  constructor(documentKey: string, attempts: number) {
+    super(
+      `appendItem: concurrent write conflict on "${documentKey}" persisted after ${attempts} ` +
+        `compare-and-swap attempts; the append was not applied. Retry the append.`,
+    )
+    this.name = "AppendConcurrencyError"
+  }
+}
 
 /** Opt-in append behaviours resolved from the collection's `appendOnly` config. */
 export interface AppendOptions {
@@ -248,67 +279,106 @@ async function _appendImpl(
   opts: AppendOptions,
   context: StoreContext | undefined,
 ): Promise<AppendOutcome> {
-  const raw = await store.getString(documentKey, context)
+  // Cross-instance safety: when the store supports compare-and-swap, the
+  // single-document head write below becomes an atomic CAS that fails (and
+  // retries) instead of silently overwriting a concurrent instance's append.
+  // The in-process {@link writeChain} already serialises same-key writes, so a
+  // single instance never hits a CAS failure — this path only engages when two
+  // instances share one bucket. Stores without CAS keep last-write-wins.
+  //
+  // RESIDUAL LIMITATION: only the single-document layout is CAS-protected. The
+  // segmented (chunked) layout still uses plain puts on its tail chunk, so two
+  // instances appending to the same open tail chunk can still clobber each
+  // other. Strict multi-instance guarantees there require either the
+  // single-document layout or a CAS-native backend with per-chunk conditional
+  // writes (a larger change deliberately left out here).
+  const cas = typeof store.putIfMatch === "function" && typeof store.getWithEtag === "function"
 
-  let head: Record<string, unknown> | null = null
-  if (raw) {
-    try {
-      head = JSON.parse(raw) as Record<string, unknown>
-    } catch (e) {
-      console.error(`[Starfish] Corrupt stored document at key "${documentKey}":`, e)
-      head = null
+  for (let attempt = 1; ; attempt++) {
+    let raw: string | null
+    let headEtag: string | null = null
+    if (cas) {
+      const got = await store.getWithEtag!(documentKey, context)
+      raw = got?.value ?? null
+      headEtag = got?.etag ?? null
+    } else {
+      raw = await store.getString(documentKey, context)
     }
-  }
 
-  const isSeg = head != null && head["seg"] === true
-  const existingData = (head?.["data"] as Record<string, unknown> | undefined) ?? {}
-  const existingArr = Array.isArray(existingData[appendField]) ? (existingData[appendField] as unknown[]) : []
-  const currentCount = isSeg ? ((head?.["n"] as number | undefined) ?? 0) : existingArr.length
-
-  // Once a document is segmented it stays segmented, even if `chunkSize` was later
-  // removed from config — otherwise this append would write a fresh single-doc at
-  // the head key and orphan every existing chunk (silent data loss). Pull keys off
-  // the stored `seg` flag the same way.
-  const effectiveChunkSize = opts.chunkSize ?? (isSeg ? (((head?.["chunkSize"] as number | undefined) || APPEND_DEFAULT_CHUNK_SIZE)) : undefined)
-
-  // Cap check first — never write past the configured limit.
-  if (opts.maxItems != null && currentCount >= opts.maxItems) {
-    return { error: ERROR_APPEND_LIMIT_EXCEEDED, limit: opts.maxItems } as AppendLimitExceeded
-  }
-
-  if (effectiveChunkSize != null) {
-    return _appendChunkedImpl(store, documentKey, item, appendField, providedTs, effectiveChunkSize, head, isSeg, context, opts.author)
-  }
-
-  // ---- single-document layout (legacy default; unchanged behaviour) ----
-  const arr = existingArr
-  const latest = arr.length > 0 ? elementTs(arr[arr.length - 1]) : -1
-
-  const now = Date.now()
-  let ts: number
-  if (providedTs !== undefined) {
-    if (!(providedTs > latest)) {
-      return { error: "non_monotonic_timestamp", latest } as AppendConflict
+    let head: Record<string, unknown> | null = null
+    if (raw) {
+      try {
+        head = JSON.parse(raw) as Record<string, unknown>
+      } catch (e) {
+        console.error(`[Starfish] Corrupt stored document at key "${documentKey}":`, e)
+        head = null
+      }
     }
-    ts = providedTs
-  } else {
-    ts = Math.max(now, latest + 1)
+
+    const isSeg = head != null && head["seg"] === true
+    const existingData = (head?.["data"] as Record<string, unknown> | undefined) ?? {}
+    const existingArr = Array.isArray(existingData[appendField]) ? (existingData[appendField] as unknown[]) : []
+    const currentCount = isSeg ? ((head?.["n"] as number | undefined) ?? 0) : existingArr.length
+
+    // Once a document is segmented it stays segmented, even if `chunkSize` was later
+    // removed from config — otherwise this append would write a fresh single-doc at
+    // the head key and orphan every existing chunk (silent data loss). Pull keys off
+    // the stored `seg` flag the same way.
+    const effectiveChunkSize = opts.chunkSize ?? (isSeg ? (((head?.["chunkSize"] as number | undefined) || APPEND_DEFAULT_CHUNK_SIZE)) : undefined)
+
+    // Cap check first — never write past the configured limit.
+    if (opts.maxItems != null && currentCount >= opts.maxItems) {
+      return { error: ERROR_APPEND_LIMIT_EXCEEDED, limit: opts.maxItems } as AppendLimitExceeded
+    }
+
+    if (effectiveChunkSize != null) {
+      // Segmented layout is not CAS-protected (see RESIDUAL LIMITATION above);
+      // runs once, plain puts, unchanged behaviour.
+      return _appendChunkedImpl(store, documentKey, item, appendField, providedTs, effectiveChunkSize, head, isSeg, context, opts.author)
+    }
+
+    // ---- single-document layout (legacy default) ----
+    const arr = existingArr
+    const latest = arr.length > 0 ? elementTs(arr[arr.length - 1]) : -1
+
+    const now = Date.now()
+    let ts: number
+    if (providedTs !== undefined) {
+      if (!(providedTs > latest)) {
+        return { error: "non_monotonic_timestamp", latest } as AppendConflict
+      }
+      ts = providedTs
+    } else {
+      ts = Math.max(now, latest + 1)
+    }
+
+    const element: AppendElement = makeAppendElement(ts, item, opts.author)
+    const newArr = [...arr, element]
+    const newHash = await computeHash({ n: newArr.length, last: item })
+
+    const doc: Record<string, unknown> = {
+      v: DOCUMENT_VERSION,
+      data: { ...existingData, [appendField]: newArr },
+      ts,
+      hash: newHash,
+    }
+    const body = JSON.stringify(doc)
+
+    if (cas) {
+      const newEtag = await store.putIfMatch!(documentKey, body, headEtag, { contentType: CONTENT_TYPE_JSON }, context)
+      if (newEtag === null) {
+        // A concurrent instance changed the head between our read and our write.
+        // Re-read and retry rather than overwrite; surface the conflict if the
+        // contention persists past the retry budget.
+        if (attempt >= APPEND_CAS_MAX_ATTEMPTS) throw new AppendConcurrencyError(documentKey, attempt)
+        continue
+      }
+    } else {
+      await store.put(documentKey, body, { contentType: CONTENT_TYPE_JSON }, context)
+    }
+
+    return { hash: newHash, timestamp: ts } as PushSuccess
   }
-
-  const element: AppendElement = makeAppendElement(ts, item, opts.author)
-  const newArr = [...arr, element]
-  const newHash = await computeHash({ n: newArr.length, last: item })
-
-  const doc: Record<string, unknown> = {
-    v: DOCUMENT_VERSION,
-    data: { ...existingData, [appendField]: newArr },
-    ts,
-    hash: newHash,
-  }
-
-  await store.put(documentKey, JSON.stringify(doc), { contentType: CONTENT_TYPE_JSON }, context)
-
-  return { hash: newHash, timestamp: ts } as PushSuccess
 }
 
 /**

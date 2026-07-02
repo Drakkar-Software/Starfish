@@ -153,6 +153,24 @@ def test_encode_integer_value_coerced_to_string():
     assert cols["message_id"] == ["42"]
 
 
+def test_encode_coerces_non_string_values_to_canonical_json():
+    # Non-string values serialize to the same canonical string the TS encoder
+    # produces: compact JSON, object keys sorted recursively, arrays left in
+    # order, booleans lowercased.
+    row = {
+        **_SAMPLE_ROW,
+        "event_type": True,  # bool → "true"
+        "message_id": 42,  # number → "42"
+        "properties": {"z": 1, "a": {"d": 4, "c": 3}},  # nested object, keys sorted recursively
+        "context": ["b", "a"],  # array order preserved, not sorted
+    }
+    cols = decode(encode_parquet([row]))
+    assert cols["event_type"] == ["true"]
+    assert cols["message_id"] == ["42"]
+    assert cols["properties"] == ['{"a":{"c":3,"d":4},"z":1}']
+    assert cols["context"] == ['["b","a"]']
+
+
 # ---------------------------------------------------------------------------
 # Empty batch
 # ---------------------------------------------------------------------------

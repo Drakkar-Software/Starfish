@@ -132,7 +132,10 @@ def seal(
     iv = secrets.token_bytes(_IV_BYTES)
     aad_bytes = aad.encode("utf-8") if aad else None
     ct = AESGCM(cek).encrypt(iv, _to_bytes(plaintext), aad_bytes)
-    v = 1 if aad is not None else None
+    # One AAD-presence test for BOTH the tag and the version marker: an empty
+    # string is no context (matches TS `if (aad)`), so aad="" stays v=None
+    # instead of a v=1 blob whose tag mixed in no AAD — un-openable by TS.
+    v = 1 if aad else None
     return SealedBlob(entry=entry, ct=base64.b64encode(iv + ct).decode("ascii"), v=v)
 
 

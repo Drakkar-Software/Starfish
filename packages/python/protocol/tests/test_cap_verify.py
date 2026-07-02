@@ -368,3 +368,28 @@ def test_path_glob_escapes_regex_specials_so_a_dot_is_literal() -> None:
 def test_path_glob_requires_a_full_match_not_a_prefix() -> None:
     assert path_glob_match("notes", "notes/extra") is False
     assert path_glob_match("notes/*", "other/x") is False
+
+
+def test_path_glob_adversarial_many_star_is_bounded() -> None:
+    # A self-signed cap could carry ``scope.paths: ['x/' + '*a' * 40]``; the old
+    # regex-compiled matcher backtracked super-polynomially on a forced non-match,
+    # freezing the auth hot path. The linear matcher stays bounded.
+    import time
+
+    glob = "x/" + "*a" * 40
+    target = "x/" + "b" * 60
+    start = time.monotonic()
+    assert path_glob_match(glob, target) is False
+    assert time.monotonic() - start < 1.0
+
+
+def test_path_glob_double_star_spans_line_terminators_like_ts() -> None:
+    # Python ``.`` excludes only ``\n`` (no DOTALL) while JS ``.`` excludes
+    # ``\r \n \u2028 \u2029``. The linear ``**`` = any-char rule keeps both
+    # languages in lockstep so a ``**`` deny cannot be dodged with a
+    # line-terminator character in the key on one server.
+    assert path_glob_match("a/**x", "a/\rx") is True
+    assert path_glob_match("a/**x", "a/\nx") is True
+    assert path_glob_match("a/**x", "a/\u2028x") is True
+    assert path_glob_match("a/**x", "a/\u2029x") is True
+    assert path_glob_match("notes/**", "notes/a\nb") is True

@@ -90,7 +90,9 @@ def test_install_pairing_bundle_recovers_ceks_for_each_collection() -> None:
         "kemPub": V["newDevice"]["kemPub"],
     }
     # The vector cap-cert has fixed nbf/exp; evaluate the window within it.
-    result = install_pairing_bundle(bundle, device, now=bundle.cap_cert["nbf"] + 5)
+    result = install_pairing_bundle(
+        bundle, device, now=bundle.cap_cert["nbf"] + 5, expected_root_ed_pub=bundle.root_ed_pub
+    )
 
     assert result.credentials.root_ed_pub == V["root"]["edPub"]
     assert result.credentials.user_id == V["root"]["userId"]
@@ -177,7 +179,7 @@ def test_assemble_then_install_roundtrip_recovers_supplied_ceks() -> None:
     assert bundle.cap_cert["sub"] == new_device["edPub"]
     assert verify_cap_cert_signature(bundle.cap_cert) is True
 
-    installed = install_pairing_bundle(bundle, new_device)
+    installed = install_pairing_bundle(bundle, new_device, expected_root_ed_pub=root.keys.ed_pub)
     assert installed.ceks["notes"].cek == cek_a
     assert installed.ceks["notes"].epoch == 3
     assert installed.ceks["tasks"].cek == cek_b
@@ -306,9 +308,9 @@ def test_install_rejects_expired_bundle() -> None:
     )
     # Past exp + 300s clock skew → rejected.
     with pytest.raises(ValueError, match="invalid"):
-        install_pairing_bundle(bundle, device, now=nbf + 10 + 301)
+        install_pairing_bundle(bundle, device, now=nbf + 10 + 301, expected_root_ed_pub=root.keys.ed_pub)
     # Inside the window it still installs.
-    ok = install_pairing_bundle(bundle, device, now=nbf + 5)
+    ok = install_pairing_bundle(bundle, device, now=nbf + 5, expected_root_ed_pub=root.keys.ed_pub)
     assert ok.credentials.device["edPub"] == device["edPub"]
 
 
@@ -361,8 +363,12 @@ def test_install_binds_bundle_to_qr_nonce() -> None:
     now = bundle.cap_cert["nbf"] + 5
     other_nonce = base64.b64encode(b"\x22" * 16).decode("ascii")
     with pytest.raises(ValueError, match="qrNonce"):
-        install_pairing_bundle(bundle, device, now=now, expected_qr_nonce=other_nonce)
-    ok = install_pairing_bundle(bundle, device, now=now, expected_qr_nonce=parsed.qr_nonce)
+        install_pairing_bundle(
+            bundle, device, now=now, expected_qr_nonce=other_nonce, expected_root_ed_pub=root.keys.ed_pub
+        )
+    ok = install_pairing_bundle(
+        bundle, device, now=now, expected_qr_nonce=parsed.qr_nonce, expected_root_ed_pub=root.keys.ed_pub
+    )
     assert ok.credentials.device["edPub"] == device["edPub"]
 
 
@@ -384,9 +390,88 @@ def test_install_rejects_unexpected_root_when_pinned() -> None:
     # Pinning the real root rejects the attacker's bundle.
     with pytest.raises(ValueError, match="root identity"):
         install_pairing_bundle(bundle, device, now=now, expected_root_ed_pub=root.keys.ed_pub)
-    # Pinning the actual issuer (or omitting the pin) installs.
+    # Pinning the actual issuer installs.
     ok = install_pairing_bundle(bundle, device, now=now, expected_root_ed_pub=attacker.keys.ed_pub)
     assert ok.credentials.root_ed_pub == attacker.keys.ed_pub
+
+
+def test_install_requires_root_pin_or_confirmation() -> None:
+    root = derive_root_identity("alice-root-passphrase")
+    device = _new_device()
+    qr = build_pairing_qr(device["edPub"], device["kemPub"], V["qrPayload"]["object"]["requestedScope"])
+    parsed = parse_pairing_qr(qr)
+    bundle = assemble_pairing_bundle(
+        {"edPriv": root.keys.ed_priv, "edPub": root.keys.ed_pub},
+        parsed,
+        {},
+        AssemblePairingBundleOpts(granted_scope=parsed.requested_scope),
+    )
+    now = bundle.cap_cert["nbf"] + 5
+    # Neither a pin nor a first-contact confirmation ⇒ refuse (no default trust).
+    with pytest.raises(ValueError, match="root pinning"):
+        install_pairing_bundle(bundle, device, now=now)
+    # The correct pin installs.
+    ok = install_pairing_bundle(bundle, device, now=now, expected_root_ed_pub=root.keys.ed_pub)
+    assert ok.credentials.root_ed_pub == root.keys.ed_pub
+
+
+def test_install_first_contact_confirm_callback() -> None:
+    root = derive_root_identity("alice-root-passphrase")
+    device = _new_device()
+    qr = build_pairing_qr(device["edPub"], device["kemPub"], V["qrPayload"]["object"]["requestedScope"])
+    parsed = parse_pairing_qr(qr)
+    bundle = assemble_pairing_bundle(
+        {"edPriv": root.keys.ed_priv, "edPub": root.keys.ed_pub},
+        parsed,
+        {},
+        AssemblePairingBundleOpts(granted_scope=parsed.requested_scope),
+    )
+    now = bundle.cap_cert["nbf"] + 5
+    seen: list[str] = []
+
+    def confirm(root_ed_pub: str) -> bool:
+        seen.append(root_ed_pub)
+        return True
+
+    ok = install_pairing_bundle(bundle, device, now=now, confirm_unpinned_root=confirm)
+    # The callback saw the bundle's root fingerprint before install proceeded.
+    assert seen == [root.keys.ed_pub]
+    assert ok.credentials.root_ed_pub == root.keys.ed_pub
+
+    # A callback that declines ⇒ refuse.
+    with pytest.raises(ValueError, match="not confirmed"):
+        install_pairing_bundle(bundle, device, now=now, confirm_unpinned_root=lambda _r: False)
+
+
+# ── parse_pairing_qr field validation ─────────────────────────────────────────
+
+
+def _encode_qr_payload(payload: dict) -> str:
+    return base64.urlsafe_b64encode(json.dumps(payload).encode("utf-8")).rstrip(b"=").decode("ascii")
+
+
+def test_parse_pairing_qr_rejects_missing_dev_kem_pub() -> None:
+    payload = {
+        "v": 1,
+        "devEdPub": "aa" * 32,
+        # devKemPub intentionally omitted
+        "requestedScope": {"ops": ["read"], "collections": ["notes"], "paths": ["notes/*"]},
+        "qrNonce": base64.b64encode(bytes(16)).decode("ascii"),
+    }
+    with pytest.raises(ValueError, match="devEdPub/devKemPub"):
+        parse_pairing_qr(_encode_qr_payload(payload))
+
+
+def test_parse_pairing_qr_rejects_non_string_dev_ed_pub() -> None:
+    payload = {
+        "v": 1,
+        "devEdPub": 123,
+        "devKemPub": "bb" * 32,
+        "requestedScope": {"ops": ["read"], "collections": ["notes"], "paths": ["notes/*"]},
+        "qrNonce": base64.b64encode(bytes(16)).decode("ascii"),
+    }
+    with pytest.raises(ValueError, match="devEdPub/devKemPub"):
+        parse_pairing_qr(_encode_qr_payload(payload))
 
 
 # ── PBKDF2 + server-relay encryption ──────────────────────────────────────────

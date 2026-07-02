@@ -66,6 +66,18 @@ describe("createEntitlementRoleEnricher — unit", () => {
     expect(roles).toEqual([])
   })
 
+  it("returns empty array when document is a literal JSON null (no throw)", async () => {
+    // A stored literal `null` parses successfully but is not an object; reading
+    // `.data` on it would throw a TypeError and surface as a 500. The enricher
+    // must instead treat it as no entitlements — identical to the Python side.
+    const store = new MemoryObjectStore(new Map())
+    await store.put("users/alice/entitlements", "null")
+
+    const enricher = createEntitlementRoleEnricher({ store })
+    const roles = await enricher({ identity: "alice", roles: [] }, {})
+    expect(roles).toEqual([])
+  })
+
   it("returns empty array when features field is not an array", async () => {
     const store = new MemoryObjectStore(new Map())
     const doc = { v: 1, data: { features: "not-a-list" }, timestamps: {}, hash: "h" }

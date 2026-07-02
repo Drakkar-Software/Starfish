@@ -103,6 +103,13 @@ async def main() -> None:
     # second QR, or a brief relay round-trip — see pairing_relay.py).
 
     # ── New device installs the bundle. ─────────────────────────────────────
+    # Root pinning is MANDATORY: install_pairing_bundle raises unless it is told
+    # which root to trust (otherwise an attacker could hand the device a bundle
+    # signed by their OWN root and hijack the identity). This demo already knows
+    # the root's Ed25519 pubkey, so we pin it via expected_root_ed_pub. In a real
+    # first-contact flow where the new device has never seen this root, pass
+    # confirm_unpinned_root=lambda root_ed_pub: True instead — and a real app MUST
+    # show that fingerprint to the user and get explicit confirmation.
     installed = install_pairing_bundle(
         bundle,
         {
@@ -111,6 +118,7 @@ async def main() -> None:
             "kemPriv": new_dev_kem_priv,
             "kemPub": new_dev_kem_pub,
         },
+        expected_root_ed_pub=root.device["edPub"],
     )
     print(f"[new-device] installed; user_id = {installed.credentials.user_id}")
     print(f"[new-device] recovered CEKs: {list(installed.ceks.keys())}")

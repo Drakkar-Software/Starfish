@@ -40,9 +40,37 @@ export function encodeParquet(rows: Record<string, unknown>[]): Uint8Array {
     name,
     type: "STRING" as const,
     nullable: false,
-    data: rows.map((r) => String(r[name] ?? "")),
+    data: rows.map((r) => coerceCell(r[name])),
   }))
 
   const buffer = parquetWriteBuffer({ columnData, codec: "UNCOMPRESSED" })
   return new Uint8Array(buffer)
+}
+
+/**
+ * Coerce one cell value to the canonical string stored in Parquet.
+ *
+ * `null`/`undefined` → `""`; strings pass through verbatim; every other JSON
+ * value (object, array, number, boolean) is serialized as compact JSON with
+ * recursively-sorted object keys. This must stay identical to the Python encoder
+ * (`json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)`)
+ * so DuckDB sees the same strings regardless of which backend produced the file.
+ */
+function coerceCell(value: unknown): string {
+  if (value == null) return ""
+  if (typeof value === "string") return value
+  return JSON.stringify(sortDeep(value))
+}
+
+/** Recursively sort object keys so `JSON.stringify` output matches Python's `sort_keys=True`. */
+function sortDeep(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortDeep)
+  if (value && typeof value === "object") {
+    const sorted: Record<string, unknown> = {}
+    for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+      sorted[key] = sortDeep((value as Record<string, unknown>)[key])
+    }
+    return sorted
+  }
+  return value
 }

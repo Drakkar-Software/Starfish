@@ -15,6 +15,7 @@ it receives opaquely.
 from __future__ import annotations
 
 import io
+import json
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -36,12 +37,30 @@ COLUMNS: tuple[str, ...] = (
 )
 
 
+def _coerce_cell(value: object) -> str:
+    """Coerce one cell value to the canonical string stored in Parquet.
+
+    ``None`` becomes ``""``; strings pass through verbatim; every other JSON
+    value (dict, list, int, float, bool) is serialized as compact JSON with
+    recursively-sorted keys.  This must stay identical to the TypeScript encoder
+    (``JSON.stringify`` over recursively key-sorted values) so DuckDB sees the
+    same strings regardless of which backend produced the file.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
 def encode_parquet(rows: list[dict]) -> bytes:
     """Encode a list of flat event-row dicts as an Apache Parquet byte string.
 
-    All values are coerced to :class:`str` so integers, floats, ``None``, and
-    other JSON types are stored as strings rather than causing a type error.
-    Missing keys default to ``""`` (empty string).
+    All values are coerced to :class:`str`: strings pass through verbatim,
+    ``None`` and missing keys become ``""`` (empty string), and every other
+    JSON value (dict, list, int, float, bool) is serialized as compact,
+    key-sorted JSON — matching the TypeScript encoder so both backends store
+    identical strings.
 
     :param rows: List of row dicts; each row is one SunGlasses event as
         flattened by the adapter's ``toStarfishRow`` (or an equivalent mapper).
@@ -52,7 +71,7 @@ def encode_parquet(rows: list[dict]) -> bytes:
     table = pa.table(
         {
             col: pa.array(
-                [str(row[col]) if row.get(col) is not None else "" for row in rows],
+                [_coerce_cell(row.get(col)) for row in rows],
                 type=pa.string(),
             )
             for col in COLUMNS

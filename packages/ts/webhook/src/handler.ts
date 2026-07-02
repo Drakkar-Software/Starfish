@@ -12,7 +12,7 @@
 
 import { signAppendAuthor } from "@drakkar.software/starfish-protocol"
 import { verifyHmac } from "./auth.js"
-import { sealDocument } from "./sealed-write.js"
+import { sealAad, sealDocument } from "./sealed-write.js"
 import type { WebhookHandlerOptions, WebhookRoute } from "./types.js"
 
 const DEFAULT_ORIGIN = "http://webhook.local"
@@ -37,12 +37,21 @@ function documentKeyFor(target: string): string {
   return target.replace(/^\/push\//, "")
 }
 
-async function buildPushBody(route: WebhookRoute, data: Record<string, unknown>): Promise<Record<string, unknown>> {
+async function buildPushBody(
+  route: WebhookRoute,
+  data: Record<string, unknown>,
+  webhookId: string,
+): Promise<Record<string, unknown>> {
+  const documentKey = documentKeyFor(route.target)
   // Option B: seal at this edge so the server stores only ciphertext.
   let stored: Record<string, unknown> = data
   if (route.seal) {
     if (!route.sealer) throw new Error("seal_config_missing_sealer")
-    stored = (await sealDocument(data, route.seal.recipientKemPubHex, route.sealer)) as unknown as Record<
+    // Bind the ciphertext to its destination (document key + route id) so a sealed
+    // blob cannot be relocated into another document/route by a party with write
+    // access there. A member reconstructs the same aad from those public facts.
+    const aad = sealAad(documentKey, webhookId)
+    stored = (await sealDocument(data, route.seal.recipientKemPubHex, route.sealer, aad)) as unknown as Record<
       string,
       unknown
     >
@@ -53,7 +62,7 @@ async function buildPushBody(route: WebhookRoute, data: Record<string, unknown>)
     // Author proof is signed over the STORED bytes (post-seal), matching what the
     // server verifies and what a reader re-verifies after pulling.
     const proof = signAppendAuthor(
-      documentKeyFor(route.target),
+      documentKey,
       stored,
       route.author.edPubHex,
       route.author.edPrivHex,
@@ -74,6 +83,21 @@ async function buildPushBody(route: WebhookRoute, data: Record<string, unknown>)
  */
 export function createWebhookHandler(opts: WebhookHandlerOptions) {
   const origin = opts.origin ?? DEFAULT_ORIGIN
+
+  // Surface the default-off replay exposure at construction time. An HMAC route with
+  // no timestamp header and no custom authenticate hook signs only the raw body, so a
+  // captured valid request can be replayed indefinitely (there is no server-side
+  // seen-id store). Configure a timestamp header to bound the replay window, or an
+  // authenticate hook that folds an idempotency/nonce header into its own check.
+  for (const [id, route] of Object.entries(opts.routes)) {
+    if (route.secret && !route.authenticate && !route.timestampHeader) {
+      console.warn(
+        `[starfish-webhook] route "${id}" uses HMAC with no timestampHeader and no authenticate hook — ` +
+          `a captured request can be replayed indefinitely. Configure a timestamp header to bound the replay ` +
+          `window, or a custom authenticate hook that folds in an idempotency/nonce header.`,
+      )
+    }
+  }
 
   return async function handleWebhook(request: Request, webhookId: string): Promise<Response> {
     const route = opts.routes[webhookId]
@@ -132,7 +156,7 @@ export function createWebhookHandler(opts: WebhookHandlerOptions) {
 
     let pushBody: Record<string, unknown>
     try {
-      pushBody = await buildPushBody(route, data)
+      pushBody = await buildPushBody(route, data, webhookId)
     } catch (e) {
       console.warn(`[starfish-webhook] failed to build push body for "${webhookId}":`, e)
       return json(500, { error: "ingest_failed" })

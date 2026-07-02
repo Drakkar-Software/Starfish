@@ -166,9 +166,12 @@ def unseal_from_self(
         The decrypted payload (as parsed JSON).
 
     Raises:
-        ValueError: on signature failure, wrong epoch, or missing AAD.
+        ValueError: on signature failure, wrong epoch, missing AAD, or when the
+            blob was not self-signed (``entry.addedBy != own edPub``).
     """
     keys = _extract_keys(has_keys)
+    if (blob.get("entry") or {}).get("addedBy") != keys["edPub"]:
+        raise ValueError("sealed blob not self-signed")
     return _open_raw(keys["kemPriv"], blob, namespace, SELF_EPOCH)
 
 

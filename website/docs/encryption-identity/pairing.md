@@ -115,20 +115,25 @@ interface PairingBundle {
 import { installPairingBundle } from "@drakkar.software/starfish-client"
 
 const { credentials, ceks } = await installPairingBundle(bundle, device, {
+  expectedRootEdPub, // REQUIRED (or `confirmUnpinnedRoot`): pin the target
+                     //   account's known root pubkey. See step 4 below.
   expectedQrNonce,   // the qrNonce this device put in its own QR (recommended)
 })
 // credentials: DeviceCredentials   — store the device keys + cap-cert securely
 // ceks:        { [collection]: { epoch, cek } } — seed the local key cache
 ```
 
+> **Root pinning is mandatory.** `installPairingBundle` throws unless you pass **either** `expectedRootEdPub` (the account's known root pubkey — a pin) **or** `confirmUnpinnedRoot: (rootEdPub) => boolean` (a first-contact callback that surfaces `bundle.rootEdPub` so the user can confirm the fingerprint out-of-band). Supplying neither used to silently trust *any* root — a confused-deputy vulnerability that let an attacker provision the new device into *their* account. In Python the keyword args are `expected_root_ed_pub=` / `confirm_unpinned_root=`. (`installProvisionedDevice` / `install_provisioned_device` auto-acknowledge first-contact, since one-way provisioning delivers the keys and bundle atomically over an already-trusted channel.)
+
 `installPairingBundle` does:
 
 1. Fully verify the cap-cert with `verifyCapCert` — Ed25519 signature **and** the not-before/expiry window **and** well-formedness (the previous signature-only check accepted expired or not-yet-valid bundles). Pass `opts.now` to make the window check deterministic in tests.
 2. Require `bundle.capCert.kind === "device"` — a signed `member` cap (which binds identity to its subject, not the issuer) must never be installed as a root-proxy device credential.
 3. Require `bundle.capCert.iss === bundle.rootEdPub` — the cert must be issued by the root the bundle claims.
-4. Check `bundle.capCert.sub === device.edPub` and `bundle.capCert.subKem === device.kemPub` (the bundle is bound to *this* device).
-5. If `opts.expectedQrNonce` is given, require `bundle.qrNonce === expectedQrNonce` — binds the bundle to the pairing session that produced the QR, rejecting a replayed/stale capture.
-6. Unwrap each `WrappedCekEntry` against `device.kemPriv`.
+4. **Establish trust in the bundle's root (mandatory).** The `iss === rootEdPub` check above is satisfied by *any* self-consistent root, so it does not prove the bundle came from *your* account. Require `opts.expectedRootEdPub === bundle.rootEdPub` (pin) or run `opts.confirmUnpinnedRoot(bundle.rootEdPub)` and require it to return true (first-contact). Neither present → throw.
+5. Check `bundle.capCert.sub === device.edPub` and `bundle.capCert.subKem === device.kemPub` (the bundle is bound to *this* device).
+6. If `opts.expectedQrNonce` is given, require `bundle.qrNonce === expectedQrNonce` — binds the bundle to the pairing session that produced the QR, rejecting a replayed/stale capture.
+7. Unwrap each `WrappedCekEntry` against `device.kemPriv`.
 
 Any failure throws. The new device is now ready to build `KeyringEncryptor`s and `SyncManager`s; once the root device adds the new device as a recipient on each collection's `_keyring`, future epochs will be unwrappable through the live keyring too.
 
@@ -231,7 +236,13 @@ const incomingResp = (
   await client.pull(`_pairing-responses/${req.requestNonce}`)
 ).data as PairingResponseEncrypted
 const installable  = await readPairingResponse(incomingResp, code)
-const { credentials, ceks } = await installPairingBundle(installable, device)
+// Root pinning is mandatory (see §2). Here the shared code authenticated the
+// response, but the new device still confirms which root it is joining: pass
+// `expectedRootEdPub` if it already knows the account's root pubkey, otherwise
+// a `confirmUnpinnedRoot` callback that shows `rootEdPub` for user confirmation.
+const { credentials, ceks } = await installPairingBundle(installable, device, {
+  confirmUnpinnedRoot: (_rootEdPub) => true, // real apps: verify the fingerprint first
+})
 ```
 
 `readPairingRequest` / `readPairingResponse` throw if the code is wrong or the ciphertext was tampered with — AES-GCM authentication tag failure is surfaced verbatim.

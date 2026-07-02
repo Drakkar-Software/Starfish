@@ -56,22 +56,33 @@ primitive (`seal`/`unseal`: ephemeral X25519 → HKDF-SHA256 → AES-256-GCM):
 3. **Members open it.**
 
    ```ts
-   import { openSealedDocument, isSealedBlob } from "@drakkar.software/starfish-webhook"
+   import { openSealedDocument, isSealedBlob, sealAad } from "@drakkar.software/starfish-webhook"
+
+   // The webhook handler binds every sealed blob to its destination with an
+   // `aad = sealAad(documentKey, webhookId)` (documentKey = the target path with
+   // the `/push/` prefix stripped; webhookId = the route id). A member
+   // reconstructs the SAME aad from those public facts — opening without the
+   // matching aad throws.
+   const aad = sealAad("pubspaces/owner/space/streams/room", "bridge")
 
    for (const el of pulledItems) {
      const msg = isSealedBlob(el.data)
-       ? await openSealedDocument(el.data, kemPrivHex, { requireSealer: BOT_PUB })
+       ? await openSealedDocument(el.data, kemPrivHex, BOT_PUB, { aad })
        : el.data // a plaintext write from a normal client
    }
    ```
 
-   `requireSealer` pins provenance: the open throws unless the blob's wrap entry was
-   signed by the webhook's key, so a member can trust *who* injected the message
-   against any **outside** party. (The signature commits to the wrapped content key,
-   not the message bytes; forging a different message under a pinned sealer would
-   require the per-message content key, which is fresh-random and known only to the
-   sealer and key-holders. A *member* — who can already post — is therefore out of
-   this guarantee's scope; it defends against non-members, not against insiders.)
+   The expected sealer is now a **required positional argument** (`BOT_PUB` above) —
+   sealer pinning is **mandatory**. The open throws unless the blob's wrap entry was
+   signed by that key, so a member can trust *who* injected the message against any
+   **outside** party. (The signature commits to the wrapped content key, not the
+   message bytes; forging a different message under a pinned sealer would require the
+   per-message content key, which is fresh-random and known only to the sealer and
+   key-holders. A *member* — who can already post — is therefore out of this
+   guarantee's scope; it defends against non-members, not against insiders.) Passing
+   the matching `aad` additionally binds the ciphertext to its destination
+   (`documentKey` + route id), so a sealed blob cannot be relocated into another
+   document or route.
 
 ## What each party can do
 

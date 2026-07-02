@@ -47,7 +47,13 @@ export function parseSseFrames(
   for (let i = 0; i < parts.length - 1; i++) {
     const dataLines: string[] = []
     for (const line of parts[i]!.split("\n")) {
-      if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart())
+      if (line.startsWith("data:")) {
+        // WHATWG SSE §9.2.6: strip exactly ONE leading U+0020 SPACE after the
+        // colon (a tab or a second space is part of the payload). Keeps frame
+        // payloads byte-identical with the Python parser.
+        const value = line.slice(5)
+        dataLines.push(value.startsWith(" ") ? value.slice(1) : value)
+      }
       // id:, event:, retry:, and comment (:) lines are intentionally ignored.
     }
     if (dataLines.length > 0) events.push(dataLines.join("\n"))

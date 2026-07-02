@@ -82,6 +82,46 @@ async def test_corrupt_document_result_is_not_cached():
 
 
 @pytest.mark.asyncio
+async def test_returns_empty_when_document_is_literal_null():
+    # A stored literal ``null`` parses successfully but is not an object; reading
+    # its "data" field would raise and diverge from TS (which raised a 500). Both
+    # languages must now treat it as no entitlements without raising.
+    store = MemoryObjectStore()
+    store._data["users/alice/entitlements"] = "null"
+
+    enricher = create_entitlement_role_enricher(EntitlementRoleEnricherOptions(store=store))
+    roles = await enricher(AuthResult(identity="alice", roles=[]), {})
+    assert roles == []
+
+
+@pytest.mark.asyncio
+async def test_anonymous_caller_gets_no_roles_and_does_not_query_store():
+    # Anonymous requests arrive with identity="" — resolving features for the
+    # empty string would build the bogus key "users//entitlements" and, if the
+    # store held a doc there, hand entitlement roles to every unauthenticated
+    # caller. The guard must short-circuit before any store read.
+    store = MemoryObjectStore()
+    # Even with a doc present at the bogus key, the anon path must never read it.
+    _write_entitlement_doc(store, "users//entitlements", ["bogus-role"])
+
+    call_count = 0
+    original_get_string = store.get_string
+
+    async def counting_get_string(key: str) -> str | None:
+        nonlocal call_count
+        call_count += 1
+        return await original_get_string(key)
+
+    store.get_string = counting_get_string
+
+    enricher = create_entitlement_role_enricher(EntitlementRoleEnricherOptions(store=store))
+    roles = await enricher(AuthResult(identity="", roles=[]), {})
+
+    assert roles == []
+    assert call_count == 0
+
+
+@pytest.mark.asyncio
 async def test_returns_empty_when_field_not_a_list():
     store = MemoryObjectStore()
     doc = {"v": 1, "data": {"features": "not-a-list"}, "timestamps": {}, "hash": "h"}

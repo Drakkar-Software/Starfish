@@ -88,6 +88,14 @@ describe("QueueConfig.subjectParam — charset re-validation (defense-in-depth)"
     expect(await publishSubject(cfg, { postId: "123" })).toBe("posts.changed.123")
   })
 
+  it("full-matches an unanchored subjectIdPattern (no substring pass)", async () => {
+    // An unanchored pattern must gate the WHOLE id, mirroring Python's fullmatch:
+    // a metacharacter-bearing id must NOT slip through on a substring match.
+    const cfg: QueueConfig = { topic: "posts.changed", subjectParam: "postId", subjectIdPattern: /[a-z0-9]+/, includeParams: false }
+    expect(await publishSubject(cfg, { postId: "abc.*>evil" })).toBe("posts.changed")
+    expect(await publishSubject(cfg, { postId: "abc" })).toBe("posts.changed.abc")
+  })
+
   it("leaves the subject unchanged when subjectParam is unset", async () => {
     expect(await publishSubject({ topic: "posts.changed", includeParams: false }, { postId: "abc" })).toBe("posts.changed")
   })

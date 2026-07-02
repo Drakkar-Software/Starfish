@@ -47,7 +47,12 @@ export function createQueuingServerPlugin(opts: QueuingPluginOptions): ServerPlu
         // that slipped through upstream gate drift.
         const rawId = event.params[cfg.subjectParam]
         const pattern = cfg.subjectIdPattern ?? DEFAULT_SAFE_ID
-        if (typeof rawId === "string" && pattern.test(rawId)) {
+        // Full-match (mirror Python's `fullmatch`): `RegExp.test` only needs a
+        // SUBSTRING match unless anchored, so a custom unanchored subjectIdPattern
+        // would admit metacharacter-bearing ids (e.g. "abc.*>evil" passes /[a-z0-9]+/).
+        // Anchor a fresh matcher; drop `g` so a stray global flag can't skew it.
+        const anchored = new RegExp(`^(?:${pattern.source})$`, pattern.flags.replace("g", ""))
+        if (typeof rawId === "string" && anchored.test(rawId)) {
           subject = `${subject}.${rawId}`
         }
       }

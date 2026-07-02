@@ -86,6 +86,11 @@ export interface EventsPluginOptions {
  * Create a Starfish server plugin that encodes SunGlasses event batches as
  * Parquet and writes them to the object store.
  *
+ * The events collection carries analytics payloads (`distinct_id`, `properties`)
+ * and must **not** be publicly readable — gate `readRoles` to an admin/service
+ * role. `interceptPull` performs no access control of its own; it relies on the
+ * collection's `readRoles`.
+ *
  * @example
  * ```ts
  * import { S3ObjectStore } from "@drakkar.software/starfish-server/s3"
@@ -105,7 +110,7 @@ export interface EventsPluginOptions {
  *     collections: [{
  *       name: "events",
  *       storagePath: "events/{app}/{batchId}",
- *       readRoles: ["public"],
+ *       readRoles: ["admin"],  // ← never "public": events carry PII-bearing payloads
  *       writeRoles: ["public"],
  *       encryption: "none",
  *       allowedMimeTypes: ["application/json"],  // ← JSON-typed, not parquet

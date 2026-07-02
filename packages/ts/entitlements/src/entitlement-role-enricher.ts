@@ -111,10 +111,16 @@ export function createEntitlementRoleEnricher(opts: EntitlementRoleEnricherOptio
     if (raw != null) {
       try {
         // StoredDocument format: { v: 1, data: { features: [...] }, timestamps: {...}, hash: "..." }
-        const doc = JSON.parse(raw) as { data?: Record<string, unknown> }
-        const list = doc.data?.[field]
-        if (Array.isArray(list)) {
-          features = new Set(list.filter((s): s is string => typeof s === "string"))
+        // A successfully-parsed but non-object document (e.g. a literal `null`)
+        // carries no entitlements. Guard before reading `.data` so a degenerate
+        // doc yields an empty set instead of throwing a TypeError (which would
+        // otherwise surface as a 500). Matches the Python enricher.
+        const doc = JSON.parse(raw) as unknown
+        if (doc && typeof doc === "object") {
+          const list = (doc as { data?: Record<string, unknown> }).data?.[field]
+          if (Array.isArray(list)) {
+            features = new Set(list.filter((s): s is string => typeof s === "string"))
+          }
         }
       } catch (err) {
         if (!(err instanceof SyntaxError)) throw err

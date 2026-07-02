@@ -115,10 +115,7 @@ def create_entitlement_role_enricher(opts: EntitlementRoleEnricherOptions) -> Ro
             try:
                 # StoredDocument format: { "v": 1, "data": { "features": [...] }, ... }
                 doc = json.loads(raw)
-                feature_list = doc.get("data", {}).get(opts.field)
-                if isinstance(feature_list, list):
-                    features = frozenset(s for s in feature_list if isinstance(s, str))
-            except (json.JSONDecodeError, AttributeError) as exc:
+            except json.JSONDecodeError as exc:
                 logging.getLogger(__name__).error(
                     "entitlement-enricher: corrupt entitlement document at %r: %s", key, exc
                 )
@@ -127,6 +124,15 @@ def create_entitlement_role_enricher(opts: EntitlementRoleEnricherOptions) -> Ro
                 # corruption must not deny entitlement roles for the whole TTL
                 # after the document is repaired.
                 return features
+            # A successfully-parsed but non-object (e.g. a literal ``null``) or
+            # otherwise-shaped document carries no entitlements. Mirror the TS
+            # enricher's optional chaining: any unusable shape yields an empty
+            # set instead of raising. A null doc is a valid read, so it IS
+            # cached like any other empty document.
+            data = doc.get("data") if isinstance(doc, dict) else None
+            feature_list = data.get(opts.field) if isinstance(data, dict) else None
+            if isinstance(feature_list, list):
+                features = frozenset(s for s in feature_list if isinstance(s, str))
 
         if opts.cache_ttl_ms > 0:
             cache[identity] = _CacheEntry(
@@ -140,6 +146,12 @@ def create_entitlement_role_enricher(opts: EntitlementRoleEnricherOptions) -> Ro
         auth: AuthResult,
         params: dict[str, str],
     ) -> list[str]:
+        # Anonymous callers have identity="" — no entitlement doc to look up.
+        # Resolving features for the empty string would query "users//entitlements"
+        # (a bogus key) and, if the store ever returned a doc for it, could hand a
+        # public role to every unauthenticated caller.  Short-circuit early.
+        if not auth.identity:
+            return []
         features = await resolve_features(auth.identity)
         return [f"{opts.role_prefix}:{slug}" for slug in features]
 

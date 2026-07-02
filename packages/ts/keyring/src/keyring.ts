@@ -502,8 +502,13 @@ export async function createKeyringEncryptor(
       const key = await aesKeyFor(currentEpoch)
       const iv = randomBytes(KEYRING_IV_BYTES)
       const plaintext = ENC.encode(JSON.stringify(data))
+      // Bind the epoch into AES-GCM AAD so a ciphertext cannot be replayed with a
+      // different `_epoch` value. Byte-for-byte identical to the Python JSON path
+      // (`aad = str(epoch)`), so the two languages produce mutually-decryptable
+      // `{_encrypted, _epoch}` payloads; the parallel sealBytes path binds the
+      // epoch the same way via `blobAad`.
       const ctBuf = await getCrypto().subtle.encrypt(
-        { name: AES_ALGO, iv: iv as BufferSource },
+        { name: AES_ALGO, iv: iv as BufferSource, additionalData: ENC.encode(String(currentEpoch)) as BufferSource },
         key,
         plaintext as BufferSource,
       )
@@ -521,8 +526,9 @@ export async function createKeyringEncryptor(
       const iv = combined.slice(0, KEYRING_IV_BYTES)
       const ct = combined.slice(KEYRING_IV_BYTES)
       try {
+        // AAD must match the epoch bound at encrypt time (see encrypt()).
         const ptBuf = await getCrypto().subtle.decrypt(
-          { name: AES_ALGO, iv: iv as BufferSource },
+          { name: AES_ALGO, iv: iv as BufferSource, additionalData: ENC.encode(String(epoch)) as BufferSource },
           key,
           ct as BufferSource,
         )

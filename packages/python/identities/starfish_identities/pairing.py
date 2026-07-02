@@ -27,7 +27,7 @@ import json
 import secrets
 import time
 from dataclasses import dataclass, field
-from typing import Any, Optional, TypedDict
+from typing import Any, Callable, Optional, TypedDict
 
 from cryptography.exceptions import InvalidSignature, InvalidTag
 from cryptography.hazmat.primitives import hashes, serialization
@@ -374,6 +374,13 @@ def parse_pairing_qr(payload: str) -> PairingQrPayload:
     obj = json.loads(raw.decode("utf-8"))
     if obj.get("v") != 1:
         raise ValueError(f"Unsupported pairing QR version: {obj.get('v')}")
+    # Mirror the TS presence/type checks so a missing/non-string field raises a
+    # descriptive ValueError instead of a KeyError (or flowing an int into
+    # bytes.fromhex downstream).
+    if not isinstance(obj.get("devEdPub"), str) or not isinstance(obj.get("devKemPub"), str):
+        raise ValueError("Pairing QR is missing devEdPub/devKemPub")
+    if not isinstance(obj.get("qrNonce"), str):
+        raise ValueError("Pairing QR is missing qrNonce")
     return PairingQrPayload.from_dict(obj)
 
 
@@ -447,6 +454,7 @@ def install_pairing_bundle(
     now: Optional[int] = None,
     expected_qr_nonce: Optional[str] = None,
     expected_root_ed_pub: Optional[str] = None,
+    confirm_unpinned_root: Optional[Callable[[str], bool]] = None,
 ) -> InstalledPairingResult:
     """New-device side of the pairing exchange.
 
@@ -464,11 +472,21 @@ def install_pairing_bundle(
     :param expected_root_ed_pub: The root Ed25519 pubkey (hex) this device
         expects to be paired to. When supplied, the bundle's ``root_ed_pub``
         MUST equal it, so a bundle minted by a *different* root is rejected.
-        Without this pin the device trusts whatever root signed the bundle,
-        which over an open rendezvous lets an attacker's own root provision this
-        device into THEIR account. Pass it whenever the caller already knows the
-        target account's root pubkey; otherwise surface the bundle's
-        ``root_ed_pub`` fingerprint for the user to compare with the root device.
+        Pass it whenever the caller already knows the target account's root
+        pubkey; otherwise pass ``confirm_unpinned_root``.
+    :param confirm_unpinned_root: First-contact acknowledgment for when the
+        target account's root pubkey is NOT known ahead of time (e.g. an
+        anonymous rendezvous). Called with the bundle's ``root_ed_pub`` (which
+        equals the verified cap-cert issuer); the caller MUST surface that
+        fingerprint to the user to compare against the root device and return
+        ``True`` only once the user confirms. Ignored when
+        ``expected_root_ed_pub`` is supplied.
+
+        Root trust is MANDATORY: supplying NEITHER ``expected_root_ed_pub`` nor
+        ``confirm_unpinned_root`` raises. Without a pin or an explicit
+        acknowledgment an attacker's own root could answer an open rendezvous
+        and provision this device into THEIR account — the ``iss==root_ed_pub``
+        self-consistency check is satisfied by any root.
     """
     now_sec = now if now is not None else int(time.time())
     # Full verification: signature + not-before/expiry window + well-formedness.
@@ -487,11 +505,27 @@ def install_pairing_bundle(
     # The cap-cert must be issued by the root the bundle claims.
     if bundle.cap_cert["iss"] != bundle.root_ed_pub:
         raise ValueError("Pairing bundle cap-cert issuer does not match bundle.root_ed_pub")
-    # Pin the expected root when the caller knows it: rejects a bundle minted by
-    # a different root (e.g. an attacker's own root answering an open rendezvous
-    # and trying to provision this device into their account).
-    if expected_root_ed_pub is not None and bundle.root_ed_pub != expected_root_ed_pub:
-        raise ValueError("Pairing bundle rootEdPub does not match the expected root identity")
+    # Establish trust in the bundle's root. Pinning is MANDATORY: either the
+    # caller pins the account's known root pubkey (expected_root_ed_pub), or it
+    # supplies a first-contact acknowledgment callback that surfaces the root
+    # fingerprint to the user. Neither ⇒ refuse. Without this an attacker's own
+    # root could answer an open rendezvous and provision this device into THEIR
+    # account (the iss==root_ed_pub self-consistency check is satisfied by any root).
+    if expected_root_ed_pub is not None:
+        if bundle.root_ed_pub != expected_root_ed_pub:
+            raise ValueError("Pairing bundle rootEdPub does not match the expected root identity")
+    elif confirm_unpinned_root is not None:
+        if not confirm_unpinned_root(bundle.root_ed_pub):
+            raise ValueError(
+                "Pairing bundle root identity was not confirmed for first-contact pairing"
+            )
+    else:
+        raise ValueError(
+            "install_pairing_bundle requires root pinning: pass `expected_root_ed_pub` (the "
+            "target account's known root pubkey) or `confirm_unpinned_root` (a first-contact "
+            "callback that surfaces the bundle's root fingerprint for the user to verify). "
+            "Refusing to trust an unverified root."
+        )
     if (
         bundle.cap_cert["sub"] != device["edPub"]
         or bundle.cap_cert["subKem"] != device["kemPub"]
@@ -644,18 +678,35 @@ def install_provisioned_device(
     *,
     now: Optional[int] = None,
     expected_qr_nonce: Optional[str] = None,
+    expected_root_ed_pub: Optional[str] = None,
+    confirm_unpinned_root: Optional[Callable[[str], bool]] = None,
 ) -> InstalledPairingResult:
     """New-device side of one-way provisioning.
 
     Installs a :class:`ProvisionedDevice` blob: verifies the bundle's cap-cert
     and unwraps its CEKs exactly as :func:`install_pairing_bundle`, using the
     device keys carried in the blob.
+
+    One-way provisioning delivers device private keys + bundle atomically from
+    the root over a channel the caller already trusts with the collection keys
+    themselves (see the security note above), so the root is trusted by
+    construction. The root is acknowledged as first-contact when the caller did
+    not pin, while still honoring an explicit ``expected_root_ed_pub`` /
+    ``confirm_unpinned_root``.
     """
+    effective_confirm = confirm_unpinned_root
+    if expected_root_ed_pub is None and effective_confirm is None:
+        def _trust_provisioned_root(_root_ed_pub: str) -> bool:
+            return True
+
+        effective_confirm = _trust_provisioned_root
     return install_pairing_bundle(
         provisioned.bundle,
         provisioned.device_keys,
         now=now,
         expected_qr_nonce=expected_qr_nonce,
+        expected_root_ed_pub=expected_root_ed_pub,
+        confirm_unpinned_root=effective_confirm,
     )
 
 

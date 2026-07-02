@@ -28,13 +28,14 @@ function makeCol(overrides: Partial<CollectionConfig> = {}): CollectionConfig {
   }
 }
 
-function makeRouter(col: CollectionConfig, global?: SyncConfig["rateLimit"], identity = "user-1") {
+function makeRouter(col: CollectionConfig, global?: SyncConfig["rateLimit"], identity = "user-1", trustedProxyHops = 0) {
   const store = new MemoryObjectStore(new Map())
   const config: SyncConfig = { version: 1, collections: [col], rateLimit: global }
   const opts: SyncRouterOptions = {
     store,
     config,
     roleResolver: async (): Promise<AuthResult> => ({ identity, roles: ["member"] }),
+    trustedProxyHops,
   }
   return { app: createSyncRouter(opts), store }
 }
@@ -98,11 +99,22 @@ describe("per-action collection rate limiting", () => {
 
   it('bucket "ip" separates callers by X-Forwarded-For even when identity is constant', async () => {
     // roleResolver returns a fixed identity, so identity-bucketing would group all
-    // requests; "ip" mode must instead split by X-Forwarded-For.
-    const { app } = makeRouter(makeCol({ rateLimit: { push: { windowMs: 60_000, maxRequests: 1, bucket: "ip" } } }))
+    // requests; "ip" mode must instead split by X-Forwarded-For. trustedProxyHops=1
+    // opts into trusting the single-hop XFF as the client IP.
+    const { app } = makeRouter(makeCol({ rateLimit: { push: { windowMs: 60_000, maxRequests: 1, bucket: "ip" } } }), undefined, "user-1", 1)
     expect((await push(app, { "X-Forwarded-For": "1.1.1.1" })).status).toBe(200)
     expect((await push(app, { "X-Forwarded-For": "1.1.1.1" })).status).toBe(429) // same IP exhausted
     expect((await push(app, { "X-Forwarded-For": "2.2.2.2" })).status).toBe(200) // different IP, fresh budget
+  })
+
+  it('with default trustedProxyHops=0, a spoofed X-Forwarded-For cannot bypass "ip" bucketing', async () => {
+    // No trusted proxy configured → the client-controlled XFF is ignored; Hono has no
+    // socket IP, so every request collapses to the one "anonymous" bucket even though
+    // the attacker rotates X-Forwarded-For on each request.
+    const { app } = makeRouter(makeCol({ rateLimit: { push: { windowMs: 60_000, maxRequests: 1, bucket: "ip" } } }))
+    expect((await push(app, { "X-Forwarded-For": "1.1.1.1" })).status).toBe(200)
+    expect((await push(app, { "X-Forwarded-For": "2.2.2.2" })).status).toBe(429) // spoofed XFF, same anonymous bucket
+    expect((await push(app, { "X-Forwarded-For": "3.3.3.3" })).status).toBe(429)
   })
 
   it("backward-compat: legacy flat config + global limits push only", async () => {
@@ -126,6 +138,9 @@ describe("per-action collection rate limiting", () => {
   it('composite bucket "identity+ip" keeps one budget per (identity, ip) pair', async () => {
     const { app } = makeRouter(
       makeCol({ rateLimit: { push: { windowMs: 60_000, maxRequests: 1, bucket: "identity+ip" } } }),
+      undefined,
+      "user-1",
+      1,
     )
     expect((await push(app, { "X-Forwarded-For": "1.1.1.1" })).status).toBe(200)
     expect((await push(app, { "X-Forwarded-For": "1.1.1.1" })).status).toBe(429) // same pair exhausted
@@ -141,6 +156,9 @@ describe("per-action collection rate limiting", () => {
           push: { windowMs: 60_000, identity: { maxRequests: 3 }, ip: { maxRequests: 1 } },
         },
       }),
+      undefined,
+      "user-1",
+      1,
     )
     expect((await push(app, { "X-Forwarded-For": "1.1.1.1" })).status).toBe(200) // id#1, ip(1)#1
     expect((await push(app, { "X-Forwarded-For": "1.1.1.1" })).status).toBe(429) // ip(1) cap 1 trips

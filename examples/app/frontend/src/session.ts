@@ -196,7 +196,15 @@ export async function buildDeviceSession(
   roomId: string,
 ): Promise<Session> {
   const bundle = JSON.parse(bundleJson)
-  const installed = await installPairingBundle(bundle, keys)
+  // Root pinning is MANDATORY: installPairingBundle throws unless it is told
+  // which root to trust. This is genuine first-contact two-way pairing (the new
+  // device has never seen the root), so we acknowledge via confirmUnpinnedRoot.
+  // PRODUCTION MUST show `rootEdPub` as a fingerprint and get explicit user
+  // confirmation (compare it against the root device's screen) before returning
+  // true — returning true unconditionally trusts ANY root and is unsafe.
+  const installed = await installPairingBundle(bundle, keys, {
+    confirmUnpinnedRoot: (_rootEdPub: string) => true,
+  })
   const cap = installed.credentials.capCert as unknown as { scope: { ops: string[] } }
   const chatClient = makeClient(installed.credentials.capCert, keys.edPriv)
   const encryptor = await buildEncryptor(chatClient, keys, roomId)

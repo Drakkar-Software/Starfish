@@ -8,8 +8,9 @@ from unittest.mock import AsyncMock
 import pytest
 
 from starfish_sdk.client import StarfishClient
-from starfish_sdk.sync import SyncManager
+from starfish_sdk.sync import SyncManager, DocAuthorError
 from starfish_sdk.types import ConflictError
+from starfish_protocol.append_author import sign_doc_author
 from starfish_protocol.types import PullResult, PushSuccess
 
 
@@ -143,6 +144,128 @@ async def test_stale_or_corrupt_hash_self_heals_via_conflict_retry():
     result = await sync.push({"b": 2})
     assert state["data"] == {"a": 1, "b": 2}
     assert result["hash"] == state["hash"]
+
+
+@pytest.mark.asyncio
+async def test_incremental_pull_uses_configured_resolver_not_deep_merge():
+    # The pull path must route through the configured on_conflict resolver (it
+    # previously hardcoded deep_merge). A union resolver preserves a local-only
+    # item that a shorter incremental snapshot omits — deep_merge would drop it.
+    calls: list[tuple[dict, dict]] = []
+
+    def union_resolver(local: dict, remote: dict) -> dict:
+        calls.append((local, remote))
+        by_id = {it["id"]: it for it in local.get("items", [])}
+        for it in remote.get("items", []):
+            by_id[it["id"]] = it
+        return {**local, **remote, "items": list(by_id.values())}
+
+    client = mock_client(
+        pull_responses=[
+            PullResult(data={"items": [{"id": "a"}, {"id": "b"}]}, hash="h1", timestamp=100),
+            PullResult(data={"items": [{"id": "a"}]}, hash="h2", timestamp=200),
+        ]
+    )
+    sync = SyncManager(client, "/pull/test", "/push/test", on_conflict=union_resolver)
+
+    await sync.pull()  # first pull (checkpoint 0) → wholesale, resolver NOT called
+    assert calls == []
+    result = await sync.pull()  # incremental → resolver invoked
+    assert len(calls) == 1
+
+    ids = sorted(it["id"] for it in sync.data["items"])
+    assert ids == ["a", "b"]  # 'b' survived the union (deep_merge would have dropped it)
+    # The returned PullResult mirrors the merged local data (parity with TS).
+    assert sorted(it["id"] for it in result.data["items"]) == ["a", "b"]
+
+
+# ── verify_author (opt-in document author verification) ───────────────────────
+#
+# Regression: SyncManager.pull accepted whatever data the server returned without
+# checking the author signature it also returns, so a malicious server could forge
+# authorship/content on none-mode collections. verify_author mirrors the TS option
+# and AppendLogCursor.verify_author: opt-in, default OFF (unchanged behavior).
+
+# A real Ed25519 keypair (same one used by test_append.py).
+_DOC_PRIV = "1133557799bbddff1133557799bbddff1133557799bbddff1133557799bbddff"
+_DOC_PUB = "062f2ba3c6a5590364b0864d539af151907d09ea0b741b0811e0d761a059bda4"
+
+
+def _signed_pull(data: dict, *, sign_over: dict | None = None, ts: int = 100) -> PullResult:
+    # Document key for "/pull/test" is "test" — must match what the writer signed.
+    signed = sign_doc_author("test", data if sign_over is None else sign_over, _DOC_PUB, _DOC_PRIV)
+    return PullResult(
+        data=data,
+        hash="h1",
+        timestamp=ts,
+        author_pubkey=signed["authorPubkey"],
+        author_signature=signed["authorSignature"],
+    )
+
+
+@pytest.mark.asyncio
+async def test_verify_author_accepts_correctly_signed_snapshot():
+    client = mock_client(pull_responses=[_signed_pull({"key": "value"})])
+    sync = SyncManager(client, "/pull/test", "/push/test", verify_author=True)
+    result = await sync.pull()
+    assert result.data == {"key": "value"}
+    assert sync.data == {"key": "value"}
+    assert sync.checkpoint == 100
+
+
+@pytest.mark.asyncio
+async def test_verify_author_rejects_forged_snapshot_and_mutates_no_state():
+    # Server tampers with data but replays a signature made over the original.
+    client = mock_client(
+        pull_responses=[_signed_pull({"key": "tampered"}, sign_over={"key": "original"})]
+    )
+    sync = SyncManager(client, "/pull/test", "/push/test", verify_author=True)
+    with pytest.raises(DocAuthorError):
+        await sync.pull()
+    assert sync.data == {}
+    assert sync.checkpoint == 0
+
+
+@pytest.mark.asyncio
+async def test_verify_author_rejects_missing_author_fields():
+    client = mock_client(pull_responses=[PullResult(data={"key": "v"}, hash="h1", timestamp=100)])
+    sync = SyncManager(client, "/pull/test", "/push/test", verify_author=True)
+    with pytest.raises(DocAuthorError):
+        await sync.pull()
+
+
+@pytest.mark.asyncio
+async def test_verify_author_rejects_foreign_pinned_pubkey():
+    client = mock_client(pull_responses=[_signed_pull({"key": "value"})])
+    sync = SyncManager(
+        client,
+        "/pull/test",
+        "/push/test",
+        verify_author={"expected_author_pubkey": "aa" * 32},
+    )
+    with pytest.raises(DocAuthorError):
+        await sync.pull()
+
+
+@pytest.mark.asyncio
+async def test_verify_author_accepts_matching_pinned_pubkey_case_insensitive():
+    client = mock_client(pull_responses=[_signed_pull({"key": "value"})])
+    sync = SyncManager(
+        client,
+        "/pull/test",
+        "/push/test",
+        verify_author={"expected_author_pubkey": _DOC_PUB.upper()},
+    )
+    result = await sync.pull()
+    assert result.data == {"key": "value"}
+
+
+@pytest.mark.asyncio
+async def test_verify_author_disabled_by_default_accepts_unsigned_snapshot():
+    client = mock_client(pull_responses=[PullResult(data={"key": "value"}, hash="h1", timestamp=100)])
+    sync = SyncManager(client, "/pull/test", "/push/test")  # default: verification off
+    result = await sync.pull()
+    assert result.data == {"key": "value"}
 
 
 @pytest.mark.asyncio

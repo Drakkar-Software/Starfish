@@ -6,10 +6,12 @@ import {
   deepMerge,
   docAuthorCanonicalInput,
   getBase64,
+  verifyDocAuthor,
   type AppendAuthor,
 } from "@drakkar.software/starfish-protocol"
 import type { ConflictResolver } from "./types.js"
 import { ConflictError } from "./types.js"
+import type { AuthorVerifier } from "./append-log.js"
 import type { Encryptor } from "@drakkar.software/starfish-protocol"
 import { StarfishClient, stripPushPrefix, pullWasFromCache } from "./client.js"
 import type { SyncLogger } from "./logger.js"
@@ -20,6 +22,15 @@ export class AbortError extends Error {
   constructor() {
     super("SyncManager was aborted")
     this.name = "AbortError"
+  }
+}
+
+/** Thrown when a pulled document's author signature fails verification (only
+ *  when {@link SyncManagerOptions.verifyAuthor} is enabled). */
+export class DocAuthorError extends Error {
+  constructor() {
+    super("pulled document author verification failed")
+    this.name = "DocAuthorError"
   }
 }
 
@@ -69,6 +80,26 @@ export interface SyncManagerOptions {
   loggerName?: string
   /** Validate data before push. Throws ValidationError on failure. */
   validate?: Validator
+  /**
+   * Opt-in author-signature verification for pulled snapshots. Mirrors
+   * {@link AppendLogCursor}'s `verifyAuthor`. Default OFF.
+   *
+   * TRUST MODEL: with `none`-mode collections the server returns the document
+   * `data` alongside the author's Ed25519 `authorPubkey`/`authorSignature`
+   * (signed by the writer's device on push over `docAuthorCanonicalInput`).
+   * Leaving this off means the client trusts the server not to forge content —
+   * fine when the server is trusted, unsafe otherwise. Set `true` to require a
+   * valid signature over the pulled `data` for the self-declared `authorPubkey`,
+   * or pass `{ expectedAuthorPubkey }` to additionally pin WHICH key must have
+   * signed it. A pull/ingest whose signature is missing, foreign, or invalid
+   * throws {@link DocAuthorError} and no state is mutated.
+   *
+   * The signature covers `data` (as stored — ciphertext for `delegated`, so
+   * verification runs over the pre-decryption payload) bound to the document
+   * key, but NOT `hash`/`timestamp`: a malicious server cannot forge content,
+   * but can still replay or re-timestamp an authentic snapshot.
+   */
+  verifyAuthor?: boolean | AuthorVerifier
 }
 
 export class SyncManager {
@@ -82,6 +113,8 @@ export class SyncManager {
   private readonly logger?: SyncLogger
   private readonly loggerName: string
   private readonly validate?: Validator
+  private readonly verifyAuthor?: boolean | AuthorVerifier
+  private readonly documentKey: string
 
   private lastHash: string | null = null
   private lastCheckpoint: number = 0
@@ -102,6 +135,12 @@ export class SyncManager {
     this.loggerName = options.loggerName ?? options.pullPath.split("/").filter(Boolean).pop() ?? options.pullPath
     this.validate = options.validate
     this.encryptor = options.encryptor ?? null
+    this.verifyAuthor = options.verifyAuthor
+    // Reader derives the document key by stripping the `/pull/` action prefix —
+    // it must match the key the writer signed over (push strips `/push/`).
+    this.documentKey = options.pullPath.startsWith("/pull/")
+      ? options.pullPath.slice("/pull/".length)
+      : options.pullPath
   }
 
   abort(): void {
@@ -240,6 +279,33 @@ export class SyncManager {
    * (causing a spurious 409 on the next push). We silently drop the result in
    * that case — the store's post-push state is already correct.
    */
+  /**
+   * Verify a pulled snapshot's author signature over its RAW (pre-decryption)
+   * `data`, bound to the document key. Throws {@link DocAuthorError} on any
+   * failure. No-op when {@link SyncManagerOptions.verifyAuthor} is disabled.
+   */
+  private verifyAuthorProof(result: PullResult): void {
+    if (!this.verifyAuthor) return
+    const policy: AuthorVerifier = typeof this.verifyAuthor === "object" ? this.verifyAuthor : {}
+    const { authorPubkey, authorSignature } = result
+    if (!authorPubkey || !authorSignature) throw new DocAuthorError()
+    // Public keys are hex (case-insensitive) — normalise before comparing so a
+    // differently-cased `expectedAuthorPubkey` isn't falsely rejected.
+    if (
+      policy.expectedAuthorPubkey &&
+      authorPubkey.toLowerCase() !== policy.expectedAuthorPubkey.toLowerCase()
+    ) {
+      throw new DocAuthorError()
+    }
+    const ok = verifyDocAuthor(
+      this.documentKey,
+      result.data as Record<string, unknown>,
+      authorPubkey,
+      authorSignature,
+    )
+    if (!ok) throw new DocAuthorError()
+  }
+
   async ingest(result: PullResult): Promise<void> {
     if (this.aborted) return
     // Drop a revalidation result that is older than our current local state.
@@ -247,6 +313,8 @@ export class SyncManager {
     // revalidation snapshot whose document timestamp is strictly less than the
     // current checkpoint is stale relative to a concurrent push.
     if (result.timestamp < this.lastCheckpoint) return
+    // Verify authorship over the raw (pre-decryption) data before accepting it.
+    this.verifyAuthorProof(result)
     let incoming: Record<string, unknown>
     if (this.encryptor) {
       incoming = await this.encryptor.decrypt(result.data)
@@ -278,6 +346,9 @@ export class SyncManager {
       // True when the client served this from its offline cache (transport was
       // unreachable); a live response clears it. Surfaced as `stale` by the binding.
       this.lastFromCache = pullWasFromCache(result)
+
+      // Verify authorship over the raw (pre-decryption) data before accepting it.
+      this.verifyAuthorProof(result)
 
       let incoming: Record<string, unknown>
       if (this.encryptor) {

@@ -141,24 +141,58 @@ describe("RateLimiter", () => {
     expect(await rl.check("b")).toBeNull() // a different key is unaffected
   })
 
-  it("keys by identity → X-Forwarded-For (first hop) → client IP → anonymous", async () => {
-    // Identical precedence to the Python limiter; pins the convergence. (The runtimes
-    // differ only in which signals they can supply — TS callers pass clientIp=null.)
+  it("keys by identity → resolved socket IP → anonymous, ignoring XFF by default", async () => {
+    // Default trustedProxyHops=0: the client-controlled X-Forwarded-For header is NOT
+    // trusted, so bucketing falls back to the runtime socket/peer IP (or a shared
+    // "anonymous" bucket). Identical precedence to the Python limiter.
     const rl = new RateLimiter(60_000, 1)
     expect(await rl.check("user-1", "1.2.3.4", "5.6.7.8")).toBeNull() // identity wins
     expect((await rl.check("user-1", "9.9.9.9", "8.8.8.8"))?.status).toBe(429) // same identity bucket
-    expect(await rl.check(null, "1.1.1.1, 2.2.2.2", null)).toBeNull() // first XFF hop
-    expect((await rl.check(null, "1.1.1.1", null))?.status).toBe(429) // same first-hop bucket
-    expect(await rl.check(null, null, "3.3.3.3")).toBeNull() // client IP when no identity/XFF
-    expect((await rl.check(null, null, "3.3.3.3"))?.status).toBe(429)
+    expect(await rl.check(null, null, "3.3.3.3")).toBeNull() // socket IP when no identity
+    expect((await rl.check(null, "9.9.9.9", "3.3.3.3"))?.status).toBe(429) // XFF ignored → same socket bucket
     expect(await rl.check(null, null, null)).toBeNull() // shared anonymous fallback
-    expect((await rl.check(null, null, null))?.status).toBe(429)
+    expect((await rl.check(null, "7.7.7.7", null))?.status).toBe(429) // spoofed XFF → still anonymous
   })
 
-  it('bucketMode "ip" ignores identity and keys by IP', async () => {
+  it("with default settings, a fresh spoofed leftmost X-Forwarded-For does not create a new bucket", async () => {
+    // The bypass this fix closes: without a trusted-proxy config, an attacker who
+    // rotates X-Forwarded-For must not each time land in a brand-new bucket and so
+    // escape the limit. No socket IP (Hono) → all collapse to the "anonymous" bucket.
+    const rl = new RateLimiter(60_000, 1)
+    expect(await rl.check(null, "1.1.1.1", null)).toBeNull()
+    expect((await rl.check(null, "2.2.2.2", null))?.status).toBe(429) // spoofed XFF, same anonymous bucket
+    expect((await rl.check(null, "3.3.3.3", null))?.status).toBe(429)
+
+    // With a socket IP present, rotating XFF still maps to the one socket bucket.
+    const rl2 = new RateLimiter(60_000, 1)
+    expect(await rl2.check(null, "1.1.1.1", "9.9.9.9")).toBeNull()
+    expect((await rl2.check(null, "2.2.2.2", "9.9.9.9"))?.status).toBe(429) // same socket peer
+  })
+
+  it("trustedProxyHops picks the Nth-from-right X-Forwarded-For entry", async () => {
+    // One trusted proxy: the real client is the rightmost XFF entry; a spoofed
+    // leftmost entry cannot change the bucket.
+    const rl = new RateLimiter(60_000, 1, 10_000, "ip", { trustedProxyHops: 1 })
+    expect(await rl.check(null, "1.1.1.1, 9.9.9.9", null)).toBeNull() // client = "9.9.9.9"
+    expect((await rl.check(null, "8.8.8.8, 9.9.9.9", null))?.status).toBe(429) // spoofed leftmost, still "9.9.9.9"
+    expect(await rl.check(null, "8.8.8.8, 7.7.7.7", null)).toBeNull() // different real client "7.7.7.7"
+
+    // Two trusted proxies: the client is the 2nd entry from the right.
+    const rl2 = new RateLimiter(60_000, 1, 10_000, "ip", { trustedProxyHops: 2 })
+    expect(await rl2.check(null, "5.5.5.5, 6.6.6.6, 7.7.7.7", null)).toBeNull() // client = "6.6.6.6"
+    expect((await rl2.check(null, "0.0.0.0, 6.6.6.6, 8.8.8.8", null))?.status).toBe(429) // still "6.6.6.6"
+
+    // XFF shorter than the hop count → not trusted; fall back to the socket peer.
+    const rl3 = new RateLimiter(60_000, 1, 10_000, "ip", { trustedProxyHops: 2 })
+    expect(await rl3.check(null, "1.1.1.1", "9.9.9.9")).toBeNull() // 1 hop < 2 → socket "9.9.9.9"
+    expect((await rl3.check(null, "2.2.2.2", "9.9.9.9"))?.status).toBe(429) // same socket peer
+  })
+
+  it('bucketMode "ip" ignores identity and keys by IP (via a trusted proxy hop)', async () => {
     // Two different identities sharing one IP collapse into one bucket; identity is
-    // not consulted at all in "ip" mode. Mirrors the Python twin.
-    const rl = new RateLimiter(60_000, 1, 10_000, "ip")
+    // not consulted at all in "ip" mode. Mirrors the Python twin. trustedProxyHops=1
+    // makes the (single-entry) XFF the trusted client IP.
+    const rl = new RateLimiter(60_000, 1, 10_000, "ip", { trustedProxyHops: 1 })
     expect(await rl.check("alice", "1.2.3.4", null)).toBeNull()
     expect((await rl.check("bob", "1.2.3.4", null))?.status).toBe(429) // same IP bucket, different identity
     expect(await rl.check("carol", "9.9.9.9", null)).toBeNull() // different IP, fresh bucket
@@ -174,8 +208,9 @@ describe("RateLimiter", () => {
 
   it('bucketMode "identity+ip" keys by the (identity, ip) pair', async () => {
     // One budget per distinct (identity, ip) combination; changing either dimension
-    // yields a fresh bucket. Mirrors the Python twin.
-    const rl = new RateLimiter(60_000, 1, 10_000, "identity+ip")
+    // yields a fresh bucket. Mirrors the Python twin. trustedProxyHops=1 makes the
+    // (single-entry) XFF the trusted client IP.
+    const rl = new RateLimiter(60_000, 1, 10_000, "identity+ip", { trustedProxyHops: 1 })
     expect(await rl.check("alice", "1.1.1.1", null)).toBeNull()
     expect((await rl.check("alice", "1.1.1.1", null))?.status).toBe(429) // same pair exhausted
     expect(await rl.check("alice", "2.2.2.2", null)).toBeNull() // same identity, different ip
@@ -189,9 +224,10 @@ describe("checkRateLimiters", () => {
   })
 
   it("rejects if EITHER an identity or an ip limiter trips (two-independent)", async () => {
-    // identity: 5/window, ip: 1/window. Same identity from two IPs.
+    // identity: 5/window, ip: 1/window. Same identity from two IPs. trustedProxyHops=1
+    // makes the (single-entry) XFF the trusted client IP for the ip limiter.
     const idLimiter = new RateLimiter(60_000, 5, 10_000, "identity")
-    const ipLimiter = new RateLimiter(60_000, 1, 10_000, "ip")
+    const ipLimiter = new RateLimiter(60_000, 1, 10_000, "ip", { trustedProxyHops: 1 })
     const limiters = [idLimiter, ipLimiter]
 
     // First request from ip A: both ok.

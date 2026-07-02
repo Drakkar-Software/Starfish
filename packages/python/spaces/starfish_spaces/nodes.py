@@ -497,15 +497,15 @@ async def create_node_invite_link(
 async def join_node_by_link(session: "Session", token: NodeInviteLinkToken) -> str:
     """Any user: access a node by redeeming an invite link token."""
     access_payload = {"cap": token["cap"], "key": token["key"], "write": token.get("write", False)}
-    sealed = await seal_to_self(session, json.dumps(access_payload))
+    sealed = seal_to_self(session, json.dumps(access_payload))
 
     sealed_stream = None
     if "streamCap" in token:
-        sealed_stream = await seal_to_self(session, json.dumps({"cap": token["streamCap"], "key": token["key"], "write": token.get("write", False)}))
+        sealed_stream = seal_to_self(session, json.dumps({"cap": token["streamCap"], "key": token["key"], "write": token.get("write", False)}))
 
     sealed_keyring = None
     if "keyringCap" in token:
-        sealed_keyring = await seal_to_self(session, json.dumps({"cap": token["keyringCap"], "key": token["key"], "write": False}))
+        sealed_keyring = seal_to_self(session, json.dumps({"cap": token["keyringCap"], "key": token["key"], "write": False}))
 
     space_id = token["spaceId"]
     node_id = token["nodeId"]
@@ -518,12 +518,12 @@ async def join_node_by_link(session: "Session", token: NodeInviteLinkToken) -> s
         exists = any(s.get("id") == node_id for s in cur["spaces"] if isinstance(s, dict))
         new_pub = {
             **cur["pubAccess"],
-            f"{space_id}:{node_id}": {"v": sealed.v, "ct": sealed.ct, "wks": sealed.wks},  # type: ignore[attr-defined]
+            f"{space_id}:{node_id}": sealed,
         }
         if sealed_stream:
-            new_pub[f"{space_id}:{node_id}:stream"] = {"v": sealed_stream.v, "ct": sealed_stream.ct, "wks": sealed_stream.wks}  # type: ignore[attr-defined]
+            new_pub[f"{space_id}:{node_id}:stream"] = sealed_stream
         if sealed_keyring:
-            new_pub[f"{space_id}:{node_id}:keyring"] = {"v": sealed_keyring.v, "ct": sealed_keyring.ct, "wks": sealed_keyring.wks}  # type: ignore[attr-defined]
+            new_pub[f"{space_id}:{node_id}:keyring"] = sealed_keyring
         return {
             "spaces": cur["spaces"] if exists else [*cur["spaces"], {"id": node_id, "name": token.get("nodeName") or node_id, "members": 1}],
             "caps": cur["caps"],

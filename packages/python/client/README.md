@@ -132,6 +132,8 @@ from starfish_sdk import (
 
 `derive_code_key(code, salt, iterations=600_000)` is the PBKDF2-HMAC-SHA256 used by the relay flow. The relayed request also carries an Ed25519 proof-of-possession signature over the device keys; `read_pairing_request` rejects a request whose `popSig` does not verify.
 
+**Root pinning is mandatory.** `install_pairing_bundle(bundle, device, *, expected_root_ed_pub=None, confirm_unpinned_root=None, ...)` raises unless you supply either `expected_root_ed_pub` (pin the account's known root pubkey) or `confirm_unpinned_root` (a first-contact callback that surfaces the bundle's root for explicit user confirmation). Passing neither used to silently trust *any* root — a confused-deputy vulnerability that let an attacker provision the device into their own account. For one-way provisioning over an already-trusted channel use `install_provisioned_device`, which auto-acknowledges first-contact.
+
 Full walkthroughs: [docs/ts/client/24-pairing.md](../../../docs/ts/client/24-pairing.md).
 
 ## Multi-recipient delegated encryption

@@ -605,6 +605,7 @@ async def test_echoing_a_hostile_pairing_qr_scope_grants_it(sdk):
             AssemblePairingBundleOpts(granted_scope=parsed.requested_scope),  # echo = footgun
         ),
         attacker_dev,
+        expected_root_ed_pub=root.root_ed_pub,
     )
     assert "chat/rooms/**" in echoed.credentials.cap_cert["scope"]["paths"]  # got the broad scope
 
@@ -614,6 +615,7 @@ async def test_echoing_a_hostile_pairing_qr_scope_grants_it(sdk):
             AssemblePairingBundleOpts(granted_scope=member_scope("only-this-room", False)),  # bound it
         ),
         attacker_dev,
+        expected_root_ed_pub=root.root_ed_pub,
     )
     assert bounded.credentials.cap_cert["scope"]["paths"] == ["chat/rooms/only-this-room", "chatkeyring/rooms/only-this-room/_keyring"]
 
@@ -981,7 +983,9 @@ async def test_revoking_one_device_leaves_siblings_working(sdk, http):
             {"edPriv": issuer.device["edPriv"], "edPub": issuer.device["edPub"]}, parsed, {},
             AssemblePairingBundleOpts(granted_scope=parsed.requested_scope),
         )
-        cap = install_pairing_bundle(bundle, dev).credentials.cap_cert
+        cap = install_pairing_bundle(
+            bundle, dev, expected_root_ed_pub=issuer.root_ed_pub
+        ).credentials.cap_cert
         caps.append((cap, dev))
 
     (cap1, dev1), (cap2, dev2) = caps
@@ -1407,18 +1411,20 @@ async def test_with_keyring_optimization_degrades_gracefully(sdk):
     assert resp.json()["keyring"] is None
 
 
-# ── rendezvous pairing: the LIB permits an unpinned install (app must pin) ────
-async def test_rendezvous_without_root_pin_enables_mitm(sdk):
-    """Documents the LIBRARY's residual permissiveness: `install_pairing_bundle`'s
-    `expected_root_ed_pub` is OPTIONAL, so installing WITHOUT it adopts whatever
-    bundle sits in the public, anonymously-overwritable `_pairing/{rendezvousId}`
-    slot — including one an attacker planted under their own root (account takeover).
+# ── rendezvous pairing: an unpinned install is REJECTED (MITM closed) ─────────
+async def test_rendezvous_without_root_pin_is_rejected(sdk):
+    """`install_pairing_bundle` now REQUIRES root pinning, closing the confused-
+    deputy MITM this test used to document. The public, anonymously-overwritable
+    `_pairing/{rendezvousId}` slot can hold a bundle an attacker planted under
+    their OWN root, so adopting it blindly would be account takeover. Installing
+    WITHOUT `expected_root_ed_pub` (and without a `confirm_unpinned_root`
+    acknowledgment) now RAISES rather than silently trusting whatever root signed
+    the fetched bundle.
 
-    The library keeps the pin optional by design (some callers learn the root only
-    from the bundle). The EXAMPLE APP closes this: `fetchAndBuildDeviceSession`
-    (frontend `starfish.ts`) makes `expectedRootEdPub` REQUIRED and throws without
-    it, so the app never performs an unpinned install. This test pins the lib
-    behavior; the second half shows the pin rejecting the planted bundle.
+    The EXAMPLE APP layers on top: `fetchAndBuildDeviceSession` (frontend
+    `starfish.ts`) makes `expectedRootEdPub` REQUIRED and throws before it even
+    fetches. This test pins the lib behavior: an unpinned install raises, a WRONG
+    pin rejects the planted bundle, and the CORRECT pin accepts the legit bundle.
     """
     legit = bootstrap_root_identity("edge-rdv-legit")
     attacker = bootstrap_root_identity("edge-rdv-attacker")
@@ -1439,14 +1445,24 @@ async def test_rendezvous_without_root_pin_enables_mitm(sdk):
     await push_pairing_bundle(sdk(), parsed.qr_nonce, attacker_bundle)  # no cap required (public write)
 
     fetched = await fetch_pairing_bundle(sdk(), parsed.qr_nonce)
-    # A device that does NOT pin the root adopts the attacker's identity → MITM.
-    hijacked = install_pairing_bundle(fetched, new_device)  # expected_root_ed_pub omitted
-    assert hijacked.credentials.user_id == attacker.user_id
-    assert hijacked.credentials.user_id != legit.user_id
+    # A device that does NOT pin the root can no longer be silently hijacked: the
+    # unpinned install is refused outright (mandatory root pinning).
+    with pytest.raises(ValueError, match="root pinning"):
+        install_pairing_bundle(fetched, new_device)  # expected_root_ed_pub omitted → raises
 
     # Defense: pinning the legitimate root (learned out-of-band) rejects the planted bundle.
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError, match="root identity"):
         install_pairing_bundle(fetched, new_device, expected_root_ed_pub=legit.device["edPub"])
+
+    # And with the legit root back in the slot, the CORRECT pin installs the legit
+    # bundle — binding the device to exactly the root the user confirmed.
+    await push_pairing_bundle(sdk(), parsed.qr_nonce, legit_bundle)  # legit reclaims the slot
+    legit_fetched = await fetch_pairing_bundle(sdk(), parsed.qr_nonce)
+    installed = install_pairing_bundle(
+        legit_fetched, new_device, expected_root_ed_pub=legit.device["edPub"]
+    )
+    assert installed.credentials.user_id == legit.user_id
+    assert installed.credentials.user_id != attacker.user_id
 
 
 # ── more identity binding + content hygiene ───────────────────────────────────

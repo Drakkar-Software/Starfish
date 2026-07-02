@@ -229,14 +229,35 @@ describe("duckdbReadParquetSql", () => {
     expect(setupSql).toContain("LOAD httpfs")
   })
 
-  it("configSql sets endpoint, credentials, region, url_style, ssl", () => {
+  it("configSql sets endpoint, access key id, region, url_style, ssl — but NOT the secret", () => {
     const { configSql } = duckdbReadParquetSql({ s3: S3_MINIO, key: "k" })
     expect(configSql).toContain("SET s3_endpoint='localhost:9000'")
     expect(configSql).toContain("SET s3_access_key_id='minio'")
-    expect(configSql).toContain("SET s3_secret_access_key='minio123'")
     expect(configSql).toContain("SET s3_region='us-east-1'")
     expect(configSql).toContain("SET s3_url_style='path'")
     expect(configSql).toContain("SET s3_use_ssl=false")
+    // The secret access key must never appear in the redactable configSql.
+    expect(configSql).not.toContain("s3_secret_access_key")
+    expect(configSql).not.toContain("minio123")
+  })
+
+  it("secret access key is excluded from redactable sql/configSql, present in credentialSql/runnableSql", () => {
+    const { configSql, credentialSql, sql, runnableSql } = duckdbReadParquetSql({ s3: S3_MINIO, key: "k" })
+    // Redactable fields (safe to log) must not leak the secret.
+    expect(configSql).not.toContain("minio123")
+    expect(sql).not.toContain("minio123")
+    expect(sql).not.toContain("s3_secret_access_key")
+    // The credential lives only in the clearly-marked fields.
+    expect(credentialSql).toBe("SET s3_secret_access_key='minio123';")
+    expect(runnableSql).toContain("SET s3_secret_access_key='minio123'")
+  })
+
+  it("runnableSql concatenates setup + config + credential + read", () => {
+    const { setupSql, configSql, credentialSql, readSql, runnableSql } = duckdbReadParquetSql({ s3: S3_MINIO, key: "k" })
+    expect(runnableSql).toContain(setupSql)
+    expect(runnableSql).toContain(configSql)
+    expect(runnableSql).toContain(credentialSql)
+    expect(runnableSql).toContain(readSql)
   })
 
   it("readSql is a SELECT * FROM read_parquet", () => {
@@ -280,14 +301,15 @@ describe("duckdbReadParquetSql", () => {
       secretAccessKey: "sec'ret",
       accessKeyId: "aki'd",
     }
-    const { sql } = duckdbReadParquetSql({ s3: s3WithQuote, key: "datasets/alice'x/q1.parquet" })
+    // Check the full runnable script — it is the only field carrying the secret.
+    const { runnableSql } = duckdbReadParquetSql({ s3: s3WithQuote, key: "datasets/alice'x/q1.parquet" })
     // escaped forms must appear
-    expect(sql).toContain("sec''ret")
-    expect(sql).toContain("aki''d")
-    expect(sql).toContain("alice''x")
+    expect(runnableSql).toContain("sec''ret")
+    expect(runnableSql).toContain("aki''d")
+    expect(runnableSql).toContain("alice''x")
     // raw unescaped single quotes must NOT appear inside any SQL string literal
     // (the outer framework quotes are fine; we check that no lone ' breaks a literal)
-    const withoutSetupAndLoad = sql.replace(/INSTALL httpfs;?\nLOAD httpfs;?/, "")
+    const withoutSetupAndLoad = runnableSql.replace(/INSTALL httpfs;?\nLOAD httpfs;?/, "")
     const singleQuoteMatches = withoutSetupAndLoad.match(/(?<!')'(?!')/g) ?? []
     // Only the wrapping quotes around each SET value and read_parquet should remain:
     // SET k='v'; → 2 quotes per SET statement (6 SET lines = 12) + read_parquet 2 = 14 max.

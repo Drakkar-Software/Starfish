@@ -135,7 +135,7 @@ describe("installPairingBundle — vector roundtrip", () => {
         kemPub: V.newDevice.kemPub,
       },
       // The vector cap-cert has fixed nbf/exp; evaluate the window within it.
-      { now: V.bundle.capCert.nbf + 5 },
+      { now: V.bundle.capCert.nbf + 5, expectedRootEdPub: V.root.edPub },
     )
 
     // DeviceCredentials shape sanity checks.
@@ -237,7 +237,9 @@ describe("assemblePairingBundle + installPairingBundle — synthetic roundtrip",
     expect(bundle.capCert.sub).toBe(newDeviceCreds.edPub)
     expect(await verifyCapCertSignature(bundle.capCert)).toBe(true)
 
-    const installed = await installPairingBundle(bundle, newDeviceCreds)
+    const installed = await installPairingBundle(bundle, newDeviceCreds, {
+      expectedRootEdPub: root.keys.edPub,
+    })
     expect(bytesToHex(installed.ceks.notes!.cek)).toBe(bytesToHex(cekA))
     expect(bytesToHex(installed.ceks.tasks!.cek)).toBe(bytesToHex(cekB))
     expect(installed.ceks.notes!.epoch).toBe(3)
@@ -376,7 +378,7 @@ describe("installPairingBundle — hardening", () => {
       installPairingBundle(bundle, creds, { now: nbf + 10 + 301 }),
     ).rejects.toThrow(/invalid/)
     // Inside the window it still installs.
-    const ok = await installPairingBundle(bundle, creds, { now: nbf + 5 })
+    const ok = await installPairingBundle(bundle, creds, { now: nbf + 5, expectedRootEdPub: root.keys.edPub })
     expect(ok.credentials.device.edPub).toBe(creds.edPub)
   })
 
@@ -424,10 +426,18 @@ describe("installPairingBundle — hardening", () => {
     const now = bundle.capCert.nbf + 5
     // A bundle from a different session (different qrNonce) is rejected.
     await expect(
-      installPairingBundle(bundle, creds, { now, expectedQrNonce: Buffer.from(new Uint8Array(16).fill(0x22)).toString("base64") }),
+      installPairingBundle(bundle, creds, {
+        now,
+        expectedQrNonce: Buffer.from(new Uint8Array(16).fill(0x22)).toString("base64"),
+        expectedRootEdPub: root.keys.edPub,
+      }),
     ).rejects.toThrow(/qrNonce/)
     // The matching session installs.
-    const ok = await installPairingBundle(bundle, creds, { now, expectedQrNonce: parsed.qrNonce })
+    const ok = await installPairingBundle(bundle, creds, {
+      now,
+      expectedQrNonce: parsed.qrNonce,
+      expectedRootEdPub: root.keys.edPub,
+    })
     expect(ok.credentials.device.edPub).toBe(creds.edPub)
   })
 
@@ -451,9 +461,57 @@ describe("installPairingBundle — hardening", () => {
     await expect(
       installPairingBundle(bundle, creds, { now, expectedRootEdPub: root.keys.edPub }),
     ).rejects.toThrow(/root identity/)
-    // Pinning the actual issuer (or omitting the pin) installs.
+    // Pinning the actual issuer installs.
     const ok = await installPairingBundle(bundle, creds, { now, expectedRootEdPub: attacker.keys.edPub })
     expect(ok.credentials.rootEdPub).toBe(attacker.keys.edPub)
+  })
+
+  it("refuses to install without a root pin or a first-contact confirmation", async () => {
+    const root = await deriveRootIdentity("alice-root-passphrase")
+    const creds = newDeviceCreds()
+    const qr = buildPairingQr(creds.edPub, creds.kemPub, V.qrPayload.object.requestedScope)
+    const parsed = parsePairingQr(qr)
+    const bundle = await assemblePairingBundle(
+      { edPriv: root.keys.edPriv, edPub: root.keys.edPub },
+      parsed,
+      {},
+      { grantedScope: parsed.requestedScope },
+    )
+    const now = bundle.capCert.nbf + 5
+    // Neither a pin nor a first-contact confirmation ⇒ refuse (no default trust).
+    await expect(installPairingBundle(bundle, creds, { now })).rejects.toThrow(/root pinning/)
+    // The correct pin installs.
+    const ok = await installPairingBundle(bundle, creds, { now, expectedRootEdPub: root.keys.edPub })
+    expect(ok.credentials.rootEdPub).toBe(root.keys.edPub)
+  })
+
+  it("accepts a first-contact confirmUnpinnedRoot callback and rejects when it declines", async () => {
+    const root = await deriveRootIdentity("alice-root-passphrase")
+    const creds = newDeviceCreds()
+    const qr = buildPairingQr(creds.edPub, creds.kemPub, V.qrPayload.object.requestedScope)
+    const parsed = parsePairingQr(qr)
+    const bundle = await assemblePairingBundle(
+      { edPriv: root.keys.edPriv, edPub: root.keys.edPub },
+      parsed,
+      {},
+      { grantedScope: parsed.requestedScope },
+    )
+    const now = bundle.capCert.nbf + 5
+    const seen: string[] = []
+    const ok = await installPairingBundle(bundle, creds, {
+      now,
+      confirmUnpinnedRoot: (rootEdPub) => {
+        seen.push(rootEdPub)
+        return true
+      },
+    })
+    // The callback saw the bundle's root fingerprint before install proceeded.
+    expect(seen).toEqual([root.keys.edPub])
+    expect(ok.credentials.rootEdPub).toBe(root.keys.edPub)
+    // A callback that declines ⇒ refuse.
+    await expect(
+      installPairingBundle(bundle, creds, { now, confirmUnpinnedRoot: () => false }),
+    ).rejects.toThrow(/not confirmed/)
   })
 })
 

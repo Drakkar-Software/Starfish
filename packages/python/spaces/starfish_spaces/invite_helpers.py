@@ -6,7 +6,7 @@ One implementation per concept, parameterized by collection + scope.  Used by
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Optional, TypedDict
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional, TypedDict
 
 from starfish_identities import generate_device_keys, mint_device_cap
 from starfish_sharing.cap_mint import mint_member_cap
@@ -182,16 +182,20 @@ async def evict_keyring_member(
     member_entry: dict[str, Any],
     generation: int,
     prior_revoked: Optional[list[dict[str, Any]]] = None,
+    submit_revocation: Optional[Callable[[dict[str, Any]], Awaitable[None]]] = None,
 ) -> dict[str, Any]:
     """Rotate the keyring and submit a :class:`RevocationList` for ``member_entry``.
 
     Args:
-        client:         The StarfishClient to use.
-        session:        The owner's session.
+        client:          The StarfishClient to use.
+        session:         The owner's session.
         collection_name: The keyring collection name.
-        member_entry:   The member entry dict (``{sub, subKem, ...}``).
-        generation:     The new revocation list generation number.
-        prior_revoked:  Previously revoked entries to include in the new list.
+        member_entry:    The member entry dict (``{sub, subKem, ...}``).
+        generation:      The new revocation list generation number.
+        prior_revoked:   Previously revoked entries to include in the new list.
+        submit_revocation: Callback the signed :class:`RevocationList` is POSTed
+            to.  When ``None`` a no-op is used (rotation alone gives forward
+            secrecy); callers that need live revocation must forward one.
 
     Returns:
         The updated revocation list dict.
@@ -199,8 +203,6 @@ async def evict_keyring_member(
     from starfish_spaces.node_keyring import owner_trusted_adders
 
     trusted = owner_trusted_adders(session)
-
-    submit_revocation = prior_revoked or []
 
     async def _noop_submit(revocation_list: dict[str, Any]) -> None:
         # Callers that need live revocation list submission should pass a
@@ -215,7 +217,7 @@ async def evict_keyring_member(
         iss_ed_pub_hex=session.keys["edPub"],
         iss_ed_priv_hex=session.keys["edPriv"],
         generation=generation,
-        submit_revocation=_noop_submit,
+        submit_revocation=submit_revocation or _noop_submit,
         keyring_collection=collection_name,
         adder={
             "edPriv": session.keys["edPriv"],

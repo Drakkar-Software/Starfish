@@ -26,10 +26,10 @@
  *   write: "authenticated",
  * })
  *
- * const s3Opts = { endpoint: "http://localhost:9000", bucket: "starfish", accessKeyId: "...", secretAccessKey: "..." }
+ * const s3Opts = { endpoint: "http://localhost:9000", bucket: "starfish", accessKeyId: "<access-key-id>", secretAccessKey: "<secret-access-key>" }
  * const key = resolveDocumentKey("datasets/{owner}/{dataset}", { owner: "alice", dataset: "sales.parquet" })
- * const { sql } = duckdbReadParquetSql({ s3: s3Opts, key })
- * // → Run `sql` in DuckDB to query the file
+ * const { sql, runnableSql } = duckdbReadParquetSql({ s3: s3Opts, key })
+ * // → `sql` is safe to log; run `runnableSql` (contains the secret) in DuckDB
  * ```
  */
 
@@ -280,12 +280,31 @@ export interface DuckdbParquetSqlResult {
   uri: string
   /** `INSTALL httpfs;\nLOAD httpfs;` — run once per DuckDB session. */
   setupSql: string
-  /** `SET s3_*` configuration statements. */
+  /**
+   * `SET s3_*` configuration statements, EXCLUDING the secret access key.
+   * Safe to log — the live secret lives only in {@link credentialSql}.
+   */
   configSql: string
+  /**
+   * `SET s3_secret_access_key='…';` — **contains a live S3 secret**.
+   * Returned separately so it can be run without folding the credential into
+   * {@link sql}. NEVER log this field.
+   */
+  credentialSql: string
   /** `SELECT * FROM read_parquet('…')` statement. */
   readSql: string
-  /** All statements concatenated into one runnable script. */
+  /**
+   * Redactable script (setup + config + read) with the secret access key
+   * OMITTED — safe to log. Because it lacks the credential it is **not**
+   * runnable on its own: run {@link credentialSql} in the same DuckDB session,
+   * or use {@link runnableSql}.
+   */
   sql: string
+  /**
+   * Full runnable script (setup + config + credential + read) INCLUDING the
+   * secret access key. **Contains a live S3 secret** — NEVER log this field.
+   */
+  runnableSql: string
 }
 
 /**
@@ -299,9 +318,9 @@ export interface DuckdbParquetSqlResult {
  * ```ts
  * import { duckdbReadParquetSql, resolveDocumentKey } from "@drakkar.software/starfish-server"
  *
- * const s3 = { endpoint: "http://localhost:9000", bucket: "data", accessKeyId: "minio", secretAccessKey: "minio123" }
+ * const s3 = { endpoint: "http://localhost:9000", bucket: "data", accessKeyId: "<access-key-id>", secretAccessKey: "<secret-access-key>" }
  * const key = resolveDocumentKey("analytics/{owner}/{report}", { owner: "alice", report: "q1.parquet" })
- * const { sql } = duckdbReadParquetSql({ s3, key })
+ * const { runnableSql } = duckdbReadParquetSql({ s3, key })
  *
  * // For all reports by alice:
  * const prefix = resolveDocumentKey("analytics/{owner}", { owner: "alice" })
@@ -329,21 +348,30 @@ export function duckdbReadParquetSql(opts: DuckdbParquetSqlOptions): DuckdbParqu
   const uri = `s3://${sq(s3.bucket)}/${sq(resolvedKey)}`
 
   const setupSql = "INSTALL httpfs;\nLOAD httpfs;"
+  // configSql deliberately OMITS s3_secret_access_key so it (and `sql`) stay
+  // safe to log. The secret is emitted only in the separate `credentialSql`.
   const configLines = [
     `SET s3_endpoint='${sq(host)}';`,
     `SET s3_access_key_id='${sq(s3.accessKeyId)}';`,
-    `SET s3_secret_access_key='${sq(s3.secretAccessKey)}';`,
     `SET s3_region='${sq(s3.region ?? "us-east-1")}';`,
     `SET s3_url_style='${urlStyle}';`,
     `SET s3_use_ssl=${useSsl};`,
   ]
   const configSql = configLines.join("\n")
 
+  // SECURITY: this statement embeds the live S3 secret access key. It is
+  // returned in its own field and never folded into `sql`, so callers can run
+  // it in the DuckDB session without logging it. NEVER log `credentialSql`.
+  const credentialSql = `SET s3_secret_access_key='${sq(s3.secretAccessKey)}';`
+
   const readSql = `SELECT * FROM read_parquet('${uri}');`
 
+  // Redactable (no secret) — safe to log; not runnable without credentialSql.
   const sql = [setupSql, configSql, readSql].join("\n")
+  // Full runnable script INCLUDING the secret — NEVER log.
+  const runnableSql = [setupSql, configSql, credentialSql, readSql].join("\n")
 
-  return { uri, setupSql, configSql, readSql, sql }
+  return { uri, setupSql, configSql, credentialSql, readSql, sql, runnableSql }
 }
 
 // ---------------------------------------------------------------------------

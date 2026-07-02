@@ -402,11 +402,25 @@ export interface InstallPairingBundleOpts {
    * root signed the bundle, which over an open rendezvous lets an attacker's
    * own root provision this device into THEIR account. Pass it whenever the
    * caller already knows the target account's root pubkey (e.g. the user is
-   * signed in); when first-contact pairing makes it unknown, surface the
-   * bundle's `rootEdPub` fingerprint for the user to compare against the root
-   * device instead.
+   * signed in); when first-contact pairing makes it unknown, pass
+   * `confirmUnpinnedRoot` instead.
    */
   expectedRootEdPub?: string
+  /**
+   * First-contact acknowledgment for when the target account's root pubkey is
+   * NOT known ahead of time (e.g. an anonymous rendezvous). Called with the
+   * bundle's `rootEdPub` (which equals the verified cap-cert issuer); the caller
+   * MUST surface that fingerprint to the user to compare against the root device
+   * and return `true` only once the user confirms. Ignored when
+   * `expectedRootEdPub` is supplied.
+   *
+   * Root trust is MANDATORY: supplying NEITHER `expectedRootEdPub` nor
+   * `confirmUnpinnedRoot` makes `installPairingBundle` throw. Without a pin or an
+   * explicit acknowledgment an attacker's own root could answer an open
+   * rendezvous and provision this device into THEIR account — the
+   * `iss === rootEdPub` self-consistency check is satisfied by any root.
+   */
+  confirmUnpinnedRoot?: (rootEdPub: string) => boolean | Promise<boolean>
 }
 
 /**
@@ -445,11 +459,28 @@ export async function installPairingBundle(
   if (bundle.capCert.iss !== bundle.rootEdPub) {
     throw new Error("Pairing bundle cap-cert issuer does not match bundle.rootEdPub")
   }
-  // Pin the expected root when the caller knows it: rejects a bundle minted by
-  // a different root (e.g. an attacker's own root answering an open rendezvous
-  // and trying to provision this device into their account).
-  if (opts.expectedRootEdPub !== undefined && bundle.rootEdPub !== opts.expectedRootEdPub) {
-    throw new Error("Pairing bundle rootEdPub does not match the expected root identity")
+  // Establish trust in the bundle's root. Pinning is MANDATORY: either the
+  // caller pins the account's known root pubkey (expectedRootEdPub), or it
+  // supplies a first-contact acknowledgment callback that surfaces the root
+  // fingerprint to the user. Neither ⇒ refuse. Without this an attacker's own
+  // root could answer an open rendezvous and provision this device into THEIR
+  // account (the iss === rootEdPub self-consistency check is satisfied by any root).
+  if (opts.expectedRootEdPub !== undefined) {
+    if (bundle.rootEdPub !== opts.expectedRootEdPub) {
+      throw new Error("Pairing bundle rootEdPub does not match the expected root identity")
+    }
+  } else if (opts.confirmUnpinnedRoot !== undefined) {
+    const confirmed = await opts.confirmUnpinnedRoot(bundle.rootEdPub)
+    if (!confirmed) {
+      throw new Error("Pairing bundle root identity was not confirmed for first-contact pairing")
+    }
+  } else {
+    throw new Error(
+      "installPairingBundle requires root pinning: pass `expectedRootEdPub` (the target " +
+        "account's known root pubkey) or `confirmUnpinnedRoot` (a first-contact callback that " +
+        "surfaces the bundle's root fingerprint for the user to verify). Refusing to trust an " +
+        "unverified root.",
+    )
   }
   // Sanity: the cap-cert must be for this device's keys.
   if (bundle.capCert.sub !== device.edPub || bundle.capCert.subKem !== device.kemPub) {
@@ -593,7 +624,16 @@ export async function installProvisionedDevice(
   provisioned: ProvisionedDevice,
   opts: InstallPairingBundleOpts = {},
 ): Promise<InstalledPairingResult> {
-  return installPairingBundle(provisioned.bundle, provisioned.deviceKeys, opts)
+  // One-way provisioning delivers device private keys + bundle atomically from
+  // the root over a channel the caller already trusts with the collection keys
+  // themselves (see the security note above), so the root is trusted by
+  // construction. Acknowledge it as first-contact when the caller did not pin,
+  // while still honoring an explicit expectedRootEdPub / confirmUnpinnedRoot.
+  const effectiveOpts: InstallPairingBundleOpts =
+    opts.expectedRootEdPub === undefined && opts.confirmUnpinnedRoot === undefined
+      ? { ...opts, confirmUnpinnedRoot: () => true }
+      : opts
+  return installPairingBundle(provisioned.bundle, provisioned.deviceKeys, effectiveOpts)
 }
 
 // ── Server-relay pairing (code-derived encryption) ───────────────────────────
