@@ -49,6 +49,8 @@ await client.members.invite(spaceId, { userId: recipientId, write: true })
 - **`makeSpaceClient`** — unified client covering registry, members, nodes, objects, inbox, identity links
 - **`configureSpaces` / `defaultSpaceLayout`** — layout injection
 - **`generateSeedWords` / `isValidSeed`** — BIP-39 mnemonic helpers
+- **`createPrefsStore`** — generic per-identity preference store on the `_spaces` registry `extra`-field (cache + subscriptions + KV persistence + CAS-safe synced write); write-through or debounced from one config
+- **`startDevicePairing` / `completeDevicePairing`** — device-pairing rendezvous over the public `_pairing/<nonce>` slot (hash-guarded push, slot clear, mandatory root pinning)
 - **`createSpacesServerPlugin`** — server-side companion (server plugin for object-index projection)
 
 See the [full guide](/extensions/spaces) for detailed documentation on all subsystems.

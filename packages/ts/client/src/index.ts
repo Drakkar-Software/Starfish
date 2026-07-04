@@ -26,6 +26,13 @@ export type {
   SealAndPushBlobOptions,
   PullAndOpenBlobOptions,
 } from "./blob-seal.js"
+export { createSealedBlobStore, FileTooLargeError } from "./sealed-blob-store.js"
+export type {
+  SealedBlobStore,
+  SealedBlobPaths,
+  SealedBlobStoreKv,
+  CreateSealedBlobStoreOptions,
+} from "./sealed-blob-store.js"
 export { PARQUET_MIME_TYPE, PARQUET_MIME_TYPES } from "@drakkar.software/starfish-protocol"
 export { SyncManager, AbortError, DocAuthorError } from "./sync.js"
 export type { SyncManagerOptions, SyncSigner } from "./sync.js"

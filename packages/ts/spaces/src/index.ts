@@ -193,6 +193,14 @@ export {
 // ── Object index ──────────────────────────────────────────────────────────────
 export { pushIndexSeed, seedSpaceObjectIndex, updateObjectIndex, readObjectTree } from "./object-index.js"
 
+// ── Prefs store (generic per-identity preferences on the _spaces extra-field) ──
+export type { PrefsStore, CreatePrefsStoreOptions } from "./prefs-store.js"
+export { createPrefsStore } from "./prefs-store.js"
+
+// ── Device pairing (rendezvous over the public _pairing slot) ─────────────────
+export type { StartDevicePairingOptions, CompleteDevicePairingOptions, PairResult } from "./pairing.js"
+export { startDevicePairing, completeDevicePairing, DEFAULT_PAIR_PREFIX } from "./pairing.js"
+
 // ── Members ───────────────────────────────────────────────────────────────────
 export type { StoredSpaceInvite } from "./members.js"
 export {

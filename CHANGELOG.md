@@ -1,5 +1,21 @@
 # Changelog
 
+## 3.0.0-alpha.64
+
+Adds three reusable client-side helpers extracted from downstream apps so a consuming library can hold configuration instead of logic. **TypeScript only** this release; Python twins are deferred (these are client-side conveniences over existing primitives — no protocol/wire change, so the cross-language conformance vectors are unaffected).
+
+### `@drakkar.software/starfish-spaces` (alpha.64)
+
+#### Added
+- **`createPrefsStore` — generic per-identity preference store** on the `_spaces` registry `extra`-field. Factors the shared machinery (in-memory cache + change subscriptions, KV persistence via the configured `kvAdapter`, server hydration with a caller-supplied `merge`, and a CAS-safe synced write over `updateSpacesExtraField`) so an app supplies only config (field name, `empty`, `coerce`/`merge`, KV key) plus its own accessors. Supports both **write-through** (immediate per-op sync, e.g. mutes) and **debounced** (`flushDelayMs`; batched snapshot flush, e.g. read marks) cadences from one config, with `foldKvOnHydrate` + `legacyKeys` for back-compat migration.
+- **Device-pairing rendezvous — `startDevicePairing` / `completeDevicePairing`** over the public `_pairing/<nonce>` slot. Centralizes the pairing security invariants (hash-guarded first-write push, best-effort slot clear after open, and mandatory root pinning via the QR-carried `rootEdPub` satisfying `installPairingBundle`). QR prefix, TTL, and `fetch` are configurable; any `*-pair:` prefix is accepted on completion (dual-accept).
+- **`SpaceLayout.pairingPull` / `pairingPush`** added to the layout seam (default `_pairing/<nonce>`), so the rendezvous path is injectable alongside the other storage paths.
+
+### `@drakkar.software/starfish-client` (alpha.64)
+
+#### Added
+- **`createSealedBlobStore` — cached sealed-blob store.** Wraps the `ByteSealer` seal/push/pull core (over `pushBlob`/`pullBlob`) with an in-memory decrypted-plaintext LRU (default 64 MB) and a KV-persisted post-seal ciphertext cache (default 4 MB) so blobs reopen offline / after reload without a round-trip. The app supplies a `SealedBlobPaths` strategy (push/pull path + AAD per blob id + context); the store owns id generation, size-guarding (`FileTooLargeError`), sealing, transport, and cache eviction.
+
 ## 3.0.0-alpha.63
 
 Security- and parity-hardening release: a full TS+Python security and code review of the library produced 37 verified findings, all remediated here. Fixes are cross-language (both implementations) unless noted. **Two breaking API changes** are called out below (pairing-bundle install and webhook sealed-open now require an explicit trust argument).

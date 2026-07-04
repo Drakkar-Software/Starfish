@@ -75,6 +75,12 @@ export interface SpaceLayout {
   /** Pull path for the global public-object directory shard. */
   objectDirPull(shard?: string): string
 
+  // ── Device-pairing rendezvous ─────────────────────────────────────────────
+  /** Pull path for a device-pairing rendezvous slot (public-read). */
+  pairingPull(nonce: string): string
+  /** Push path for a device-pairing rendezvous slot (public, hash-guarded write). */
+  pairingPush(nonce: string): string
+
   // ── Cap scopes ────────────────────────────────────────────────────────────
   /** Full owner access to all spaces (all tiers). */
   ownerScope(): ScopePreset

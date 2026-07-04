@@ -267,6 +267,10 @@ log.getCheckpoint()             // max ts held — persist, and restore via setC
 - `pull()` is safe to call concurrently — overlapping calls serialize internally so they never double-append a window.
 - **Reactive bindings:** `createStarfishLog` (Zustand, `./zustand`) + hooks `useStarfishLog` / `useStarfishLogItems` / `useLogStatus` / `useLogConnectivity`; `createStarfishLogObservable` (Legend, `./legend`); `createAppendLogMobileLifecycle` (pull on app foreground). `startPolling` and `createSuspenseResource` work with `cursor.pull()` directly.
 
+## Sealed blobs
+
+`sealAndPushBlob` / `pullAndOpenBlob` are the one-shot seal/transport helpers. For a caching layer, **`createSealedBlobStore`** wraps that core with an in-memory decrypted-plaintext LRU (default 64 MB) and a KV-persisted post-seal ciphertext cache (default 4 MB) so blobs reopen offline / after reload without a round-trip. The app supplies a `SealedBlobPaths` strategy (push/pull path + AAD per blob id + context); the store owns id generation, size-guarding (`FileTooLargeError`), sealing, transport, and eviction.
+
 ## Other utilities
 
 The package also re-exports the v2 ergonomics that survived intact: `consoleSyncLogger`, `noopSyncLogger`, `createMetricsCollector`, `createMigrator`, `createSchemaValidator`, `classifyError`, conflict resolvers (`createUnionMerge`, `createSoftDeleteResolver`, `timestampWinner`, `pruneTombstones`), `SnapshotHistory`, `startPolling`/`startAdaptivePolling`, `createDedupFetch`, `fetchServerConfig`, `pullEntitlements`, `createIndexedDBStorage`, `exportData`/`importData`, `createDebouncedSync`/`createDebouncedPush`, `createMultiStoreSync`, `createMobileLifecycle`, and the Zustand/Legend bindings via the `./zustand` and `./legend` subpaths.

@@ -109,6 +109,10 @@ export const defaultSpaceLayout: SpaceLayout = {
   // ── Object directory ───────────────────────────────────────────────────────
   objectDirPull: (shard) => pull(`_index/objects/${shard ?? "public"}`),
 
+  // ── Device-pairing rendezvous ────────────────────────────────────────────────
+  pairingPull: (nonce) => pull(`_pairing/${nonce}`),
+  pairingPush: (nonce) => push(`_pairing/${nonce}`),
+
   // ── Cap scopes ─────────────────────────────────────────────────────────────
 
   ownerScope: () => ({
