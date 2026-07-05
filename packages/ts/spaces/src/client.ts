@@ -340,6 +340,51 @@ export async function readProfile(
   }
 }
 
+// ── Profile offline cache ──────────────────────────────────────────────────────
+// Public profiles are plaintext and fetched with a bare `fetch` (they bypass the
+// signed pull cache), so `readProfile` has no offline fallback. These helpers add a
+// last-known cache over the configured `kvAdapter` (installed via `configureSpaces`).
+
+const profileCacheKey = (userId: string) => `starfish.profile.v1.${userId}`
+
+/** Persist a public profile to the configured `kvAdapter` (fire-and-forget). No-op without one. */
+export async function cacheProfile(userId: string, profile: PublicProfile): Promise<void> {
+  const kv = getSpacesConfig().kvAdapter
+  if (kv) await kv.setItem(profileCacheKey(userId), JSON.stringify(profile)).catch(() => {})
+}
+
+/** Load a previously-cached public profile from the configured `kvAdapter`, or `null`. */
+export async function loadCachedProfile(userId: string): Promise<PublicProfile | null> {
+  const kv = getSpacesConfig().kvAdapter
+  if (!kv) return null
+  const raw = await kv.getItem(profileCacheKey(userId)).catch(() => null)
+  if (!raw) return null
+  try {
+    return coerceProfile(JSON.parse(raw) as Record<string, unknown>)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Read a public profile with an offline fallback. On a live read that returns any
+ * data, cache it and return it; on a failed / all-null live read, return the
+ * last-known cached profile when present (else the all-null live result).
+ */
+export async function readProfileCached(
+  userId: string,
+  opts: { baseUrl: string; layout: SpaceLayout; fetch?: typeof globalThis.fetch },
+): Promise<PublicProfile> {
+  const live = await readProfile(userId, opts)
+  const hasData =
+    live.pseudo !== null || live.avatar !== null || live.edPub !== null || live.kemPub !== null || live.kemSig !== null
+  if (hasData) {
+    await cacheProfile(userId, live)
+    return live
+  }
+  return (await loadCachedProfile(userId)) ?? live
+}
+
 const PROFILE_BATCH_CHUNK = 24
 
 /** Read multiple users' public profiles in batched `/batch/pull` round-trips. */

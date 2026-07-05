@@ -15,7 +15,7 @@
  */
 import type { SealedBlob } from "./config.js"
 import { sealToRecipient, unsealFromRecipient } from "./account-seal.js"
-import { inboxShard, inboxShards, pullInbox } from "./inbox.js"
+import { inboxShard, inboxShards, pullInbox, appendToInbox } from "./inbox.js"
 import { createKeyedStore } from "./keyed-store.js"
 import { verifyIdentityLinkBinding, verifyIdentityLinkKeys } from "./identity-link.js"
 import type { IdentityLink } from "./identity-link.js"
@@ -26,7 +26,6 @@ import { randomId } from "@drakkar.software/starfish-protocol"
 import type { Session } from "./session.js"
 import type { ObjectNode } from "./config.js"
 import type { ResourceRequest, ResourceGrant, ResourceReject } from "./token-types.js"
-import { makeAnonSpaceClient } from "./client.js"
 
 export type { ResourceRequest, ResourceGrant, ResourceReject }
 
@@ -73,13 +72,7 @@ async function sealAppend(
     inboxAad(session, recipientUserId, shard, kind),
   )
   const element = { sealed, ts: Date.now(), mkind: kind } as unknown as Record<string, unknown>
-  // Use an anonymous client for public-write inbox appends.
-  const anonClient = makeAnonSpaceClient({ baseUrl: session.baseUrl, namespace: session.namespace })
-  await anonClient.appendAnonymous(
-    session.layout.inboxPush(recipientUserId, shard),
-    element,
-    { edPubHex: session.keys.edPub, edPrivHex: session.keys.edPriv },
-  )
+  await appendToInbox(session, recipientUserId, shard, element)
 }
 
 /**

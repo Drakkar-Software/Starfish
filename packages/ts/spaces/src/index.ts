@@ -59,6 +59,9 @@ export {
   readProfile,
   readProfiles,
   writeProfile,
+  cacheProfile,
+  loadCachedProfile,
+  readProfileCached,
   ensurePseudo,
   ensureProfileKeys,
   buildAuthHeaders,
@@ -244,7 +247,7 @@ export {
 
 // ── Inbox ─────────────────────────────────────────────────────────────────────
 export type { InboxElement } from "./inbox.js"
-export { inboxShard, inboxShards, pullInbox } from "./inbox.js"
+export { inboxShard, inboxShards, pullInbox, appendToInbox } from "./inbox.js"
 
 // ── Identity link ─────────────────────────────────────────────────────────────
 export type { IdentityLink } from "./identity-link.js"

@@ -6,6 +6,7 @@
  */
 import type { StarfishClient } from "@drakkar.software/starfish-client"
 import type { Session } from "./session.js"
+import { makeAnonSpaceClient } from "./client.js"
 
 /** Current UTC month shard in `YYYY-MM` format. */
 export function inboxShard(): string {
@@ -31,6 +32,30 @@ export function inboxShards(): string[] {
 export interface InboxElement {
   ts: number
   data: Record<string, unknown>
+}
+
+/**
+ * Append a pre-built element to `recipientUserId`'s inbox shard as an anonymous
+ * public write, authored by the session identity.
+ *
+ * The inbox collection is `writeRoles:["public"]`, so no cap header is sent; the
+ * Ed25519 author proof (the session's device keys) is bound to the document key and
+ * surfaces the sender via `sealed.entry.addedBy` on the receive path. The caller is
+ * responsible for sealing `element` first (see `resource-requests` for the canonical
+ * seal-then-append pattern); use {@link inboxShard} for the current UTC shard.
+ */
+export async function appendToInbox(
+  session: Session,
+  recipientUserId: string,
+  shard: string,
+  element: Record<string, unknown>,
+): Promise<void> {
+  const anonClient = makeAnonSpaceClient({ baseUrl: session.baseUrl, namespace: session.namespace })
+  await anonClient.appendAnonymous(
+    session.layout.inboxPush(recipientUserId, shard),
+    element,
+    { edPubHex: session.keys.edPub, edPrivHex: session.keys.edPriv },
+  )
 }
 
 /**

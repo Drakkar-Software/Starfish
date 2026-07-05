@@ -1,5 +1,26 @@
 # Changelog
 
+## 3.0.0-alpha.65
+
+Adds two reusable client-side helpers extracted from downstream apps (inbox append + a
+public-profile offline cache), so a consuming library can hold configuration instead of logic.
+**TypeScript only** this release; Python twins are deferred (client-side conveniences over
+existing primitives — no protocol/wire change, cross-language conformance vectors unaffected).
+
+### `@drakkar.software/starfish-spaces` (alpha.65)
+
+#### Added
+- **`appendToInbox(session, recipientUserId, shard, element)`** — public helper to append a
+  pre-built element to an identity's `inbox/{id}/{shard}` shard as an anonymous public write,
+  authored by the session identity. Extracts the append pattern that was previously inlined and
+  unexported inside `resource-requests`' `sealAppend` (now refactored to call it), so consumers no
+  longer hand-roll an anon client + `appendAnonymous(layout.inboxPush(…))`.
+- **Public-profile offline cache — `cacheProfile` / `loadCachedProfile` / `readProfileCached`** over
+  the configured `kvAdapter`. Public profiles are plaintext and fetched with a bare `fetch` (they
+  bypass the signed pull cache), so `readProfile` had no offline fallback; `readProfileCached` caches
+  a live hit and returns the last-known profile when a later read fails or returns all-null.
+
+
 ## 3.0.0-alpha.64
 
 Adds three reusable client-side helpers extracted from downstream apps so a consuming library can hold configuration instead of logic. **TypeScript only** this release; Python twins are deferred (these are client-side conveniences over existing primitives — no protocol/wire change, so the cross-language conformance vectors are unaffected).

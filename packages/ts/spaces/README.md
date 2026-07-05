@@ -51,6 +51,8 @@ await client.members.invite(spaceId, { userId: recipientId, write: true })
 - **`generateSeedWords` / `isValidSeed`** — BIP-39 mnemonic helpers
 - **`createPrefsStore`** — generic per-identity preference store on the `_spaces` registry `extra`-field (cache + subscriptions + KV persistence + CAS-safe synced write); write-through or debounced from one config
 - **`startDevicePairing` / `completeDevicePairing`** — device-pairing rendezvous over the public `_pairing/<nonce>` slot (hash-guarded push, slot clear, mandatory root pinning)
+- **`appendToInbox`** — append a (pre-sealed) element to an identity's public inbox shard, authored by the session identity
+- **`cacheProfile` / `loadCachedProfile` / `readProfileCached`** — public-profile offline cache over the configured `kvAdapter`
 - **`createSpacesServerPlugin`** — server-side companion (server plugin for object-index projection)
 
 See the [full guide](/extensions/spaces) for detailed documentation on all subsystems.
