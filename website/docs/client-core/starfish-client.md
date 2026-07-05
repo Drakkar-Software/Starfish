@@ -247,6 +247,38 @@ const client = new StarfishClient({
 })
 ```
 
+## Sealed Blobs
+
+`sealAndPushBlob` / `pullAndOpenBlob` are the one-shot seal/transport helpers over `pushBlob`/`pullBlob` (see [E2EE Parquet](/analytics/parquet-duckdb#e2ee-parquet-createsealed) for a full example). For a caching layer, **`createSealedBlobStore`** wraps that core with an in-memory decrypted-plaintext cache (default 64 MB, evicted in insertion order) and a KV-persisted post-seal ciphertext cache (default 4 MB), so blobs reopen offline / after reload without a round-trip:
+
+```ts
+import { createSealedBlobStore, type SealedBlobPaths } from "@drakkar.software/starfish-client"
+
+interface Ctx {
+  spaceId: string
+}
+
+const paths: SealedBlobPaths<Ctx> = {
+  pushPath: (id, ctx) => `/push/spaces/${ctx.spaceId}/objects/blob/${id}`,
+  pullPath: (id, ctx) => `/pull/spaces/${ctx.spaceId}/objects/blob/${id}`,
+  aad: (id, ctx) => `spaces/${ctx.spaceId}/objects/blob/${id}`,
+}
+
+const store = createSealedBlobStore({
+  paths,
+  maxBytes: 10 * 1024 * 1024, // 10 MiB
+  kvAdapter: myAsyncStorage, // optional; omit to disable persistence
+})
+
+// Seal (sealer non-null) or store plaintext (sealer: null) and mint an id
+const id = await store.upload(client, sealer, bytes, { spaceId })
+
+// Fetch + unseal: memory cache → persisted cache → network
+const plaintext = await store.load(client, sealer, id, { spaceId })
+```
+
+The app supplies only the path/AAD strategy; the store owns id generation, size-guarding (throws `FileTooLargeError` when `bytes` exceeds `maxBytes`), sealing, transport, and eviction.
+
 ## Next Steps
 
 - [SyncManager](/client-core/sync-manager) — wraps `StarfishClient` with encryption, conflict retry, and state tracking

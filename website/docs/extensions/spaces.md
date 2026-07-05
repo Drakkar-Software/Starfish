@@ -21,8 +21,10 @@ sidebar_label: "Spaces"
 8. [Object tree — pure algorithms](#8-object-tree)
 9. [Inbox and resource requests](#9-inbox-and-resource-requests)
 10. [Identity links](#10-identity-links)
-11. [Server companion](#11-server-companion)
-12. [Migration from octospaces-sdk](#12-migration-from-octospaces-sdk)
+11. [Preferences — `createPrefsStore`](#11-preferences)
+12. [Device pairing](#12-device-pairing)
+13. [Server companion](#13-server-companion)
+14. [Migration from octospaces-sdk](#14-migration-from-octospaces-sdk)
 
 ---
 
@@ -274,7 +276,74 @@ if (decoded && verifyIdentityLinkKeys(decoded)) {
 
 ---
 
-## 11. Server companion
+## 11. Preferences
+
+`createPrefsStore` is a generic per-identity preference store persisted on the user's `_spaces` registry doc as one app-specific `extra`-field (via `updateSpacesExtraField`). It factors the shared machinery — in-memory cache with change subscriptions, KV persistence through the `kvAdapter` installed via `configureSpaces`, server hydration with a caller-supplied `merge`, and a CAS-safe synced write — so a consuming app supplies only configuration plus its own domain accessors.
+
+```typescript
+import { createPrefsStore } from '@drakkar.software/starfish-spaces'
+
+interface Mutes {
+  userIds: string[]
+}
+
+const mutesStore = createPrefsStore<Mutes>({
+  field: 'mutes',
+  client: (session) => session.spacesRegistryClient,
+  empty: { userIds: [] },
+  coerce: (raw) => (raw && typeof raw === 'object' ? (raw as Mutes) : { userIds: [] }),
+  merge: (base, incoming) => incoming, // server-wins
+  kvKey: (userId) => `myapp.mutes.${userId}`,
+})
+
+// Optimistic local change, synced to the server
+await mutesStore.mutate(session, (cur) => ({ userIds: [...cur.userIds, targetUserId] }))
+
+mutesStore.get()                       // current in-memory value
+mutesStore.subscribe(() => rerender()) // re-render on change
+```
+
+Two write cadences are supported from one config:
+
+- **Write-through** (default) — each `mutate` pushes to the server immediately, applying the same per-operation function to the server's current value. Use for low-frequency toggles (e.g. mutes).
+- **Debounced** (set `flushDelayMs`) — `mutate` batches locally, then flushes the whole cache snapshot through `merge` on a timer. Use for high-frequency updates (e.g. read marks).
+
+> The in-flight guard on `hydrate` covers the write-through server round-trip, but **not** the debounce window. Debounced mode should therefore use a **monotonic** `merge` (one that never drops a local key, e.g. max-merge) so a server hydrate landing mid-debounce cannot clobber a not-yet-flushed local change. Pair a replace/server-wins `merge` with write-through mode instead.
+
+---
+
+## 12. Device pairing
+
+`startDevicePairing` / `completeDevicePairing` implement one-way, PIN-sealed device pairing over a public rendezvous slot (`_pairing/<nonce>`, from `SpaceLayout.pairingPull` / `pairingPush`).
+
+```typescript
+import { startDevicePairing, completeDevicePairing } from '@drakkar.software/starfish-spaces'
+
+// Existing (root/owner) device: provision + PIN-seal a new device, publish, get a QR payload
+const qrPayload = await startDevicePairing(session, pin, {
+  onProvisioned: async ({ userId }) => {
+    // Grant the new device access to space keyrings before the sealed blob is published
+  },
+})
+
+// New device: scan the QR, fetch + open the sealed bundle, install the cap bundle
+const { userId, fingerprint, deviceKeys, capCert } = await completeDevicePairing(qrPayload, pin, {
+  baseUrl: 'https://sync.example.com',
+  namespace: 'myapp',
+})
+```
+
+Security invariants centralized here:
+
+- The rendezvous push is **hash-guarded** (pull baseHash first) so only the first write to a slot succeeds.
+- The slot is best-effort **cleared** after a successful open.
+- Root trust is **mandatory** — the expected root pubkey comes from the QR payload (or an explicit `expectedRootEdPub` override), satisfying `installPairingBundle`'s pinning requirement.
+
+`startDevicePairing` is intended for a root/owner session (`buildSession` / `deriveSession`) — calling it on a linked-device session provisions the new device under the linked device's key, not the account root. `completeDevicePairing` accepts any `<prefix>-pair:<nonce>.<rootEdPub>` payload, not just the default `starfish-pair:` prefix.
+
+---
+
+## 13. Server companion
 
 ```typescript
 import {
@@ -365,7 +434,7 @@ Python equivalents: `create_spaces_role_enricher` (pass `allow_tofu=False`, whic
 
 ---
 
-## 12. Migration from octospaces-sdk
+## 14. Migration from octospaces-sdk
 
 `octospaces-sdk` can be migrated to consume `starfish-spaces` with the following steps:
 
