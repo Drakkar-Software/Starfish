@@ -20,6 +20,7 @@ import json
 from typing import TYPE_CHECKING, Any, Callable, Optional, TypedDict
 
 from starfish_protocol.encoding import decode_link_fragment, encode_link_fragment
+from starfish_sharing.cap_mint import MintOpts
 
 from starfish_spaces.account_seal import seal_to_self, unseal_from_self
 from starfish_spaces.client import (
@@ -29,6 +30,7 @@ from starfish_spaces.client import (
 from starfish_spaces.invite_helpers import (
     CapSubject,
     assert_cap_for_me,
+    assert_cap_not_expired,
     cap_nonce,
     ephemeral_subject_async,
     evict_keyring_member,
@@ -224,16 +226,28 @@ async def create_space_invite_link(
     space_name: str,
     write: bool,
     origin: str,
+    opts: Optional[MintOpts] = None,
 ) -> dict[str, Any]:
     """Owner: create a shareable invite link for a space.
 
+    The link is a BEARER token — anyone holding it can join. Bound the exposure
+    with ``opts`` (``ttl_sec`` / ``expires_at``; the cap's server-enforced
+    ``exp``, default 30 days when omitted). The returned ``inviteUserId`` is the
+    ephemeral member's userId — pass it to
+    ``revoke_space_access(session, space_id, invite_user_id, …)`` to kill this one
+    link without affecting other members or links.
+
+    Bearer links are inherently multi-use: there is no client-only single-use, as
+    the secret lives entirely in the URL fragment and the server counts no
+    redemptions. Use a short TTL and/or revoke after the intended join.
+
     Returns:
-        ``{"token": SpaceInviteLinkToken, "link": str}``.
+        ``{"token": SpaceInviteLinkToken, "link": str, "inviteUserId": str}``.
     """
     subject, ed_priv, kem_priv = await ephemeral_subject_async(session)
     ephemeral_user_id = subject["userIdHex"]
 
-    cap = mint_cap(session, subject, "content", session.layout.space_member_scope(space_id, write))
+    cap = mint_cap(session, subject, "content", session.layout.space_member_scope(space_id, write), opts)
     nonce = cap_nonce(cap)
     if nonce:
         save_space_invite_entry(space_id, ephemeral_user_id, {"edPub": subject["edPubHex"], "kemPub": subject["kemPubHex"], "cap": nonce})
@@ -256,11 +270,12 @@ async def create_space_invite_link(
         "kemPub": subject["kemPubHex"],
         "write": write,
     }
-    return {"token": token, "link": encode_space_invite_link(origin, token)}
+    return {"token": token, "link": encode_space_invite_link(origin, token), "inviteUserId": ephemeral_user_id}
 
 
 async def join_space_by_link(session: "Session", token: SpaceInviteLinkToken) -> Any:
     """Any user: join a space by redeeming an invite link token."""
+    assert_cap_not_expired(token["cap"], "That space invite link is no longer usable")
     access_payload = {
         "cap": token["cap"],
         "key": token["key"],

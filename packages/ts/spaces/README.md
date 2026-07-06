@@ -43,6 +43,35 @@ const spaceId = await client.registry.createSpace({ name: "My Space" })
 await client.members.invite(spaceId, { userId: recipientId, write: true })
 ```
 
+## Invite links (single-link join)
+
+`createSpaceInviteLink` produces a **bearer link** — the ephemeral member credential
+rides in the URL fragment (`{origin}/join#…`), so anyone holding the link can join
+with no request/grant round-trip. It is the right tool for owner-initiated sharing to
+a trusted recipient (not for public "request access", which is the sealed inbox flow).
+
+```ts
+// Owner: mint a link that expires in 24h.
+const { link, inviteUserId } = await createSpaceInviteLink(
+  session, spaceId, "My Space", /* write */ true, origin,
+  { ttlSec: 24 * 3600 },              // or { expiresAt: <unix seconds> }; omit → 30-day default
+)
+
+// Invitee: redeem it (rejects an expired / not-yet-valid link up front).
+await joinSpaceByLink(session, decodeSpaceInviteLink(fragment))
+
+// Owner: revoke this ONE link later, using the returned handle.
+await revokeSpaceAccess(session, spaceId, inviteUserId, { generation, submitRevocation })
+```
+
+- **Expiry** — `ttlSec` / `expiresAt` bound the cap's `exp`; the server enforces `nbf`/`exp`
+  on every request, so a lapsed link genuinely stops working. Default is 30 days.
+- **Per-link revocation** — each call mints a *distinct* ephemeral member, so revoking one
+  link (via its `inviteUserId`) never affects other members or links.
+- **Multi-use** — bearer links are inherently reusable: there is **no** client-only single-use,
+  because the secret lives entirely in the fragment and the server counts no redemptions. Use a
+  short `ttlSec` and/or revoke after the intended join.
+
 ## API surface
 
 - **`buildSession` / `deriveSession`** — construct the runtime session from passphrase or device keys

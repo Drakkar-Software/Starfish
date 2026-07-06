@@ -43,6 +43,38 @@ space_id = await client.registry.create_space(name="My Space")
 await client.members.invite(space_id, user_id=recipient_id, write=True)
 ```
 
+## Invite links (single-link join)
+
+`create_space_invite_link` produces a **bearer link** — the ephemeral member credential
+rides in the URL fragment (`{origin}/join#…`), so anyone holding the link can join with no
+request/grant round-trip. It is the right tool for owner-initiated sharing to a trusted
+recipient (not for public "request access", which is the sealed inbox flow).
+
+```python
+from starfish_sharing.cap_mint import MintOpts
+
+# Owner: mint a link that expires in 24h.
+result = await create_space_invite_link(
+    session, space_id, "My Space", True, origin,
+    MintOpts(ttl_sec=24 * 3600),        # or MintOpts(expires_at=<unix seconds>); omit → 30-day default
+)
+link, invite_user_id = result["link"], result["inviteUserId"]
+
+# Invitee: redeem it (rejects an expired / not-yet-valid link up front).
+await join_space_by_link(session, decode_space_invite_link(fragment))
+
+# Owner: revoke this ONE link later, using the returned handle.
+await revoke_space_access(session, space_id, invite_user_id, generation=…, submit_revocation=…)
+```
+
+- **Expiry** — `ttl_sec` / `expires_at` bound the cap's `exp`; the server enforces `nbf`/`exp`
+  on every request, so a lapsed link genuinely stops working. Default is 30 days.
+- **Per-link revocation** — each call mints a *distinct* ephemeral member, so revoking one link
+  (via its `inviteUserId`) never affects other members or links.
+- **Multi-use** — bearer links are inherently reusable: there is **no** client-only single-use,
+  because the secret lives entirely in the fragment and the server counts no redemptions. Use a
+  short `ttl_sec` and/or revoke after the intended join.
+
 ## API surface
 
 - **`build_session` / `derive_session`** — construct the runtime session from passphrase or device keys

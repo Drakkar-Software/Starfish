@@ -27,6 +27,7 @@ from starfish_spaces.client import (
 from starfish_spaces.invite_helpers import (
     CapSubject,
     assert_cap_for_me,
+    assert_cap_not_expired,
     cap_nonce,
     ephemeral_subject_async,
     evict_keyring_member,
@@ -496,6 +497,7 @@ async def create_node_invite_link(
 
 async def join_node_by_link(session: "Session", token: NodeInviteLinkToken) -> str:
     """Any user: access a node by redeeming an invite link token."""
+    assert_cap_not_expired(token["cap"], "That node invite link is no longer usable")
     access_payload = {"cap": token["cap"], "key": token["key"], "write": token.get("write", False)}
     sealed = seal_to_self(session, json.dumps(access_payload))
 

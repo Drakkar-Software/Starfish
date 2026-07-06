@@ -20,6 +20,7 @@ import { ensureSpaceKeyringRecipient, ownerEnsureSpaceKeyring, buildAuthHeaders 
 import type { Session } from "./session.js"
 import {
   assertCapForMe,
+  assertCapNotExpired,
   capNonce,
   ephemeralSubject,
   evictKeyringMember,
@@ -448,6 +449,7 @@ export async function createNodeInviteLink(
  * Any user: access a node by redeeming an invite link token.
  */
 export async function joinNodeByLink(session: Session, token: NodeInviteLinkToken): Promise<string> {
+  assertCapNotExpired(token.cap, "That node invite link is no longer usable")
   const accessPayload = { cap: token.cap, key: token.key, write: token.write }
   const sealed = await sealToSelf(session, JSON.stringify(accessPayload))
   const sealedStream =

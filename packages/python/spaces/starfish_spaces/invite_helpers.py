@@ -8,8 +8,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional, TypedDict
 
+import time
+
 from starfish_identities import generate_device_keys, mint_device_cap
-from starfish_sharing.cap_mint import mint_member_cap
+from starfish_sharing.cap_mint import MintOpts, mint_member_cap
 from starfish_sharing.evict import evict_member
 
 from starfish_spaces.request_verify import verify_kem_sig
@@ -48,11 +50,13 @@ def mint_cap(
     subject: CapSubject,
     collection: str,
     scope: dict[str, Any],
+    opts: Optional[MintOpts] = None,
 ) -> Any:
     """Mint a member cap-cert from ``session`` for ``subject`` into ``collection`` with ``scope``.
 
     ``collection`` is the single collection name the cap grants access to (matches
-    ``starfish_sharing.mint_member_cap``'s signature).
+    ``starfish_sharing.mint_member_cap``'s signature). ``opts`` bounds validity via
+    ``ttl_sec`` / ``expires_at`` / ``nbf`` (default 30-day TTL when omitted).
     """
     sub = {
         "edPubHex": subject["edPubHex"],
@@ -65,7 +69,31 @@ def mint_cap(
         sub,  # type: ignore[arg-type]
         collection,
         scope,
+        opts,
     )
+
+
+def assert_cap_not_expired(cap_cert: Any, err_prefix: str) -> None:
+    """Reject a cap that has expired or is not yet valid (from its ``nbf``/``exp``).
+
+    The server enforces ``nbf``/``exp`` on every request regardless; this gives
+    link redemption a clear, immediate error instead of a silent post-join pull
+    failure. A cap with no ``exp`` is treated as non-expiring — the server stays
+    the backstop.
+
+    Raises:
+        ValueError: ``"{err_prefix}: this invite link has expired."`` /
+            ``"...is not yet valid."``.
+    """
+    if not isinstance(cap_cert, dict):
+        return
+    now = int(time.time())
+    nbf = cap_cert.get("nbf")
+    exp = cap_cert.get("exp")
+    if nbf is not None and now < nbf:
+        raise ValueError(f"{err_prefix}: this invite link is not yet valid.")
+    if exp is not None and now >= exp:
+        raise ValueError(f"{err_prefix}: this invite link has expired.")
 
 
 def cap_nonce(cap_cert: Any) -> Optional[dict[str, Any]]:
@@ -237,6 +265,7 @@ __all__ = [
     "adder_of",
     "mint_cap",
     "cap_nonce",
+    "assert_cap_not_expired",
     "parse_join_request",
     "ephemeral_subject",
     "ephemeral_subject_async",

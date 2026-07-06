@@ -38,6 +38,20 @@ export function capNonce(cap: unknown): { nonce: string; exp: number } | undefin
 }
 
 /**
+ * Reject a cap that has expired or is not yet valid, based on its `nbf`/`exp`
+ * (unix seconds). The server enforces `nbf`/`exp` on every request regardless;
+ * this gives link redemption a clear, immediate error instead of a silent
+ * post-join pull failure. A cap carrying no `exp` (should not happen for a
+ * minted member cap) is treated as non-expiring — the server stays the backstop.
+ */
+export function assertCapNotExpired(cap: unknown, errPrefix: string): void {
+  const cert = cap as { nbf?: number; exp?: number } | undefined
+  const now = Math.floor(Date.now() / 1000)
+  if (cert?.nbf != null && now < cert.nbf) throw new Error(`${errPrefix}: this invite link is not yet valid.`)
+  if (cert?.exp != null && now >= cert.exp) throw new Error(`${errPrefix}: this invite link has expired.`)
+}
+
+/**
  * Parse + fully verify a join request: shape, `userId === sha256(edPub)`, and kemSig.
  * Throws `${errPrefix}.` / `${errPrefix}: userId does not match edPub.` /
  * `${errPrefix}: kemSig is missing or invalid.`

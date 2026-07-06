@@ -33,6 +33,7 @@ import {
 import type { LinkAccessPayload } from "./space-access-store.js"
 import {
   assertCapForMe,
+  assertCapNotExpired,
   capNonce,
   ephemeralSubject,
   evictKeyringMember,
@@ -204,6 +205,16 @@ export function decodeSpaceInviteLink(fragment: string): SpaceInviteLinkToken {
 
 /**
  * Owner: create a shareable invite link for a PUBLIC space.
+ *
+ * The link is a BEARER token — anyone who holds it can join. Bound the exposure
+ * with `opts.ttlSec` / `opts.expiresAt` (the cap's server-enforced `exp`; default
+ * 30 days when omitted). The returned `inviteUserId` is the ephemeral member's
+ * userId — pass it to `revokeSpaceAccess(session, spaceId, inviteUserId, …)` to
+ * kill this one link without affecting other members or links.
+ *
+ * Bearer links are inherently multi-use: there is no client-only single-use, as
+ * the secret lives entirely in the URL fragment and the server counts no
+ * redemptions. Use a short TTL and/or revoke after the intended join.
  */
 export async function createSpaceInviteLink(
   session: Session,
@@ -211,9 +222,11 @@ export async function createSpaceInviteLink(
   spaceName: string,
   write: boolean,
   origin: string,
-): Promise<{ token: SpaceInviteLinkToken; link: string }> {
+  opts: { ttlSec?: number; nbf?: number; expiresAt?: number } = {},
+): Promise<{ token: SpaceInviteLinkToken; link: string; inviteUserId: string }> {
   const { ek, userId: ephemeralUserId, subject } = await ephemeralSubject(session)
-  const cap = await mintCap(session, subject, "content", session.layout.spaceMemberScope(spaceId, write))
+  const capOpts = { ttlSec: opts.ttlSec, nbf: opts.nbf, expiresAt: opts.expiresAt }
+  const cap = await mintCap(session, subject, "content", session.layout.spaceMemberScope(spaceId, write), capOpts)
   const nonce = capNonce(cap)
   if (nonce) saveSpaceInviteEntry(spaceId, ephemeralUserId, { edPub: ek.edPub, kemPub: ek.kemPub, cap: nonce })
   // Add the ephemeral userId to the roster
@@ -225,13 +238,14 @@ export async function createSpaceInviteLink(
   const token: SpaceInviteLinkToken = {
     v: 1, spaceId, spaceName, cap, key: ek.edPriv, kemPriv: ek.kemPriv, kemPub: ek.kemPub, write,
   }
-  return { token, link: encodeSpaceInviteLink(origin, token) }
+  return { token, link: encodeSpaceInviteLink(origin, token), inviteUserId: ephemeralUserId }
 }
 
 /**
  * Any user: join a space by redeeming an invite link token.
  */
 export async function joinSpaceByLink(session: Session, token: SpaceInviteLinkToken): Promise<Space> {
+  assertCapNotExpired(token.cap, "That space invite link is no longer usable")
   const space = buildSpace(token.spaceId, token.spaceName)
   const accessPayload = { cap: token.cap, key: token.key, kemPriv: token.kemPriv, kemPub: token.kemPub, write: token.write }
   const sealed = await sealToSelf(session, JSON.stringify(accessPayload))
