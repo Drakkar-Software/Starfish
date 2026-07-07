@@ -314,12 +314,31 @@ function stripActionPrefix(pathAndQuery: string): string {
 }
 
 /**
- * True for the batch-pull routes (`/batch/pull` and `/<ns>/batch/pull`). These
- * carry no storage path in their URL — they name collections + params in the
- * query — so the per-request `scope.paths` check cannot run at the resolver; the
- * batch handler re-checks each RESOLVED key against `scope.paths` instead. The
- * length + action-prefix guard keeps a standalone pull of a collection literally
- * named `batch/pull` (`/pull/batch/pull`) from being mistaken for the batch route.
+ * True for the batch-pull routes (`/batch/pull`, `/<ns>/batch/pull`, and any
+ * further-prefixed variant such as `/v1/<ns>/batch/pull`). These carry no
+ * storage path in their URL — they name collections + params in the query —
+ * so the per-request `scope.paths` check cannot run at the resolver; the
+ * batch handler re-checks each RESOLVED key against `scope.paths` instead.
+ * The action-prefix guard keeps a standalone pull of a collection literally
+ * named `batch/pull` (`/pull/batch/pull`) from being mistaken for the batch
+ * route — it does NOT hardcode a segment count, since a caller may prepend
+ * any number of routing segments (a namespace, a protocol version, or both —
+ * e.g. `/v1/{ns}/batch/pull`) before `batch/pull`.
+ *
+ * Fixed 2025: previously required exactly 2 or 3 total segments, so any
+ * caller whose namespaced routes carry an additional prefix segment (e.g. a
+ * `/v1` protocol-version segment ahead of the namespace, the common case for
+ * clients built on this SDK) got `false` here unconditionally. That skipped
+ * this function's whole reason for existing — the resolver fell through to
+ * its per-request `matchScopePath` check against an EMPTY storagePath
+ * (nothing follows the trailing `pull` on a batch URL), which can never
+ * match a real scope glob, so every `member`/`audience`-kind cap's batch
+ * pull was rejected with `CapAuthError(403, "request path is outside cap
+ * scope")`. Device/root caps carry no `scope.paths` at all, so
+ * `matchScopePath(_, null)` short-circuits `true` regardless — masking the
+ * bug entirely for root/device-cap callers and only ever affecting scoped
+ * member/audience callers (i.e. invited collaborators, not the resource
+ * owner) on every namespaced+versioned deployment.
  */
 function isBatchPullPath(pathAndQuery: string): boolean {
   const qIdx = pathAndQuery.indexOf("?")
@@ -328,8 +347,11 @@ function isBatchPullPath(pathAndQuery: string): boolean {
   const n = segs.length
   if (n < 2 || segs[n - 2] !== "batch" || segs[n - 1] !== "pull") return false
   if (n === 2) return true // /batch/pull
-  // /<ns>/batch/pull — a single namespace segment, never an action prefix.
-  return n === 3 && segs[0] !== "pull" && segs[0] !== "push" && segs[0] !== "list"
+  // Any number of leading namespace/version-prefix segments — none of them
+  // may themselves be an action verb (pull/push/list), which is what
+  // distinguishes this from a standalone pull of a literal "batch/pull"
+  // collection (e.g. /pull/batch/pull).
+  return segs.slice(0, n - 2).every((s) => s !== "pull" && s !== "push" && s !== "list")
 }
 
 // ─── Private orchestrator helpers ────────────────────────────────────────────

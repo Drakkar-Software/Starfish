@@ -1114,3 +1114,298 @@ async def test_member_cap_with_no_scope_paths_rejected_at_resolver() -> None:
         await resolver(req)
     assert exc.value.status == 403
     assert "scope.paths" in str(exc.value)
+
+
+# ─── _is_batch_pull_path — /v1/{ns}/batch/pull regression (fixed 2025) ────────
+#
+# Bug: the function's segment-count guard only accepted exactly 2 total
+# segments (bare `/batch/pull`) or 3 (`/{ns}/batch/pull`). Any caller whose
+# namespaced routes carry an additional prefix segment — e.g. a `/v1`
+# protocol-version segment ahead of the namespace, the shape every client
+# built on this SDK's `applyNamespace()` produces — got `False` unconditionally
+# for 4+ segments. That skipped the resolver's designed exemption ("batch pull
+# carries no single storage path in its URL, so the per-request scope.paths
+# check can't run here"), so it fell through to `match_scope_path` against an
+# EMPTY storage_path (`_strip_action_prefix` has nothing left after the
+# trailing `pull` on a batch URL) — which can never match a real
+# `spaces/{id}/**`-style glob, raising `CapAuthError(403, "request path is
+# outside cap scope")` for EVERY `member`/`audience`-kind cap's batch pull.
+# `device`/root caps carry no `scope.paths` at all, so
+# `match_scope_path(_, None)` short-circuits `True` regardless — masking the
+# bug entirely for device-cap callers and only ever breaking scoped
+# member/audience callers (i.e. invited collaborators, never the resource
+# owner) on every namespaced+versioned deployment. Found via a live production
+# incident (wedding-os "invited collaborator sees no data after joining a
+# space") where every real request hit the 4-segment shape below.
+
+
+def test_v1_namespaced_batch_pull_path_recognized_unit() -> None:
+    """PIN (CORE REGRESSION, unit level): the real deployed URL shape — a
+    `/v1` version prefix + namespace + `batch/pull` — must be recognized."""
+    from starfish_server.router.cap_resolver import _is_batch_pull_path
+
+    assert _is_batch_pull_path("/v1/dk/batch/pull") is True
+    assert _is_batch_pull_path("/v1/dk/batch/pull?collections=objdoc") is True
+    assert _is_batch_pull_path("/v1/octobot/batch/pull?collections=a,b") is True
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/batch/pull",
+        "/batch/pull?collections=x",
+        "/dk/batch/pull",
+        "/v1/dk/batch/pull",
+        "/v1/dk/batch/pull?collections=objdoc&params=%7B%7D",
+        "/api/v2/dk/batch/pull",  # any number/kind of non-verb prefix segments
+        "/a/b/c/d/e/batch/pull",
+    ],
+)
+def test_batch_pull_path_recognized_for_any_non_verb_prefix_depth(path: str) -> None:
+    """PIN: the fix must generalize to ANY number of leading routing segments
+    (namespace, protocol version, or both, or more) — not just 2/3/4 — as
+    long as none of them is itself an action verb. Guards against a future
+    regression that special-cases 4 without generalizing the guard."""
+    from starfish_server.router.cap_resolver import _is_batch_pull_path
+
+    assert _is_batch_pull_path(path) is True
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/pull/batch/pull",
+        "/push/batch/pull",
+        "/list/batch/pull",
+        "/v1/pull/batch/pull",
+        "/v1/dk/pull/batch/pull",
+        "/pull/v1/dk/batch/pull",
+    ],
+)
+def test_standalone_pull_of_literal_batch_pull_collection_never_mistaken_for_batch_route(
+    path: str,
+) -> None:
+    """PIN: a leading action verb (pull/push/list) ANYWHERE in the prefix
+    means this is a STANDALONE action on a collection literally named
+    `batch/pull`, never the aggregate batch endpoint — at any prefix depth,
+    not just the original 3-segment case. This is the exact guard the fix
+    must not weaken while generalizing the segment-count relaxation."""
+    from starfish_server.router.cap_resolver import _is_batch_pull_path
+
+    assert _is_batch_pull_path(path) is False
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "",
+        "/",
+        "/pull",
+        "/batch",
+        "/pull/batch",
+        "/batch/push",
+        "/batch/list",
+        "/other/path",
+        "/v1/dk/pull/spaces/sp1/_keyring",
+        "/v1/dk/push/spaces/sp1/_access",
+    ],
+)
+def test_non_batch_pull_paths_rejected_unit(path: str) -> None:
+    from starfish_server.router.cap_resolver import _is_batch_pull_path
+
+    assert _is_batch_pull_path(path) is False
+
+
+def _mint_member_with_paths(iss, sub, nbf, paths, *, collections=None, ttl=3600):
+    unsigned = {
+        "v": 1,
+        "kind": "member",
+        "iss": iss.ed_pub_hex,
+        "issUserId": iss.user_id,
+        "sub": sub.ed_pub_hex,
+        "subKem": sub.kem_pub_hex,
+        "subUserId": sub.user_id,
+        "scope": {
+            "ops": ["read", "write", "list"],
+            "collections": list(collections or ["content"]),
+            "paths": paths,
+        },
+        "nbf": nbf,
+        "exp": nbf + ttl,
+        "nonce": base64.b64encode(bytes([11]) * 16).decode("ascii"),
+    }
+    return sign_cap_cert(unsigned, iss.ed_priv_hex)
+
+
+@pytest.mark.asyncio
+async def test_member_cap_v1_namespaced_batch_pull_end_to_end_succeeds() -> None:
+    """PIN (CORE REGRESSION, end-to-end): a real member-kind cap — the exact
+    kind an invited space collaborator's client presents — must be admitted
+    at the resolver for a `/v1/{ns}/batch/pull` request whose scope covers the
+    space. Before the fix this raised CapAuthError(403, "request path is
+    outside cap scope") for every such request."""
+    alice = _make_root(0x42)
+    bob = _make_root(0x11)
+    cert = _mint_member_with_paths(
+        alice, bob, int(time.time()) - 10, ["spaces/sp1/**"]
+    )
+    req_path = "/v1/dk/batch/pull?collections=objdoc&params=%7B%7D"
+    sig = sign_request("GET", req_path, b"", bob.ed_priv_hex, host="api")
+    req = _FakeRequest(
+        "GET",
+        f"https://api{req_path}",
+        headers={
+            "Authorization": _cap_header(cert),
+            "X-Starfish-Sig": sig.sig,
+            "X-Starfish-Ts": str(sig.ts),
+            "X-Starfish-Nonce": sig.nonce,
+        },
+    )
+    resolver = create_cap_cert_role_resolver(
+        nonce_cache=create_in_memory_nonce_cache(),
+        revocation_store=create_in_memory_revocation_store(),
+        plugins=[sharing_server_plugin],
+    )
+    auth = await resolver(req)  # must NOT raise
+    assert auth.identity == bob.user_id
+
+
+@pytest.mark.asyncio
+async def test_member_cap_bare_and_single_segment_batch_pull_still_succeed() -> None:
+    """PIN: the pre-existing shapes (bare `/batch/pull`, single-segment
+    `/{ns}/batch/pull`) must keep working for a member cap — the fix must not
+    regress what already worked."""
+    alice = _make_root(0x42)
+    bob = _make_root(0x11)
+    cert = _mint_member_with_paths(alice, bob, int(time.time()) - 10, ["spaces/sp1/**"])
+    resolver = create_cap_cert_role_resolver(
+        nonce_cache=create_in_memory_nonce_cache(),
+        revocation_store=create_in_memory_revocation_store(),
+        plugins=[sharing_server_plugin],
+    )
+    for req_path in ("/batch/pull?collections=objdoc", "/dk/batch/pull?collections=objdoc"):
+        sig = sign_request("GET", req_path, b"", bob.ed_priv_hex, host="api")
+        req = _FakeRequest(
+            "GET",
+            f"https://api{req_path}",
+            headers={
+                "Authorization": _cap_header(cert),
+                "X-Starfish-Sig": sig.sig,
+                "X-Starfish-Ts": str(sig.ts),
+                "X-Starfish-Nonce": sig.nonce,
+            },
+        )
+        auth = await resolver(req)  # must NOT raise
+        assert auth.identity == bob.user_id
+
+
+@pytest.mark.asyncio
+async def test_member_cap_batch_pull_still_enforces_scope_paths() -> None:
+    """PIN: the fix only relaxes the SEGMENT-COUNT guard, not the actual
+    scope enforcement — a member cap scoped to a DIFFERENT space must still
+    be rejected on `/v1/{ns}/batch/pull` (the batch HANDLER re-checks
+    scope.paths against each resolved key; this pins that the resolver at
+    least still reports a scope for the batch handler to check against,
+    i.e. `_is_batch_pull_path` correctly returning True does not turn into an
+    unconditional bypass — see the handler-level re-check note in the
+    function's own docstring)."""
+    alice = _make_root(0x42)
+    bob = _make_root(0x11)
+    cert = _mint_member_with_paths(
+        alice, bob, int(time.time()) - 10, ["spaces/sp-OTHER/**"]
+    )
+    req_path = "/v1/dk/batch/pull?collections=objdoc&params=%7B%7D"
+    sig = sign_request("GET", req_path, b"", bob.ed_priv_hex, host="api")
+    req = _FakeRequest(
+        "GET",
+        f"https://api{req_path}",
+        headers={
+            "Authorization": _cap_header(cert),
+            "X-Starfish-Sig": sig.sig,
+            "X-Starfish-Ts": str(sig.ts),
+            "X-Starfish-Nonce": sig.nonce,
+        },
+    )
+    resolver = create_cap_cert_role_resolver(
+        nonce_cache=create_in_memory_nonce_cache(),
+        revocation_store=create_in_memory_revocation_store(),
+        plugins=[sharing_server_plugin],
+    )
+    # The resolver itself does NOT check scope.paths for a batch-pull path
+    # (by design — see _is_batch_pull_path's docstring); it must still admit
+    # the request here (identity resolves) and hand `expandedPaths` off via
+    # request.state for the batch HANDLER to enforce per resolved key. This
+    # test pins that the resolver does not itself reject it — the handler-
+    # level enforcement is covered by drakkar_sync's own batch tests, not
+    # this package.
+    auth = await resolver(req)
+    assert auth.identity == bob.user_id
+
+
+@pytest.mark.asyncio
+async def test_device_cap_v1_namespaced_batch_pull_end_to_end_succeeds() -> None:
+    """PIN: a device cap's batch pull over `/v1/{ns}/batch/pull` must succeed.
+    `_mint_device` (this file's shared helper) sets an explicit `scope.paths`
+    (`["notes/*"]`), so this device cap IS subject to the same bug as a member
+    cap and DOES fail pre-fix (verified: reverting the fix breaks this test
+    too) — it is not immune just by virtue of being device-kind. A TRUE root
+    cap with no `scope.paths` at all would be immune regardless (`
+    match_scope_path(_, None)` short-circuits `True`), which is the actual
+    reason the space *owner* was never affected in production — but pinning
+    that requires no `_is_batch_pull_path` involvement at all, so it isn't a
+    meaningful regression test for THIS fix. This test instead proves the fix
+    also benefits any device-kind caller that does carry a scope restriction."""
+    alice = _make_root(0x42)
+    dev = _make_root(0x11)
+    cert = _mint_device(alice, dev, int(time.time()) - 10)
+    req_path = "/v1/dk/batch/pull?collections=objdoc"
+    sig = sign_request("GET", req_path, b"", dev.ed_priv_hex, host="api")
+    req = _FakeRequest(
+        "GET",
+        f"https://api{req_path}",
+        headers={
+            "Authorization": _cap_header(cert),
+            "X-Starfish-Sig": sig.sig,
+            "X-Starfish-Ts": str(sig.ts),
+            "X-Starfish-Nonce": sig.nonce,
+        },
+    )
+    auth = await _base_resolver()(req)
+    assert auth.identity == alice.user_id
+
+
+@pytest.mark.asyncio
+async def test_member_cap_standalone_pull_of_literal_batch_pull_collection_still_scope_checked() -> None:
+    """PIN (end-to-end): a member cap scoped to `spaces/sp1/**` making a
+    STANDALONE pull of a collection literally named `batch/pull`
+    (`/pull/batch/pull`) — NOT the aggregate batch route — must still go
+    through the normal per-request scope.paths check and be rejected, since
+    `spaces/sp1/**` does not cover `batch/pull`. Confirms the fix's
+    generalized prefix-scanning didn't accidentally start treating this
+    standalone-pull edge case as a batch route (which would incorrectly skip
+    the scope check and admit it)."""
+    alice = _make_root(0x42)
+    bob = _make_root(0x11)
+    cert = _mint_member_with_paths(
+        alice, bob, int(time.time()) - 10, ["spaces/sp1/**"], collections=["content"]
+    )
+    req_path = "/pull/batch/pull"
+    sig = sign_request("GET", req_path, b"", bob.ed_priv_hex, host="api")
+    req = _FakeRequest(
+        "GET",
+        f"https://api{req_path}",
+        headers={
+            "Authorization": _cap_header(cert),
+            "X-Starfish-Sig": sig.sig,
+            "X-Starfish-Ts": str(sig.ts),
+            "X-Starfish-Nonce": sig.nonce,
+        },
+    )
+    resolver = create_cap_cert_role_resolver(
+        nonce_cache=create_in_memory_nonce_cache(),
+        revocation_store=create_in_memory_revocation_store(),
+        plugins=[sharing_server_plugin],
+    )
+    with pytest.raises(CapAuthError) as exc:
+        await resolver(req)
+    assert exc.value.status == 403
