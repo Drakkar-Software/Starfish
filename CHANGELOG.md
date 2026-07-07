@@ -1,5 +1,24 @@
 # Changelog
 
+## 3.0.0-alpha.68
+
+Fixes an infinite-render loop in the Zustand React bindings under React 18/19 when a
+`useStarfishData` / `useStarfishLogItems` selector derives a fresh array or object.
+
+### `@drakkar.software/starfish-client` (alpha.68)
+
+#### Fixed
+- **`useStarfishData` / `useStarfishLogItems` no longer loop when a selector returns a
+  derived array/object.** A selector such as `d => d.items.filter(...)`, a merge, or a
+  mapped list returns a new reference on every call. Under Zustand v5 — whose `useStore`
+  reads through React's `useSyncExternalStore` with `Object.is` — that made the snapshot
+  referentially unstable, which React 18/19 rejects with "The result of getSnapshot should
+  be cached to avoid an infinite loop" and then loops (Maximum update depth exceeded). Both
+  hooks now read the underlying slice via `useStoreWithEqualityFn` with a `shallow` equality
+  check, so an unchanged selection returns the cached reference (stable snapshot, no loop)
+  while real changes still re-render. Primitive selectors are unaffected (`shallow` falls
+  back to `Object.is`). No API change — call sites are identical.
+
 ## 3.0.0-alpha.67
 
 Hardens the single-link space-invite flow with owner-settable expiry, a per-link revocation

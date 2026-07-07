@@ -125,6 +125,50 @@ describe("useStarfishData", () => {
 
     expect(result.current).toBe("dark")
   })
+
+  // Regression: a selector that derives a fresh array/object every call must not
+  // make the snapshot referentially unstable (which loops under zustand v5 + React
+  // 18/19 with "getSnapshot should be cached"). `shallow` equality returns the
+  // cached reference while the data is unchanged.
+  it("keeps a transform selector referentially stable across re-renders", () => {
+    const store = createMockStore({ data: { items: [{ id: "a" }, { id: "b" }] } })
+    let renderCount = 0
+    const { result, rerender } = renderHook(() => {
+      renderCount++
+      // Fresh array on every call — the shape that used to loop.
+      return useStarfishData(store, (d) =>
+        (d.items as { id: string }[]).filter((x) => x.id !== "z"),
+      )
+    })
+
+    const first = result.current
+    expect(first).toEqual([{ id: "a" }, { id: "b" }])
+    const countAfterMount = renderCount
+
+    // Re-render the consumer without touching store data.
+    rerender()
+
+    // Same reference (shallow-cached) and no runaway render loop.
+    expect(result.current).toBe(first)
+    expect(renderCount).toBeLessThanOrEqual(countAfterMount + 1)
+  })
+
+  it("returns a new value only when the underlying data changes", () => {
+    const store = createMockStore({ data: { items: [{ id: "a" }] } })
+    const { result } = renderHook(() =>
+      useStarfishData(store, (d) => (d.items as { id: string }[]).map((x) => x.id)),
+    )
+
+    const first = result.current
+    expect(first).toEqual(["a"])
+
+    act(() => {
+      store.setState({ data: { items: [{ id: "a" }, { id: "b" }] } })
+    })
+
+    expect(result.current).toEqual(["a", "b"])
+    expect(result.current).not.toBe(first)
+  })
 })
 
 describe("useStarfishState", () => {
@@ -517,6 +561,17 @@ describe("useStarfishLog hooks", () => {
     const store = createMockLogStore({ items: [{ ts: 1, data: { a: 1 } }, { ts: 2, data: { b: 2 } }] })
     const { result } = renderHook(() => useStarfishLogItems(store, (items) => items.length))
     expect(result.current).toBe(2)
+  })
+
+  it("useStarfishLogItems keeps a transform selector referentially stable across re-renders", () => {
+    const store = createMockLogStore({ items: [{ ts: 1, data: { a: 1 } }, { ts: 2, data: { b: 2 } }] })
+    const { result, rerender } = renderHook(() =>
+      useStarfishLogItems(store, (items) => items.map((i) => i.ts)),
+    )
+    const first = result.current
+    expect(first).toEqual([1, 2])
+    rerender()
+    expect(result.current).toBe(first)
   })
 
   it("useLogStatus derives status and updates on change", () => {

@@ -1,5 +1,7 @@
 import { createStore, type StoreApi } from "zustand/vanilla"
 import { useStore } from "zustand"
+import { useStoreWithEqualityFn } from "zustand/traditional"
+import { shallow } from "zustand/shallow"
 import {
   persist,
   subscribeWithSelector,
@@ -347,13 +349,29 @@ export function useStarfishState<T>(
   return useStore(store, selector)
 }
 
-/** Use only the synced data, with an optional selector for fine-grained subscriptions. */
+/**
+ * Use only the synced data, with an optional selector for fine-grained subscriptions.
+ *
+ * Uses `useStoreWithEqualityFn` with a `shallow` equality check rather than the
+ * plain `useStore`. A selector that derives a fresh array/object from `data`
+ * (e.g. `d => d.items.filter(...)`, a merge, a mapped list) returns a new
+ * reference on every call. Under zustand v5 — whose `useStore` reads through
+ * React's `useSyncExternalStore` with `Object.is` — that makes the snapshot
+ * referentially unstable, which React 18/19 rejects with "The result of
+ * getSnapshot should be cached to avoid an infinite loop" and then loops
+ * (Maximum update depth exceeded). `shallow` compares the selected value
+ * element-by-element and returns the cached reference when unchanged, so the
+ * snapshot stays stable (no loop) while still re-rendering on real changes.
+ * Primitive selectors are unaffected — `shallow` falls back to `Object.is`.
+ */
 export function useStarfishData<T = Record<string, unknown>>(
   store: StoreApi<StarfishStore>,
   selector?: (data: Record<string, unknown>) => T,
 ): T {
-  return useStore(store, (state) =>
-    selector ? selector(state.data) : (state.data as unknown as T),
+  return useStoreWithEqualityFn(
+    store,
+    (state) => (selector ? selector(state.data) : (state.data as unknown as T)),
+    shallow,
   )
 }
 
@@ -862,13 +880,21 @@ export function useStarfishLog(store: StoreApi<StarfishLogStore>): StarfishLogSt
   return useStore(store)
 }
 
-/** Use only the accumulated items, with an optional selector for fine-grained subscriptions. */
+/**
+ * Use only the accumulated items, with an optional selector for fine-grained subscriptions.
+ *
+ * Uses `shallow` equality for the same reason as {@link useStarfishData}: a
+ * selector that derives a fresh array/object would otherwise make the zustand v5
+ * `useSyncExternalStore` snapshot referentially unstable and loop under React 18/19.
+ */
 export function useStarfishLogItems<T = AppendElement[]>(
   store: StoreApi<StarfishLogStore>,
   selector?: (items: AppendElement[]) => T,
 ): T {
-  return useStore(store, (state) =>
-    selector ? selector(state.items) : (state.items as unknown as T),
+  return useStoreWithEqualityFn(
+    store,
+    (state) => (selector ? selector(state.items) : (state.items as unknown as T)),
+    shallow,
   )
 }
 

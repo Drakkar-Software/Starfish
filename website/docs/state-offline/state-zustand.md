@@ -167,6 +167,8 @@ function RoomChat({ store }: { store: StoreApi<StarfishStore> }) {
 }
 ```
 
+Selectors that **derive** a fresh array or object each call (`d => d.items.filter(...)`, a merge, a mapped list) are safe: `useStarfishData` compares the selected value with a `shallow` equality check and returns the cached reference when it's unchanged. This keeps the value referentially stable between real data changes, so it never triggers React's "The result of getSnapshot should be cached to avoid an infinite loop" under Zustand v5 / React 18+.
+
 The store includes `subscribeWithSelector` middleware, so you can also subscribe programmatically:
 
 ```ts
