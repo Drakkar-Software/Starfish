@@ -1,5 +1,27 @@
 # Changelog
 
+## 3.0.0-alpha.67
+
+Hardens the single-link space-invite flow with owner-settable expiry, a per-link revocation
+handle, and a join-time expiry guard. **Cross-language** (TS + Python).
+
+### `@drakkar.software/starfish-spaces` / `starfish-spaces` (alpha.67)
+
+#### Added
+- **Single-link space invites — owner-settable expiry + per-link revocation handle.** (TS + Python)
+  `createSpaceInviteLink(session, spaceId, name, write, origin, opts?)` now accepts
+  `{ ttlSec, nbf, expiresAt }` (mirrors `createNodeInviteLink`; the cap's server-enforced `exp`,
+  default 30-day TTL preserved when omitted) and additionally returns `inviteUserId` — the ephemeral
+  member's id to pass to `revokeSpaceAccess(session, spaceId, inviteUserId, …)` to kill one specific
+  link without affecting other members or links. New shared `assertCapNotExpired` guard in
+  `invite-helpers`. The bearer-link token stays `v:1` and default behavior is unchanged, so existing
+  consumers are unaffected; bearer links remain inherently multi-use (no client-only single-use).
+
+#### Changed
+- **`joinSpaceByLink` / `joinNodeByLink` reject an expired or not-yet-valid link up front** (TS + Python)
+  with a clear error, instead of proceeding into a silent post-join pull failure. The server already
+  enforces the cap's `nbf`/`exp` on every request; this is a fail-fast client-side guard.
+
 ## 3.0.0-alpha.66
 
 Fixes a cap-cert resolver bug that denied every scoped (`member`/`audience`-kind) batch pull
@@ -34,10 +56,9 @@ carried the identical bug and are fixed identically).
 ## 3.0.0-alpha.65
 
 Adds two reusable client-side helpers extracted from downstream apps (inbox append + a
-public-profile offline cache), so a consuming library can hold configuration instead of logic —
-**TypeScript only** (Python twins deferred; client-side conveniences over existing primitives, no
-protocol/wire change). Also **hardens the single-link space-invite flow** (owner-settable expiry +
-per-link revocation handle + join-time expiry guard), which **is** mirrored TS + Python.
+public-profile offline cache), so a consuming library can hold configuration instead of logic.
+**TypeScript only** this release; Python twins are deferred (client-side conveniences over
+existing primitives — no protocol/wire change, cross-language conformance vectors unaffected).
 
 ### `@drakkar.software/starfish-spaces` (alpha.65)
 
@@ -51,19 +72,6 @@ per-link revocation handle + join-time expiry guard), which **is** mirrored TS +
   the configured `kvAdapter`. Public profiles are plaintext and fetched with a bare `fetch` (they
   bypass the signed pull cache), so `readProfile` had no offline fallback; `readProfileCached` caches
   a live hit and returns the last-known profile when a later read fails or returns all-null.
-- **Single-link space invites — owner-settable expiry + per-link revocation handle.** (TS + Python)
-  `createSpaceInviteLink(session, spaceId, name, write, origin, opts?)` now accepts
-  `{ ttlSec, nbf, expiresAt }` (mirrors `createNodeInviteLink`; the cap's server-enforced `exp`,
-  default 30-day TTL preserved when omitted) and additionally returns `inviteUserId` — the ephemeral
-  member's id to pass to `revokeSpaceAccess(session, spaceId, inviteUserId, …)` to kill one specific
-  link without affecting other members or links. New shared `assertCapNotExpired` guard in
-  `invite-helpers`. The bearer-link token stays `v:1` and default behavior is unchanged, so existing
-  consumers are unaffected; bearer links remain inherently multi-use (no client-only single-use).
-
-#### Changed
-- **`joinSpaceByLink` / `joinNodeByLink` reject an expired or not-yet-valid link up front** (TS + Python)
-  with a clear error, instead of proceeding into a silent post-join pull failure. The server already
-  enforces the cap's `nbf`/`exp` on every request; this is a fail-fast client-side guard.
 
 
 ## 3.0.0-alpha.64
