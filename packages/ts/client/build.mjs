@@ -21,15 +21,18 @@ const EXTERNAL = [
   "@drakkar.software/starfish-protocol",
 ]
 
-// esbuild treats `zustand` external as covering all `zustand/*` subpaths.
-// We need `zustand` + `zustand/vanilla` external (consumers ship their own
-// peer-dep copy — duplicating would split state) but `zustand/middleware`
-// MUST be bundled so esbuild can tree-shake `devtoolsImpl` (and its
+// esbuild does NOT treat a bare `zustand` external as covering `zustand/*`
+// subpaths — each subpath resolves independently. We keep `zustand`,
+// `zustand/vanilla`, `zustand/traditional`, and `zustand/shallow` external
+// (consumers ship their own peer-dep copy — duplicating would split state, and
+// `zustand/traditional` drags in `use-sync-external-store`, whose CJS
+// `require("react")` breaks once inlined into this ESM bundle). `zustand/middleware`
+// MUST stay bundled so esbuild can tree-shake `devtoolsImpl` (and its
 // `import.meta.env`) out of the published file.
 const zustandSelectiveExternal = {
   name: "zustand-selective-external",
   setup(b) {
-    b.onResolve({ filter: /^zustand($|\/vanilla$)/ }, (args) => ({
+    b.onResolve({ filter: /^zustand($|\/vanilla$|\/traditional$|\/shallow$)/ }, (args) => ({
       path: args.path,
       external: true,
     }))

@@ -1,5 +1,22 @@
 # Changelog
 
+## 3.0.0-alpha.69
+
+Build fix for the alpha.68 Zustand-binding change: ship `zustand/traditional` and
+`zustand/shallow` as external imports instead of bundling them.
+
+### `@drakkar.software/starfish-client` (alpha.69)
+
+#### Fixed
+- **`bindings/zustand` threw `Dynamic require of "react" is not supported` at import.**
+  alpha.68 started importing `useStoreWithEqualityFn` from `zustand/traditional` and
+  `shallow` from `zustand/shallow`, but the esbuild config only externalized `zustand`
+  and `zustand/vanilla`. esbuild does not treat a bare `zustand` external as covering
+  those subpaths, so `zustand/traditional` (and its transitive `use-sync-external-store`,
+  whose CJS `require("react")` can't run in an ESM bundle) got inlined and crashed on
+  first import. Both subpaths are now marked external and resolve from the consumer's
+  own zustand peer dependency. `zustand/middleware` stays bundled (devtools tree-shake).
+
 ## 3.0.0-alpha.68
 
 Fixes an infinite-render loop in the Zustand React bindings under React 18/19 when a
