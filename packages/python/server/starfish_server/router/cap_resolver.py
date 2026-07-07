@@ -268,14 +268,32 @@ def _strip_action_prefix(path_and_query: str) -> str:
 
 
 def _is_batch_pull_path(path_and_query: str) -> bool:
-    """True for the batch-pull routes (``/batch/pull`` and ``/<ns>/batch/pull``).
+    """True for the batch-pull routes (``/batch/pull``, ``/<ns>/batch/pull``, and
+    any further-prefixed variant such as ``/v1/<ns>/batch/pull``).
 
     These carry no storage path in their URL — they name collections + params in
     the query — so the per-request ``scope.paths`` check cannot run at the
     resolver; the batch handler re-checks each RESOLVED key against
-    ``scope.paths`` instead. The length + action-prefix guard keeps a standalone
-    pull of a collection literally named ``batch/pull`` (``/pull/batch/pull``)
-    from being mistaken for the batch route.
+    ``scope.paths`` instead. The action-prefix guard keeps a standalone pull of a
+    collection literally named ``batch/pull`` (``/pull/batch/pull``) from being
+    mistaken for the batch route — it does NOT hardcode a segment count, since a
+    caller may prepend any number of routing segments (a namespace, a protocol
+    version, or both — e.g. ``/v1/{ns}/batch/pull``) before ``batch/pull``.
+
+    Fixed 2025: previously required exactly 2 or 3 total segments, so any
+    caller whose namespaced routes carry an additional prefix segment (e.g. a
+    ``/v1`` protocol-version segment ahead of the namespace, the common case
+    for clients built on this SDK) got ``False`` here unconditionally. That
+    skipped this function's whole reason for existing — the resolver fell
+    through to its per-request ``match_scope_path`` check against an EMPTY
+    storage_path (nothing follows the trailing ``pull`` on a batch URL), which
+    can never match a real scope glob, so every ``member``/``audience``-kind
+    cap's batch pull was rejected with ``CapAuthError(403, "request path is
+    outside cap scope")``. Device/root caps carry no ``scope.paths`` at all, so
+    ``match_scope_path(_, None)`` short-circuits ``True`` regardless — masking
+    the bug entirely for root/device-cap callers and only ever affecting
+    scoped member/audience callers (i.e. invited collaborators, not the
+    resource owner) on every namespaced+versioned deployment.
     """
     q_idx = path_and_query.find("?")
     path_only = path_and_query[:q_idx] if q_idx >= 0 else path_and_query
@@ -285,8 +303,11 @@ def _is_batch_pull_path(path_and_query: str) -> bool:
         return False
     if n == 2:  # /batch/pull
         return True
-    # /<ns>/batch/pull — a single namespace segment, never an action prefix.
-    return n == 3 and segs[0] not in ("pull", "push", "list")
+    # Any number of leading namespace/version-prefix segments — none of them
+    # may themselves be an action verb (pull/push/list), which is what
+    # distinguishes this from a standalone pull of a literal "batch/pull"
+    # collection (e.g. /pull/batch/pull).
+    return all(s not in ("pull", "push", "list") for s in segs[:-2])
 
 
 # ─── Private orchestrator helpers ────────────────────────────────────────────

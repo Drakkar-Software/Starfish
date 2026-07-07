@@ -1,5 +1,36 @@
 # Changelog
 
+## 3.0.0-alpha.66
+
+Fixes a cap-cert resolver bug that denied every scoped (`member`/`audience`-kind) batch pull
+under a namespaced-AND-version-prefixed route — found via a live production incident where an
+invited space collaborator saw no data after joining. **Cross-language** (both implementations
+carried the identical bug and are fixed identically).
+
+### `starfish-server` / `@drakkar.software/starfish-server` (alpha.66)
+
+#### Fixed
+- **`isBatchPullPath`/`_is_batch_pull_path` rejected `/v1/{ns}/batch/pull` (4-segment) routes** —
+  the function's segment-count guard only accepted a bare `/batch/pull` (2 segments) or a
+  single-namespace-segment `/{ns}/batch/pull` (3); any caller whose namespaced routes carry an
+  additional prefix segment (e.g. a `/v1` protocol-version segment ahead of the namespace — the
+  shape any client built on this SDK's `applyNamespace()` produces) got `false`/`False`
+  unconditionally. That skipped the resolver's designed exemption ("batch pull carries no single
+  storage path in its URL, so the per-request `scope.paths` check can't run here"), so it fell
+  through to `matchScopePath`/`match_scope_path` against an **empty** storage path
+  (`stripActionPrefix`/`_strip_action_prefix` has nothing left after the trailing `pull` on a
+  batch URL) — which can never match a real `spaces/{id}/**`-style glob, raising
+  `CapAuthError(403, "request path is outside cap scope")` for every `member`/`audience`-kind
+  cap's batch pull. `device`/root caps carry no `scope.paths` at all, so
+  `matchScopePath(_, null)`/`match_scope_path(_, None)` short-circuits `true` regardless — this is
+  why the bug was invisible for a resource owner and only ever broke invited collaborators.
+  Fixed by relaxing the guard to accept any number of leading namespace/version-prefix segments,
+  as long as none of them is itself an action verb (`pull`/`push`/`list`) — same guard intent as
+  before, just without the hardcoded segment count. Added end-to-end regression tests (real
+  `member`-kind and `device`-kind caps against `/v1/{ns}/batch/pull`, plus the pre-existing
+  `/batch/pull` and `/{ns}/batch/pull` shapes, plus the standalone-pull-of-a-literal-
+  `batch/pull`-collection exclusion this guard protects) in both languages.
+
 ## 3.0.0-alpha.65
 
 Adds two reusable client-side helpers extracted from downstream apps (inbox append + a

@@ -104,6 +104,34 @@ async function mintMemberCertForTest(
   return signCapCert(unsigned, bytesToHex(issuer.edPriv))
 }
 
+async function mintMemberCertWithPaths(
+  issuer: RootKeys,
+  subject: RootKeys,
+  nbf: number,
+  paths: string[],
+  opts: { collections?: string[]; ttlSec?: number } = {},
+): Promise<CapCert> {
+  const unsigned: UnsignedCapCert = {
+    v: 1,
+    kind: "member",
+
+    iss: issuer.edPubHex,
+    issUserId: issuer.userId,
+    sub: subject.edPubHex,
+    subKem: subject.kemPubHex,
+    subUserId: subject.userId,
+    scope: {
+      ops: ["read", "write", "list"],
+      collections: opts.collections ?? ["content"],
+      paths,
+    },
+    nbf,
+    exp: nbf + (opts.ttlSec ?? 3600),
+    nonce: Buffer.from(new Uint8Array(16).fill(11)).toString("base64"),
+  }
+  return signCapCert(unsigned, bytesToHex(issuer.edPriv))
+}
+
 interface FakeReqHeaders {
   [k: string]: string
 }
@@ -1479,5 +1507,147 @@ describe("createCapCertRoleResolver — scope.paths glob", () => {
         revocationStore: createInMemoryRevocationStore(),
       })(c),
     ).rejects.toMatchObject({ status: 403 })
+  })
+})
+
+// ─── isBatchPullPath — /v1/{ns}/batch/pull regression (fixed 2025) ────────────
+//
+// Bug: the function's segment-count guard only accepted exactly 2 total
+// segments (bare `/batch/pull`) or 3 (`/{ns}/batch/pull`). Any caller whose
+// namespaced routes carry an additional prefix segment — e.g. a `/v1`
+// protocol-version segment ahead of the namespace, the shape every client
+// built on this SDK's `applyNamespace()` produces — got `false` unconditionally
+// for 4+ segments. That skipped the resolver's designed exemption ("batch pull
+// carries no single storage path in its URL, so the per-request scope.paths
+// check can't run here"), so it fell through to `matchScopePath` against an
+// EMPTY storagePath (`stripActionPrefix` has nothing left after the trailing
+// `pull` on a batch URL) — which can never match a real `spaces/{id}/**`-style
+// glob, raising `CapAuthError(403, "request path is outside cap scope")` for
+// EVERY `member`/`audience`-kind cap's batch pull. `device`/root caps carry no
+// `scope.paths` at all, so `matchScopePath(_, null)` short-circuits `true`
+// regardless — masking the bug entirely for device-cap callers and only ever
+// breaking scoped member/audience callers (i.e. invited collaborators, never
+// the resource owner) on every namespaced+versioned deployment. Found via a
+// live production incident (wedding-os "invited collaborator sees no data
+// after joining a space") where every real request hit the 4-segment shape
+// below. `isBatchPullPath` itself is not exported — these tests exercise it
+// end-to-end through the real resolver, mirroring the existing "scope.paths
+// glob" describe block's approach for `matchScopePath`.
+describe("createCapCertRoleResolver — /v1/{ns}/batch/pull path regression (fixed 2025)", () => {
+  async function batchPullAs(cert: CapCert, signerPriv: Uint8Array, reqPath: string) {
+    const certB64 = Buffer.from(JSON.stringify(cert)).toString("base64")
+    const req: SignableRequest = { method: "GET", pathAndQuery: reqPath, host: "api" }
+    const sig = await signRequest(req, bytesToHex(signerPriv))
+    const c = fakeContext({
+      method: "GET",
+      url: `https://api${reqPath}`,
+      headers: {
+        Authorization: `Cap ${certB64}`,
+        "X-Starfish-Sig": sig.sig,
+        "X-Starfish-Ts": String(sig.ts),
+        "X-Starfish-Nonce": sig.nonce,
+      },
+    })
+    return createCapCertRoleResolver({
+      nonceCache: createInMemoryNonceCache(),
+      revocationStore: createInMemoryRevocationStore(),
+      plugins: [sharingServerPlugin],
+    })(c)
+  }
+
+  it("PIN (CORE REGRESSION): member cap batch pull over /v1/{ns}/batch/pull succeeds", async () => {
+    const alice = makeRoot(0x42)
+    const bob = makeRoot(0x11)
+    const nowSec = Math.floor(Date.now() / 1000)
+    const cert = await mintMemberCertWithPaths(alice, bob, nowSec - 10, ["spaces/sp1/**"])
+    const auth = await batchPullAs(
+      cert,
+      bob.edPriv,
+      "/v1/dk/batch/pull?collections=objdoc&params=%7B%7D",
+    )
+    expect(auth.identity).toBe(bob.userId)
+  })
+
+  it("PIN: member cap batch pull over bare /batch/pull and single-segment /{ns}/batch/pull still succeed", async () => {
+    const alice = makeRoot(0x42)
+    const bob = makeRoot(0x11)
+    const nowSec = Math.floor(Date.now() / 1000)
+    const cert = await mintMemberCertWithPaths(alice, bob, nowSec - 10, ["spaces/sp1/**"])
+    for (const reqPath of ["/batch/pull?collections=objdoc", "/dk/batch/pull?collections=objdoc"]) {
+      const auth = await batchPullAs(cert, bob.edPriv, reqPath)
+      expect(auth.identity).toBe(bob.userId)
+    }
+  })
+
+  it("PIN: the fix generalizes to any prefix depth (namespace + version, or more)", async () => {
+    const alice = makeRoot(0x42)
+    const bob = makeRoot(0x11)
+    const nowSec = Math.floor(Date.now() / 1000)
+    const cert = await mintMemberCertWithPaths(alice, bob, nowSec - 10, ["spaces/sp1/**"])
+    for (const reqPath of [
+      "/v1/dk/batch/pull?collections=objdoc",
+      "/api/v2/dk/batch/pull?collections=objdoc",
+    ]) {
+      const auth = await batchPullAs(cert, bob.edPriv, reqPath)
+      expect(auth.identity).toBe(bob.userId)
+    }
+  })
+
+  it("PIN: device cap batch pull over /v1/{ns}/batch/pull succeeds (mintDeviceCertForTest sets scope.paths, so this cap IS subject to the same bug — a true root cap with no scope.paths at all would be immune regardless via matchScopePath(_, null) short-circuiting true, which is why the space owner was never affected in production, but that case doesn't exercise isBatchPullPath at all)", async () => {
+    const alice = makeRoot(0x42)
+    const dev = makeRoot(0x99)
+    const nowSec = Math.floor(Date.now() / 1000)
+    const cert = await mintDeviceCertForTest(alice, dev, nowSec - 10)
+    const certB64 = Buffer.from(JSON.stringify(cert)).toString("base64")
+    const reqPath = "/v1/dk/batch/pull?collections=notes"
+    const req: SignableRequest = { method: "GET", pathAndQuery: reqPath, host: "api" }
+    const sig = await signRequest(req, bytesToHex(dev.edPriv))
+    const c = fakeContext({
+      method: "GET",
+      url: `https://api${reqPath}`,
+      headers: {
+        Authorization: `Cap ${certB64}`,
+        "X-Starfish-Sig": sig.sig,
+        "X-Starfish-Ts": String(sig.ts),
+        "X-Starfish-Nonce": sig.nonce,
+      },
+    })
+    const auth = await createCapCertRoleResolver({
+      nonceCache: createInMemoryNonceCache(),
+      revocationStore: createInMemoryRevocationStore(),
+    })(c)
+    expect(auth.identity).toBe(alice.userId)
+  })
+
+  it("PIN: member cap batch pull still enforces scope.paths — wrong space is not silently admitted", async () => {
+    const alice = makeRoot(0x42)
+    const bob = makeRoot(0x11)
+    const nowSec = Math.floor(Date.now() / 1000)
+    const cert = await mintMemberCertWithPaths(alice, bob, nowSec - 10, ["spaces/sp-OTHER/**"])
+    // The resolver itself does not check scope.paths for a batch-pull path (by
+    // design); it must still admit the request here and hand expandedPaths off
+    // for the batch HANDLER to enforce per resolved key (covered by
+    // drakkar_sync's own batch tests, not this package).
+    const auth = await batchPullAs(
+      cert,
+      bob.edPriv,
+      "/v1/dk/batch/pull?collections=objdoc&params=%7B%7D",
+    )
+    expect(auth.identity).toBe(bob.userId)
+  })
+
+  it("PIN: a STANDALONE pull of a collection literally named batch/pull is never mistaken for the batch route, at any prefix depth", async () => {
+    const alice = makeRoot(0x42)
+    const bob = makeRoot(0x11)
+    const nowSec = Math.floor(Date.now() / 1000)
+    const cert = await mintMemberCertWithPaths(alice, bob, nowSec - 10, ["spaces/sp1/**"])
+    for (const reqPath of [
+      "/pull/batch/pull",
+      "/v1/pull/batch/pull",
+      "/v1/dk/pull/batch/pull",
+      "/pull/v1/dk/batch/pull",
+    ]) {
+      await expect(batchPullAs(cert, bob.edPriv, reqPath)).rejects.toMatchObject({ status: 403 })
+    }
   })
 })
