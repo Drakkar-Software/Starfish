@@ -154,25 +154,43 @@ import {
   inviteMember,
   createSpaceInviteLink,
   acceptSpaceInvite,
-  joinSpaceViaLink,
+  joinSpaceByLink,
   revokeMember,
+  revokeSpaceAccess,
 } from '@drakkar.software/starfish-spaces'
 
 // Owner: send a direct invite to a member (requires their profile keys)
 await inviteMember(session, spaceId, { userId: memberUserId })
 
-// Owner: create a shareable invite link (bearer token)
-const { url, token } = await createSpaceInviteLink(session, spaceId, { canWrite: true })
+// Owner: create a shareable invite link (bearer token). Bound its exposure with
+// ttlSec or an absolute expiresAt (both become the cap's server-enforced `exp`;
+// defaults to a 30-day cap when omitted). inviteUserId is the ephemeral member
+// created for this link — hold onto it to revoke this one link later.
+const { link, token, inviteUserId } = await createSpaceInviteLink(
+  session, spaceId, spaceName, /* write */ true, origin,
+  { ttlSec: 3600 },
+)
 
 // Member: accept a direct invite (they received a join request in their inbox)
 await acceptSpaceInvite(session, spaceId)
 
-// Anyone with the link: join the space
-await joinSpaceViaLink(session, token)
+// Anyone with the link: join the space. Rejects up front (before touching the
+// network) if the link is already expired or not yet valid.
+await joinSpaceByLink(session, token)
 
 // Owner: revoke a member (rotates keyring + submits revocation)
 await revokeMember(session, spaceId, { memberUserId })
+
+// Owner: revoke one specific invite link by its inviteUserId, without
+// affecting other members or other links
+await revokeSpaceAccess(session, spaceId, inviteUserId, { generation, submitRevocation })
 ```
+
+Invite links are **bearer tokens**: anyone holding the link can join, and there is no
+client-only single-use — the secret lives entirely in the URL fragment and the server counts
+no redemptions. Use a short `ttlSec` and/or revoke the link via `inviteUserId` after the
+intended join. The same `ttlSec` / `nbf` / `expiresAt` options and expiry guard apply to
+`createNodeInviteLink` / `joinNodeByLink`.
 
 ---
 
