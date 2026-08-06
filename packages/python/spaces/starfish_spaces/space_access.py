@@ -1,8 +1,10 @@
 """Space and node access resolver with local caching.
 
 Resolves which StarfishClient + Encryptor pair to use for a given node access
-request.  The resolution order (6 tiers) mirrors the TypeScript implementation:
+request.  The resolution order mirrors the TypeScript implementation:
 
+0. Plaintext short-circuit — when the caller passes ``node`` and it is not
+   ``enc``, resolve a client and NEVER an encryptor.
 1. Per-node link access entry from the local store.
 2. Per-node member cap entry from the local store.
 3. Space-level link access entry from the local store.
@@ -10,8 +12,17 @@ request.  The resolution order (6 tiers) mirrors the TypeScript implementation:
 5. Owner self-mint (if ``session.keys.edPub == session.owner_ed_pub``).
 6. Non-owner fallback — raises :class:`SpaceAccessError`.
 
+Tier 0 is load-bearing, not an optimisation: tiers 1-5 each build an encryptor
+whenever one can be derived, and tier 5 falls back to the space keyring, which
+exists in any space holding at least one encrypted node. Without it a plaintext
+node is handed an encryptor, and a caller that seals on
+``handle.encryptor is not None`` writes ciphertext into a collection the server
+declares ``encryption="none"``. See ``tests/test_space_access_tier.py``.
+
 Resolved handles are cached in two module-level dicts:
-- ``_cache``: keyed ``"{userId}:{spaceId}:{nodeId}"`` → :class:`NodeAccessHandle`.
+- ``_cache``: keyed ``"{userId}:{spaceId}:{nodeId}:{enc}"`` → :class:`NodeAccessHandle`.
+  The trailing ``enc`` flag keeps a node's encrypted and plaintext views distinct;
+  without it, resolving one would serve the other from cache.
 - ``_space_encryptor_cache``: keyed ``"{userId}:{spaceId}"`` → encryptor.
 """
 
@@ -146,19 +157,33 @@ async def get_node_access(
     session: "Session",
     space_id: str,
     node_id: str,
+    node: Optional[dict[str, Any]] = None,
 ) -> NodeAccessHandle:
     """Resolve the :class:`NodeAccessHandle` for ``(space_id, node_id)``.
+
+    Args:
+        node: The node's ``{"access": ..., "enc": ...}`` axes, when the caller knows
+            them. **Pass this for any node that is not E2EE.** Without it this
+            function cannot tell a plaintext node from an encrypted one and will
+            resolve an encryptor for both — see :func:`_resolve_node_access`.
+            Matches the TypeScript ``getNodeAccess(spaceId, nodeId, node, session)``
+            signature, which has always taken it.
 
     Result is cached in ``_cache`` after first resolution.
 
     Raises:
         SpaceAccessError: when no credential can be found or derived.
     """
-    cache_key = f"{session.user_id}:{space_id}:{node_id}"
+    # The tier is part of the identity of a handle, not just of its lookup: an
+    # encrypted and a plaintext view of the same node are different objects, and a
+    # node whose access axes change must not be served a stale encryptor-bearing
+    # handle from before the change.
+    enc_key = "1" if (node or {}).get("enc") else "0"
+    cache_key = f"{session.user_id}:{space_id}:{node_id}:{enc_key}"
     if cache_key in _cache:
         return _cache[cache_key]
 
-    handle = await _resolve_node_access(session, space_id, node_id)
+    handle = await _resolve_node_access(session, space_id, node_id, node)
     _cache[cache_key] = handle
     return handle
 
@@ -167,11 +192,28 @@ async def _resolve_node_access(
     session: "Session",
     space_id: str,
     node_id: str,
+    node: Optional[dict[str, Any]] = None,
 ) -> NodeAccessHandle:
     from starfish_spaces.client import ClientOpts
     from starfish_spaces.node_keyring import build_node_encryptor
 
     opts: ClientOpts = {"baseUrl": session.base_url, "namespace": session.namespace}  # type: ignore[misc]
+
+    # Tier 0 — PLAINTEXT node: resolve a client, never an encryptor.
+    #
+    # Every tier below builds an encryptor whenever one can be derived, and Tier 5
+    # (owner self-mint) falls back to the SPACE keyring — which exists in any space
+    # holding at least one ``enc=True`` node, because ``create_node`` minted it there.
+    # So without this guard a node declared ``access:"public", enc:False`` is handed an
+    # encryptor anyway, and a caller that seals on ``handle.encryptor is not None``
+    # writes ciphertext into a collection the server declares ``encryption="none"``
+    # (``objpub``). That succeeds with 200 and the world reads an opaque blob.
+    #
+    # ``not ... .get("enc")`` rather than ``is False``: ``create_node`` stores
+    # ``enc=True if enc else None``, so a plaintext node has no ``enc`` key at all.
+    # Mirrors the TypeScript guard in ``space-access.ts`` (``if (!node.enc) ...``).
+    if node is not None and not node.get("enc"):
+        return NodeAccessHandle(client=await get_space_client(session, space_id), encryptor=None)
 
     # Tier 1 — per-node link access.
     node_link = get_node_access_entry(space_id, node_id)
@@ -284,10 +326,15 @@ async def build_node_access(
     session: "Session",
     space_id: str,
     node_id: str,
+    node: Optional[dict[str, Any]] = None,
 ) -> NodeAccessHandle:
-    """Like :func:`get_node_access` but never raises — returns a best-effort handle."""
+    """Like :func:`get_node_access` but never raises — returns a best-effort handle.
+
+    ``node`` carries the same meaning and the same warning as in
+    :func:`get_node_access`: pass it for any node that is not E2EE.
+    """
     try:
-        return await get_node_access(session, space_id, node_id)
+        return await get_node_access(session, space_id, node_id, node)
     except SpaceAccessError:
         return NodeAccessHandle(client=session.content_client)
 

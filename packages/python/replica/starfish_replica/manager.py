@@ -1,28 +1,92 @@
-"""Replica manager — scheduled and on-demand sync from a remote primary starfish."""
+"""``ReplicaManager`` — back-compat HTTP-pull manager, now a thin subclass of
+:class:`ChannelScheduler`.
+
+Historically this module held both the scheduling logic (interval loop,
+``on_pull`` cooldown, error funnel) and the HTTP-pull-into-``ObjectStore``
+sync mechanics in one class. Those are now split out into
+``scheduler.py`` (:class:`ChannelScheduler`, pure — no HTTP/server
+dependency) and ``http_channel.py`` (:class:`HttpReplicaChannel`, the HTTP
+mechanics). ``ReplicaManager`` keeps its original public constructor and
+method surface — ``__init__(store, collections, ...)``, ``remote_for``,
+``proxy_push``, ``stop`` — by building one :class:`HttpReplicaChannel` per
+:class:`RemoteCollection` and delegating scheduling to the base class.
+
+Mirrors the TS package's ``manager.ts``.
+"""
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator, MutableMapping
 from typing import Any
 
 import httpx
 
-from starfish_protocol.merge import deep_merge
-from starfish_server.protocol.push import push
-from starfish_server.router.helpers import deep_sanitize
-from starfish_server.protocol.types import PushSuccess
+from starfish_replica.channel import ChannelSchedule, ScheduledChannel
+from starfish_replica.config import RemoteCollection, RemoteConfig
+from starfish_replica.http_channel import HttpReplicaChannel
+from starfish_replica.scheduler import ChannelScheduler
 from starfish_server.storage.base import AbstractObjectStore
-
-from starfish_replica.config import RemoteCollection, RemoteConfig, SyncTrigger, WriteMode
 
 logger = logging.getLogger(__name__)
 
+__all__ = ["ReplicaManager"]
 
-class ReplicaManager:
+
+def _schedule_from_remote(remote: RemoteConfig) -> ChannelSchedule:
+    return ChannelSchedule(
+        triggers=list(remote.sync_triggers),
+        interval_ms=remote.interval_ms,
+        on_pull_min_interval_ms=remote.on_pull_min_interval_ms,
+    )
+
+
+class _LastHashView(MutableMapping[str, str]):
+    """Back-compat shim for ``manager._last_hash[name] = h``.
+
+    Historically ``_last_hash`` was a ``dict[str, str]`` on the manager
+    itself; it now lives per-channel on each :class:`HttpReplicaChannel`
+    (mirroring the TS split, where ``_lastHash`` is a per-channel scalar).
+    This view reads/writes through to the named channel so
+    ``tests/test_manager.py``'s one private-state poke
+    (``manager._last_hash["featured"] = local_hash``) keeps working
+    unmodified. New code should reach the channel directly instead.
+    """
+
+    def __init__(self, entries: list[ScheduledChannel]) -> None:
+        self._entries = entries
+
+    def _channel(self, name: str) -> HttpReplicaChannel:
+        for entry in self._entries:
+            if entry.channel.name == name and isinstance(entry.channel, HttpReplicaChannel):
+                return entry.channel
+        raise KeyError(name)
+
+    def __getitem__(self, name: str) -> str:
+        value = self._channel(name)._last_hash
+        if value is None:
+            raise KeyError(name)
+        return value
+
+    def __setitem__(self, name: str, value: str) -> None:
+        self._channel(name)._last_hash = value
+
+    def __delitem__(self, name: str) -> None:
+        self._channel(name)._last_hash = None
+
+    def __iter__(self) -> Iterator[str]:
+        return (
+            entry.channel.name
+            for entry in self._entries
+            if isinstance(entry.channel, HttpReplicaChannel) and entry.channel._last_hash is not None
+        )
+
+    def __len__(self) -> int:
+        return sum(1 for _ in self)
+
+
+class ReplicaManager(ChannelScheduler):
     """Manages replication from remote (primary) starfish servers.
 
     For each :class:`RemoteCollection`, syncs data from the primary to local
@@ -37,72 +101,43 @@ class ReplicaManager:
         client: httpx.AsyncClient | None = None,
         on_error: Callable[[str, Exception], None] | None = None,
     ) -> None:
-        self._store = store
-        self._remote_cols = list(collections)
         self._owned_client = client is None
         self._client = client or httpx.AsyncClient(timeout=30.0)
-        self._on_error = on_error or (
-            lambda name, exc: logger.error("[ReplicaManager] %s: %s", name, exc)
-        )
-        self._last_hash: dict[str, str] = {}
-        self._last_sync_at: dict[str, float] = {}
-        self._tasks: list[asyncio.Task[None]] = []
 
-    def remote_for(self, name: str) -> RemoteConfig | None:
-        """The :class:`RemoteConfig` for a collection name, or ``None`` if not replicated."""
-        col = self._find(name)
-        return col.remote if col else None
+        entries = [
+            ScheduledChannel(
+                channel=HttpReplicaChannel(store, col, self._client),
+                schedule=_schedule_from_remote(col.remote),
+            )
+            for col in collections
+        ]
+        super().__init__(entries, on_error=on_error)
 
-    async def start(self) -> None:
-        """Start background sync tasks for all remote collections."""
-        for col in self._remote_cols:
-            remote = col.remote
-
-            if SyncTrigger.SCHEDULED in remote.sync_triggers:
-                task = asyncio.create_task(self._run_loop(col))
-                self._tasks.append(task)
-            else:
-                asyncio.create_task(self._sync_safe(col))
+    @classmethod
+    def from_channels(
+        cls,
+        entries: list[ScheduledChannel],
+        *,
+        on_error: Callable[[str, Exception], None] | None = None,
+    ) -> "ChannelScheduler":
+        """Build a scheduler over arbitrary (non-HTTP) channels — e.g. a
+        :class:`~starfish_replica.space.SpaceMirrorChannel`. Prefer
+        :class:`ChannelScheduler` directly for new, non-HTTP consumers; this
+        exists for symmetry with the TS package's ``ReplicaManager.fromChannels``."""
+        return ChannelScheduler(entries, on_error=on_error)
 
     async def stop(self) -> None:
         """Cancel all background tasks and close the HTTP client (if owned)."""
-        for task in self._tasks:
-            task.cancel()
-        if self._tasks:
-            await asyncio.gather(*self._tasks, return_exceptions=True)
-        self._tasks.clear()
+        await super().stop()
         if self._owned_client:
             await self._client.aclose()
 
-    async def on_pull(self, collection_name: str) -> None:
-        """Called by the pull route when ``on_pull`` is listed in ``sync_triggers``.
-
-        Awaited before the local store is read, ensuring the response is fresh.
-        If ``on_pull_min_interval_ms`` is configured and the last sync occurred within
-        that window, the primary is not contacted and cached local data is served instead.
-        """
-        col = self._find(collection_name)
-        if col is None:
-            return
-
-        min_interval_ms = col.remote.on_pull_min_interval_ms
-        if min_interval_ms is not None:
-            last = self._last_sync_at.get(collection_name)
-            if last is not None and (time.monotonic() - last) * 1000 < min_interval_ms:
-                return  # within cooldown — serve cached local data
-
-        await self._sync_safe(col)
-
-    async def sync_now(self, name: str) -> None:
-        """Trigger an immediate sync for a single collection by name."""
-        col = self._find(name)
-        if col is None:
-            raise ValueError(f"[ReplicaManager] Unknown remote collection: {name!r}")
-        await self._do_sync(col)
-
-    async def sync_all(self) -> None:
-        """Trigger an immediate sync for all remote collections in parallel."""
-        await asyncio.gather(*(self._sync_safe(col) for col in self._remote_cols))
+    def remote_for(self, name: str) -> RemoteConfig | None:
+        """The :class:`RemoteConfig` for a collection name, or ``None`` if not replicated."""
+        entry = self._find(name)
+        if entry is None or not isinstance(entry.channel, HttpReplicaChannel):
+            return None
+        return entry.channel.remote
 
     async def proxy_push(self, name: str, raw_body: bytes | str) -> tuple[int, Any]:
         """Forward a client push to the primary (write_mode ``push_through``).
@@ -111,133 +146,20 @@ class ReplicaManager:
         a background sync so the local replica catches up. Framework-neutral —
         the caller (replica plugin) turns this into an HTTP response.
         """
-        col = self._find(name)
-        if col is None:
+        entry = self._find(name)
+        if entry is None or not isinstance(entry.channel, HttpReplicaChannel):
             return 404, {"error": f"Unknown remote collection: {name!r}"}
-        remote = col.remote
-        primary_url = f"{remote.url.rstrip('/')}{remote.push_path}"
-        headers = {
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            **remote.headers,
-        }
 
-        try:
-            resp = await self._client.post(primary_url, content=raw_body, headers=headers)
-        except httpx.HTTPError as exc:
-            logger.error("Failed to reach primary for %r: %s", name, exc)
-            return 502, {"error": "Failed to reach primary"}
-
-        if resp.status_code == 409:
-            return 409, {"error": "hash_mismatch"}
-        if not resp.is_success:
-            return resp.status_code, {"error": f"Primary returned {resp.status_code}"}
-
-        body = resp.json()
-
-        # Validate the primary's response shape before relaying it to our client.
-        # A successful push returns ``{ hash, timestamp }``; refuse to forward an
-        # arbitrary/garbage body a compromised or misbehaving primary might send.
-        if not isinstance(body, dict) or not isinstance(body.get("hash"), str):
-            logger.error("Primary returned an unexpected push response shape for %r", name)
-            return 502, {"error": "Primary returned an unexpected response"}
-
-        # Trigger sync in background (don't await)
-        task = asyncio.create_task(self.sync_now(name))
-        task.add_done_callback(
-            lambda t: logger.error("replica sync_now failed for %r: %s", name, t.exception())
-            if not t.cancelled() and t.exception() is not None
-            else None
-        )
-
-        return resp.status_code, body
-
-    def _find(self, name: str) -> RemoteCollection | None:
-        return next((c for c in self._remote_cols if c.name == name), None)
-
-    async def _run_loop(self, col: RemoteCollection) -> None:
-        interval = col.remote.interval_ms / 1000
-        while True:
-            await self._sync_safe(col)
-            await asyncio.sleep(interval)
-
-    async def _sync_safe(self, col: RemoteCollection) -> None:
-        try:
-            await self._do_sync(col)
-        except Exception as exc:  # noqa: BLE001
-            self._on_error(col.name, exc)
-
-    async def _do_sync(self, col: RemoteCollection) -> None:
-        remote = col.remote
-
-        if remote.write_mode == WriteMode.PUSH_ONLY:
-            return
-
-        document_key = col.storage_path
-
-        primary_url = f"{remote.url.rstrip('/')}{remote.pull_path}"
-        resp = await self._client.get(
-            primary_url,
-            headers={"Accept": "application/json", **remote.headers},
-        )
-        resp.raise_for_status()
-        pulled: dict[str, Any] = resp.json()
-
-        primary_hash: str = pulled.get("hash", "")
-        primary_data: dict[str, Any] = pulled.get("data", {})
-
-        if not primary_hash:
-            return
-
-        if self._last_hash.get(col.name) == primary_hash:
-            return
-
-        raw_local = await self._store.get_string(document_key)
-        current_local_hash: str = ""
-        current_local_data: dict[str, Any] = {}
-        if raw_local:
-            try:
-                local_doc = json.loads(raw_local)
-                current_local_hash = local_doc.get("hash", "")
-                current_local_data = local_doc.get("data", {})
-            except json.JSONDecodeError as exc:
-                logger.error(
-                    "[ReplicaManager] Corrupt local document at %r — treating as empty: %s",
-                    document_key, exc,
-                )
-                # current_local_hash stays "" — push with baseHash="" will overwrite
-
-        if current_local_hash == primary_hash:
-            self._last_hash[col.name] = primary_hash
-            return
-
-        if remote.write_mode == WriteMode.BIDIRECTIONAL and current_local_data:
-            data_to_write = deep_merge(current_local_data, primary_data)
-        else:
-            data_to_write = primary_data
-
-        # Strip prototype-pollution keys before writing primary data into the
-        # local store. The bidirectional merge drops them via deep_merge, but the
-        # pull-only / push-through path writes the primary's ``data`` verbatim and
-        # must not trust it — a compromised primary could otherwise plant a
-        # ``__proto__`` / ``__class__`` payload.
-        sanitized = deep_sanitize(data_to_write)
-
-        # Use current_local_hash directly ("" works for both "no document" and
-        # "corrupt document"): push() treats base_hash="" the same as no hash when
-        # the stored current_hash is also "". Must NOT coerce "" → None — push()
-        # rejects base_hash=None when a (corrupt) doc is present, which would leave
-        # a corrupt local doc permanently unrecoverable (sync would raise
-        # "Concurrent write" forever). A valid local doc still yields its real
-        # hash, so genuine concurrent-write detection is preserved.
-        base_hash = current_local_hash
-        result = await push(self._store, document_key, sanitized, base_hash)
-
-        if not isinstance(result, PushSuccess):
-            raise RuntimeError(
-                f"[ReplicaManager] Concurrent write on {col.name!r} — will retry"
+        def on_success() -> None:
+            task = asyncio.create_task(self.sync_now(name))
+            task.add_done_callback(
+                lambda t: logger.error("replica sync_now failed for %r: %s", name, t.exception())
+                if not t.cancelled() and t.exception() is not None
+                else None
             )
 
-        self._last_hash[col.name] = result.hash
-        self._last_sync_at[col.name] = time.monotonic()
-        logger.debug("[ReplicaManager] Synced %r (hash=%s)", col.name, result.hash)
+        return await entry.channel.proxy_push(raw_body, on_success=on_success)
+
+    @property
+    def _last_hash(self) -> MutableMapping[str, str]:
+        return _LastHashView(self._entries)

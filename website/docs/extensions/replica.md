@@ -16,9 +16,23 @@ It lives in its own package — `@drakkar.software/starfish-replica` (TS) /
 hook. The replica config (`remote`) is **no longer part of `CollectionConfig`**;
 the plugin owns it, exactly like `starfish-queuing` owns its `QueueConfig`.
 
-Unlike the client-side cap extensions, `starfish-replica` depends on
-`starfish-server` — the `ReplicaManager` writes pulled data through the server's
-`push()` (hash-based conflict detection) into the `ObjectStore`.
+Unlike the client-side cap extensions, `starfish-replica`'s root `.` entry
+depends on `starfish-server` — the default `HttpReplicaChannel` writes pulled
+data through the server's `push()` (hash-based conflict detection) into the
+`ObjectStore`. A second, independent data path at the `./space` subpath
+mirrors into a Starfish *space* instead and never imports `starfish-server` —
+see [Mirroring into a Starfish space](#mirroring-into-a-starfish-space) below.
+
+Under the hood, scheduling (interval loop, on_pull cooldown, error funnel) is
+a pure `ChannelScheduler` that drives whichever `ReplicaChannel` you give it —
+`HttpReplicaChannel` (this path) or `SpaceMirrorChannel` (the `./space` path)
+are just two implementations of that one interface. The root `.` entry's
+`ReplicaManager` EXTENDS `ChannelScheduler` and adds the HTTP back-compat
+constructor (`new ReplicaManager(store, collections, opts)`, unchanged) plus
+`remoteFor`/`proxyPush`; `./space`'s own `ReplicaManager` export IS
+`ChannelScheduler` directly — same scheduling API, but importing it never
+pulls in `starfish-server` (the root one's `ReplicaManager` always does,
+because its legacy constructor statically needs `HttpReplicaChannel`).
 
 ## How it works
 
@@ -136,3 +150,95 @@ auth = ReplicaAuth(passphrase=PLATFORM_PASSPHRASE)
 client = httpx.AsyncClient(timeout=30.0, auth=auth)
 manager = ReplicaManager(store, collections, client=client)
 ```
+
+## Mirroring into a Starfish space
+
+The primary→replica-server path above assumes both ends run `starfish-server`.
+A different shape of problem — replicating a mobile app's or a node's own
+local data into per-collection nodes of a Starfish *space*, encrypted under
+that space's own keyring, so a third party can be granted read-only access
+via `starfish-spaces`' `inviteToSpace` — is a second, independent
+`ReplicaChannel` at the `./space` subpath. It depends on
+`@drakkar.software/starfish-spaces` (an optional peer dependency) and never
+imports `starfish-server`, so it's safe to bundle into a mobile or browser
+client.
+
+```ts
+import { createSpaceMirrorChannel, ReplicaManager } from "@drakkar.software/starfish-replica/space"
+
+const channel = createSpaceMirrorChannel({
+  name: "cloud-mirror",
+  session,                                    // a starfish-spaces Session
+  collections: [{ id: "user-accounts", spaceName: "app-mirror" }],
+  enabledIds: () => currentlyEnabledCollectionIds(),
+  readSource: (id, ctx) => readLocalCollection(id),
+  docPath: (spaceId, nodeId) => `spaces/${spaceId}/objects/mirror/${nodeId}`,
+})
+
+const manager = new ReplicaManager([
+  { channel, schedule: { triggers: ["scheduled"], intervalMs: 5 * 60_000 } },
+])
+manager.start()
+
+channel.result  // { spaces, created, written, skipped, cleared } after the last sync
+```
+
+`ReplicaManager` here is imported from `./space`, not the root `.` entry — see
+the note above: it is `ChannelScheduler` directly, so this whole example never
+touches `starfish-server`.
+
+`SpaceMirrorChannel` finds-or-creates one space per distinct `spaceName` in
+`collections`, finds-or-creates one node per collection id (`access: "space",
+enc: true` by default), and CAS-writes `readSource`'s result into it every
+cycle — `changeDetection` defaults to `"none"` (always write) since a
+source-hash skip is only sound when this channel is the *sole* writer of a
+node.
+
+The read side, `readSpaceMirror`, is session-less: given a member cap for the
+space (e.g. minted via `inviteToSpace`) plus the grant holder's own ephemeral
+keys, it pulls and decrypts every node it recognizes. No `.` (`ReplicaManager`)
+type or plugin machinery is involved on this side — it's a standalone function.
+
+### Python
+
+Python has the same channel, as `starfish_replica.space`, installed via the
+`space` extra:
+
+```bash
+pip install "starfish-replica[space]"
+```
+
+```python
+from starfish_replica.space import SpaceMirrorCollection, create_space_mirror_channel
+
+channel = create_space_mirror_channel(
+    name="cloud-mirror",
+    session=session,
+    collections=[SpaceMirrorCollection(id="accounts", space_name="app-mirror")],
+    enabled_ids=lambda: enabled,                 # re-read every cycle; sync or async
+    read_source=lambda cid, ctx: load(cid),
+    doc_path=lambda space_id, node_id: f"spaces/{space_id}/objects/mirror/{node_id}",
+)
+```
+
+Schedule it with `ChannelScheduler` (exported from `starfish_replica.space` as
+`ReplicaManager`, matching the TS subpath's naming).
+
+Three differences from TypeScript:
+
+- **Write-only: there is no `read_space_mirror` yet.** This is a gap, not a
+  design position. A reader needs invite/link-cap resolution and per-node
+  keyrings (`get_node_access` tiers 1 and 3) that a *writer* never exercises,
+  and which the Python `starfish_spaces` covers less completely than the
+  TypeScript one. Read mirrored content with the TypeScript reader, or
+  against the node documents directly, until it lands.
+- **`SpacePort` owns the CAS push.** TypeScript's `NodeAccessHandle.push()`
+  does pull→decrypt→mutate→encrypt→push itself; the Python
+  `NodeAccessHandle` is a plain dataclass, so the port implements that over
+  `starfish_spaces.cas_retry.run_cas`. (Python's `KeyringEncryptor` methods
+  are synchronous.)
+- **The port flattens the object tree.** Python's
+  `starfish_spaces.read_object_tree` returns a *nested* tree, while TS's
+  identically-named `readObjectTree` returns a *flat* list. Flattening keeps
+  both planners equivalent — otherwise a non-root node would be invisible and
+  get duplicated.

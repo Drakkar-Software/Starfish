@@ -1,5 +1,176 @@
 # Changelog
 
+## 3.0.0-alpha.70
+
+Generalizes `starfish-replica`'s `ReplicaManager` from a single hardcoded HTTP
+data path into a scheduler driving a pluggable `ReplicaChannel`, and adds a
+second channel that mirrors a local data source into a Starfish space instead
+of a local `ObjectStore`. Also fixes two `starfish-spaces` bugs found while
+building the space-mirror channel (both were previously worked around with
+downstream `patch-package`/pnpm patches in OctoBot's client SDK and in
+Astrolab2's mobile app — those patches can now be removed once this ships).
+
+### `@drakkar.software/starfish-spaces` / `starfish-spaces`
+
+#### Fixed
+- **`createNode` unconditionally self-minted an invalid `objinvlog` "member"
+  cap for its own creator identity.** (TS + Python) `starfish-sharing`'s
+  `assertMemberCapShape`/`assert_member_cap_shape` rejects a `kind:"member"`
+  cap where `subUserId === issUserId` (a member cap grants access to someone
+  ELSE, not the issuer) — so every `createNode()`/`create_node()` call threw
+  against a real server. The self-mint served no purpose (the owner already
+  has implicit access to nodes in their own space) and is removed.
+- **`pullSpacesDoc` (`readSpaces`) raced `StarfishClient.push()`'s
+  fire-and-forget cache write-through.** (TS only — the Python package never
+  had this doc-cache layer, so it was never affected.) `push()` updates the
+  pull cache via an unawaited `void this.cache.set(...)`; a `readSpaces()`
+  shortly after a `createSpace()`/`writeSpaces()` (e.g. a find-or-create-space
+  helper re-reading right after creating) could win that race and serve the
+  pre-write snapshot, causing duplicate-space creation or a stale-hash CAS
+  409 on the next write. `readSpaces` is now always network-first
+  (`staleWhileRevalidate` dropped) — nothing in this monorepo consumed the
+  fast-boot cache-hit behavior it traded away.
+- **A plaintext node was handed an encryptor, so a caller that seals on
+  "an encryptor exists" wrote ciphertext into a plaintext collection.**
+  (TS + Python) `getNodeAccess`/`get_node_access` resolves through six tiers,
+  and tier 5 (owner self-mint) falls back to the SPACE keyring — which exists
+  in any space holding at least one `enc:true` node, because `createNode`
+  minted it there. A node declared `access:"public", enc:false` therefore came
+  back with a usable encryptor. Writing through it puts `{"_encrypted": …}`
+  into a collection the server declares `encryption="none"` with
+  `read_roles: ["public"]`: HTTP 200, no error at any layer, and the world
+  reads an opaque blob permanently.
+  - **Python: `get_node_access` / `build_node_access` gained an optional
+    `node` parameter** carrying the `{access, enc}` axes, plus a tier-0
+    short-circuit that resolves a client and never an encryptor when the node
+    is not `enc`. TS has had this guard; Python had no parameter to guard on.
+    Pass `node` for any node that is not E2EE — the guard cannot fire without
+    it. Uses `not node.get("enc")` rather than `is False`, because
+    `create_node` stores `enc=True if enc else None`, so a plaintext node
+    carries no `enc` key at all.
+- **`getNodeAccess`'s handle cache was keyed too loosely.** (TS) The key was
+  `${spaceId}:${nodeId}` — neither the resolving identity nor the tier. Two
+  consequences: a second identity in the same process was served the first
+  one's cap-bearing client, and a node's plaintext and encrypted views
+  collided, so resolving one served the other — the same
+  ciphertext-into-a-plaintext-collection failure above, reached through the
+  cache instead of the resolver. Now
+  `${userId}:${spaceId}:${nodeId}:${enc ? 1 : 0}`. Python's key gained the same
+  trailing `enc` flag (it already carried `user_id`).
+- **Python only: `create_node`'s and `set_node_access`'s inner `mutator`
+  closures were declared `async def`, but `update_object_index` calls them
+  synchronously (`mutator(current)`, no `await`) — the convention every other
+  mutator in this package (`registry.py`, and `nodes.py`'s own
+  `set_node_access`... now fixed alongside it) follows. The coroutine object
+  was never awaited, so both functions threw `TypeError: 'coroutine' object
+  is not iterable` on every call, independent of the self-mint bug above and
+  never previously caught by a test. Both are now plain `def`.
+
+### `@drakkar.software/starfish-replica` / `starfish-replica`
+
+#### Added
+- **`ReplicaChannel` / `ReplicaCallContext` / `ChannelSchedule` /
+  `ScheduledChannel`** (`./index.js`, `starfish_replica.channel`) — the
+  pluggable seam scheduling now happens against instead of a hardcoded HTTP
+  pull. (TS + Python)
+- **`ChannelScheduler`** (`./index.js`, `starfish_replica.scheduler`) — the
+  actual scheduler (interval loop, on_pull cooldown, error funnel), extracted
+  so it has NO dependency on `starfish-server`. `ReplicaManager` extends it,
+  adding the back-compat HTTP constructor (`new ReplicaManager(store,
+  collections, opts)`, unchanged — builds `HttpReplicaChannel`s internally)
+  plus `remoteFor`/`proxyPush`. `ReplicaManager.fromChannels(entries, opts)`
+  builds a manager from arbitrary channels. (TS + Python)
+- **`HttpReplicaChannel`** (`./index.js`, `starfish_replica.http_channel`) —
+  the original primary→replica-server HTTP path, now a standalone
+  `ReplicaChannel`; its sync body is unchanged (moved verbatim), so the
+  existing test suites pass with zero edits — TS (`manager.test.ts`,
+  `plugin.test.ts`, `integration.test.ts`, `validate.test.ts`,
+  `auth.test.ts`) and Python (`test_manager.py`'s 19 tests,
+  `test_plugin.py`, `test_config_validation.py`, `test_auth.py`).
+  (TS + Python)
+  - Python note: `_last_hash` was a `dict[str, str]` on the manager, where TS
+    kept a per-channel scalar. It now lives per-channel in Python too, with a
+    `MutableMapping` view on `ReplicaManager._last_hash` writing through to
+    the named channel, so `test_manager.py`'s one private-state poke keeps
+    working unmodified.
+  - Python note: the "generic seam must not import `starfish_server`"
+    invariant is enforced by a static (AST) check on `channel.py` /
+    `scheduler.py` / `config.py`, not a `sys.modules` check. Unlike TS —
+    where `./space` is a separate bundle entry and excluding
+    `starfish-server` keeps React Native's Metro from having to resolve
+    `node:dns/promises` — importing any Python submodule evaluates the
+    package `__init__`, and `starfish-server` is a hard (non-optional)
+    dependency in both languages. The layering is still worth enforcing; the
+    bundling benefit simply has no Python analogue.
+- **`./space` subpath** — a second, independent `ReplicaChannel`:
+  `createSpaceMirrorChannel` mirrors a local data source into per-collection
+  nodes of one or more Starfish spaces (space find-or-create, node
+  find-or-create, CAS-write via `getNodeAccess(...).push(...)`,
+  clear-on-disable, optional `changeDetection: "source-hash"` skip), plus
+  `readSpaceMirror` (session-less read side for a third-party grant holder),
+  `planSpaceMirror` (pure create/write/clear diff), `findOrCreateSpace` /
+  `SpacePort` (the one file that imports `starfish-spaces`), and its own
+  `ReplicaManager` export — literally `ChannelScheduler` (see above), so
+  importing it never pulls in `starfish-server` unlike the root `.` entry's
+  `ReplicaManager`. Caught by the octobot_client_ts_demo's `vite build`
+  bundling `starfish-server`'s Node-only `node:dns/promises` import — would
+  have hard-failed React Native/Metro bundling in a mobile consumer. Depends
+  on `@drakkar.software/starfish-spaces` (optional peer dependency). Ported
+  and generalized from OctoBot's hand-rolled `client/mirror/*` +
+  `client/pairing/mirrorReader.ts` — the fixed 5-collection registry there
+  becomes caller-supplied `collections`/`knownIds` here.
+- **`starfish_replica.space`** (Python) — the same space-mirror channel:
+  `create_space_mirror_channel`, `plan_space_mirror`, `find_or_create_space`,
+  `SpacePort`/`default_space_port`, and `ReplicaManager` (= `ChannelScheduler`).
+  Installed via a new `space` optional extra
+  (`pip install "starfish-replica[space]"`), the Python analogue of the TS
+  package's optional `starfish-spaces` peer dependency. Four notes:
+  - **No reader.** TS's `readSpaceMirror` is deliberately NOT ported — no
+    Python-side mirror reader exists anywhere, OctoBot's own writer documents
+    that session-less reads stay in `octobot_client_ts` (full
+    `starfish-spaces` parity there, not on the Python side), and a reader
+    needs the invite/link-cap resolution surface a mirror writer never
+    touches. Recorded as a decision, not an omission.
+  - **`SpacePort` also owns the CAS push.** TS gets
+    pull→decrypt→mutate→encrypt→push free from `NodeAccessHandle.push`;
+    Python's `NodeAccessHandle` is a plain dataclass with no such method and
+    no equivalent anywhere in the package, so the port implements it over
+    `starfish_spaces.cas_retry.run_cas` (5 attempts, jittered backoff). Note
+    `KeyringEncryptor.encrypt`/`.decrypt` are SYNCHRONOUS in Python.
+  - **`read_object_tree` is flattened in the port.** Python's
+    `starfish_spaces.read_object_tree` returns a NESTED tree (`build_tree`),
+    while TS's identically-named `readObjectTree` returns a FLAT list (it
+    calls `readIndexObjects`, not `buildTree` — the TS name is misleading).
+    Un-flattened, a non-root node would be invisible to the planner and the
+    channel would create a duplicate beside it.
+  - Both fixes TS only gained after an adversarial review pass — the
+    `clearedNodes` repeat-clear skip and `findOrCreateSpace` in-flight
+    coalescing — are built in here from the start rather than repeated as
+    bugs.
+
+#### Fixed
+- **`on_pull` cooldown never engaged for a no-op sync.** (TS + Python)
+  `_lastSyncAt`/`_last_sync_at` was previously stamped only inside a
+  successful WRITE, so a sync that found the primary's hash unchanged never
+  started its own cooldown — every `on_pull` hit the primary until a write
+  actually landed. Now stamped after every completed sync.
+- **Python: the space port never forwarded a node's access axes**, leaving the
+  `get_node_access` tier-0 guard above unreachable from the only code that
+  calls it. `SpacePort.get_node_access` and `push_node_doc` now take `node`,
+  and `SpaceMirrorChannel` passes its resolved `node_enc` on both the write and
+  the clear path (clearing writes a document too, so a missed forward there is
+  what would seal a public collection on disable). `push_node_doc` also refuses
+  outright to push when a node declares `enc:false` but the handle carries an
+  encryptor — defence in depth, because the failure it guards is silent and
+  unrecoverable once written. TS already threaded this through.
+- **TS: a `"scheduled"` entry whose schedule omitted `intervalMs` span an
+  unthrottled sync loop.** `ChannelSchedule.intervalMs` is optional (unlike
+  `RemoteCollection.intervalMs`, which is required, so the back-compat HTTP
+  path never hit this), and `ChannelScheduler` fell back to `setInterval(fn, 0)`
+  — syncing as fast as the event loop allows against the network. Now defaults
+  to 60s, matching Python's `interval_ms or 60_000`. Reachable from the
+  direct-construction path `./space` documents.
+
 ## 3.0.0-alpha.69
 
 Build fix for the alpha.68 Zustand-binding change: ship `zustand/traditional` and
