@@ -114,11 +114,16 @@ function coerceSpacesDoc(data: Record<string, unknown> | undefined, hash: string
 }
 
 async function pullSpacesDoc(client: StarfishClient, session: Session): Promise<SpacesDoc> {
-  // staleWhileRevalidate: return the cached _spaces doc instantly when the client
-  // has a cache configured, and revalidate in the background. This eliminates the
-  // network wait on every boot for the largest doc on the hot path. Falls through
-  // to a normal network-first pull when no cache hit exists (first boot).
-  const res = await client.pull(session.layout.spacesPull(session.userId), { staleWhileRevalidate: true }).catch((err: unknown) => {
+  // NOTE: deliberately NOT staleWhileRevalidate. StarfishClient.push() writes
+  // through to the pull cache via a fire-and-forget `void this.cache.set(...)`
+  // (see client.ts) that is not awaited before push() returns. A caller that
+  // creates/writes a space (e.g. createSpace -> writeSpaces -> push) and then
+  // immediately calls readSpaces() can race that write-through: SWR would serve
+  // the pre-write cached snapshot (a cache hit) instead of falling through to a
+  // fresh network pull, so the just-created space (or its updated hash) would
+  // be invisible to the caller and a subsequent CAS push could 409 on the stale
+  // hash. A plain network-first pull sidesteps the race entirely.
+  const res = await client.pull(session.layout.spacesPull(session.userId)).catch((err: unknown) => {
     if (err instanceof StarfishHttpError && err.status === 404) return null
     throw err
   })

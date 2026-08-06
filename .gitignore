@@ -3,6 +3,7 @@ node_modules/
 dist/
 .turbo/
 *.tsbuildinfo
+*.tgz
 
 # Python
 __pycache__/

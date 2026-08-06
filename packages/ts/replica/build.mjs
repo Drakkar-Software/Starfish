@@ -2,12 +2,16 @@ import { build } from "esbuild"
 
 const ENTRIES = {
   index: "src/index.ts",
+  "space/index": "src/space/index.ts",
 }
 
 const EXTERNAL = [
   "@drakkar.software/starfish-protocol",
   "@drakkar.software/starfish-server",
   "@drakkar.software/starfish-identities",
+  "@drakkar.software/starfish-client",
+  "@drakkar.software/starfish-keyring",
+  "@drakkar.software/starfish-spaces",
 ]
 
 await Promise.all(

@@ -345,7 +345,7 @@ jobs:
         run: npx npm@latest publish --provenance --access public --tag ${{ needs.setup.outputs.npm_tag }}
 
   publish-replica:
-    needs: [setup, publish-server]
+    needs: [setup, publish-server, publish-spaces]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -372,6 +372,10 @@ jobs:
           npm pkg set "version=$VERSION"
           npm pkg set "dependencies.@drakkar.software/starfish-protocol=$VERSION"
           npm pkg set "dependencies.@drakkar.software/starfish-server=$VERSION"
+          npm pkg set "dependencies.@drakkar.software/starfish-identities=$VERSION"
+          npm pkg set "peerDependencies.@drakkar.software/starfish-client=$VERSION"
+          npm pkg set "peerDependencies.@drakkar.software/starfish-keyring=$VERSION"
+          npm pkg set "peerDependencies.@drakkar.software/starfish-spaces=$VERSION"
 
       - name: Publish starfish-replica
         working-directory: packages/ts/replica

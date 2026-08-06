@@ -1,9 +1,15 @@
 /**
  * Tests for readSpaces / pullSpacesDoc cache behaviour.
  *
- * Verifies that pullSpacesDoc opts into staleWhileRevalidate so readSpaces
- * returns the cached _spaces doc instantly (when a cache is configured) and
- * that it still swallows 404 on a miss.
+ * pullSpacesDoc is deliberately network-first (NOT staleWhileRevalidate) — see
+ * the rationale comment on pullSpacesDoc in ../src/registry.ts. StarfishClient's
+ * push() write-through to the pull cache is fire-and-forget (unawaited), so an
+ * SWR-enabled read shortly after a write (e.g. readSpaces() right after
+ * createSpace()) could race that write-through and serve the pre-write
+ * snapshot — observed in production via findOrCreateMirrorSpace creating a
+ * space then re-reading it in the same session. Verifies readSpaces always
+ * hits the network (ignoring any pre-populated cache) and still swallows 404
+ * on a miss.
  */
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
 
@@ -224,9 +230,14 @@ describe("updateSpacesDoc / writeSpaces — CAS hardening (regression + converge
   })
 })
 
-describe("readSpaces staleWhileRevalidate", () => {
-  it("returns the cached _spaces doc immediately and fires background revalidation", async () => {
-    vi.useFakeTimers()
+describe("readSpaces — network-first (no staleWhileRevalidate)", () => {
+  it("regression: ignores a pre-populated cache entry and always hits the network", async () => {
+    // This is the actual race: StarfishClient.push() write-through to the pull
+    // cache is fire-and-forget (unawaited `void this.cache.set(...)`), so an
+    // SWR-enabled read could serve a cache entry written by a push that raced
+    // ahead of (or lagged behind) the real server state. Proving readSpaces()
+    // never consults the cache — regardless of what's in it — closes that race
+    // categorically rather than depending on timing.
     const cache = memCache()
     const spacesPath = defaultSpaceLayout.spacesPull("u1")  // /pull/user/u1/_spaces
     const stalePayload = { spaces: [{ id: "s1" }], caps: {}, pubAccess: {} }
@@ -238,8 +249,6 @@ describe("readSpaces staleWhileRevalidate", () => {
       cachedAt: Date.now(),
     }))
 
-    const onRevalidated = vi.fn()
-    // Background revalidation will call fetch — set it up to return fresh data
     const fetchMock = vi.fn().mockResolvedValueOnce(
       jsonResponse({ data: freshPayload, hash: "hfresh", timestamp: 10 }),
     )
@@ -247,24 +256,21 @@ describe("readSpaces staleWhileRevalidate", () => {
       baseUrl: "https://h",
       fetch: fetchMock as unknown as typeof fetch,
       cache,
-      onRevalidated,
     })
 
-    // readSpaces returns the STALE cached value immediately
     const doc = await readSpaces(client, makeSession() as Session)
-    expect(doc.spaces).toEqual([{ id: "s1" }])
-    expect(doc.hash).toBe("hcached")
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(doc.spaces).toEqual([{ id: "s1" }, { id: "s2" }])
+    expect(doc.hash).toBe("hfresh")
+  })
 
-    // The background revalidation fires immediately (no delay) and updates cache.
-    // advanceTimersByTimeAsync(0) flushes all pending microtasks and zero-delay timers,
-    // ensuring the revalidation Promise chain fully settles before we assert.
-    await vi.advanceTimersByTimeAsync(0)
-    expect(fetchMock).toHaveBeenCalledTimes(1)  // background revalidation fetch
-    expect(onRevalidated).toHaveBeenCalledTimes(1)
-    expect(onRevalidated).toHaveBeenCalledWith(
-      expect.stringContaining("_spaces"),
-      expect.objectContaining({ hash: "hfresh" }),
-    )
+  it("regression: never calls pull() with { staleWhileRevalidate: true }", async () => {
+    const pullSpy = vi.fn(async () => ({ data: { spaces: [], caps: {}, pubAccess: {} }, hash: "h1" }))
+    const client = { pull: pullSpy }
+    await readSpaces(client as never, makeSession() as Session)
+    expect(pullSpy).toHaveBeenCalledTimes(1)
+    const args = pullSpy.mock.calls[0]
+    expect(args[1]).not.toEqual(expect.objectContaining({ staleWhileRevalidate: true }))
   })
 
   it("falls through to network when the cache is empty (first boot)", async () => {
