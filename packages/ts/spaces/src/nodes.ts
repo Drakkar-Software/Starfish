@@ -137,14 +137,13 @@ export async function createNode(
 
   if (!createdNode) throw new Error("createNode: index update did not produce a node")
 
-  // Mint the owner's per-node stream cap (objinvlog).
-  const ownerStreamCap = await mintCap(
-    session,
-    { edPubHex: session.keys.edPub, kemPubHex: session.keys.kemPub, userIdHex: session.userId },
-    "objinvlog",
-    session.layout.nodeStreamScope(spaceId, nodeId, true),
-  )
-  saveNodeStreamAccessEntry(spaceId, nodeId, { kind: "member", cap: JSON.stringify(ownerStreamCap) })
+  // NOTE: the creator does NOT get a minted "member" stream cap for their own
+  // node here. A `kind:"member"` cap asserts `subUserId !== issUserId`
+  // (starfish-sharing's assertMemberCapShape) — it exists to grant access to
+  // someone ELSE, not to the issuer's own identity. The owner already has
+  // implicit access to nodes in their own space via the account/owner cap
+  // scope; minting a self-targeted member cap here always fails that shape
+  // check and would make every createNode() call throw against a real server.
 
   return createdNode
 }

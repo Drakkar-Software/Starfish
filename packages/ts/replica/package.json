@@ -18,6 +18,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./space": {
+      "types": "./dist/space/index.d.ts",
+      "import": "./dist/space/index.js"
     }
   },
   "dependencies": {
@@ -25,12 +29,26 @@
     "@drakkar.software/starfish-protocol": "workspace:*",
     "@drakkar.software/starfish-server": "workspace:*"
   },
+  "peerDependencies": {
+    "@drakkar.software/starfish-client": "workspace:*",
+    "@drakkar.software/starfish-keyring": "workspace:*",
+    "@drakkar.software/starfish-spaces": "workspace:*"
+  },
+  "peerDependenciesMeta": {
+    "@drakkar.software/starfish-client": { "optional": true },
+    "@drakkar.software/starfish-keyring": { "optional": true },
+    "@drakkar.software/starfish-spaces": { "optional": true }
+  },
   "scripts": {
     "build": "node build.mjs && tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
   "devDependencies": {
+    "@drakkar.software/starfish-client": "workspace:*",
+    "@drakkar.software/starfish-keyring": "workspace:*",
+    "@drakkar.software/starfish-spaces": "workspace:*",
+    "@noble/curves": "^2.2.0",
     "esbuild": "^0.27.4",
     "typescript": "^5.5.0",
     "vitest": "^3.0.0"

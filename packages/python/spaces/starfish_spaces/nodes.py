@@ -141,7 +141,7 @@ async def create_node(
 
     created: list[ObjectNode] = []
 
-    async def mutator(nodes: list[ObjectNode]) -> Optional[list[ObjectNode]]:
+    def mutator(nodes: list[ObjectNode]) -> Optional[list[ObjectNode]]:
         new_input = NewObjectInput(
             id=node_id,
             type=inp.get("type") or "page",
@@ -161,16 +161,13 @@ async def create_node(
     if not created:
         raise RuntimeError("create_node: index update did not produce a node")
 
-    # Mint the owner's per-node stream cap (objinvlog).
-    subject = CapSubject(
-        edPubHex=session.keys["edPub"],
-        kemPubHex=session.keys["kemPub"],
-        userIdHex=session.user_id,
-    )
-    owner_stream_cap = mint_cap(
-        session, subject, "objinvlog", session.layout.node_stream_scope(space_id, node_id, True)
-    )
-    save_node_stream_access_entry(space_id, node_id, {"kind": "member", "cap": json.dumps(owner_stream_cap)})
+    # NOTE: the creator does NOT get a minted "member" stream cap for their own
+    # node here. A `kind:"member"` cap asserts `subUserId != issUserId`
+    # (starfish-sharing's assert_member_cap_shape) -- it exists to grant access
+    # to someone ELSE, not to the issuer's own identity. The owner already has
+    # implicit access to nodes in their own space via the account/owner cap
+    # scope; minting a self-targeted member cap here always fails that shape
+    # check and would make every create_node() call throw against a real server.
 
     return created[0]
 
@@ -197,7 +194,7 @@ async def set_node_access(
     if patch.get("enc"):
         await owner_ensure_space_keyring(session.content_client, session.keys, space_id, session.layout)  # type: ignore[arg-type]
 
-    async def mutator(nodes: list[ObjectNode]) -> Optional[list[ObjectNode]]:
+    def mutator(nodes: list[ObjectNode]) -> Optional[list[ObjectNode]]:
         import time
         now = int(time.time() * 1000)
         idx = next((i for i, n in enumerate(nodes) if n.id == node_id), -1)

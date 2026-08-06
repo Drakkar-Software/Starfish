@@ -11,14 +11,23 @@ each outgoing pull/push request with a self-signed device cap-cert.
 """
 
 from starfish_replica.auth import ReplicaAuth
+from starfish_replica.channel import (
+    REPLICATOR_CTX,
+    ChannelSchedule,
+    ReplicaCallContext,
+    ReplicaChannel,
+    ScheduledChannel,
+)
 from starfish_replica.config import (
     RemoteCollection,
     RemoteConfig,
     SyncTrigger,
     WriteMode,
 )
+from starfish_replica.http_channel import HttpReplicaChannel
 from starfish_replica.manager import ReplicaManager
 from starfish_replica.plugin import ReplicaServerPlugin, create_replica_server_plugin
+from starfish_replica.scheduler import ChannelScheduler
 from starfish_replica.validate import validate_replica_config
 
 __all__ = [
@@ -28,6 +37,13 @@ __all__ = [
     "SyncTrigger",
     "WriteMode",
     "ReplicaManager",
+    "ChannelScheduler",
+    "ReplicaChannel",
+    "ReplicaCallContext",
+    "REPLICATOR_CTX",
+    "ChannelSchedule",
+    "ScheduledChannel",
+    "HttpReplicaChannel",
     "ReplicaServerPlugin",
     "create_replica_server_plugin",
     "validate_replica_config",

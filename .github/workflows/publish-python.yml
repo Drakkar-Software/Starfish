@@ -109,7 +109,10 @@ jobs:
 
       - name: Install replica dependencies
         working-directory: packages/python/replica
-        run: uv pip install --system -e ".[dev]"
+        # `space` extra: the starfish_replica.space subpackage (space-mirror
+        # channel) needs starfish-spaces, which is deliberately NOT a base
+        # dependency. Without it the space tests are skipped/error out.
+        run: uv pip install --system -e ".[dev,space]"
 
       - name: Run replica tests
         working-directory: packages/python/replica
@@ -534,7 +537,9 @@ jobs:
           UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}
 
   publish-replica:
-    needs: [setup, publish-server]
+    # publish-spaces: the `space` optional extra (starfish_replica.space)
+    # resolves starfish-spaces from the index, so it must already be published.
+    needs: [setup, publish-server, publish-spaces]
     runs-on: ubuntu-latest
     permissions:
       contents: read

@@ -278,7 +278,13 @@ export function getNodeAccess(
   session: Session,
   reg?: { owner: string | null; members: string[] } | null,
 ): Promise<NodeAccessHandle> {
-  const cacheKey = `${spaceId}:${nodeId}`
+  // A handle's identity includes WHO resolved it and at WHICH tier, not just which
+  // node it points at. Keyed on `${spaceId}:${nodeId}` alone, two things went wrong:
+  // a second identity in the same process was served the first one's cap-bearing
+  // client, and a node's plaintext and encrypted views collided — so resolving one
+  // served the other, which for a plaintext node means being handed an encryptor and
+  // sealing content into a collection declared `encryption:"none"`.
+  const cacheKey = `${session.userId}:${spaceId}:${nodeId}:${node.enc ? 1 : 0}`
   const hit = cache.get(cacheKey)
   if (hit) return hit
 

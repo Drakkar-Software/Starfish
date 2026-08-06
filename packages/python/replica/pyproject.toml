@@ -15,16 +15,25 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+space = [
+  # Required only by the `starfish_replica.space` subpackage (the space-mirror
+  # channel). Kept out of the base `dependencies` so a plain HTTP-replication
+  # install does not pull in the spaces stack — the Python analogue of the TS
+  # package's `peerDependenciesMeta: { starfish-spaces: { optional: true } }`.
+  "starfish-spaces",
+]
 dev = [
   "pytest>=7.0",
   "pytest-asyncio>=0.21",
   "respx>=0.23.1",
+  "starfish-spaces",
 ]
 
 [tool.uv.sources]
 starfish-protocol = { path = "../protocol", editable = true }
 starfish-server = { path = "../server", editable = true }
 starfish-identities = { path = "../identities", editable = true }
+starfish-spaces = { path = "../spaces", editable = true }
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

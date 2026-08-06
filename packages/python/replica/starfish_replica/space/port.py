@@ -1,0 +1,218 @@
+"""The ONLY module under ``space/`` that imports ``starfish_spaces``.
+
+``SpaceMirrorChannel`` (``mirror_channel.py``) depends on :class:`SpacePort`,
+not on ``starfish_spaces`` directly — so it stays unit-testable with a fake
+in-memory port (no ``unittest.mock``, matching this monorepo's hand-rolled
+fake-client idiom, e.g. ``packages/python/spaces/tests/test_registry_cas.py``).
+
+Mirrors the TS package's ``space/port.ts``, with three signature differences
+absorbed here rather than leaking into the channel — the Python and TS
+``starfish_spaces``/``starfish-spaces`` APIs are not identical:
+
+1. ``read_spaces(client, session)`` takes a client first and returns a
+   ``SpacesDoc`` OBJECT (``.spaces`` attribute), where TS's ``readSpaces``
+   returns a plain ``{ spaces }`` record.
+2. ``read_object_tree(client, session, space_id)`` takes three args, and —
+   the important one — returns a NESTED tree (``build_tree``), while TS's
+   identically-named ``readObjectTree`` returns a FLAT ``ObjectNode[]`` (it
+   calls ``readIndexObjects``, not ``buildTree``; the TS name is misleading).
+   This port flattens, so both languages' channels see every node. Without
+   the flatten, a non-root node would be invisible to the planner and the
+   channel would create a duplicate alongside it.
+3. ``get_node_access(session, space_id, node_id)`` takes no ``node`` argument
+   and orders its parameters differently from TS's
+   ``getNodeAccess(spaceId, nodeId, node, session)``.
+
+It also supplies something the TS port gets for free: ``push_node_doc``.
+TS's ``NodeAccessHandle`` owns a ``push()`` that does the whole
+pull → decrypt → mutate → encrypt → push CAS dance. Python's
+``NodeAccessHandle`` (``space_access.py``) is a plain dataclass
+(``client``/``encryptor``/``is_owner_open``) with no such method and no
+equivalent anywhere in the package, so the port implements it here on top of
+``starfish_spaces.cas_retry.run_cas``. Note ``KeyringEncryptor.encrypt`` /
+``.decrypt`` are SYNCHRONOUS in Python (unlike TS) and must not be awaited.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from typing import Any, Awaitable, Callable, Optional, Protocol
+
+from starfish_spaces.cas_retry import run_cas
+from starfish_spaces.nodes import create_node as sf_create_node
+from starfish_spaces.object_index import read_object_tree as sf_read_object_tree
+from starfish_spaces.registry import create_space as sf_create_space
+from starfish_spaces.registry import read_spaces as sf_read_spaces
+from starfish_spaces.space_access import NodeAccessHandle
+from starfish_spaces.space_access import get_node_access as sf_get_node_access
+
+__all__ = [
+    "SpacePort",
+    "NodeAccessHandle",
+    "default_space_port",
+    "find_or_create_space",
+    "flatten_object_tree",
+]
+
+
+def _as_dict(obj: Any) -> dict[str, Any]:
+    """Normalize a dataclass/``Space``/plain-dict node or space into a dict."""
+    if isinstance(obj, dict):
+        return obj
+    if hasattr(obj, "to_dict"):
+        return obj.to_dict()
+    if hasattr(obj, "__dict__"):
+        return dict(vars(obj))
+    return {
+        slot: getattr(obj, slot)
+        for slot in getattr(obj, "__slots__", ())
+        if hasattr(obj, slot)
+    }
+
+
+def flatten_object_tree(nodes: Any) -> list[dict[str, Any]]:
+    """Depth-first flatten of ``read_object_tree``'s nested result.
+
+    See this module's docstring, point 2: Python builds a tree where TS returns
+    a flat list. Flattening here is what makes the two channels equivalent.
+    """
+    out: list[dict[str, Any]] = []
+
+    def walk(items: Any) -> None:
+        for item in items or ():
+            data = _as_dict(item)
+            out.append(data)
+            walk(data.get("children") or ())
+
+    walk(nodes)
+    return out
+
+
+class SpacePort(Protocol):
+    """The subset of ``starfish_spaces``' space/node API the mirror channel needs."""
+
+    async def read_spaces(self, session: Any) -> list[dict[str, Any]]:
+        """All of the session identity's spaces, as ``{"id", "name"}`` dicts."""
+        ...
+
+    async def create_space(self, session: Any, name: str) -> dict[str, Any]:
+        ...
+
+    async def read_object_tree(self, session: Any, space_id: str) -> list[dict[str, Any]]:
+        """FLAT list of every node in the space, as ``{"id", "type"}`` dicts."""
+        ...
+
+    async def create_node(self, session: Any, space_id: str, inp: dict[str, Any]) -> dict[str, Any]:
+        ...
+
+    async def get_node_access(self, session: Any, space_id: str, node_id: str) -> NodeAccessHandle:
+        ...
+
+    async def push_node_doc(
+        self,
+        handle: NodeAccessHandle,
+        pull_path: str,
+        push_path: str,
+        mutator: Callable[[Any], Any],
+    ) -> None:
+        """CAS read-modify-write one node's content through ``handle``."""
+        ...
+
+
+class _DefaultSpacePort:
+    """The real :class:`SpacePort`, bound to ``starfish_spaces``."""
+
+    async def read_spaces(self, session: Any) -> list[dict[str, Any]]:
+        doc = await sf_read_spaces(session.account_client, session)
+        return [_as_dict(space) for space in (doc.spaces or [])]
+
+    async def create_space(self, session: Any, name: str) -> dict[str, Any]:
+        return _as_dict(await sf_create_space(session, name))
+
+    async def read_object_tree(self, session: Any, space_id: str) -> list[dict[str, Any]]:
+        tree = await sf_read_object_tree(session.content_client, session, space_id)
+        return flatten_object_tree(tree)
+
+    async def create_node(self, session: Any, space_id: str, inp: dict[str, Any]) -> dict[str, Any]:
+        return _as_dict(await sf_create_node(session, space_id, inp))
+
+    async def get_node_access(self, session: Any, space_id: str, node_id: str) -> NodeAccessHandle:
+        return await sf_get_node_access(session, space_id, node_id)
+
+    async def push_node_doc(
+        self,
+        handle: NodeAccessHandle,
+        pull_path: str,
+        push_path: str,
+        mutator: Callable[[Any], Any],
+    ) -> None:
+        async def attempt() -> None:
+            try:
+                res = await handle.client.pull(pull_path)
+                current = res.data if hasattr(res, "data") else None
+                base_hash = res.hash if hasattr(res, "hash") else None
+            except Exception:
+                # No document yet (404) or an unreadable one — treat as absent
+                # and write from scratch, same as the TS handle's own push().
+                current = None
+                base_hash = None
+
+            if current is not None and handle.encryptor is not None:
+                # KeyringEncryptor.decrypt is SYNCHRONOUS in Python.
+                current = handle.encryptor.decrypt(current)
+
+            nxt = mutator(current)
+            if nxt is None:
+                return  # mutator signalled no-op
+
+            payload = handle.encryptor.encrypt(nxt) if handle.encryptor is not None else nxt
+            await handle.client.push(push_path, payload, base_hash)
+
+        await run_cas(attempt)
+
+
+default_space_port: SpacePort = _DefaultSpacePort()
+
+
+# In-flight find-or-create calls, keyed by ``{user_id}:{name}``, so two
+# concurrent callers racing on the same (session, name) coalesce into one
+# actual read+create instead of each independently missing the not-yet-created
+# space and both calling create_space. This only protects against in-process
+# concurrency (e.g. a scheduled sync and an interactive action overlapping in
+# the same app session) — it cannot prevent two different devices from racing
+# the same identity's space registry, which would need server-side idempotent
+# creation.
+_in_flight_find_or_create: dict[str, "asyncio.Task[dict[str, Any]]"] = {}
+
+
+async def find_or_create_space(
+    session: Any,
+    name: str,
+    port: Optional[SpacePort] = None,
+) -> dict[str, Any]:
+    """Find one of the session's spaces by name, creating it on first use.
+
+    TOFU-first-writer semantics apply exactly like every other
+    ``starfish_spaces`` space — the caller is always this identity's own
+    device, so it is always the legitimate owner on first creation.
+    """
+    port = port or default_space_port
+    key = f"{getattr(session, 'user_id', '')}:{name}"
+
+    in_flight = _in_flight_find_or_create.get(key)
+    if in_flight is not None:
+        return await in_flight
+
+    async def run() -> dict[str, Any]:
+        spaces = await port.read_spaces(session)
+        for space in spaces:
+            if space.get("name") == name:
+                return space
+        return await port.create_space(session, name)
+
+    task: "asyncio.Task[dict[str, Any]]" = asyncio.ensure_future(run())
+    _in_flight_find_or_create[key] = task
+    try:
+        return await task
+    finally:
+        _in_flight_find_or_create.pop(key, None)
