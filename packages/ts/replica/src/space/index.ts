@@ -22,14 +22,14 @@
  *   collections: [{ id: "user-accounts", spaceName: "app-mirror" }],
  *   enabledIds: () => currentlyEnabledCollectionIds(),
  *   readSource: (id) => readLocalCollection(id),
- *   docPath: (spaceId, nodeId) => `spaces/${spaceId}/objects/mirror/${nodeId}`,
+ *   docPath: (collectionId, spaceId, nodeId) => `spaces/${spaceId}/objects/mirror/${nodeId}`,
  * })
  * const manager = new ReplicaManager([
  *   { channel, schedule: { triggers: ["scheduled"], intervalMs: 5 * 60_000 } },
  * ])
  * manager.start()
  * // ... later, read the last sync's result:
- * channel.result // { spaces, created, written, skipped, cleared }
+ * channel.result // { spaces, created, written, skipped, cleared, failed }
  * ```
  */
 
@@ -43,6 +43,7 @@ export {
   type SpaceMirrorChannelOptions,
   type SpaceMirrorCollection,
   type SpaceMirrorResult,
+  type SpaceMirrorTier,
 } from "./mirror-channel.js"
 export { planSpaceMirror, type ExistingSpaceNode, type SpaceMirrorPlan } from "./plan.js"
 export {
@@ -54,4 +55,10 @@ export {
   type Session,
   type SpacePort,
 } from "./port.js"
-export { readSpaceMirror, type ReadSpaceMirrorOptions } from "./reader.js"
+export {
+  readSpaceMirror,
+  readPublicSpaceMirror,
+  type ReadSpaceMirrorOptions,
+  type ReadPublicSpaceMirrorOptions,
+  type PublicSpaceMirrorNode,
+} from "./reader.js"

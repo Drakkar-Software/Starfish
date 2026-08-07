@@ -136,10 +136,21 @@ channel = create_space_mirror_channel(
     collections=[
         SpaceMirrorCollection(id="accounts", space_name="app-mirror"),
         SpaceMirrorCollection(id="settings", space_name="app-mirror-private"),
+        # tier="public" stores the node plaintext at a world-readable path
+        # (objpub) instead of E2EE and member-gated (objdoc). Default is
+        # "private"; there is no way to ask for public AND encrypted, because
+        # the server rejects that combination.
+        SpaceMirrorCollection(id="profile", space_name="app-mirror-public", tier="public"),
     ],
     enabled_ids=lambda: settings.enabled_collection_ids,   # re-read every cycle
     read_source=lambda cid, ctx: load_projection(cid),
-    doc_path=lambda space_id, node_id: f"spaces/{space_id}/objects/mirror/{node_id}",
+    # The collection id comes first so one template can route tiers to
+    # different prefixes — objects/docs/ for private, objects/pub/ for public.
+    doc_path=lambda cid, space_id, node_id: f"spaces/{space_id}/objects/mirror/{node_id}",
+    # Optional; defaults to the collection id. A PUBLIC node's title is
+    # world-readable via the object-index projection, so give public
+    # collections an opaque one rather than advertising what you mirror.
+    title=lambda cid: cid,
 )
 
 scheduler = ChannelScheduler([
@@ -160,6 +171,32 @@ turned off. `channel.result` reports
 - **`node_enc`** defaults to `{"access": "space", "enc": True}`. `"invite"`
   access is deliberately not the default: it resolves through a per-node
   keyring nothing in a mirror-style writer ever seeds.
+- **`tier`** defaults to `"private"`, which resolves to `node_enc` — writing
+  `tier="private"` out is exactly equivalent to omitting it, so spelling out
+  the default never costs you a `node_enc` override. `"public"` always
+  resolves to `{"access": "public", "enc": False}` and ignores `node_enc`.
+- Flipping a collection's tier is safe, INCLUDING across a restart. The
+  channel compares the node's STORED `access`/`enc` (recorded in the space's
+  object index, so they outlive the process) against the tier it is configured
+  for now, and clears the node's content under the STORED axes before writing
+  under the new ones. Skipping that on `public` -> `private` would leave the
+  old plaintext at a world-readable URL — and a user toggling the setting
+  usually does restart the app before the next sync, which is exactly when an
+  in-memory "what did I last write" record is already gone. Once the new
+  content is written, the node's STORED axes are PATCHED to the new tier
+  (`SpacePort.set_node_access`), in that order: patching before the write would
+  leave the index claiming a tier the stored content does not match if the
+  write then failed. That patch is not bookkeeping. The object index is
+  projected into a world-readable index of every `access="public"` node's id,
+  title and type, so a node left recorded as public keeps being advertised to
+  anonymous callers even after its content is cleared, contradicting the
+  setting the user just changed. It is also what makes the flip self-limiting:
+  without it the stored axes read as the old tier every cycle, so the clear
+  re-fires forever and a `"source-hash"` collection that flipped once could
+  never skip again. The patch normalizes exactly the way `create_node` does (no
+  `access` for `"space"`, no `enc` when false), so a patched node is
+  indistinguishable from one born at that tier, and a patch that fails is
+  isolated like any other per-collection failure.
 - **`change_detection`** defaults to `"none"` (write every cycle).
   `"source-hash"` skips a write when the source projection is unchanged —
   **only safe when this channel is the sole writer of that node**, since a

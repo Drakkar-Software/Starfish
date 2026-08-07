@@ -169,10 +169,15 @@ import { createSpaceMirrorChannel, ReplicaManager } from "@drakkar.software/star
 const channel = createSpaceMirrorChannel({
   name: "cloud-mirror",
   session,                                    // a starfish-spaces Session
-  collections: [{ id: "user-accounts", spaceName: "app-mirror" }],
+  collections: [
+    { id: "user-accounts", spaceName: "app-mirror" },                  // tier defaults to "private"
+    { id: "public-profile", spaceName: "app-mirror", tier: "public" },
+  ],
   enabledIds: () => currentlyEnabledCollectionIds(),
   readSource: (id, ctx) => readLocalCollection(id),
-  docPath: (spaceId, nodeId) => `spaces/${spaceId}/objects/mirror/${nodeId}`,
+  docPath: (collectionId, spaceId, nodeId) =>
+    `spaces/${spaceId}/objects/mirror/${nodeId}`,
+  title: (collectionId) => `Mirror: ${collectionId}`,   // optional; defaults to the id
 })
 
 const manager = new ReplicaManager([
@@ -180,7 +185,7 @@ const manager = new ReplicaManager([
 ])
 manager.start()
 
-channel.result  // { spaces, created, written, skipped, cleared } after the last sync
+channel.result  // { spaces, created, written, skipped, cleared, failed } after the last sync
 ```
 
 `ReplicaManager` here is imported from `./space`, not the root `.` entry — see
@@ -188,16 +193,118 @@ the note above: it is `ChannelScheduler` directly, so this whole example never
 touches `starfish-server`.
 
 `SpaceMirrorChannel` finds-or-creates one space per distinct `spaceName` in
-`collections`, finds-or-creates one node per collection id (`access: "space",
-enc: true` by default), and CAS-writes `readSource`'s result into it every
-cycle — `changeDetection` defaults to `"none"` (always write) since a
-source-hash skip is only sound when this channel is the *sole* writer of a
-node.
+`collections`, finds-or-creates one node per collection id, and CAS-writes
+`readSource`'s result into it every cycle — `changeDetection` defaults to
+`"none"` (always write) since a source-hash skip is only sound when this
+channel is the *sole* writer of a node.
+
+#### Storage tiers
+
+Each collection carries a `tier` selecting the access axes its node is created
+with *and* written through — a single closed enum rather than a raw
+`{ access, enc }` pair, because the server rejects `access: "public"` with
+`enc: true` and an enum makes that combination unrepresentable instead of a
+failure discovered late, at `createNode`.
+
+| `tier` | resolves to | meaning |
+| --- | --- | --- |
+| `"private"` (default) | the channel-wide `nodeEnc`, itself `{ access: "space", enc: true }` unless you overrode it | readable only by space members, sealed under the space's own keyring |
+| `"public"` | `{ access: "public", enc: false }`, always, ignoring `nodeEnc` | world-readable plaintext at its storage URL |
+
+Writing `tier: "private"` out is exactly equivalent to omitting it: both
+resolve to `nodeEnc`, so spelling out the default never costs you an override.
+Only `"public"` overrides `nodeEnc`.
+
+Flipping a collection between tiers is safe, **including across a restart**.
+The channel compares the node's *stored* `access`/`enc` (recorded in the space's
+object index, so they survive the process) against the tier it is configured
+for now; when they differ it clears the node under the **stored** axes before
+writing under the new ones. Skipping that on a `public` → `private` flip would
+leave the previously published plaintext sitting at a world-readable URL
+indefinitely, which is the whole reason the clear exists.
+
+Once the new content is written, the node's *stored* axes are **patched** to the
+new tier, through `SpacePort.setNodeAccess` / `set_node_access`. The order —
+clear old path, write new path, patch stored axes — matters: patching before
+the write would leave the index claiming a tier the stored content does not
+match if the write then failed.
+
+That patch is not bookkeeping. The object index is projected into a
+**world-readable** index of every `access: "public"` node's `id`, `title` and
+`type`. A node left recorded as public therefore keeps being advertised to
+anonymous callers even after its content has been cleared, which directly
+contradicts the setting the user just changed. The patch is also what makes a
+flip self-limiting: without it the stored axes read as the old tier on every
+subsequent cycle, so the clear re-fires forever and a
+`changeDetection: "source-hash"` collection that flipped once can never skip
+again. The patch normalizes exactly the way node creation does (no `access` for
+`"space"`, no `enc` when false), so a patched node is indistinguishable from one
+born at that tier, and a patch that itself fails is isolated like any other
+per-collection failure — the collection lands in `result.failed` and its error
+in the raised group, without aborting the cycle.
+
+The `changeDetection: "source-hash"` fingerprint is keyed by node id *and* tier
+for the same reason the migrating write must happen at all — a tier change does
+not alter what `readSource` returns, so a node-id-keyed hash would skip the one
+write that migrates the node.
+
+`title` is an optional `(collectionId) => string` used only when a node is
+first created; it defaults to the collection id.
 
 The read side, `readSpaceMirror`, is session-less: given a member cap for the
 space (e.g. minted via `inviteToSpace`) plus the grant holder's own ephemeral
 keys, it pulls and decrypts every node it recognizes. No `.` (`ReplicaManager`)
 type or plugin machinery is involved on this side — it's a standalone function.
+
+It pulls the space keyring **lazily** — only once a node's document actually
+comes back carrying `_encrypted`. A space whose every collection is written at
+`tier: "public"` never mints a keyring at all (nothing in it was ever
+encrypted), and this reader reads such a space in full without one. A space that
+does contain an encrypted node but has no keyring still fails with the same
+"this space has no keyring yet" error.
+
+#### Reading the public tier
+
+`readPublicSpaceMirror` is the read side of `tier: "public"`, and needs **no
+grant, no cap and no keyring** — it builds an anonymous client, the same one
+`readObjectDirectory` uses. That is the point of the tier: anyone holding the
+space id reads what its owner chose to publish, with no invite in between.
+
+```ts
+import { readPublicSpaceMirror } from "@drakkar.software/starfish-replica/space"
+
+const published = await readPublicSpaceMirror({
+  rendezvous: { baseUrl, namespace },
+  spaceId,
+  // Optional: ids the caller already has (from a share link, say). Omit them
+  // to enumerate the public object directory instead.
+  nodes: [{ id: nodeId, type: "public-strategy" }],
+  isKnownCollection: (type) => KNOWN_IDS.has(type), // optional; default: all
+  docPath: (collectionId, spaceId, nodeId) => `spaces/${spaceId}/objects/pub/${nodeId}`,
+})
+```
+
+It cannot enumerate the space the way `readSpaceMirror` does: the object index
+is `space:member`, so an anonymous caller may not list a space's nodes. So it
+takes either explicit `nodes` (`{ id, type }`) or, when they're omitted, pulls
+the world-readable public object directory at `_index/objects/{shard}`
+(`directoryShard`, default `"public"`) and reads every entry it lists for
+`spaceId` — a server-maintained projection of `objindex` writes that by
+construction only ever advertises `access: "public"` nodes. `docPath` is the
+same widened `(collectionId, spaceId, nodeId)` template the writer and
+`readSpaceMirror` take, so one literal serves all three, and the result is keyed
+the same way: collection id (the node's `type`) to plaintext document.
+
+A node whose document unexpectedly carries `_encrypted` is **omitted** from the
+result rather than returned — handing back the sealed envelope would give the
+caller ciphertext it would go on to treat as data. Omitted rather than thrown on
+because the state is reachable with nothing broken: a `public` -> `private` flip
+writes the encrypted content *before* patching the node's stored access, so for
+that window the directory still advertises a node whose content is already
+sealed, and one such node must not cost every other published collection its
+read. A failed *directory* pull does throw, unlike `readObjectDirectory`'s
+empty-list fallback: "the server is unreachable" must not be indistinguishable
+from "this space publishes nothing".
 
 ### Python
 
@@ -214,12 +321,19 @@ from starfish_replica.space import SpaceMirrorCollection, create_space_mirror_ch
 channel = create_space_mirror_channel(
     name="cloud-mirror",
     session=session,
-    collections=[SpaceMirrorCollection(id="accounts", space_name="app-mirror")],
+    collections=[
+        SpaceMirrorCollection(id="accounts", space_name="app-mirror"),   # tier defaults to "private"
+        SpaceMirrorCollection(id="profile", space_name="app-mirror", tier="public"),
+    ],
     enabled_ids=lambda: enabled,                 # re-read every cycle; sync or async
     read_source=lambda cid, ctx: load(cid),
-    doc_path=lambda space_id, node_id: f"spaces/{space_id}/objects/mirror/{node_id}",
+    doc_path=lambda cid, space_id, node_id: f"spaces/{space_id}/objects/mirror/{node_id}",
+    title=lambda cid: f"Mirror: {cid}",          # optional; defaults to the id
 )
 ```
+
+`tier` and `title` behave exactly as described above, including the stored-axes
+flip detection and the post-write patch back into the object index.
 
 Schedule it with `ChannelScheduler` (exported from `starfish_replica.space` as
 `ReplicaManager`, matching the TS subpath's naming).

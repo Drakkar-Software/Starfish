@@ -234,6 +234,34 @@ from starfish_spaces.members import (
     serialize_space_invite_store,
 )
 
+# ── Device-code space join ─────────────────────────────────────────────────────
+from starfish_spaces.join_request import (
+    AwaitSpaceJoinGrantOptions,
+    ClearSpaceJoinGrantOptions,
+    CreatedSpaceJoinRequest,
+    FetchedSpaceJoinRequest,
+    FetchSpaceJoinGrantOptions,
+    FetchSpaceJoinRequestOptions,
+    PublishSpaceJoinGrantOptions,
+    Rendezvous,
+    SpaceJoinConflictError,
+    SpaceJoinGrant,
+    SpaceJoinGrantDoc,
+    SpaceJoinRequestPayload,
+    SpaceJoinRequestSession,
+    StartSpaceJoinRequestOptions,
+    await_space_join_grant,
+    clear_space_join_grant,
+    create_space_join_request,
+    fetch_space_join_grant,
+    fetch_space_join_request_by_code,
+    join_request_from_space_join_request,
+    parse_space_join_request,
+    publish_space_join_grant,
+    start_space_join_request,
+    verify_space_join_request_pop,
+)
+
 # ── Nodes ──────────────────────────────────────────────────────────────────────
 from starfish_spaces.nodes import (
     CreateNodeInput,
@@ -385,6 +413,17 @@ __all__ = [
     "encode_space_invite_link", "decode_space_invite_link", "create_space_invite_link",
     "join_space_by_link", "add_device_to_space_keyring",
     "recover_space_access", "revoke_space_access",
+    # device-code space join
+    "Rendezvous", "SpaceJoinRequestPayload", "SpaceJoinGrantDoc", "SpaceJoinConflictError",
+    "CreatedSpaceJoinRequest", "StartSpaceJoinRequestOptions", "SpaceJoinRequestSession",
+    "FetchSpaceJoinRequestOptions", "FetchedSpaceJoinRequest",
+    "PublishSpaceJoinGrantOptions", "ClearSpaceJoinGrantOptions",
+    "SpaceJoinGrant", "FetchSpaceJoinGrantOptions", "AwaitSpaceJoinGrantOptions",
+    "create_space_join_request", "parse_space_join_request", "verify_space_join_request_pop",
+    "start_space_join_request", "fetch_space_join_request_by_code",
+    "publish_space_join_grant", "clear_space_join_grant",
+    "fetch_space_join_grant", "await_space_join_grant",
+    "join_request_from_space_join_request",
     # nodes
     "CreateNodeInput",
     "save_node_invite_entry", "get_node_invite_entry",

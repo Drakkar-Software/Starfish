@@ -157,10 +157,21 @@ async def test_the_mirror_channel_can_write_through_a_real_owner_handle():
             raise AssertionError("space already exists")
 
         async def read_object_tree(self, s, space_id):
-            return [{"id": "nd-1", "type": "user-accounts"}]
+            # Stored exactly the way the object index records a default
+            # (private) node this channel created earlier: `enc` present,
+            # `access` OMITTED because "space" is the index's default. Seeding
+            # it without `enc` would be a plaintext node, and the channel would
+            # correctly read that as a tier flip and clear it first.
+            return [{"id": "nd-1", "type": "user-accounts", "enc": True}]
 
         async def create_node(self, s, space_id, inp):
             raise AssertionError("node already exists")
+
+        async def set_node_access(self, s, space_id, node_id, patch):
+            # Only reached on a tier flip, and the seeded node's stored axes
+            # already match the collection's configured tier — so a call here
+            # would mean the flip detection misfired.
+            raise AssertionError("no tier flip in this test")
 
         get_node_access = default_space_port.get_node_access  # the real thing
 
@@ -180,7 +191,7 @@ async def test_the_mirror_channel_can_write_through_a_real_owner_handle():
         collections=[SpaceMirrorCollection(id="user-accounts", space_name="mirror")],
         enabled_ids=lambda: ["user-accounts"],
         read_source=read_source,
-        doc_path=lambda sp, nd: f"spaces/{sp}/objects/mirror/{nd}",
+        doc_path=lambda cid, sp, nd: f"spaces/{sp}/objects/mirror/{nd}",
         port=OwnerAccessPort(),
     )
 

@@ -8,16 +8,33 @@ Mirrors the TS package's ``space/plan.ts``.
 
 from __future__ import annotations
 
-from typing import Iterable, NamedTuple
+from typing import Iterable, NamedTuple, Optional
 
 __all__ = ["ExistingSpaceNode", "SpaceMirrorPlan", "plan_space_mirror"]
 
 
 class ExistingSpaceNode(NamedTuple):
-    """The subset of a space's object-tree node this planning logic reads."""
+    """The subset of a space's object-tree node this planning logic reads, plus
+    the stored access axes the CHANNEL reads off the same node.
+
+    ``access``/``enc`` are exactly what the object index records:
+    ``starfish_spaces``' node creation omits ``access`` when it is ``"space"``
+    and omits ``enc`` when false, so an ABSENT field means the default, not
+    "unknown". They are carried here rather than left behind in the channel's
+    memory because they are the only tier evidence that survives a restart — a
+    channel rebuilt after a settings toggle has no memory of what it last
+    wrote, but the stored axes still say what the content sitting there was
+    written under.
+    """
 
     id: str
     type: str
+
+    access: Optional[str] = None
+    """Stored access axis. ``None`` ⇒ ``"space"``."""
+
+    enc: Optional[bool] = None
+    """Stored encryption axis. ``None`` ⇒ ``False``."""
 
 
 class SpaceMirrorPlan(NamedTuple):

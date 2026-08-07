@@ -1,5 +1,300 @@
 # Changelog
 
+## 3.0.0-alpha.71
+
+Adds device-code space-join pairing to `starfish-spaces` — the "requester
+shows a short code, a human types it into an approving app, the approver
+grants space membership" primitive, reusable outside OctoBot's own
+website↔phone pairing flow it was lifted from. Also adds per-collection
+storage tiers (`objdoc`/`objpub`) to `starfish-replica`'s space-mirror
+channel, letting a collection opt into a plaintext, world-readable tier
+instead of the default E2EE one, plus a `readSpaceMirror` fix for reading an
+all-public space and a `docPath` signature change to support it (breaking,
+see below).
+
+### `starfish-spaces` / `@drakkar.software/starfish-spaces`
+
+#### Added
+- **Device-code space-join pairing (`join-request.ts`).** A generic, reusable
+  primitive for the "requester shows a short code, a human types it into an
+  approving app, the approver grants space membership" flow. It fills the gap
+  between the two things that already existed: `createSpaceInviteLink` is a
+  bearer link (the grant materializes at creation time, the whole credential
+  rides in a URL fragment, there is no approval-before-grant step), and
+  `makeJoinRequest` has no transport at all. Neither reproduces the property
+  this flow needs — the requester generates its OWN ephemeral key, proves
+  possession of it, a human reads the requesting `origin` and explicitly
+  approves, and only then does anything get sealed to that key.
+
+  **One collection, one address.** Both halves of the exchange live at the SAME
+  storage path, keyed by the human `code` alone (`SpaceLayout.joinSessionPull` /
+  `joinSessionPush`, default `_pairing/session/{code}`). The document is a
+  discriminated union on `phase`: the requester writes `phase:"request"`, and
+  approval rewrites the very same slot to `phase:"grant"`. There is no second
+  high-entropy session id. It would add no confidentiality the KEM seal does not
+  already provide — the response slot is public-read regardless of how
+  unguessable its address is, so the real boundary was never address entropy but
+  the ephemeral KEM private key that never leaves the requester.
+
+  **Still KEM-sealed and PoP-bound, deliberately not PIN-sealed.** Collapsing to
+  one slot does NOT mean adopting `pairing.ts`'s PIN-sealing model.
+  `startDevicePairing` pairs a person's own two devices and has two independent
+  out-of-band channels (a scanned QR *and* a separately-known PIN); this flow has
+  exactly one (read a code, type a code). PIN-sealing here would have downgraded
+  confidentiality from key-possession to offline-brute-forceable code-guessing
+  and forced the UX from a typed code to a QR scan.
+
+  `code` is bound into the crypto twice: it is the proof-of-possession signing
+  input (so a signature cannot be replayed under another code) and the seal AAD
+  (so a grant ciphertext copied into another code's slot fails to open).
+
+  **CAS discipline.** The request write is **create-only** (`baseHash: null`) —
+  only the first write to a fresh code's slot lands. The grant write is a **CAS
+  update** presenting the hash of the request document the approver just read, so
+  a racing bogus grant is a detectable `ConflictError`, not a silent overwrite
+  (and even a bogus write that did land would only yield ciphertext the requester
+  cannot open — it denies the exchange rather than compromising it).
+  `startSpaceJoinRequest` re-publishes against its OWN remembered hash rather
+  than re-pulling and adopting whatever the server currently reports, so a
+  hostile overwrite between two publishes surfaces loudly instead of quietly
+  becoming the session's new baseline.
+
+  **The grant slot is re-pollable, not one-shot.** Unlike `completeDevicePairing`,
+  which clears its rendezvous slot after a successful open, a live pairing is
+  legitimately re-read over its lifetime — so nothing is cleared automatically.
+  `clearSpaceJoinGrant` is an explicit best-effort cleanup for unpair time; the
+  collection TTL is the outer backstop. Clearing only stops the CODE from
+  resolving to a usable grant, it does not revoke a grant already handed out —
+  `removeSpaceMember` / `revokeSpaceAccess` remain the actual revocation
+  mechanism, used alongside it.
+
+  API: `createSpaceJoinRequest` (pure), `parseSpaceJoinRequest`,
+  `startSpaceJoinRequest`, `fetchSpaceJoinRequestByCode`,
+  `joinRequestFromSpaceJoinRequest` (a sibling of `makeJoinRequest` that rebuilds
+  the `{edPub, kemPub, userId, kemSig}` shape `inviteToSpace` expects, for a
+  remote ephemeral identity this side holds no `Session` for),
+  `publishSpaceJoinGrant`, `clearSpaceJoinGrant`, `fetchSpaceJoinGrant`,
+  `awaitSpaceJoinGrant`. Request-side functions are resolvable session-lessly via
+  `{rendezvous, layout?}`, defaulting to `defaultSpaceLayout`, matching
+  `CompleteDevicePairingOptions`' existing precedent. `fetchSpaceJoinGrant`
+  returns `{spaceId, cap, sealedBy}` and reads no space content — fetching
+  whatever the cap unlocks is the caller's concern. Validation: rejection-sampled
+  8-char code over a 31-symbol unambiguous alphabet, hex length checks before any
+  allocation, control/bidi-override rejection on the `origin`/`label` a human
+  actually reads, and a TTL cap anchored to the real wall clock rather than the
+  request's own (attacker-writable, unsigned) `createdAt`.
+- **`SpaceLayout.joinSessionPull(code)` / `joinSessionPush(code)`.** Default
+  `_pairing/session/{code}`, sharing the existing `_pairing/` prefix used by
+  `pairing.ts`'s own-device QR+PIN rendezvous (`_pairing/{rendezvousId}`) — no
+  routing collision, since the `session/` sub-segment keeps the two apart. The
+  human-typed code is percent-encoded so it cannot escape the path. One slot
+  carries both phases.
+- **Python twin (`starfish_spaces.join_request`).** Same API in snake_case —
+  `create_space_join_request`, `parse_space_join_request`,
+  `verify_space_join_request_pop`, `start_space_join_request`,
+  `SpaceJoinRequestSession.publish`, `fetch_space_join_request_by_code`,
+  `publish_space_join_grant`, `clear_space_join_grant`,
+  `fetch_space_join_grant`, `await_space_join_grant`,
+  `join_request_from_space_join_request`. Byte-identical wire format with the
+  TS side, verified by a dedicated cross-language parity test suite
+  (`test_join_request_wire_parity.py`): the PoP signing input is canonical
+  JSON matching `JSON.stringify({code, devEdPub, devKemPub})` exactly, and the
+  sealed grant envelope, phase-gating (a not-yet-approved slot resolves to
+  `None`, it does not raise), and poll backoff (`min(1s * 2**attempt, 5s)`)
+  all match the already-shipped TS behavior — three points where an initial
+  straight port diverged and were corrected against it during review.
+
+### `@drakkar.software/starfish-replica` / `starfish-replica`
+
+#### Added
+- **Per-collection storage tiers for the space-mirror channel.** (TS + Python.)
+  `SpaceMirrorCollection` gains an optional `tier`: `"private"` (the default)
+  resolves to the channel-wide `nodeEnc`, itself `{ access: "space", enc: true }`
+  unless the caller overrode it; `"public"` resolves to
+  `{ access: "public", enc: false }` always, ignoring `nodeEnc`. Deliberately a closed enum and not a raw
+  `{ access, enc }` pair — the server rejects `access:"public"` with
+  `enc:true`, and the enum makes that combination unrepresentable rather than
+  a failure discovered late, at `createNode`, after a space has already been
+  created. The resolved pair is precomputed per collection and threaded into
+  BOTH `createNode` and `getNodeAccess`, on the write path AND the clear path,
+  instead of the channel-wide default. A collection with no `tier` keeps using
+  the existing `nodeEnc` option, so nothing configured before this changes
+  behavior.
+  Flipping a collection between tiers is safe, INCLUDING across a restart (see
+  Fixed, below): the node's content is cleared under the OLD tier before being
+  written under the new one (a `public` -> `private` flip would otherwise leave
+  the old plaintext sitting at a world-readable URL), the node's STORED
+  `access`/`enc` are then patched to the new tier's axes so the object index
+  stops recording the old one (see Fixed, below), and the
+  `changeDetection: "source-hash"` fingerprint is keyed by node id AND tier —
+  a tier change does not alter what `readSource` returns, so a node-id-keyed
+  hash would have skipped the one write that migrates the node. A `public`
+  collection's clear is additionally never short-circuited by the "already
+  cleared by this instance" cache: the redundant no-op CAS write is cheap, and
+  being wrong about a public clear leaves world-readable data, which is not
+  symmetric with leaving stale ciphertext readable only by space members.
+- **`SpaceMirrorChannelOptions.title`.** (TS + Python.) Optional
+  `(collectionId) => string`, used when a node is first created. Defaults to
+  the collection id, which is what was hardcoded before.
+- **`ExistingSpaceNode` carries the node's stored `access`/`enc`.** (TS +
+  Python.) The pure planner still ignores them; the channel reads them off the
+  object tree it already fetches, to compare what a node is actually stored as
+  against the tier it is now configured for. Absent means the default
+  (`"space"` / `false`), matching how the object index records them — it omits
+  both when they are the defaults. `SpacePort.readObjectTree` /
+  `read_object_tree`'s declared element type is widened in lockstep; the real
+  implementations always returned these fields, the channel was throwing them
+  away.
+- **`SpacePort.setNodeAccess` / `SpacePort.set_node_access`.** (TS + Python.)
+  `(session, spaceId, nodeId, patch)`, bound to `starfish-spaces`'
+  `setNodeAccess` / `set_node_access` in the default port. The channel uses it
+  to patch a node's stored axes after a tier flip (see Fixed, below). Custom
+  `SpacePort` implementations — including test fakes — must add it.
+- **`readPublicSpaceMirror` — the read side of the public tier.** (TS only;
+  Python has no mirror reader by design.) Reads the collections written with
+  `tier: "public"` — plaintext at a world-readable path — with NO grant, NO cap
+  and NO keyring: the client is `starfish-spaces`' `makeAnonSpaceClient`, the
+  same anonymous client `readObjectDirectory` builds. That is the whole point
+  of the tier: anyone holding the space id can read what its owner chose to
+  publish, with no invite in between.
+  It deliberately cannot enumerate the space the way `readSpaceMirror` does —
+  the object index is `space:member`, so an anonymous caller may not list a
+  space's nodes. It therefore takes either explicit `nodes`
+  (`{ id, type }[]`, e.g. ids carried by a share link) or, when those are
+  omitted, pulls the world-readable public object directory
+  (`_index/objects/{shard}`, shard defaults to `"public"`) and reads every
+  entry it lists for `spaceId` — a projection that by construction only ever
+  advertises `access:"public"` nodes. `isKnownCollection` is optional here
+  (default: accept all) and `docPath` is the same widened
+  `(collectionId, spaceId, nodeId)` template the writer and `readSpaceMirror`
+  take, so ONE function literal serves all three. The result is keyed exactly
+  like `readSpaceMirror`'s: collection id (the node `type`) -> plaintext
+  document.
+  A node whose document unexpectedly comes back carrying `_encrypted` is
+  OMITTED, never returned — handing back the sealed envelope would give the
+  caller ciphertext it would go on to treat as data. Omission rather than a
+  throw because that state is reachable without anything being broken: a
+  `public` -> `private` flip writes the encrypted content BEFORE patching the
+  node's stored access, so for that window the directory still advertises a
+  node whose content is already sealed, and one such node must not cost every
+  other published collection its read. Unlike `readObjectDirectory`, a failed
+  directory pull is NOT swallowed into an empty result: this is the sibling of
+  `readSpaceMirror`, whose own index pull throws, and "the server is
+  unreachable" must not be indistinguishable from "this space publishes
+  nothing".
+
+#### Changed
+- **BREAKING: `docPath` now takes the collection id first** —
+  `(collectionId, spaceId, nodeId) => string`, was `(spaceId, nodeId)`. A
+  caller can route a tier (or any other per-collection concern) to its own
+  path prefix, e.g. a stable, guessable path for a public collection whose URL
+  is meant to be shared. On the clear path the collection id is the existing
+  node's `type`. (TS only: `readSpaceMirror`'s `docPath` is widened in
+  lockstep — its documented contract is "the same template the channel was
+  configured with", and there the collection id is the node's `type` too.)
+
+#### Fixed
+- **`readSpaceMirror` threw on an all-public space it could read entirely.**
+  (TS only.) It pulled the space keyring unconditionally as soon as ANY node in
+  the tree was recognized, and threw `"this space has no keyring yet — ask the
+  owner to sync at least once"` when the keyring doc had no `epochs`. A space
+  whose every collection is written at the new `tier: "public"` never mints a
+  keyring at all — nothing in it was ever encrypted — so the reader failed hard
+  on a space whose every node it could have read as plaintext.
+  The keyring pull is now LAZY: it happens on the first node whose pulled
+  document actually carries `_encrypted`, and not at all when none does. The
+  per-node `"_encrypted" in sealed` sniff that already handled a mixed batch is
+  unchanged; only WHEN the keyring is fetched changed. A space that genuinely
+  does contain an encrypted node and has no keyring still throws the same
+  error, unchanged. The memo holds the IN-FLIGHT promise rather than the
+  resolved encryptor, so several encrypted nodes read concurrently under the
+  existing `Promise.all` share ONE keyring pull instead of racing into one
+  each.
+- **A tier flip could not be detected across a restart, which is the only way
+  it realistically happens.** (TS + Python.) Both implementations detected a
+  flip from IN-MEMORY state — the tier the current channel instance last wrote.
+  But the realistic flip is a user toggling a collection from `public` to
+  `private` in settings, after which the app restarts or the channel is
+  rebuilt: the in-memory map is then empty, no flip is detected, no clear
+  happens, and the old plaintext stays at its world-readable `objects/pub/`
+  URL indefinitely — exactly the hazard the flip clear exists to prevent.
+  (Python was worse still: it precomputed tiers strictly at construction, so a
+  real caller could never trigger a flip at all; only a test poking
+  `channel._tier_for` could.)
+  The flip is now detected from STORED state. The object index already records
+  it — node creation writes `access` when it is not `"space"` and `enc: true`
+  when set — so a node's stored `{ access, enc }` is authoritative and survives
+  any restart. A flip is "stored axes differ from the configured tier's axes",
+  and the old path is cleared UNDER THE STORED AXES (the new axes resolve a
+  different handle, which does not reach what is stored) before the new content
+  is written, then that node's fingerprints are dropped. The clear-on-disable
+  path likewise now clears under the stored axes rather than under a
+  remembered tier. The in-memory `lastTierByNode`/`_last_tier` maps this
+  replaces are removed; `lastWritten`/`_last_written` stays, still keyed by
+  `(nodeId, tier)`.
+- **A flipped node's stored axes were never patched, so a `public` -> `private`
+  collection kept advertising itself to anonymous callers forever.** (TS +
+  Python.) Detecting the flip from stored axes (above) only ever READ the
+  object index; nothing wrote back to it, so the index recorded the OLD tier
+  indefinitely. The object index is not just bookkeeping — Infra's
+  `_project_objindex_public` projection extracts every node whose stored
+  `access` is `"public"` out of an `objindex` write and upserts
+  `{ id, title, type, updatedAt }` into the WORLD-READABLE
+  `_index/objects/public`, keyed by spaceId. A collection the user flipped from
+  `public` to `private` therefore had its CONTENT cleared (correct) while its
+  node kept being published — id, title and type — to anonymous callers, which
+  directly contradicts the setting the user just changed. The flip was also not
+  self-limiting: the stored axes still read as the old tier every cycle, so the
+  clear re-fired forever and a `changeDetection: "source-hash"` collection that
+  had flipped once could never skip again.
+  The channel now patches the node's stored `access`/`enc` to the new tier's
+  axes, via the new `SpacePort.setNodeAccess`/`set_node_access`. Order is
+  clear old path -> write new path -> patch stored axes, and the patch is
+  strictly last on purpose: patching first would leave the index claiming a
+  tier the stored content does not match if the write then failed. The patch
+  normalizes exactly the way node creation does (no `access` when it is
+  `"space"`, no `enc` when false), so a patched node is indistinguishable from
+  one created at that tier. A patch that itself fails goes through the same
+  per-collection isolation as every other step — the collection lands in
+  `result.failed` and its exception in the raised
+  `AggregateError`/`ExceptionGroup`, without aborting the cycle.
+- **BREAKING (TS only): an explicit `tier: "private"` ignored a custom
+  `nodeEnc`.** TS resolved a spelled-out `"private"` to a hardcoded
+  `{ access: "space", enc: true }` and only fell back to `nodeEnc` when `tier`
+  was omitted, so a caller passing `nodeEnc: { access: "invite", enc: true }`
+  got different axes from Python for the same configuration. Since `tier`
+  DEFAULTS to `"private"`, `tier: "private"` and an omitted `tier` must behave
+  identically or the documented default is a lie. Both languages now follow
+  the Python rule: `"private"` — explicit or defaulted — resolves to the
+  channel's `nodeEnc`/`node_enc`; `"public"` always resolves to the fixed
+  `{ access: "public", enc: false }` and ignores `nodeEnc`.
+- **One failing collection aborted the whole space-mirror sync cycle.**
+  (TS + Python.) `SpaceMirrorChannel.sync()` wrote each collection in an
+  unguarded loop and ran the spaces through a single
+  `Promise.all`/`asyncio.gather`, so one collection throwing (a 413 on an
+  oversized document, a CAS 409 that exhausted its retries, a transient
+  network error) threw out of that space AND rejected the gather — skipping
+  every other collection, in every other space, for the cycle. `result` was
+  never assigned either, so a caller reading `channel.result` afterwards
+  silently got the PREVIOUS cycle's numbers.
+  Each collection's write and each clear is now isolated, and a space-level
+  failure only sinks its own space. Failing ids are reported in the new
+  `SpaceMirrorResult.failed` field (a whole space failing contributes every
+  collection routed to it), and `result` is always replaced before `sync()`
+  reports the failure. The errors are still surfaced, not swallowed: `sync()`
+  rejects with an `AggregateError` (Python: raises an `ExceptionGroup`) naming
+  the failed ids once the cycle has finished, so `ChannelScheduler`'s existing
+  `onError`/`on_error` funnel sees it while `channel.result` describes what
+  actually got written. Raising rather than logging is deliberate — it is the
+  package's one error surface, the one a caller can replace, and it keeps this
+  channel reporting failure the same way `HttpReplicaChannel` does.
+- **`SpaceMirrorResult.created` reported the PLAN, not reality.** (TS +
+  Python.) It was copied from `planSpaceMirror`'s `toCreate`, which lists what
+  should be created. A node whose creation then failed was reported as created
+  anyway — landing the same id in both `created` and `failed`, so a caller
+  reconciling the two could not tell whether the node exists. It is now
+  accumulated from the creations that actually succeeded.
+
 ## 3.0.0-alpha.70
 
 Generalizes `starfish-replica`'s `ReplicaManager` from a single hardcoded HTTP

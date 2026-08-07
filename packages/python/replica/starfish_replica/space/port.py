@@ -45,6 +45,7 @@ from typing import Any, Awaitable, Callable, Optional, Protocol
 
 from starfish_spaces.cas_retry import run_cas
 from starfish_spaces.nodes import create_node as sf_create_node
+from starfish_spaces.nodes import set_node_access as sf_set_node_access
 from starfish_spaces.object_index import read_object_tree as sf_read_object_tree
 from starfish_spaces.registry import create_space as sf_create_space
 from starfish_spaces.registry import read_spaces as sf_read_spaces
@@ -104,10 +105,37 @@ class SpacePort(Protocol):
         ...
 
     async def read_object_tree(self, session: Any, space_id: str) -> list[dict[str, Any]]:
-        """FLAT list of every node in the space, as ``{"id", "type"}`` dicts."""
+        """FLAT list of every node in the space, as ``{"id", "type"}`` dicts.
+
+        Each node also carries its STORED ``access``/``enc`` axes when the
+        object index recorded them — it omits them when they are the defaults
+        (``"space"`` / ``False``), so absent means default, not unknown.
+        :class:`~starfish_replica.space.mirror_channel.SpaceMirrorChannel`
+        reads them to detect a tier flip that happened while it was not
+        running.
+        """
         ...
 
     async def create_node(self, session: Any, space_id: str, inp: dict[str, Any]) -> dict[str, Any]:
+        ...
+
+    async def set_node_access(
+        self, session: Any, space_id: str, node_id: str, patch: dict[str, Any]
+    ) -> None:
+        """Patch a node's STORED ``access``/``enc`` in the object index.
+
+        The index is not just bookkeeping: Infra's public-objects projection
+        reads ``access`` off it and re-publishes every ``"public"`` node's id,
+        title and type into a world-readable index. A node left recorded as
+        ``"public"`` after its content was migrated to private therefore keeps
+        being advertised to anonymous callers forever.
+
+        ``starfish_spaces`` rejects the invalid ``public`` + ``enc``
+        combination internally, and normalizes the same way ``create_node``
+        does — it DROPS ``access`` when it is ``"space"`` and ``enc`` when
+        false — so a patched node is indistinguishable from one created at
+        that tier.
+        """
         ...
 
     async def get_node_access(
@@ -152,6 +180,11 @@ class _DefaultSpacePort:
 
     async def create_node(self, session: Any, space_id: str, inp: dict[str, Any]) -> dict[str, Any]:
         return _as_dict(await sf_create_node(session, space_id, inp))
+
+    async def set_node_access(
+        self, session: Any, space_id: str, node_id: str, patch: dict[str, Any]
+    ) -> None:
+        await sf_set_node_access(session, space_id, node_id, patch)
 
     async def get_node_access(
         self,

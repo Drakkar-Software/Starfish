@@ -204,6 +204,35 @@ export { createPrefsStore } from "./prefs-store.js"
 export type { StartDevicePairingOptions, CompleteDevicePairingOptions, PairResult } from "./pairing.js"
 export { startDevicePairing, completeDevicePairing, DEFAULT_PAIR_PREFIX } from "./pairing.js"
 
+// ── Space-join requests (device-code pairing over one rendezvous slot) ────────
+export type {
+  SpaceJoinRendezvous,
+  SpaceJoinRequestPayload,
+  SpaceJoinGrantPayload,
+  SpaceJoinSessionDoc,
+  CreateSpaceJoinRequestOptions,
+  StartSpaceJoinRequestOptions,
+  SpaceJoinRequestSession,
+  FetchSpaceJoinRequestOptions,
+  PublishSpaceJoinGrantOptions,
+  SpaceJoinGrantSession,
+  UnsealedSpaceJoinGrant,
+  FetchSpaceJoinGrantOptions,
+  AwaitSpaceJoinGrantOptions,
+} from "./join-request.js"
+export {
+  createSpaceJoinRequest,
+  parseSpaceJoinRequest,
+  startSpaceJoinRequest,
+  fetchSpaceJoinRequestByCode,
+  joinRequestFromSpaceJoinRequest,
+  publishSpaceJoinGrant,
+  clearSpaceJoinGrant,
+  fetchSpaceJoinGrant,
+  awaitSpaceJoinGrant,
+  SpaceJoinGrantIntegrityError,
+} from "./join-request.js"
+
 // ── Members ───────────────────────────────────────────────────────────────────
 export type { StoredSpaceInvite } from "./members.js"
 export {

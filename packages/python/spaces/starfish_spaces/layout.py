@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 from typing import Any, Optional
+from urllib.parse import quote
 
 from starfish_spaces.config import SpaceLayout
 
@@ -150,6 +151,14 @@ class _DefaultSpaceLayout:
 
     def object_dir_pull(self, shard: Optional[str] = None) -> str:
         return _pull(f"_index/objects/{shard or 'public'}")
+
+    # ── Space-join rendezvous ─────────────────────────────────────────────────
+
+    def join_session_pull(self, code: str) -> str:
+        return _pull(f"_pairing/session/{quote(code, safe='')}")
+
+    def join_session_push(self, code: str) -> str:
+        return _push(f"_pairing/session/{quote(code, safe='')}")
 
     # ── Cap scopes ────────────────────────────────────────────────────────────
 
