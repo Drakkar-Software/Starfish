@@ -30,6 +30,7 @@ describe("findOrCreateSpace — concurrent-call coalescing", () => {
       createSpace,
       readObjectTree: vi.fn(async () => []),
       createNode: vi.fn(),
+      setNodeAccess: vi.fn(),
       getNodeAccess: vi.fn(),
     }
 
@@ -59,6 +60,7 @@ describe("findOrCreateSpace — concurrent-call coalescing", () => {
       createSpace,
       readObjectTree: vi.fn(async () => []),
       createNode: vi.fn(),
+      setNodeAccess: vi.fn(),
       getNodeAccess: vi.fn(),
     }
 
@@ -78,6 +80,7 @@ describe("findOrCreateSpace — concurrent-call coalescing", () => {
       createSpace,
       readObjectTree: vi.fn(async () => []),
       createNode: vi.fn(),
+      setNodeAccess: vi.fn(),
       getNodeAccess: vi.fn(),
     }
 

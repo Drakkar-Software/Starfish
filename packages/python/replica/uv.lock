@@ -712,7 +712,7 @@ wheels = [
 
 [[package]]
 name = "starfish-identities"
-version = "3.0.0a70"
+version = "3.0.0a71"
 source = { editable = "../identities" }
 dependencies = [
     { name = "argon2-cffi" },
@@ -742,7 +742,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "starfish-keyring"
-version = "3.0.0a70"
+version = "3.0.0a71"
 source = { editable = "../keyring" }
 dependencies = [
     { name = "cryptography" },
@@ -763,7 +763,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "starfish-protocol"
-version = "3.0.0a70"
+version = "3.0.0a71"
 source = { editable = "../protocol" }
 dependencies = [
     { name = "argon2-cffi" },
@@ -781,7 +781,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "starfish-replica"
-version = "3.0.0a70"
+version = "3.0.0a71"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },
@@ -817,7 +817,7 @@ provides-extras = ["space", "dev"]
 
 [[package]]
 name = "starfish-sdk"
-version = "3.0.0a70"
+version = "3.0.0a71"
 source = { editable = "../client" }
 dependencies = [
     { name = "cryptography" },
@@ -838,7 +838,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "starfish-server"
-version = "3.0.0a70"
+version = "3.0.0a71"
 source = { editable = "../server" }
 dependencies = [
     { name = "aiofiles" },
@@ -874,7 +874,7 @@ provides-extras = ["s3", "dev"]
 
 [[package]]
 name = "starfish-sharing"
-version = "3.0.0a70"
+version = "3.0.0a71"
 source = { editable = "../sharing" }
 dependencies = [
     { name = "starfish-keyring" },
@@ -897,7 +897,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "starfish-spaces"
-version = "3.0.0a70"
+version = "3.0.0a71"
 source = { editable = "../spaces" }
 dependencies = [
     { name = "cryptography" },

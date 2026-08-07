@@ -113,6 +113,12 @@ export const defaultSpaceLayout: SpaceLayout = {
   pairingPull: (nonce) => pull(`_pairing/${nonce}`),
   pairingPush: (nonce) => push(`_pairing/${nonce}`),
 
+  // ── Space-join rendezvous (device-code pairing) ──────────────────────────────
+  // One slot per code carries BOTH phases of the exchange (request, then grant).
+  // The code is human-typed, so it is percent-encoded before it reaches a path.
+  joinSessionPull: (code) => pull(`_pairing/session/${encodeURIComponent(code)}`),
+  joinSessionPush: (code) => push(`_pairing/session/${encodeURIComponent(code)}`),
+
   // ── Cap scopes ─────────────────────────────────────────────────────────────
 
   ownerScope: () => ({

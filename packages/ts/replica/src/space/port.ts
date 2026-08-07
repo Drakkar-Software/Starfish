@@ -13,6 +13,7 @@ import {
   getNodeAccess as sfGetNodeAccess,
   readObjectTree as sfReadObjectTree,
   readSpaces as sfReadSpaces,
+  setNodeAccess as sfSetNodeAccess,
   type CreateNodeInput,
   type NodeAccess,
   type NodeAccessHandle,
@@ -25,8 +26,34 @@ export type { CreateNodeInput, NodeAccess, NodeAccessHandle, Session }
 export interface SpacePort {
   readSpaces(session: Session): Promise<{ spaces: { id: string; name: string }[] }>
   createSpace(session: Session, name: string): Promise<{ id: string; name: string }>
-  readObjectTree(session: Session, spaceId: string): Promise<{ id: string; type: string }[]>
+  /** FLAT list of the space's nodes. `access`/`enc` are the STORED axes, as
+   *  recorded in the object index — omitted by `starfish-spaces` when they are
+   *  the defaults (`"space"` / false), so absent means default, not unknown.
+   *  `SpaceMirrorChannel` reads them to detect a tier flip that happened while
+   *  it was not running. */
+  readObjectTree(
+    session: Session,
+    spaceId: string,
+  ): Promise<{ id: string; type: string; access?: NodeAccess; enc?: boolean }[]>
   createNode(session: Session, spaceId: string, input: CreateNodeInput): Promise<{ id: string }>
+  /** Patch a node's STORED `access`/`enc` in the object index, so what the
+   *  index records matches the tier the content was just written under. The
+   *  index is not just bookkeeping: Infra's public-objects projection reads
+   *  `access` off it and re-publishes every `"public"` node's id, title and
+   *  type into a world-readable index. A node left recorded as `"public"`
+   *  after its content was migrated to `"private"` therefore keeps being
+   *  advertised to anonymous callers forever.
+   *
+   *  `starfish-spaces` rejects the invalid `public` + `enc` combination
+   *  internally, and normalizes the same way `createNode` does — it DROPS
+   *  `access` when it is `"space"` and `enc` when false — so a patched node is
+   *  indistinguishable from one created at that tier. */
+  setNodeAccess(
+    session: Session,
+    spaceId: string,
+    nodeId: string,
+    patch: { access?: NodeAccess; enc?: boolean },
+  ): Promise<void>
   getNodeAccess(
     spaceId: string,
     nodeId: string,
@@ -41,6 +68,7 @@ export const defaultSpacePort: SpacePort = {
   createSpace: sfCreateSpace,
   readObjectTree: sfReadObjectTree,
   createNode: sfCreateNode,
+  setNodeAccess: sfSetNodeAccess,
   getNodeAccess: (spaceId, nodeId, node, session) => sfGetNodeAccess(spaceId, nodeId, node, session),
 }
 

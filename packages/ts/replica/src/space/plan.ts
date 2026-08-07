@@ -5,10 +5,28 @@
  * dependency, so it is directly unit-testable.
  */
 
-/** The subset of a space's object-tree node this planning logic reads. */
+/**
+ * The subset of a space's object-tree node this planning logic reads, plus the
+ * stored access axes the CHANNEL reads off the same node.
+ *
+ * `access`/`enc` are exactly what the object index records — `starfish-spaces`'
+ * node creation omits `access` when it is `"space"` and omits `enc` when false
+ * (see `starfish-spaces`' `addObject`), so an ABSENT field means the default,
+ * not "unknown". They are carried here rather than left behind in the channel's
+ * memory because they are the only tier evidence that survives a restart: a
+ * channel rebuilt after a settings toggle has no memory of what it last wrote,
+ * but the stored axes still say what the content sitting there was written
+ * under.
+ */
 export interface ExistingSpaceNode {
   id: string
   type: string
+  /** Stored access axis. Absent ⇒ `"space"`. Deliberately a plain `string`
+   *  rather than `starfish-spaces`' `NodeAccess`, so this pure planner keeps
+   *  its zero dependencies. */
+  access?: string
+  /** Stored encryption axis. Absent ⇒ `false`. */
+  enc?: boolean
 }
 
 export interface SpaceMirrorPlan {

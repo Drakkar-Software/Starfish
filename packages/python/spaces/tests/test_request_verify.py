@@ -63,7 +63,12 @@ def test_verify_kem_sig_tampered_sig():
     ed_priv, ed_pub = _make_keypair()
     kem_pub = _make_kem_pub()
     sig = sign_kem_sig(kem_pub, ed_priv)
-    tampered = sig[:-2] + "00"
+    # Overwriting the last byte with a CONSTANT is a no-op whenever the real
+    # signature already ends in that byte — 1 run in 256 tampered with nothing
+    # and then failed, because verify correctly returned True. Flip the byte
+    # relative to what is there so the input is always genuinely different.
+    tampered = sig[:-2] + ("01" if sig[-2:] == "00" else "00")
+    assert tampered != sig
     assert verify_kem_sig(ed_pub, kem_pub, tampered) is False
 
 
