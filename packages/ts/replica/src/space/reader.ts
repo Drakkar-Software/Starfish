@@ -57,6 +57,12 @@ function objectDirectoryPath(shard: string): string {
   return `_index/objects/${shard}`
 }
 
+/** Storage path for ONE node's own keyring (the isolated tier) — same reason
+ *  as the paths above. */
+function nodeKeyringPath(spaceId: string, nodeId: string): string {
+  return `spaces/${spaceId}/objects/n/${nodeId}/_keyring`
+}
+
 interface ObjectIndexNode {
   id: string
   type: string
@@ -160,6 +166,96 @@ export async function readSpaceMirror(
       }
       const encryptor = await openKeyring()
       result[node.type] = await encryptor.decrypt(sealed as { _encrypted: string; _epoch?: number })
+    }),
+  )
+  return result
+}
+
+// ── Isolated tier ──────────────────────────────────────────────────────────────
+
+/** One isolated node a grant covers. The caps are the two `inviteToNode(...,
+ *  {isolated: true})` mints: `contentCap` (`objinv`) fetches the document,
+ *  `keyringCap` (`nodekeyring`) fetches the key to open it. */
+export interface IsolatedMirrorNodeGrant {
+  /** The node's `type` in the object index — the collection id. Supplied by
+   *  the grant rather than read from `objindex`, which is `space:member` and
+   *  therefore unreadable to a per-node grant holder. */
+  collectionId: string
+  nodeId: string
+  contentCap: CapCert
+  keyringCap: CapCert
+}
+
+export interface ReadIsolatedSpaceMirrorOptions {
+  rendezvous: { baseUrl: string; namespace: string }
+  spaceId: string
+  /** Exactly the nodes this grant covers — no enumeration step, because a
+   *  per-node grant holder is not on the space roster and cannot list. */
+  nodes: readonly IsolatedMirrorNodeGrant[]
+  /** The grant holder's own ephemeral Ed25519 private key (hex); every cap was
+   *  minted for this device's pubkey. */
+  devEdPrivHex: string
+  /** The grant holder's own ephemeral X25519 KEM private key (hex) — added as
+   *  a recipient of each node's OWN keyring at invite time. */
+  devKemPrivHex: string
+  /** Same bare-path template the writer was configured with. */
+  docPath: (collectionId: string, spaceId: string, nodeId: string) => string
+  fetch?: typeof fetch
+}
+
+/**
+ * Session-less read side of the ISOLATED tier: pull and decrypt each node the
+ * grant names, every one through its own keyring.
+ *
+ * Differs from `readSpaceMirror` in the two ways the tier implies. There is no
+ * object-index pull — `objindex` is `space:member`, and the whole point of an
+ * isolated grant is that its holder never joins the roster — so the node list
+ * comes from the grant. And there is no one shared keyring: each node carries
+ * its own, so revoking one node leaves the others readable.
+ *
+ * A node whose content or keyring pull fails is OMITTED rather than failing
+ * the batch: with per-node grants, one revoked node is a normal state, not an
+ * error for the rest.
+ */
+export async function readIsolatedSpaceMirror(
+  opts: ReadIsolatedSpaceMirrorOptions,
+): Promise<Record<string, unknown>> {
+  const clientFor = (cap: CapCert) =>
+    new StarfishClient({
+      baseUrl: opts.rendezvous.baseUrl,
+      namespace: opts.rendezvous.namespace,
+      fetch: opts.fetch ?? globalThis.fetch,
+      capProvider: new StaticCapProvider(cap, opts.devEdPrivHex),
+    })
+
+  const result: Record<string, unknown> = {}
+  await Promise.all(
+    opts.nodes.map(async (node) => {
+      try {
+        const docResult = await clientFor(node.contentCap).pull(
+          `/pull/${opts.docPath(node.collectionId, opts.spaceId, node.nodeId)}`,
+        )
+        const sealed = typeof docResult.data === "string" ? JSON.parse(docResult.data) : docResult.data
+        if (!sealed || typeof sealed !== "object") return
+        if (!("_encrypted" in sealed)) {
+          result[node.collectionId] = sealed
+          return
+        }
+        const keyringResult = await clientFor(node.keyringCap).pull(
+          `/pull/${nodeKeyringPath(opts.spaceId, node.nodeId)}`,
+        )
+        const keyringDoc =
+          typeof keyringResult.data === "string" ? JSON.parse(keyringResult.data) : keyringResult.data
+        if (!keyringDoc || typeof keyringDoc !== "object" || !(keyringDoc as { epochs?: unknown }).epochs) return
+        const encryptor = await createKeyringEncryptor(
+          keyringDoc as Keyring,
+          { kemPubHex: node.keyringCap.subKem ?? "", kemPrivHex: opts.devKemPrivHex },
+          { trustedAdders: [node.keyringCap.iss] },
+        )
+        result[node.collectionId] = await encryptor.decrypt(sealed as { _encrypted: string; _epoch?: number })
+      } catch {
+        // Revoked, cleared, or not yet written — omit it, keep the rest.
+      }
     }),
   )
   return result

@@ -57,8 +57,11 @@ export {
 } from "./port.js"
 export {
   readSpaceMirror,
+  readIsolatedSpaceMirror,
   readPublicSpaceMirror,
   type ReadSpaceMirrorOptions,
+  type ReadIsolatedSpaceMirrorOptions,
+  type IsolatedMirrorNodeGrant,
   type ReadPublicSpaceMirrorOptions,
   type PublicSpaceMirrorNode,
 } from "./reader.js"
