@@ -41,6 +41,7 @@ equivalent anywhere in the package, so the port implements it here on top of
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from typing import Any, Awaitable, Callable, Optional, Protocol
 
 from starfish_spaces.cas_retry import run_cas
@@ -65,11 +66,18 @@ __all__ = [
 
 
 def _as_dict(obj: Any) -> dict[str, Any]:
-    """Normalize a dataclass/``Space``/plain-dict node or space into a dict."""
+    """Normalize a dataclass/``Space``/plain-dict node or space into a dict.
+
+    ``to_dict`` first: a type that ships one (e.g. ``ObjectTreeNode``) uses it
+    to rename fields to their wire form, which :func:`dataclasses.asdict`
+    would not do.
+    """
     if isinstance(obj, dict):
         return obj
     if hasattr(obj, "to_dict"):
         return obj.to_dict()
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        return dataclasses.asdict(obj)
     if hasattr(obj, "__dict__"):
         return dict(vars(obj))
     return {
@@ -155,6 +163,14 @@ class SpacePort(Protocol):
         """
         ...
 
+    async def get_isolated_node_access(
+        self, session: Any, space_id: str, node_id: str
+    ) -> NodeAccessHandle:
+        """Resolve a handle whose encryptor is the node's OWN keyring (the
+        isolated tier): ensure the per-node keyring exists, then open it. Unlike
+        :meth:`get_node_access`, never falls back to the space keyring."""
+        ...
+
     async def push_node_doc(
         self,
         handle: NodeAccessHandle,
@@ -164,17 +180,6 @@ class SpacePort(Protocol):
         node: Optional[dict[str, Any]] = None,
     ) -> None:
         """CAS read-modify-write one node's content through ``handle``."""
-        ...
-
-    async def get_isolated_node_access(
-        self, session: Any, space_id: str, node_id: str
-    ) -> NodeAccessHandle:
-        """Resolve a handle whose encryptor is the node's OWN keyring.
-
-        Ensures the per-node keyring exists, then opens it. Unlike
-        :meth:`get_node_access`, never falls back to the space keyring — see
-        ``docs/`` on the isolated tier.
-        """
         ...
 
 
@@ -212,10 +217,9 @@ class _DefaultSpacePort:
     async def get_isolated_node_access(
         self, session: Any, space_id: str, node_id: str
     ) -> NodeAccessHandle:
-        # Ensure-then-open, and never through sf_get_node_access: its owner tier
-        # silently falls back to the SPACE keyring when the node keyring is
-        # missing, which would seal isolated content under the key every space
-        # member holds. open_node_encryptor raises instead.
+        # Never through sf_get_node_access: its owner tier silently falls back to
+        # the SPACE keyring when the node keyring is missing, sealing isolated
+        # content under the key every space member holds. This raises instead.
         await sf_owner_ensure_node_keyring(
             session.content_client, session, space_id, node_id, session.layout
         )

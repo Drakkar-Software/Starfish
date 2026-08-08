@@ -293,6 +293,31 @@ encrypted), and this reader reads such a space in full without one. A space that
 does contain an encrypted node but has no keyring still fails with the same
 "this space has no keyring yet" error.
 
+#### Reading the isolated tier
+
+`readIsolatedSpaceMirror` is the read side of `tier: "isolated"`. It differs from
+`readSpaceMirror` in exactly the two ways the tier implies: there is no object-index pull (the
+index is `space:member`, and the point of an isolated grant is that its holder never joins the
+roster), so the node list comes from the grant itself; and there is no one shared keyring, since
+each node carries its own.
+
+```ts
+import { readIsolatedSpaceMirror } from "@drakkar.software/starfish-replica/space"
+
+const collections = await readIsolatedSpaceMirror({
+  rendezvous: { baseUrl, namespace },
+  spaceId,
+  // Straight from the grant — one entry per node it covers.
+  nodes: [{ collectionId: "user-accounts", nodeId, contentCap, keyringCap }],
+  devEdPrivHex,
+  devKemPrivHex,
+  docPath: (collectionId, spaceId, nodeId) => `spaces/${spaceId}/objects/n/${nodeId}/content`,
+})
+```
+
+A node whose content or keyring pull fails is **omitted** rather than failing the batch: with
+per-node grants, one revoked node is a normal state, not an error for the rest.
+
 #### Reading the public tier
 
 `readPublicSpaceMirror` is the read side of `tier: "public"`, and needs **no

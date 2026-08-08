@@ -113,7 +113,7 @@ class ReplicaChannel(Protocol):
 `HttpReplicaChannel` is the original primary→replica HTTP path.
 `ReplicaManager(store, collections, ...)` builds one per `RemoteCollection`,
 so its constructor and behaviour are unchanged. To schedule your own
-channels, use `ChannelScheduler` directly (or `ReplicaManager.from_channels`).
+channels, use `ChannelScheduler` directly.
 
 ## `starfish_replica.space` — mirror into a Starfish space
 

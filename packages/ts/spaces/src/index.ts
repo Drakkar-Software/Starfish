@@ -209,7 +209,6 @@ export type {
   SpaceJoinRendezvous,
   SpaceJoinRequestPayload,
   SpaceJoinGrantPayload,
-  SpaceJoinSessionDoc,
   CreateSpaceJoinRequestOptions,
   StartSpaceJoinRequestOptions,
   SpaceJoinRequestSession,

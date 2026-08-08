@@ -104,7 +104,7 @@ describe.skipIf(!process.env.STARFISH_STRESS)("append-only stress: parse cost vs
       const key = `stress/fullpull/${n}`
       const store = await seedStore(key, n, PAYLOAD_SMALL)
       const t0 = performance.now()
-      const res = await handleAppendOnlyPull(key, store, null, FIELD)
+      const res = await handleAppendOnlyPull(key, store, "0", FIELD)
       const dt = performance.now() - t0
       const items = pulledItems(res)
       console.log(`[full-pull]         N=${fmt(n).padStart(9)} -> ${dt.toFixed(2)} ms (returned ${fmt(items.length)})`)
@@ -172,7 +172,7 @@ describe.skipIf(!process.env.STARFISH_STRESS)("append-only stress: parse cost vs
     const dtAppend = performance.now() - tA
 
     const tP = performance.now()
-    const res = await handleAppendOnlyPull(key, store, null, FIELD)
+    const res = await handleAppendOnlyPull(key, store, "0", FIELD)
     const dtPull = performance.now() - tP
 
     console.log(`[large-100k ~100MB] append ${dtAppend.toFixed(2)} ms, full-pull ${dtPull.toFixed(2)} ms`)
@@ -237,7 +237,7 @@ describe.skipIf(!process.env.STARFISH_STRESS)("append-only chunked storage perf 
       const key = `cperf/full/${n}`
       const store = await seedChunked(key, n, PAYLOAD_SMALL, CHUNK)
       const t0 = performance.now()
-      const res = await handleAppendOnlyPull(key, store, null, FIELD)
+      const res = await handleAppendOnlyPull(key, store, "0", FIELD)
       const dt = performance.now() - t0
       console.log(`[chunk full-pull]   N=${w(n)} -> ${dt.toFixed(2)} ms (returned ${fmt(pulledItems(res).length)})`)
       expect(pulledItems(res).length).toBe(n)

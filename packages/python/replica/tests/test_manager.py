@@ -92,7 +92,7 @@ async def test_sync_skips_write_when_hash_unchanged():
 
     async with httpx.AsyncClient() as client:
         manager = ReplicaManager(store, [col], client=client)
-        manager._last_hash["featured"] = local_hash  # simulate already synced
+        manager._entries[0].channel._last_hash = local_hash  # simulate already synced
         await manager.sync_now("featured")
 
     # Store content should be unchanged

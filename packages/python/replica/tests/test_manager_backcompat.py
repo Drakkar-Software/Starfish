@@ -1,23 +1,16 @@
-"""ReplicaManager's back-compat surface after the ChannelScheduler split.
+"""ReplicaManager's surface after the ChannelScheduler split.
 
 test_manager.py is the real regression net (it passes unmodified). This file
-covers the compatibility machinery that split introduced explicitly, rather
-than relying on it being exercised incidentally:
-
-- ``_last_hash`` used to be a plain ``dict[str, str]`` on the manager; it now
-  lives per-channel on each HttpReplicaChannel (mirroring TS, where
-  ``_lastHash`` is a per-channel scalar). ``_LastHashView`` maps the old
-  mapping access onto the new location. test_manager.py:95 pokes it exactly
-  once (``manager._last_hash["featured"] = local_hash``) — everything else
-  about the view is untested without this file.
-- ``remote_for`` / ``proxy_push`` must still 404-or-None on a non-HTTP channel,
-  since a ChannelScheduler built from space channels has no RemoteConfig.
+covers what that split introduced explicitly, rather than relying on it being
+exercised incidentally: the manager is now a ChannelScheduler over one
+HttpReplicaChannel per collection, and ``remote_for`` / ``proxy_push`` must
+404-or-None on a non-HTTP channel, since a scheduler built from space channels
+has no RemoteConfig.
 """
 
 from __future__ import annotations
 
 import httpx
-import pytest
 
 from starfish_replica.channel import ChannelSchedule, ScheduledChannel
 from starfish_replica.config import RemoteCollection, RemoteConfig, SyncTrigger, WriteMode
@@ -40,6 +33,15 @@ def _make_col(name: str = "featured") -> RemoteCollection:
             sync_triggers=[SyncTrigger.SCHEDULED],
         ),
     )
+
+
+class _FakeSpaceChannel:
+    """Stands in for a non-HTTP channel (e.g. SpaceMirrorChannel)."""
+
+    name = "mirror"
+
+    async def sync(self, ctx) -> None:
+        return None
 
 
 # ── ReplicaManager is a ChannelScheduler ──────────────────────────────────────
@@ -78,70 +80,10 @@ def test_all_channels_share_the_managers_http_client():
     assert next(iter(clients)) == id(manager._client)
 
 
-# ── _last_hash back-compat view ───────────────────────────────────────────────
-
-
-def test_last_hash_set_then_get_round_trips():
-    manager = ReplicaManager(MemoryObjectStore(), [_make_col()])
-    manager._last_hash["featured"] = "h1"
-    assert manager._last_hash["featured"] == "h1"
-
-
-def test_last_hash_writes_through_to_the_channel():
-    manager = ReplicaManager(MemoryObjectStore(), [_make_col()])
-    manager._last_hash["featured"] = "h1"
-    assert manager._entries[0].channel._last_hash == "h1"
-
-
-def test_last_hash_reads_through_from_the_channel():
-    manager = ReplicaManager(MemoryObjectStore(), [_make_col()])
-    manager._entries[0].channel._last_hash = "set-on-channel"
-    assert manager._last_hash["featured"] == "set-on-channel"
-
-
-def test_last_hash_unset_channel_raises_key_error():
-    manager = ReplicaManager(MemoryObjectStore(), [_make_col()])
-    with pytest.raises(KeyError):
-        manager._last_hash["featured"]
-
-
-def test_last_hash_unknown_name_raises_key_error():
-    manager = ReplicaManager(MemoryObjectStore(), [_make_col()])
-    with pytest.raises(KeyError):
-        manager._last_hash["not-a-collection"]
-
-
-def test_last_hash_delete_clears_the_channel_value():
-    manager = ReplicaManager(MemoryObjectStore(), [_make_col()])
-    manager._last_hash["featured"] = "h1"
-    del manager._last_hash["featured"]
-    assert manager._entries[0].channel._last_hash is None
-
-
-def test_last_hash_iteration_and_len_only_count_set_channels():
-    manager = ReplicaManager(MemoryObjectStore(), [_make_col("a"), _make_col("b")])
-    assert len(manager._last_hash) == 0
-    manager._last_hash["a"] = "h-a"
-    assert list(manager._last_hash) == ["a"]
-    assert len(manager._last_hash) == 1
-    manager._last_hash["b"] = "h-b"
-    assert sorted(manager._last_hash) == ["a", "b"]
-    assert len(manager._last_hash) == 2
-
-
 def test_last_hash_is_per_channel_not_shared():
     manager = ReplicaManager(MemoryObjectStore(), [_make_col("a"), _make_col("b")])
-    manager._last_hash["a"] = "h-a"
+    manager._entries[0].channel._last_hash = "h-a"
     assert manager._entries[1].channel._last_hash is None
-
-
-def test_last_hash_supports_the_get_idiom():
-    # MutableMapping gives .get() for free, but only if __getitem__ raises
-    # KeyError correctly rather than returning None.
-    manager = ReplicaManager(MemoryObjectStore(), [_make_col()])
-    assert manager._last_hash.get("featured") is None
-    manager._last_hash["featured"] = "h1"
-    assert manager._last_hash.get("featured") == "h1"
 
 
 # ── remote_for / proxy_push on non-HTTP channels ──────────────────────────────
@@ -156,15 +98,6 @@ def test_remote_for_returns_the_channels_remote_config():
 def test_remote_for_unknown_collection_returns_none():
     manager = ReplicaManager(MemoryObjectStore(), [_make_col()])
     assert manager.remote_for("nope") is None
-
-
-class _FakeSpaceChannel:
-    """Stands in for a non-HTTP channel (e.g. SpaceMirrorChannel)."""
-
-    name = "mirror"
-
-    async def sync(self, ctx) -> None:
-        return None
 
 
 def test_remote_for_returns_none_on_a_non_http_channel():
@@ -191,18 +124,6 @@ async def test_proxy_push_404s_on_an_unknown_collection():
     assert status == 404
 
 
-def test_last_hash_view_skips_non_http_channels():
-    manager = ReplicaManager(MemoryObjectStore(), [_make_col()])
-    manager._entries.append(
-        ScheduledChannel(channel=_FakeSpaceChannel(), schedule=ChannelSchedule())
-    )
-    manager._last_hash["featured"] = "h1"
-    # The space channel has no _last_hash and must not appear or blow up.
-    assert list(manager._last_hash) == ["featured"]
-    with pytest.raises(KeyError):
-        manager._last_hash["mirror"]
-
-
 # ── client ownership ──────────────────────────────────────────────────────────
 
 
@@ -219,30 +140,3 @@ async def test_stop_leaves_an_injected_client_open():
         assert manager._owned_client is False
         await manager.stop()
         assert not client.is_closed
-
-
-# ── from_channels ─────────────────────────────────────────────────────────────
-
-
-async def test_from_channels_builds_a_scheduler_over_non_http_channels():
-    entry = ScheduledChannel(channel=_FakeSpaceChannel(), schedule=ChannelSchedule())
-    scheduler = ReplicaManager.from_channels([entry])
-
-    assert isinstance(scheduler, ChannelScheduler)
-    await scheduler.sync_now("mirror")  # drives the channel without any HTTP setup
-
-
-async def test_from_channels_forwards_the_on_error_handler():
-    class Boom:
-        name = "boom"
-
-        async def sync(self, ctx):
-            raise RuntimeError("x")
-
-    errors: list[str] = []
-    scheduler = ReplicaManager.from_channels(
-        [ScheduledChannel(channel=Boom(), schedule=ChannelSchedule())],
-        on_error=lambda n, e: errors.append(n),
-    )
-    await scheduler.sync_all()
-    assert errors == ["boom"]

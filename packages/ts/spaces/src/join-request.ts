@@ -1,45 +1,28 @@
 /**
  * Device-code space-join pairing over ONE public rendezvous slot.
  *
- * A requester (typically a website, holding no wallet and no `Session`)
- * generates ephemeral device keys, proves possession of them, and publishes a
- * short human-typeable code. A human reads that code off the requester's
- * screen and types it into an approving app that DOES hold a `Session`. The
- * approver looks the code up, shows `origin`/`label` for a human decision,
- * and — only if approved — calls `inviteToSpace` and seals the resulting
- * `{spaceId, cap}` to the requester's ephemeral KEM key. The requester unseals
- * it with a private key that never left its process.
+ * A requester holding no wallet and no `Session` generates ephemeral device
+ * keys, proves possession of them, and publishes a short human-typeable code. A
+ * human types that code into an approving app that DOES hold a `Session`; the
+ * approver shows `origin`/`label` for a human decision and, only if approved,
+ * seals the `{spaceId, cap}` from `inviteToSpace` to the requester's ephemeral
+ * KEM key.
  *
- * ## One slot, two phases
+ * Both phases live at the SAME path, keyed by `code` alone
+ * ({@link SpaceLayout.joinSessionPull}, default `_pairing/session/{code}`), as a
+ * union discriminated on `phase`. `"request"` is written create-only
+ * (`baseHash: null`); `"grant"` is a CAS update against the request document's
+ * hash, so a bogus grant surfaces as a `ConflictError` instead of a silent
+ * overwrite. `code` is bound into the crypto twice, as the PoP signing input and
+ * as the seal AAD, so neither a signature nor a ciphertext survives relocation to
+ * another code's slot.
  *
- * Both halves of the exchange live at the SAME storage path, keyed by `code`
- * alone ({@link SpaceLayout.joinSessionPull} / `joinSessionPush`, default
- * `_pairing/session/{code}`). The document is a discriminated union on
- * `phase`:
- *
- *  - `phase: "request"` — written **create-only** (`baseHash: null`), so only
- *    the first write to a fresh code's slot succeeds.
- *  - `phase: "grant"` — written as a **CAS update** against the hash of the
- *    request document the approver just read. A racing writer needs that same
- *    hash, so a bogus grant surfaces as a `ConflictError`, never a silent
- *    overwrite.
- *
- * `code` is therefore the single address for the whole exchange. It is also
- * bound into the crypto twice: it is the PoP signing input (so a signature
- * cannot be replayed under a different code) and the seal AAD (so a grant
- * ciphertext copied into a different code's slot fails to open).
- *
- * ## Why KEM-sealing and not PIN-sealing
- *
- * {@link startDevicePairing} in `pairing.ts` pairs a person's OWN two devices
- * and can PIN-seal because it has two independent out-of-band channels (a
- * scanned QR *and* a separately-known PIN). This flow has exactly one channel
- * (read a code, type a code), so confidentiality rests on the requester's
- * ephemeral KEM private key, not on the guessability of the code. That is also
- * why the grant slot is **not** auto-cleared after a successful read the way
- * `completeDevicePairing` clears its slot: a live pairing is legitimately
- * re-polled over its lifetime. Use {@link clearSpaceJoinGrant} explicitly at
- * unpair time; the collection's TTL is the outer backstop.
+ * Confidentiality rests on the requester's ephemeral KEM private key, not on the
+ * guessability of the code: unlike {@link startDevicePairing}, this flow has one
+ * out-of-band channel and cannot PIN-seal. The grant slot is therefore NOT
+ * auto-cleared after a successful read, since a live pairing legitimately
+ * re-polls it. Call {@link clearSpaceJoinGrant} at unpair time, with the collection's
+ * TTL as the outer backstop.
  */
 import { generateDeviceKeys, type GeneratedDeviceKeys } from "@drakkar.software/starfish-identities"
 import { ed25519Suite } from "@drakkar.software/starfish-protocol"
@@ -58,32 +41,20 @@ import type { JoinRequest } from "./token-types.js"
 
 // ── Code generation ────────────────────────────────────────────────────────────
 
-/** Excludes visually-ambiguous characters (0/O, 1/I/L) — Crockford-style,
- *  meant to be read off one screen and typed on another. 31 symbols
- *  (23 letters + 8 digits), 8 characters ⇒ 8·log2(31) ≈ 39.63 bits of
- *  entropy, well above RFC 8628's device-flow `user_code` minimum, and
- *  bounded further by the rendezvous collection's TTL and per-IP rate limit
- *  (not something this package controls). {@link randomCode} uses rejection
- *  sampling (see `CODE_REJECT_THRESHOLD`) so this figure is the real, uniform
- *  entropy — not a biased approximation of it. */
+/** Crockford-style: no visually-ambiguous 0/O or 1/I/L. 31 symbols over 8
+ *  characters ≈ 39.6 bits, uniform thanks to {@link randomCode}'s rejection
+ *  sampling, and bounded further by the collection's TTL and rate limit. */
 const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
 const CODE_LENGTH = 8
-// 256 is not a multiple of CODE_ALPHABET.length (31) — a plain `byte %
-// length` would over-represent the first `256 % 31 = 8` symbols (A-H) by
-// 12.5% in every character position. Reject any byte at or above the largest
-// multiple of the alphabet length that still fits in a byte
-// (Math.floor(256 / 31) * 31 = 248) and draw a replacement — the remaining
-// range [0, 248) maps onto the 31 symbols with exactly uniform probability.
+/** Largest multiple of the alphabet length that fits in a byte (248). Bytes at
+ *  or above it are rejected so `byte % 31` stays uniform. A plain modulo would
+ *  over-represent A-H by 12.5% in every position. */
 const CODE_REJECT_THRESHOLD = Math.floor(256 / CODE_ALPHABET.length) * CODE_ALPHABET.length
 
 const DEFAULT_REQUEST_TTL_SEC = 5 * 60
-// `expiresAt`/`createdAt` are NOT covered by popSig — anyone with the code can
-// rewrite them, and the ONLY thing that kept the code's live window actually
-// short was a default nobody was forced to respect. This is the real
-// enforcement: a request whose declared window exceeds it is rejected outright
-// by parseSpaceJoinRequest, and createSpaceJoinRequest clamps its own ttlSec to
-// it too so a well-meaning caller can't accidentally create something this
-// module would reject anyway.
+/** `expiresAt` is NOT covered by popSig, so anyone with the code can rewrite it.
+ *  This absolute cap is the real enforcement: `parseSpaceJoinRequest` rejects a
+ *  longer window and `createSpaceJoinRequest` clamps to it. */
 const MAX_REQUEST_TTL_SEC = 60 * 60
 
 function randomBytes(n: number): Uint8Array {
@@ -94,10 +65,7 @@ function randomBytes(n: number): Uint8Array {
 
 function randomCode(): string {
   const chars: string[] = []
-  // Pull a batch at a time (rather than one byte per iteration) so a run of
-  // rejected bytes doesn't turn into a syscall-per-byte loop — rejection hits
-  // ~3% of bytes, so a fresh CODE_LENGTH-sized batch almost always finishes
-  // the code outright, with a further batch only on the rare tail.
+  // Batched draws so a run of rejected bytes doesn't become a syscall per byte.
   while (chars.length < CODE_LENGTH) {
     const batch = randomBytes(CODE_LENGTH)
     for (const b of batch) {
@@ -109,12 +77,8 @@ function randomCode(): string {
   return chars.join("")
 }
 
-/** What binds `code`/`devEdPub`/`devKemPub` together and proves the requester
- *  holds `devEdPriv` — without this, a request record's public keys could be
- *  swapped in transit with no way to detect it. Signed over a canonical JSON
- *  of the three fields so a signature can't be replayed under a different
- *  (key-pair, code) combination. `code` — not a separate session id — is the
- *  binding term: it is the slot address, so a request document relocated to
+/** Binds `code`/`devEdPub`/`devKemPub` together and proves the requester holds
+ *  `devEdPriv`. `code` is the slot address, so a request document relocated to
  *  another code's slot no longer verifies. */
 function popSigningInput(code: string, devEdPub: string, devKemPub: string): Uint8Array {
   return new TextEncoder().encode(JSON.stringify({ code, devEdPub, devKemPub }))
@@ -131,44 +95,34 @@ export interface SpaceJoinRendezvous {
 /**
  * The `phase: "request"` half of the join-session document.
  *
- * Deliberately carries NO rendezvous coordinates: the approving side must use
- * its OWN trusted server config (the one it used to look the code up), never a
- * value read out of a document any anonymous party can write — otherwise a
- * hostile "requester" could point the approver's outbound writes at a host of
- * its choosing. It also carries no `code`: the code IS the address, and
- * duplicating it in the body would only create a second, tamperable copy.
+ * Deliberately carries NO rendezvous coordinates and no `code`: the approver
+ * must use its OWN trusted server config rather than a host an anonymous writer
+ * chose, and the code is already the address, so a copy in the body would
+ * only be a second, tamperable one.
  */
 export interface SpaceJoinRequestPayload {
   v: 1
   phase: "request"
   devEdPub: string
   devKemPub: string
-  /** `ed25519Suite.sign(popSigningInput(code, devEdPub, devKemPub), devEdPriv)`,
-   *  hex. Proves the requester holds `devEdPriv` — not proof of the requester's
-   *  identity or intent, which is exactly why `origin` is still what the
-   *  approving human relies on. */
+  /** Ed25519 over {@link popSigningInput}, hex. Possession of `devEdPriv` only,
+   *  which is why `origin` remains what the approving human relies on. */
   popSig: string
-  /** `signKemSig({kemPub: devKemPub, edPriv: devEdPriv})`, hex — a SEPARATE
-   *  proof-of-possession signature over just `devKemPub`, matching the
-   *  `{edPub, kemPub, userId, kemSig}` join-request shape `parseJoinRequest` /
-   *  `inviteToSpace` expect. {@link joinRequestFromSpaceJoinRequest}
-   *  reassembles that shape from this plus the two public keys above, so the
-   *  requester never needs a full `Session` just to call `makeJoinRequest()`
-   *  for an identity it has no wallet to derive. */
+  /** `signKemSig({kemPub: devKemPub, edPriv: devEdPriv})`, hex. The separate
+   *  signature the `{edPub, kemPub, userId, kemSig}` shape `inviteToSpace`
+   *  expects; {@link joinRequestFromSpaceJoinRequest} reassembles it. */
   joinRequestKemSig: string
-  /** Attacker-controlled in the sense that anyone can put any string here —
-   *  the approving side must verify it (e.g. a `.well-known` fetch), not trust
-   *  it at face value. */
+  /** Anyone can write anything here, so the approving side must verify it
+   *  (e.g. a `.well-known` fetch) rather than trust it at face value. */
   origin: string
   label?: string
-  /** Opaque to this module: whatever the approving app wants to show a human
-   *  about what is being asked for. Validated only as a string array. */
+  /** Opaque to this module; validated only as a string array. */
   requestedScopes?: string[]
   createdAt: string
   expiresAt: string
 }
 
-/** The `phase: "grant"` half — same document, same slot, after approval. */
+/** The `phase: "grant"` half: same document, same slot, after approval. */
 export interface SpaceJoinGrantPayload {
   v: 1
   phase: "grant"
@@ -176,9 +130,6 @@ export interface SpaceJoinGrantPayload {
   sealed: SealedBlob
   grantedAt: string
 }
-
-/** The single discriminated-union document living at `joinSessionPull(code)`. */
-export type SpaceJoinSessionDoc = SpaceJoinRequestPayload | SpaceJoinGrantPayload
 
 const GRANT_ENVELOPE_KIND = "starfish-space-join-grant"
 const GRANT_ENVELOPE_VERSION = 1
@@ -191,14 +142,10 @@ interface GrantEnvelope {
 }
 
 /**
- * Thrown by {@link fetchSpaceJoinGrant} when the slot HAS advanced to
- * `phase: "grant"` but the grant itself doesn't check out — a malformed
- * sealed blob, a malformed envelope, or `unseal` rejecting it (wrong AAD /
- * relocated, wrong recipient, wrong sealer, tampered ciphertext). Distinct
- * from every other error this module can throw (transport errors, transient
- * server errors) so {@link awaitSpaceJoinGrant} can fail fast on a real
- * integrity signal instead of treating it like "not approved yet" and
- * polling it all the way to the timeout.
+ * The slot HAS advanced to `phase: "grant"` but the grant does not check out:
+ * a malformed blob or envelope, or `unseal` rejecting it. Distinct from transport
+ * and transient errors so {@link awaitSpaceJoinGrant} can fail fast instead of
+ * polling a bad document to the timeout.
  */
 export class SpaceJoinGrantIntegrityError extends Error {
   constructor(message: string, options?: ErrorOptions) {
@@ -215,19 +162,16 @@ export interface CreateSpaceJoinRequestOptions {
   origin: string
   label?: string
   requestedScopes?: string[]
-  /** Clamped to one hour — see `MAX_REQUEST_TTL_SEC`. Default: 5 minutes. */
+  /** Clamped to one hour (see `MAX_REQUEST_TTL_SEC`). Default: 5 minutes. */
   ttlSec?: number
 }
 
 /**
  * Create a join request: fresh ephemeral device keys (never the caller's own
- * identity), a proof-of-possession signature, and a short human code. Pure —
- * no I/O; {@link startSpaceJoinRequest} is the publishing wrapper.
- *
- * Returns `code` and `device` separately from `request` since the caller needs
- * the code to display and the private device keys to unseal the eventual
- * grant — neither travels in `request` itself except in already-public form
- * (`devEdPub`/`devKemPub`, not the private halves).
+ * identity), a proof-of-possession signature, and a short human code. Pure:
+ * {@link startSpaceJoinRequest} is the publishing wrapper. `code` and `device`
+ * come back separately because the caller displays the one and needs the private
+ * halves of the other to unseal the eventual grant.
  */
 export function createSpaceJoinRequest(opts: CreateSpaceJoinRequestOptions): {
   request: SpaceJoinRequestPayload
@@ -236,12 +180,9 @@ export function createSpaceJoinRequest(opts: CreateSpaceJoinRequestOptions): {
 } {
   const device = generateDeviceKeys()
   const code = randomCode()
-  // Clamped, not just defaulted — a caller passing an oversized ttlSec would
-  // otherwise create a request parseSpaceJoinRequest rejects outright (see
-  // MAX_REQUEST_TTL_SEC), silently breaking their own integration instead of
-  // getting the longest window this module will accept. Does NOT clamp a
-  // NEGATIVE ttlSec (e.g. for testing an already-expired request) — only the
-  // upper bound is enforced here.
+  // Clamped, not just defaulted, so an oversized ttlSec can't build a request
+  // parseSpaceJoinRequest would reject. A NEGATIVE ttlSec is left alone (it is
+  // how a test builds an already-expired request); only the upper bound applies.
   const ttlSec = Math.min(opts.ttlSec ?? DEFAULT_REQUEST_TTL_SEC, MAX_REQUEST_TTL_SEC)
   const now = new Date()
   const popSig = bytesToHex(
@@ -267,21 +208,16 @@ export function createSpaceJoinRequest(opts: CreateSpaceJoinRequestOptions): {
 
 // ── Parse / validate ───────────────────────────────────────────────────────────
 
-// Ed25519/X25519 public keys are 32 raw bytes; an Ed25519 signature is 64 —
-// hex-encoded, that's exactly these lengths. Checked BEFORE hexToBytes is
-// called on any of them: hexToBytes allocates proportionally to input length
-// with no ceiling of its own, so an unbounded hex string here would allocate
-// before ever reaching signature verification.
+// 32-byte keys and 64-byte signatures, hex. Checked BEFORE hexToBytes, which
+// allocates proportionally to its input with no ceiling of its own.
 const HEX_KEY_LENGTH = 64
 const HEX_SIG_LENGTH = 128
 const MAX_ORIGIN_LENGTH = 2048
 const MAX_LABEL_LENGTH = 200
-// C0/C1 control characters (including \n, \r — a native <Text> renders an
-// embedded newline as a real line break, letting attacker text masquerade as
-// extra app chrome) plus the Unicode bidi override/isolate controls
-// (U+202A-E, U+2066-9) that can visually reverse or reorder a rendered string
-// — e.g. making a hostile host read as a different one. Written as explicit
-// \u escapes, never literal control/bidi characters in source.
+// C0/C1 controls (a rendered newline lets attacker text pose as extra app
+// chrome) plus the bidi override/isolate controls that can visually reorder a
+// string, e.g. make a hostile host read as a different one. Always \u escapes,
+// never literal control characters in source.
 const UNSAFE_TEXT_PATTERN = /[\u0000-\u001F\u007F-\u009F\u202A-\u202E\u2066-\u2069]/
 
 function assertBoundedSafeText(value: string, field: string, maxLength: number): void {
@@ -298,23 +234,16 @@ function assertHexLength(value: string, field: string, expectedLength: number): 
 }
 
 /**
- * Parse and validate a join-request document fetched by code. Verifies the
- * proof-of-possession signature against `code` and rejects an expired
- * request — both before the approving side does anything else with it.
+ * Parse and validate a request document read from `code`'s slot: verifies the
+ * proof-of-possession signature against `code` and rejects an expired or
+ * over-long window. `code` is a required argument rather than a body field
+ * precisely because passing the slot address in is what makes the document
+ * non-relocatable.
  *
- * `code` is a REQUIRED second argument, not a field of `payload`: it is the
- * slot address the document was read from, and binding the signature to it is
- * what makes a request document non-relocatable. Passing the address in (as
- * opposed to trusting a copy inside the body) is the whole check.
- *
- * Does NOT verify `origin` resolves to anything real; that needs an actual
- * network check the approving side performs itself (this function stays
- * I/O-free). It DOES bound and sanity-check `origin`/`label` as strings — a
- * length cap, a URL parse for `origin`, and rejecting control/bidi-override
- * characters in both — since they're the two fields an approving human
- * actually reads and relies on. Full homoglyph/IDNA-confusable host detection
- * is out of scope, the same judgment call already made for origin verification
- * itself.
+ * Bounds `origin`/`label` and rejects control/bidi characters in them, since
+ * those are the two fields the approving human reads. Does NOT check that
+ * `origin` resolves to anything real (that needs network the approving side
+ * performs itself), nor detect IDNA confusables.
  */
 export function parseSpaceJoinRequest(payload: string, code: string): SpaceJoinRequestPayload {
   let parsed: unknown
@@ -364,24 +293,15 @@ export function parseSpaceJoinRequest(payload: string, code: string): SpaceJoinR
   )
   if (!verified) throw new Error("space join request: invalid proof-of-possession signature")
 
-  // Date.parse of a malformed string returns NaN, and every comparison against
-  // NaN is false — so a garbage expiresAt would otherwise be silently treated
-  // as "not expired" instead of rejected. Fail closed.
+  // Date.parse returns NaN on garbage and every NaN comparison is false, so a
+  // malformed expiresAt would otherwise read as "not expired". Fail closed.
   const expiresAtMs = Date.parse(request.expiresAt)
   if (!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()) throw new Error("space join request: expired")
 
-  // The actual enforcement of "short-lived code" — expiresAt/createdAt are NOT
-  // covered by popSig, so a party with the code can rewrite either to anything.
-  // Comparing expiresAt against the request's OWN createdAt would be trivially
-  // bypassable: an attacker controlling both fields can place them arbitrarily
-  // far in the future while keeping their difference inside the cap, making the
-  // code "look" freshly issued no matter when it's actually redeemed (e.g.
-  // createdAt = now+364d, expiresAt = now+364d+1h — passes a createdAt-relative
-  // check, but the code stays "valid" for the next year). Anchoring to THIS
-  // CALL's real wall clock instead closes that: a request cannot claim to remain
-  // valid more than MAX_REQUEST_TTL_SEC from right now, independent of what it
-  // claims createdAt to be. createdAt itself is otherwise purely informational —
-  // never used for any security decision here.
+  // Anchored to THIS CALL's wall clock, not to the request's own createdAt: an
+  // attacker controls both unsigned fields, so a createdAt-relative check passes
+  // for createdAt = now+364d / expiresAt = now+364d+1h and keeps the code usable
+  // for a year. createdAt is informational only, never a security input.
   if (expiresAtMs - Date.now() > MAX_REQUEST_TTL_SEC * 1000) {
     throw new Error("space join request: expiry window exceeds the maximum this module allows")
   }
@@ -395,20 +315,16 @@ function anonClient(rendezvous: SpaceJoinRendezvous, fetchFn?: typeof globalThis
   return makeAnonSpaceClient({ baseUrl: rendezvous.baseUrl, namespace: rendezvous.namespace, fetch: fetchFn })
 }
 
-interface JoinSessionDocResult {
-  data: Record<string, unknown>
-  hash: string
-}
-
 /**
- * Pull the join-session slot. Returns `null` ONLY for "nothing published
- * there" — either a 404 or an empty/absent document body (an unwritten
- * collection document can pull as `null`, the string `"null"`, or `{}`
- * depending on the deployment). Every OTHER failure (transport, 5xx, 403)
- * propagates, so a caller polling in a loop can tell "not approved yet" apart
- * from "the server is unreachable".
+ * Returns `null` ONLY for "nothing published there": a 404, or an empty body
+ * (an unwritten document pulls as `null`, the string `"null"`, or `{}` depending
+ * on the deployment). Every other failure propagates, so a caller polling in a
+ * loop can tell "not approved yet" from "the server is unreachable".
  */
-async function pullJoinSession(client: StarfishClient, path: string): Promise<JoinSessionDocResult | null> {
+async function pullJoinSession(
+  client: StarfishClient,
+  path: string,
+): Promise<{ data: Record<string, unknown>; hash: string } | null> {
   const result = await client.pull(path).catch((err: unknown) => {
     if (err instanceof StarfishHttpError && err.status === 404) return null
     throw err
@@ -441,12 +357,10 @@ export interface StartSpaceJoinRequestOptions extends CreateSpaceJoinRequestOpti
 }
 
 /**
- * The requester's own end of a device-code space join: its request record plus
- * everything needed to publish it and later unseal the approver's grant.
- * `code` is what the requester displays for the human to type into the
- * approving app — this module never renders it, just returns the string.
- * Carries its own `rendezvous`/`layout` so {@link fetchSpaceJoinGrant} /
- * {@link awaitSpaceJoinGrant} can take the session directly.
+ * The requester's own end of the exchange: the request record, the `code` to
+ * display, and the device keys that unseal the grant. Carries its own
+ * `rendezvous`/`layout` so {@link fetchSpaceJoinGrant} / {@link awaitSpaceJoinGrant}
+ * can take the session directly.
  */
 export interface SpaceJoinRequestSession {
   request: SpaceJoinRequestPayload
@@ -469,24 +383,20 @@ export interface SpaceJoinRequestSession {
  * const grant = await awaitSpaceJoinGrant(session)
  * ```
  *
- * The first `publish()` is **create-only** (`baseHash: null`): it fails with a
- * `ConflictError` rather than silently adopting whatever already occupies the
- * slot. Every later `publish()` uses this session's OWN remembered hash rather
- * than re-pulling and trusting whatever the server currently reports, so a
- * hostile overwrite between two `publish()` calls surfaces as a loud conflict
- * instead of quietly becoming this session's new baseline.
+ * The first `publish()` is create-only (`baseHash: null`), so it conflicts
+ * rather than adopting whatever already occupies the slot. Later ones present
+ * this session's OWN remembered hash instead of re-pulling, so a hostile
+ * overwrite in between surfaces as a conflict rather than becoming the baseline.
  */
 export function startSpaceJoinRequest(opts: StartSpaceJoinRequestOptions): SpaceJoinRequestSession {
   const layout = opts.layout ?? defaultSpaceLayout
   const { request, device, code } = createSpaceJoinRequest(opts)
   const client = anonClient(opts.rendezvous, opts.fetch)
   let lastHash: string | null = null
-  // Serializes overlapping publish() calls on the SAME session — without this,
-  // two calls in flight at once both read the same lastHash before either
-  // awaits, so the one the server processes second gets a real ConflictError
-  // caused only by this session's own overlapping write, not third-party
-  // tampering, yet it would hit the exact same "treat this code as compromised"
-  // signal a genuine hijack produces.
+  // Serializes overlapping publish() calls on the SAME session: without it both
+  // read the same lastHash before either awaits, and the second write 409s on
+  // its own sibling, indistinguishable from the hijack signal a real conflict
+  // is supposed to mean.
   let queue: Promise<void> = Promise.resolve()
   async function doPublish(): Promise<void> {
     const result = await client.push(
@@ -504,9 +414,8 @@ export function startSpaceJoinRequest(opts: StartSpaceJoinRequestOptions): Space
     layout,
     publish() {
       const run = queue.then(() => doPublish())
-      // Swallow so a failed publish() doesn't permanently wedge the queue for
-      // the NEXT caller's publish() — each call still observes its own
-      // rejection via the returned promise.
+      // Swallowed here so a failure doesn't wedge the queue for the next caller;
+      // each call still observes its own rejection via the returned promise.
       queue = run.catch(() => {})
       return run
     },
@@ -525,18 +434,14 @@ export interface FetchSpaceJoinRequestOptions {
 /**
  * Approver side, step 1: look up a request by the code the human typed.
  *
- * Returns `null` only when nothing is published under that code at all (wrong
- * code, or the collection's own TTL already reclaimed it), and also when the
- * slot has already advanced to `phase: "grant"` — there is no pending request
- * to approve in either case. A request that IS still present but past its own
- * `expiresAt` does NOT return `null`; it throws (via
- * {@link parseSpaceJoinRequest}), so the caller can tell "wrong code" apart
- * from "right code, but it expired" and say so accurately.
+ * `null` means there is no pending request to approve: nothing published under
+ * that code, or the slot already advanced to `phase: "grant"`. A request that IS
+ * present but past its own `expiresAt` throws instead (via
+ * {@link parseSpaceJoinRequest}), so the caller can tell "wrong code" from
+ * "right code, but expired".
  *
- * Returns the document's current `hash` alongside the parsed request: that
- * hash is exactly what {@link publishSpaceJoinGrant} needs as its CAS
- * `baseHash`, and taking it from the same read that produced the request is
- * what makes the grant write a genuine pull-then-push update.
+ * The returned `hash` comes from the same read as the request and is exactly
+ * what {@link publishSpaceJoinGrant} needs as its CAS `baseHash`.
  */
 export async function fetchSpaceJoinRequestByCode(
   opts: FetchSpaceJoinRequestOptions,
@@ -551,19 +456,13 @@ export async function fetchSpaceJoinRequestByCode(
 
 /**
  * Rebuild the `{edPub, kemPub, userId, kemSig}` join-request JSON that
- * `parseJoinRequest` / `inviteToSpace` expect, from a
- * {@link SpaceJoinRequestPayload}'s already-public `devEdPub`/`devKemPub` plus
- * the `joinRequestKemSig` it carries. The sibling of `makeJoinRequest`, for the
- * case where the requesting identity has no `Session` on this side of the
- * exchange (it is a remote ephemeral key, not a wallet this app holds).
+ * `parseJoinRequest` / `inviteToSpace` expect from a
+ * {@link SpaceJoinRequestPayload}. The sibling of `makeJoinRequest` for a
+ * requesting identity this side holds no `Session` for.
  *
- * `userId` is derived with `userIdFromEdPub` if given, else the
- * module-configured global default. Pass the approving session's OWN hook
- * (`session.userIdFromEdPub`) when the app configured a custom one — otherwise
- * this can derive a different `userId` than `parseJoinRequest` recomputes
- * inside `inviteToSpace` (which always uses the session's hook), and every
- * join fails with "userId does not match edPub" even though the request is
- * perfectly valid.
+ * Pass the approving session's OWN `userIdFromEdPub` when the app configured a
+ * custom one: deriving a different `userId` than `parseJoinRequest` recomputes
+ * inside `inviteToSpace` fails every join with "userId does not match edPub".
  */
 export async function joinRequestFromSpaceJoinRequest(
   request: SpaceJoinRequestPayload,
@@ -583,46 +482,37 @@ export async function joinRequestFromSpaceJoinRequest(
 
 /** Options for {@link publishSpaceJoinGrant}. */
 export interface PublishSpaceJoinGrantOptions {
-  /** The code whose slot is being updated — the seal AAD and the storage key. */
+  /** The code whose slot is being updated: the seal AAD and the storage key. */
   code: string
   /** The parsed request this grant answers; its `devKemPub` is the seal target. */
   request: SpaceJoinRequestPayload
-  /** The approver's Ed25519 keypair — signs the wrap entry so the requester can
+  /** The approver's Ed25519 keypair. Signs the wrap entry so the requester can
    *  authenticate who sealed the grant (`sealedBy`). */
   sealer: SealerKeys
   /** What gets sealed: the space and the member cap minted for the requester,
    *  e.g. `JSON.parse(await inviteToSpace(...))`. */
   grant: { spaceId: string; cap: unknown }
-  /** The approver's OWN trusted server config — the same one it used to look the
+  /** The approver's OWN trusted server config, the same one it used to look the
    *  code up. Never a value read out of the request document. */
   rendezvous: SpaceJoinRendezvous
   /** Path layout for the rendezvous slot. Default: {@link defaultSpaceLayout}. */
   layout?: SpaceLayout
-  /** The hash of the document this write replaces — the one
-   *  {@link fetchSpaceJoinRequestByCode} returned, or the hash a previous
-   *  `publishSpaceJoinGrant` returned when re-publishing. Required: this is a
-   *  CAS UPDATE of an existing request document, never a create. */
+  /** Hash of the document this write replaces. Required: this is a CAS update of
+   *  an existing request document, never a create. */
   baseHash: string
   fetch?: typeof globalThis.fetch
 }
 
 /**
  * Approver side, step 2: seal the minted grant to the requester's ephemeral KEM
- * key and CAS-UPDATE the same slot from `phase: "request"` to `phase: "grant"`.
+ * key and CAS-update the same slot from `phase: "request"` to `phase: "grant"`.
+ * `code` is the seal AAD, so the ciphertext is bound to this slot.
  *
- * The write is guarded by `baseHash`, so a racing writer trying to plant its own
- * grant needs the very hash this approver is using — it loses the race with a
- * `ConflictError` instead of silently overwriting. (And even a bogus write that
- * DID land would only yield ciphertext the requester cannot open, since it is
- * sealed to the wrong KEM key: it denies the exchange, it does not compromise
- * it.) A `ConflictError` here means the slot changed since the request was
- * read — treat the code as compromised, do not retry past it.
- *
- * `code` is the AAD for the seal, so the resulting ciphertext is bound to this
- * slot: copied into a different code's slot it fails to open.
- *
- * Returns the resulting hash so a caller that legitimately re-publishes later
- * can pass it back as `baseHash`.
+ * A `ConflictError` means the slot changed since the request was read: treat
+ * the code as compromised and do not retry past it. (A bogus write that DID land
+ * would only be ciphertext the requester cannot open: it denies the exchange, it
+ * does not compromise it.) Returns the resulting hash for a legitimate later
+ * re-publish.
  */
 export async function publishSpaceJoinGrant(opts: PublishSpaceJoinGrantOptions): Promise<{ hash: string }> {
   if (!opts.baseHash) {
@@ -655,37 +545,21 @@ export async function publishSpaceJoinGrant(opts: PublishSpaceJoinGrantOptions):
 }
 
 /**
- * Approver side: clear the join-session slot at unpair time.
+ * Approver side: clear the join-session slot at unpair time. Best-effort blind
+ * overwrite. Cleanup must work without a remembered hash (in-memory state lost
+ * across a reload), and "did someone else overwrite this" is not a meaningful
+ * question when the intent is "nothing should be published here anymore".
  *
- * Best-effort blind overwrite — the one place "overwrite whatever is there and
- * retry" is correct: cleanup must succeed even without a remembered hash (in
- * -memory state lost across a reload), and "did someone else already overwrite
- * this" is not a meaningful question when the caller's whole intent is
- * "nothing should be published here anymore".
+ * Not called automatically after a successful {@link fetchSpaceJoinGrant}: a live
+ * pairing genuinely re-polls its grant. Clearing only stops the CODE from
+ * resolving to a usable grant again; revoking an already-issued grant is
+ * `removeSpaceMember` / `revokeSpaceAccess`, alongside this rather than instead.
  *
- * This is NOT called automatically after a successful
- * {@link fetchSpaceJoinGrant}: unlike `completeDevicePairing`'s one-shot slot,
- * a live pairing genuinely re-polls its grant over its lifetime. Clearing only
- * stops the CODE from resolving to a usable grant again; it does not revoke a
- * grant already handed out — use `removeSpaceMember` / `revokeSpaceAccess` for
- * that, alongside this, not instead of it.
- *
- * Pulls the RAW result rather than going through the empty-document collapse in
- * {@link pullJoinSession}: an already-cleared slot holds `{}` (exactly what this
- * function writes) but still HAS a hash, and pushing `baseHash: null` against it
- * would conflict on every retry — making a benign double-unpair permanently
- * fail. A 404 (nothing ever published under this code) is likewise not an
- * error here — it means "already nothing to clear", so it is treated as an
- * absent document: `baseHash: null`, i.e. a genuine create-only write (matching
- * the Python twin's `_pull_hash`, which returns `None` for the same case).
- *
- * Uses {@link runCas} rather than a bespoke loop so this gets the same
- * jittered-backoff retry behavior every other CAS write in this package does.
- * One consequence: a `ConflictError` thrown after all retries are exhausted
- * is indistinguishable (same type) from a single transient one — matching
- * every other `runCas` call site in this package, none of which distinguish
- * the two either. A caller that specifically needs to tell "gave up" apart
- * from "one conflict happened" must count its own retries around this call.
+ * Pulls the RAW result rather than going through {@link pullJoinSession}: an
+ * already-cleared slot holds `{}` but still HAS a hash, so `baseHash: null`
+ * would conflict on every retry and a benign double-unpair could never succeed.
+ * A 404 means "nothing to clear" and is treated as absent (`baseHash: null`),
+ * matching the Python twin's `_pull_hash`.
  */
 export async function clearSpaceJoinGrant(opts: {
   code: string
@@ -708,9 +582,9 @@ export async function clearSpaceJoinGrant(opts: {
 
 // ── Requester side: read the grant ─────────────────────────────────────────────
 
-/** The minimum a caller needs to read a grant back — satisfied by a full
- *  {@link SpaceJoinRequestSession}, or reconstructible after a reload from the
- *  code plus the persisted device keys. */
+/** The minimum needed to read a grant back. Satisfied by a full
+ *  {@link SpaceJoinRequestSession}, or rebuilt after a reload from the code plus
+ *  the persisted device keys. */
 export interface SpaceJoinGrantSession {
   code: string
   device: GeneratedDeviceKeys
@@ -721,17 +595,14 @@ export interface SpaceJoinGrantSession {
 /** What a successfully unsealed grant carries. */
 export interface UnsealedSpaceJoinGrant {
   spaceId: string
-  /** The member cap-cert `inviteToSpace` minted for the requester's ephemeral
-   *  identity. Opaque here; feed it to `makeSpaceClient` / `acceptSpaceInvite`. */
+  /** The member cap-cert minted for the requester's ephemeral identity. Opaque
+   *  here; feed it to `makeSpaceClient` / `acceptSpaceInvite`. */
   cap: unknown
-  /** The Ed25519 pubkey that actually sealed this grant, verified via the wrap
-   *  entry's signature (never merely claimed — `unseal` always checks it). A
-   *  trust-on-first-use pin: record it after the FIRST successful call and pass
-   *  it back as `expectedSealer` on every later poll for this code, so a later
-   *  writer to the same slot cannot silently replace an established pairing's
-   *  grant with their own. Nothing pins WHO this key belongs to on the very
-   *  first read — that trust comes from the code being freshly generated here
-   *  and delivered to the approver only via the human code/origin exchange. */
+  /** The Ed25519 pubkey that actually sealed this grant. `unseal` always
+   *  verifies the wrap entry's signature, so this is never merely claimed. A
+   *  trust-on-first-use pin: record it after the first successful call and pass
+   *  it back as `expectedSealer` on later polls, so a later writer to the same
+   *  slot cannot silently replace an established pairing's grant. */
   sealedBy: string
 }
 
@@ -743,19 +614,16 @@ export interface FetchSpaceJoinGrantOptions {
 }
 
 /**
- * Requester side: read whatever is currently at this code's slot and, if it has
- * advanced to `phase: "grant"`, unseal it.
+ * Requester side: read this code's slot and, if it has advanced to
+ * `phase: "grant"`, unseal it.
  *
- * Returns `null` rather than throwing when the slot is still `phase: "request"`
- * (the approver hasn't approved yet) or holds nothing at all — a caller polling
- * in a loop should treat that as "keep waiting", not a hard failure. A slot that
- * IS a grant but fails to unseal (wrong AAD, wrong recipient, unexpected sealer)
- * or carries a malformed envelope throws {@link SpaceJoinGrantIntegrityError}:
- * that is a real integrity signal, not a wait state — {@link awaitSpaceJoinGrant}
- * fails fast on it rather than polling it to the timeout.
+ * `null` rather than a throw while the slot is still `phase: "request"` or holds
+ * nothing at all: a caller polling in a loop should treat that as "keep
+ * waiting". A slot that IS a grant but fails to unseal or carries a malformed
+ * envelope throws {@link SpaceJoinGrantIntegrityError} instead.
  *
- * Does NOT read any space content. Fetching whatever the granted cap unlocks is
- * the caller's job — this primitive delivers the credential and stops.
+ * Delivers the credential and stops; fetching what the cap unlocks is the
+ * caller's job.
  */
 export async function fetchSpaceJoinGrant(
   session: SpaceJoinGrantSession,
@@ -767,24 +635,20 @@ export async function fetchSpaceJoinGrant(
   if (!doc) return null
   if (doc.data.phase !== "grant") return null
 
-  const sealedRaw = doc.data.sealed
-  if (
-    typeof sealedRaw !== "object" || sealedRaw === null
-    || typeof (sealedRaw as Record<string, unknown>).entry !== "object"
-    || (sealedRaw as Record<string, unknown>).entry === null
-  ) {
+  const sealed = doc.data.sealed as SealedBlob | null | undefined
+  if (typeof sealed !== "object" || sealed === null || typeof sealed.entry !== "object" || sealed.entry === null) {
     throw new SpaceJoinGrantIntegrityError("space join grant: malformed sealed blob at this code's slot")
   }
   let plaintext: Uint8Array
   try {
-    plaintext = await unseal(sealedRaw as unknown as SealedBlob, session.device.kemPriv, {
+    plaintext = await unseal(sealed, session.device.kemPriv, {
       aad: session.code,
       ...(opts.expectedSealer !== undefined ? { requireSealer: opts.expectedSealer } : {}),
     })
   } catch (err) {
-    // unseal throws plain Error for every failure mode (wrong AAD/relocated,
-    // wrong recipient, wrong sealer, tampered ciphertext) — all of them a
-    // real integrity signal, never a transient one.
+    // unseal throws a plain Error for every failure mode (wrong AAD/relocated,
+    // wrong recipient, wrong sealer, tampered ciphertext), all real integrity
+    // signals, never transient ones.
     throw new SpaceJoinGrantIntegrityError(
       `space join grant: failed to unseal — ${err instanceof Error ? err.message : String(err)}`,
       { cause: err },
@@ -803,21 +667,12 @@ export async function fetchSpaceJoinGrant(
   ) {
     throw new SpaceJoinGrantIntegrityError("space join grant: malformed grant envelope")
   }
-  return {
-    spaceId: env.spaceId,
-    cap: env.cap,
-    sealedBy: (sealedRaw as unknown as SealedBlob).entry.addedBy,
-  }
+  return { spaceId: env.spaceId, cap: env.cap, sealedBy: sealed.entry.addedBy }
 }
 
 const DEFAULT_AWAIT_TIMEOUT_MS = 5 * 60 * 1000
 const POLL_MIN_MS = 1000
 const POLL_MAX_MS = 5000
-
-/** Capped exponential poll backoff. */
-function pollDelay(attempt: number): number {
-  return Math.min(POLL_MIN_MS * 2 ** attempt, POLL_MAX_MS)
-}
 
 function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -839,22 +694,14 @@ export interface AwaitSpaceJoinGrantOptions extends FetchSpaceJoinGrantOptions {
 
 /**
  * Requester side: poll until the approver publishes a grant, or `timeoutMs`
- * elapses.
+ * elapses. A transport blip or transient server error is swallowed and retried
+ * on the next tick, exactly like "not approved yet"; only the deadline ends the
+ * wait, throwing the last error if there was one, else a generic timeout. An
+ * aborted `signal` rejects immediately.
  *
- * A {@link fetchSpaceJoinGrant} failure (a network blip, a transient server
- * error) does NOT end the wait — it is swallowed and retried on the next tick,
- * same as `fetchSpaceJoinGrant` returning `null` for "not approved yet". Only
- * reaching the deadline ends it: with the last error if there was one (more
- * informative than a bare timeout), else a generic timeout error. An aborted
- * `signal` rejects immediately with an `AbortError`.
- *
- * The ONE exception to "swallow and keep polling": a
- * {@link SpaceJoinGrantIntegrityError} (a slot that IS a grant but doesn't
- * check out — forged/tampered/relocated) rethrows immediately instead of
- * being retried to the timeout. Retrying it would just keep re-reading the
- * same bad document every cycle — this is the fail-fast path
- * `fetchSpaceJoinGrant`'s own docstring promises for "a real integrity
- * signal, not a wait state".
+ * The one exception is {@link SpaceJoinGrantIntegrityError}: a forged, tampered
+ * or relocated grant rethrows at once, since re-reading the same bad document
+ * every cycle buys nothing.
  */
 export async function awaitSpaceJoinGrant(
   session: SpaceJoinGrantSession,
@@ -878,6 +725,6 @@ export async function awaitSpaceJoinGrant(
       if (lastErr) throw lastErr
       throw new Error("timed out waiting for the space join to be approved")
     }
-    await abortableSleep(pollDelay(attempt), opts.signal)
+    await abortableSleep(Math.min(POLL_MIN_MS * 2 ** attempt, POLL_MAX_MS), opts.signal)
   }
 }
