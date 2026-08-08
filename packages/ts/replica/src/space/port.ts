@@ -11,6 +11,7 @@ import {
   createNode as sfCreateNode,
   createSpace as sfCreateSpace,
   getNodeAccess as sfGetNodeAccess,
+  ownerEnsureNodeKeyring as sfOwnerEnsureNodeKeyring,
   readObjectTree as sfReadObjectTree,
   readSpaces as sfReadSpaces,
   setNodeAccess as sfSetNodeAccess,
@@ -60,6 +61,12 @@ export interface SpacePort {
     node: { access?: NodeAccess; enc?: boolean },
     session: Session,
   ): Promise<NodeAccessHandle>
+  /** Create the node's OWN keyring if missing, so the `invite`+`enc` branch of
+   *  `getNodeAccess` (which opens that keyring with the throwing variant, and
+   *  never falls back to the space keyring) can resolve. The isolated tier's
+   *  first write would otherwise throw on a node whose keyring does not exist
+   *  yet. Idempotent and CAS-safe. */
+  ensureNodeKeyring(session: Session, spaceId: string, nodeId: string): Promise<void>
 }
 
 /** The real `SpacePort`, bound to `@drakkar.software/starfish-spaces`. */
@@ -70,6 +77,9 @@ export const defaultSpacePort: SpacePort = {
   createNode: sfCreateNode,
   setNodeAccess: sfSetNodeAccess,
   getNodeAccess: (spaceId, nodeId, node, session) => sfGetNodeAccess(spaceId, nodeId, node, session),
+  ensureNodeKeyring: async (session, spaceId, nodeId) => {
+    await sfOwnerEnsureNodeKeyring(session, spaceId, nodeId)
+  },
 }
 
 /** In-flight find-or-create calls, keyed by `${userId}:${name}`, so two

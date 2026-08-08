@@ -1,5 +1,63 @@
 # Changelog
 
+## 3.0.0-alpha.72
+
+Adds a third storage tier, `"isolated"`, to `starfish-replica`'s space-mirror
+channel: a collection whose node is sealed under its OWN per-node keyring
+rather than the space-wide one, so access can be granted and revoked one node
+at a time.
+
+### `starfish-replica` / `@drakkar.software/starfish-replica`
+
+#### Added
+- **`tier: "isolated"` on `SpaceMirrorCollection`** (`space/mirror-channel.ts`,
+  `space/mirror_channel.py`). Resolves to `{ access: "invite", enc: true }`,
+  always, ignoring `nodeEnc` — like `"public"`, the tier IS the access model.
+
+  The problem it solves: a space's keyring is space-wide (every `enc` node in
+  it shares one CEK) and a `space:member` cap's scope covers
+  `spaces/{spaceId}/**`, so a grant over one `"private"` node is really a grant
+  over every private node in that space. The only way to isolate two
+  sensitivities was one space per sensitivity, per user. With `"isolated"` a
+  grant minted via `inviteToNode(..., { isolated: true })` reaches exactly one
+  node, `revokeNodeAccess` rotates exactly that node's epoch, and the grant
+  holder — never added to the space roster — cannot read `objindex`, so they
+  learn nothing about what other nodes exist.
+
+  Route isolated collections to a cap-readable content path via `docPath`
+  (`objinv`, `spaces/{spaceId}/objects/n/{nodeId}/content`) rather than
+  `objdoc`, whose read roles are `space:member` only with no cap fallback.
+  `objinv` is declared `encryption: "none"` server-side, meaning the server
+  applies no envelope of its own — exactly like `objblob`; content is still
+  E2EE, sealed client-side before the push.
+
+- **`SpacePort.ensureNodeKeyring` (TS) / `SpacePort.get_isolated_node_access`
+  (Python).** Resolution for an isolated node is deliberately fail-closed: it
+  must never silently fall back to the space keyring, which would seal the
+  content under the key every space member holds. TS's `getNodeAccess` already
+  routes `invite`+`enc` to the node keyring with the throwing variant, so the
+  port only adds the seeding step it cannot do; Python's owner tier *does*
+  fall back, so the port there does ensure-then-open explicitly and raises
+  instead.
+
+#### Changed
+- **A `"public"` or `"isolated"` node no longer takes the `clearedNodes`
+  short-circuit** on the clear path (previously `"public"` only). Skipping a
+  clear for a node this channel merely *believes* it already cleared is not
+  symmetric with the space-private case: stale isolated content stays readable
+  by every holder of a still-valid per-node grant.
+- `ALL_TIERS` / `TIERS` gained `"isolated"`, so a fingerprint sweep drops all
+  three of a node's keys — a tier flip that involves `"isolated"` is detected
+  and migrated like any other.
+
+#### Note for callers
+`nodeEnc: { access: "invite", enc: true }` as a raw override now routes through
+the per-node keyring wherever those axes appear, including a node's STORED axes
+on the clear path. That is strictly safer than the previous silent
+space-keyring fallback, but it IS a behaviour change for anyone who set that
+pair by hand. Use `tier: "isolated"` instead — it also seeds the keyring, which
+the raw override never did.
+
 ## 3.0.0-alpha.71
 
 Adds device-code space-join pairing to `starfish-spaces` — the "requester

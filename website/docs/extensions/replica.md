@@ -209,11 +209,41 @@ failure discovered late, at `createNode`.
 | `tier` | resolves to | meaning |
 | --- | --- | --- |
 | `"private"` (default) | the channel-wide `nodeEnc`, itself `{ access: "space", enc: true }` unless you overrode it | readable only by space members, sealed under the space's own keyring |
+| `"isolated"` | `{ access: "invite", enc: true }`, always, ignoring `nodeEnc` | sealed under the node's **own** keyring, so it can be granted and revoked one node at a time |
 | `"public"` | `{ access: "public", enc: false }`, always, ignoring `nodeEnc` | world-readable plaintext at its storage URL |
 
 Writing `tier: "private"` out is exactly equivalent to omitting it: both
 resolve to `nodeEnc`, so spelling out the default never costs you an override.
-Only `"public"` overrides `nodeEnc`.
+Only `"isolated"` and `"public"` override `nodeEnc`.
+
+##### The isolated tier
+
+A space's keyring is **space-wide**: every `enc` node in it shares one CEK, and
+a `space:member` grant's cap scope covers `spaces/{spaceId}/**`. So a grant over
+a `"private"` node is really a grant over *every* private node in that space.
+Splitting data across several spaces to work around that means one space per
+sensitivity level, per user.
+
+`"isolated"` removes the need for that. The node is created `access: "invite"`
+and sealed under a per-node keyring (`ensureNodeKeyring` / the Python
+`owner_ensure_node_keyring`), so a grant minted with `inviteToNode(..., {
+isolated: true })` reaches that node and nothing else, and
+`revokeNodeAccess` rotates that node's epoch alone. Grant holders are never
+added to the space roster, so they also cannot read `objindex` — they learn
+nothing about what *other* nodes exist.
+
+Route isolated collections to a cap-readable content path via `docPath` —
+`objinv` (`spaces/{spaceId}/objects/n/{nodeId}/content`) rather than `objdoc`,
+whose `read_roles` are `space:member` only, with no cap fallback. `objinv` is
+declared `encryption: "none"` server-side, which means "the server applies no
+envelope of its own" — exactly like `objblob`; the content is still E2EE,
+sealed client-side before it is pushed.
+
+Resolution is deliberately fail-closed. The owner tier of `getNodeAccess` falls
+back to the *space* keyring when a node keyring is missing, which would silently
+seal isolated content under the key every space member holds; the channel
+therefore resolves isolated nodes through ensure-then-open instead, which raises
+rather than falling back.
 
 Flipping a collection between tiers is safe, **including across a restart**.
 The channel compares the node's *stored* `access`/`enc` (recorded in the space's
