@@ -1,69 +1,36 @@
 """Device-code space-join pairing over ONE public rendezvous slot.
 
-A generic "a client asks to join a space, a human approves, a cap is delivered"
-primitive. It exists because neither existing join path covers it:
-:func:`~starfish_spaces.members.create_space_invite_link` is a BEARER link (the
-grant materializes at creation time, the whole credential rides in a URL
-fragment, there is no approve-before-grant step), and
-:func:`~starfish_spaces.members.make_join_request` has no transport at all.
-
-The flow, all at the SAME storage path ``_pairing/session/{code}``
+A client asks to join a space, a human approves, a cap is delivered. Both phases
+live at the SAME path ``_pairing/session/{code}``
 (:meth:`SpaceLayout.join_session_pull` / :meth:`~SpaceLayout.join_session_push`):
+the requester publishes ``{v:1, phase:"request", …}`` with create-only CAS, the
+approver CAS-UPDATEs that same document to ``{v:1, phase:"grant", …}`` with a cap
+sealed to the requester's ephemeral KEM key, and the requester polls until it can
+unseal it.
 
-1. **Requester** (e.g. a website with no wallet of its own) generates a fresh
-   EPHEMERAL device keypair, signs a proof-of-possession over
-   ``{code, devEdPub, devKemPub}``, and publishes
-   ``{v:1, phase:"request", …}`` with **create-only CAS** (``base_hash=None``) —
-   only the first write to a fresh code's slot succeeds.
-2. **Approver** (the space owner's device) pulls the slot by the short code the
-   human typed, verifies ``popSig``, and shows ``origin``/``label`` for
-   approval. Nothing is granted yet.
-3. **Approver approves**: mints a member cap (via
-   :func:`~starfish_spaces.members.invite_to_space`), seals it to ``devKemPub``
-   with ``code`` as AAD, and **CAS-UPDATEs the SAME slot** to
-   ``{v:1, phase:"grant", sealed:…}`` using the hash of the request doc it just
-   read.
-4. **Requester** polls the SAME slot; it resolves only once ``phase == "grant"``
-   and unseals with its never-transmitted ``devKemPriv``.
-
-Security invariants centralized here:
+Security invariants:
 
 - **One address, two phases.** ``code`` is BOTH the discovery address AND the
-  PoP-signature/AAD binding value. There is deliberately no separate
-  high-entropy ``session_id``: it would add no confidentiality the KEM seal does
-  not already provide (a slot keyed by a guessable code that contained a
-  plaintext session id already leaked it for free), only lifecycle bookkeeping.
-- **Confidentiality comes from the KEM seal, not from address entropy.** The
-  slot is public-read by design; the grant is sealed to an ephemeral KEM public
-  key whose private half never leaves the requester. Guessing a code exposes a
-  pending request record (public keys + ``origin``) and an *unopenable*
-  ciphertext, never a usable cap. This is why the merge to one slot is safe and
-  why sealing must stay KEM-based — a PIN/passphrase seal would downgrade
-  confidentiality to offline-brute-forceable code guessing.
+  PoP-signature/AAD binding value. A separate high-entropy ``session_id`` would
+  add no confidentiality the KEM seal does not already provide.
+- **Confidentiality comes from the KEM seal, not address entropy.** The slot is
+  public-read; guessing a code exposes public keys plus an unopenable
+  ciphertext, never a usable cap. Sealing must stay KEM-based: a PIN/passphrase
+  seal would downgrade this to offline-brute-forceable code guessing.
 - **Own-write CAS everywhere.** Each writer CASes against the hash IT last saw,
-  never a freshly re-pulled one. A hostile overwrite therefore surfaces as a
-  loud :class:`SpaceJoinConflictError`, instead of silently becoming the
-  writer's new baseline. Notably this module does NOT use
-  :func:`~starfish_spaces.cas_retry.run_cas` — blind conflict-retry is exactly
-  the behavior these invariants exist to prevent.
+  never a freshly re-pulled one, so a hostile overwrite surfaces as a loud
+  :class:`SpaceJoinConflictError` instead of becoming the writer's new baseline.
+  This module deliberately does NOT use :func:`~starfish_spaces.cas_retry.run_cas`.
 - **Wall-clock-anchored TTL.** ``expiresAt``/``createdAt`` are NOT covered by
-  ``popSig``, so anyone with the code can rewrite them. The cap is therefore
-  enforced against THIS call's real wall clock, never against the request's own
-  self-reported ``createdAt`` — see :func:`parse_space_join_request`.
+  ``popSig``, so the cap is enforced against THIS call's real wall clock.
 - **TOFU sealer pinning.** ``sealed_by`` is the verified Ed25519 key that
-  actually sealed the grant. Record it after the first successful fetch and pass
-  it back as ``expected_sealer`` on every later poll.
+  actually sealed the grant; pass it back as ``expected_sealer`` on later polls.
 
-The grant slot is **re-pollable** and is NOT auto-cleared after a successful
-read — a live pairing is genuinely re-read over its lifetime. Only the
-collection's TTL backstop and an explicit :func:`clear_space_join_grant` at
-unpair time remove it.
+The grant slot is re-pollable and NOT auto-cleared after a successful read; only
+the collection's TTL and an explicit :func:`clear_space_join_grant` remove it.
 
-Wire format is camelCase JSON in BOTH languages (``devEdPub``, not
-``dev_ed_pub``) — byte-identical to the TypeScript ``join-request.ts`` twin,
-matching how every other shared wire shape in this package is written (see
-:mod:`starfish_spaces.token_types`). Python-side function and local names stay
-snake_case.
+Wire format is camelCase JSON in BOTH languages, byte-identical to the
+TypeScript ``join-request.ts`` twin. Python-side names stay snake_case.
 """
 
 from __future__ import annotations
@@ -96,45 +63,31 @@ if TYPE_CHECKING:
 # ── Code generation ───────────────────────────────────────────────────────────
 
 CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
-"""Excludes visually-ambiguous characters (0/O, 1/I/L) — Crockford-style, meant
-to be read off one screen and typed on another. 31 symbols (23 letters + 8
-digits); at :data:`CODE_LENGTH` characters that is ``8·log2(31) ≈ 39.63`` bits
-of entropy, above RFC 8628's device-flow ``user_code`` minimum and bounded
-further by the rendezvous collection's TTL and per-IP rate limit (neither of
-which this package controls). :func:`random_code` uses rejection sampling, so
-this figure is the real uniform entropy, not a biased approximation of it."""
+"""Crockford-style: excludes visually-ambiguous 0/O and 1/I/L. 31 symbols at
+:data:`CODE_LENGTH` characters is ``8·log2(31) ≈ 39.63`` bits, above RFC 8628's
+device-flow ``user_code`` minimum."""
 
 CODE_LENGTH = 8
-"""Number of characters in a human-typed join code."""
 
 CODE_REJECT_THRESHOLD = (256 // len(CODE_ALPHABET)) * len(CODE_ALPHABET)
-"""256 is not a multiple of 31 — a plain ``byte % 31`` would over-represent the
-first ``256 % 31 = 8`` symbols (A-H) by 12.5% in every character position.
-Reject any byte at or above the largest multiple of the alphabet length that
-still fits in a byte (``248``) and draw a replacement: the remaining range
-``[0, 248)`` maps onto the 31 symbols with exactly uniform probability."""
+"""256 is not a multiple of 31, so a plain ``byte % 31`` would over-represent
+A-H by 12.5%. Reject bytes at or above 248 and redraw: ``[0, 248)`` maps onto
+the 31 symbols with exactly uniform probability."""
 
 DEFAULT_REQUEST_TTL_SEC = 5 * 60
-"""Default lifetime of a published join request."""
 
 MAX_REQUEST_TTL_SEC = 60 * 60
-"""Hard cap on a request's declared live window.
-
-``expiresAt``/``createdAt`` are NOT covered by ``popSig`` — anyone with the code
-can rewrite them, so a default nobody is forced to respect enforces nothing.
-This is the real enforcement: :func:`parse_space_join_request` rejects a request
-whose declared window exceeds this *relative to the parsing call's own wall
-clock*, and :func:`create_space_join_request` clamps its own ``ttl_sec`` to it
-so a well-meaning caller cannot build something this package would reject."""
+"""Hard cap on a request's declared live window. ``expiresAt`` is not covered by
+``popSig``, so this is the real enforcement: :func:`parse_space_join_request`
+rejects a window exceeding it relative to the parsing call's own wall clock, and
+:func:`create_space_join_request` clamps ``ttl_sec`` so a caller cannot build a
+request this package would reject."""
 
 
 def random_code() -> str:
     """Generate a fresh uniformly-distributed :data:`CODE_LENGTH`-character code."""
     chars: list[str] = []
-    # Pull a batch at a time (rather than one byte per iteration) so a run of
-    # rejected bytes doesn't turn into a syscall-per-byte loop — rejection hits
-    # ~3% of bytes, so a fresh CODE_LENGTH-sized batch almost always finishes
-    # the code outright, with a further batch only on the rare tail.
+    # Batched so a run of rejected bytes doesn't become a syscall per byte.
     while len(chars) < CODE_LENGTH:
         for b in secrets.token_bytes(CODE_LENGTH):
             if b >= CODE_REJECT_THRESHOLD:
@@ -156,11 +109,7 @@ class Rendezvous(TypedDict):
 
 
 class SpaceJoinRequestPayload(TypedDict, total=False):
-    """Phase-``request`` document — the discovery half of the merged slot.
-
-    Published by the requester under a code the human reads and types.
-    Everything here is public by construction; nothing sensitive rides in it.
-    """
+    """Phase-``request`` document. Everything here is public by construction."""
 
     v: Literal[1]
     phase: Literal["request"]
@@ -170,34 +119,27 @@ class SpaceJoinRequestPayload(TypedDict, total=False):
     """Ephemeral X25519 KEM public key (hex) the grant gets sealed to."""
     popSig: str
     """``ed25519.sign(pop_signing_input(code, devEdPub, devKemPub), devEdPriv)``,
-    hex. Binds the two public keys to THIS code and proves the requester holds
-    ``devEdPriv``. It is not proof of the requester's identity or intent — which
-    is exactly why ``origin``/``code`` remain what the approving human relies
-    on."""
+    hex. Binds the keys to THIS code; not proof of the requester's identity or
+    intent, which is why ``origin``/``code`` remain what the human relies on."""
     joinRequestKemSig: str
-    """``sign_kem_sig(devKemPub, devEdPriv)``, hex — a SEPARATE proof-of-possession
-    over just ``devKemPub``, in the exact shape
-    :func:`~starfish_spaces.invite_helpers.parse_join_request` expects. Lets the
-    approver rebuild a join request from this payload alone (see
-    :func:`join_request_from_space_join_request`) without the requester needing a
-    full :class:`~starfish_spaces.session.Session` for an identity it has no
-    wallet to derive."""
+    """``sign_kem_sig(devKemPub, devEdPriv)``, hex. A separate PoP over just
+    ``devKemPub``, in the shape
+    :func:`~starfish_spaces.invite_helpers.parse_join_request` expects, so the
+    approver can rebuild a join request from this payload alone."""
     origin: str
-    """Attacker-controlled in the sense that anyone can put any string here — the
-    approving side must VERIFY it (e.g. a ``.well-known`` fetch), not trust it at
-    face value. This module only bounds and sanity-checks it as a string."""
+    """Anyone can put any string here, so the approving side must VERIFY it (e.g.
+    a ``.well-known`` fetch), not trust it at face value."""
     label: str
     requestedScopes: list[str]
-    """Purely advisory: what the requester says it wants. The approver decides
-    what to actually grant."""
+    """Advisory only. The approver decides what to actually grant."""
     createdAt: str
-    """ISO-8601. Informational ONLY — never used for a security decision."""
+    """ISO-8601. Informational ONLY, never used for a security decision."""
     expiresAt: str
     """ISO-8601. Checked against the parsing call's real wall clock."""
 
 
 class SpaceJoinGrantDoc(TypedDict, total=False):
-    """Phase-``grant`` document — the delivery half of the SAME slot."""
+    """Phase-``grant`` document: the delivery half of the SAME slot."""
 
     v: Literal[1]
     phase: Literal["grant"]
@@ -209,9 +151,9 @@ class SpaceJoinGrantDoc(TypedDict, total=False):
 
 GRANT_ENVELOPE_KIND = "starfish-space-join-grant"
 GRANT_ENVELOPE_VERSION = 1
-"""The sealed plaintext is ``{v, kind, spaceId, cap}`` — flat, not a nested
-bundle string. Shared byte-for-byte with the TypeScript twin: a grant sealed by
-one language must unseal in the other."""
+"""The sealed plaintext is ``{v, kind, spaceId, cap}``, shared byte-for-byte
+with the TypeScript twin: a grant sealed by one language must unseal in the
+other."""
 
 
 # ── Errors ────────────────────────────────────────────────────────────────────
@@ -220,29 +162,15 @@ one language must unseal in the other."""
 class SpaceJoinConflictError(ConflictError):
     """The rendezvous slot changed since this caller last wrote it.
 
-    Treat as "this slot may have been tampered with", never as "retry against
-    whatever is there now" — adopting the server's current hash is precisely how
-    a hostile overwrite becomes the legitimate publisher's own new baseline.
-
-    Subclasses :class:`~starfish_sdk.types.ConflictError` (rather than plain
-    ``Exception``) so an ``except ConflictError`` — the convention every other
-    CAS write in this package uses, and what the TS twin lets propagate
-    untouched — still catches a join-request conflict instead of missing it.
-
-    Caution: this cuts both ways. Because it IS a ``ConflictError``, wrapping
-    a call that can raise this (``publish()``, ``publish_space_join_grant``,
-    ``clear_space_join_grant``) in :func:`~starfish_spaces.cas_retry.run_cas`
-    — or any other generic "retry on ConflictError" helper — would swallow it
-    as an ordinary retriable conflict instead of surfacing the "treat this
-    code as compromised" signal. None of this module's own call sites do
-    that (each already IS the CAS operation, not a caller wrapping one), and
-    they should not start.
+    Means "this slot may have been tampered with", never "retry against whatever
+    is there now". Because it IS a :class:`~starfish_sdk.types.ConflictError`,
+    wrapping a raiser in :func:`~starfish_spaces.cas_retry.run_cas` would swallow
+    it as an ordinary retriable conflict. No call site here does that.
     """
 
     def __init__(self, message: str = "") -> None:
-        # Bypass ConflictError.__init__'s "hash_mismatch: …" formatting: this
-        # error already carries its own full, specific message, and existing
-        # callers/tests match against it directly.
+        # Bypass ConflictError.__init__'s "hash_mismatch: …" prefix: callers and
+        # tests match this message directly.
         self.server_response = message
         Exception.__init__(self, message)
 
@@ -251,13 +179,10 @@ class SpaceJoinConflictError(ConflictError):
 
 
 def pop_signing_input(code: str, dev_ed_pub: str, dev_kem_pub: str) -> bytes:
-    """Canonical bytes signed by ``popSig``.
-
-    Binds ``devEdPub``/``devKemPub`` to THIS ``code`` so a signature cannot be
-    replayed across a different (key-pair, code) combination. Byte-identical to
-    the TypeScript twin's ``JSON.stringify({code, devEdPub, devKemPub})``:
-    insertion-ordered keys, no whitespace.
-    """
+    """Canonical bytes signed by ``popSig``, byte-identical to the twin's
+    ``JSON.stringify({code, devEdPub, devKemPub})``: insertion-ordered, no
+    whitespace. Binding to THIS ``code`` is what stops signature replay under a
+    different (key-pair, code) pair."""
     return json.dumps(
         {"code": code, "devEdPub": dev_ed_pub, "devKemPub": dev_kem_pub},
         separators=(",", ":"),
@@ -274,11 +199,10 @@ class CreatedSpaceJoinRequest:
 
     request: SpaceJoinRequestPayload
     device: dict[str, str]
-    """The fresh ephemeral ``{edPriv, edPub, kemPriv, kemPub}``. The PRIVATE
-    halves never travel in ``request`` — they are what unseals the grant."""
+    """The fresh ephemeral ``{edPriv, edPub, kemPriv, kemPub}``. The private
+    halves never travel in ``request``; they are what unseals the grant."""
     code: str
-    """What the requester displays for a human to type. Also the slot address
-    and the PoP/AAD binding value."""
+    """Displayed for a human to type. Also the slot address and PoP/AAD binding."""
 
 
 def create_space_join_request(
@@ -290,21 +214,10 @@ def create_space_join_request(
 ) -> CreatedSpaceJoinRequest:
     """Build a join request: fresh ephemeral keys, a PoP signature, a short code.
 
-    Pure — performs no I/O. Use :func:`start_space_join_request` to also publish.
-
-    Args:
-        origin:           The requester's origin, shown to the approving human.
-        label:            Optional human-readable requester name.
-        requested_scopes: Advisory list of what the requester wants access to.
-        ttl_sec:          Request lifetime. Clamped to :data:`MAX_REQUEST_TTL_SEC`
-            — not merely defaulted, since a caller passing an oversized value
-            would otherwise build a request :func:`parse_space_join_request`
-            rejects outright, silently breaking their own integration. A NEGATIVE
-            value is deliberately NOT clamped (it lets a test build an
-            already-expired request); only the upper bound is enforced.
-
-    Returns:
-        A :class:`CreatedSpaceJoinRequest`.
+    Pure, no I/O. Use :func:`start_space_join_request` to also publish.
+    ``ttl_sec`` is clamped to :data:`MAX_REQUEST_TTL_SEC`, not merely defaulted,
+    so an oversized value cannot build a request the parser would reject. A
+    NEGATIVE value is deliberately not clamped, to allow expired-request tests.
     """
     device = generate_device_keys()
     code = random_code()
@@ -335,12 +248,8 @@ def create_space_join_request(
 
 
 def _iso(moment: datetime) -> str:
-    """ISO-8601 with millisecond precision and a trailing ``Z``.
-
-    Byte-identical in shape to JS ``Date.prototype.toISOString()``, so a
-    timestamp this package writes round-trips through the TypeScript twin
-    unchanged.
-    """
+    """ISO-8601 with millisecond precision and a trailing ``Z``, matching JS
+    ``Date.prototype.toISOString()`` so timestamps round-trip through the twin."""
     utc = moment.astimezone(timezone.utc)
     return f"{utc.strftime('%Y-%m-%dT%H:%M:%S')}.{utc.microsecond // 1000:03d}Z"
 
@@ -359,49 +268,31 @@ MAX_LABEL_LENGTH = 200
 UNSAFE_TEXT_PATTERN = re.compile(
     "[\u0000-\u001F\u007F-\u009F\u202A-\u202E\u2066-\u2069]"
 )
-"""C0/C1 control characters (including ``\\n``/``\\r`` — a UI that renders an
-embedded newline as a real line break lets attacker text masquerade as extra app
-chrome) plus the Unicode bidi override/isolate controls (U+202A-E, U+2066-9)
-that can visually reverse or reorder a rendered string, e.g. making a hostile
-host read as a different one. Written as explicit escapes, never as literal
-control/bidi characters in source."""
+"""C0/C1 controls (including ``\\n``/``\\r``, which a UI renders as a real line
+break, letting attacker text masquerade as app chrome) plus the Unicode bidi
+override/isolate controls that can visually reorder a rendered host. Written as
+explicit escapes, never as literal control characters in source."""
 
 _HEX_RE = re.compile(r"[0-9a-fA-F]+")
 _SCHEME_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9+.\-]*")
 _SPECIAL_SCHEMES = frozenset({"http", "https", "ws", "wss", "ftp"})
-# WHATWG's URL parser strips leading/trailing C0-control-or-space before doing
-# anything else. UNSAFE_TEXT_PATTERN already rejects embedded C0 controls
-# elsewhere in `origin`, so in practice only plain leading/trailing space can
-# reach here — but trimming the whole C0 range mirrors the spec exactly.
+# WHATWG strips leading/trailing C0-control-or-space before parsing anything.
 _LEADING_TRAILING_C0_SPACE_RE = re.compile(r"^[\x00-\x20]+|[\x00-\x20]+$")
-# A "special" scheme (http/https/ws/wss/ftp) followed by a colon and ANY
-# number of AUTHORITY-MARKER characters — WHATWG's "special authority ignore
-# slashes" state treats a run of `/` AND `\` (mixed, any count, including
-# zero) right after the colon as equivalent to `//`, e.g. `scheme:host`,
-# `scheme:/host`, `scheme:\host`, `scheme://host`, `scheme:///host` all mean
-# the same thing to `new URL()`.
+# WHATWG's "special authority ignore slashes" state treats any run of `/` and
+# `\` after `scheme:` (mixed, any count, including zero) as `//`, so
+# `scheme:host`, `scheme:\host` and `scheme:///host` all name the same host.
 _SPECIAL_SCHEME_AUTHORITY_RE = re.compile(r"^([a-zA-Z][a-zA-Z0-9+.\-]*):[/\\]*(.*)$", re.DOTALL)
-# WHATWG's host state ends the authority at the first `/`, `\`, `?`, or `#`
-# (a rewrite-then-`urlparse` approach — the previous version of this function
-# — can't replicate this: `urlparse` doesn't split on `\`, so it hands a
-# padding space or a `\`-delimited fake userinfo straight through into what
-# it reports as the hostname instead of rejecting/re-splitting it).
+# WHATWG's host state ends the authority at the first of these. `urlparse` does
+# not split on `\`, so it would hand a `\`-delimited fake userinfo straight
+# through as the hostname.
 _AUTHORITY_TERMINATORS = frozenset("/\\?#")
 
 
 def _special_scheme_authority_host(rest: str) -> str:
-    """The WHATWG host for a special scheme, given everything after `scheme:`
-    and any leading authority-marker slashes (see
-    :data:`_SPECIAL_SCHEME_AUTHORITY_RE`) have already been stripped.
-
-    Only computes enough to answer "is a well-formed, non-empty host present"
-    — never returned or stored, so it does not need to be byte-identical to
-    WHATWG's own host value, only accept/reject the same inputs it would.
-    Splits userinfo off at the LAST `@` before the authority terminates (a
-    literal user@ prefix, itself accepted by WHATWG, must not be mistaken for
-    the host), and keeps an IPv6 literal's brackets together so a `:` inside
-    them isn't mistaken for a port separator.
-    """
+    """The WHATWG host, given everything after ``scheme:`` and its authority
+    slashes. Only needs to accept/reject what WHATWG does, not match its host
+    byte for byte. Userinfo splits at the LAST ``@`` before the authority ends,
+    and IPv6 brackets stay together so an inner ``:`` isn't read as a port."""
     term_idx = next((i for i, ch in enumerate(rest) if ch in _AUTHORITY_TERMINATORS), len(rest))
     host_port = rest[:term_idx].rsplit("@", 1)[-1]
     if host_port.startswith("["):
@@ -421,8 +312,7 @@ def _assert_bounded_safe_text(value: str, field_name: str, max_length: int) -> N
 
 def _assert_hex_length(value: str, field_name: str, expected_length: int) -> None:
     # Checked BEFORE any hex decode: decoding allocates proportionally to input
-    # length with no ceiling of its own, so an unbounded hex string here would
-    # allocate before ever reaching signature verification.
+    # length with no ceiling of its own.
     if len(value) != expected_length or _HEX_RE.fullmatch(value) is None:
         raise ValueError(
             f"space join request: {field_name} is not a valid {expected_length}-character hex string"
@@ -430,25 +320,11 @@ def _assert_hex_length(value: str, field_name: str, expected_length: int) -> Non
 
 
 def _assert_valid_origin_url(origin: str) -> None:
-    """Approximate WHATWG ``new URL()`` acceptance for the ``origin`` field.
-
-    Requires a syntactically valid scheme, plus a non-empty, well-formed host
-    for the "special" schemes (http/https/ws/wss/ftp) where WHATWG mandates
-    one — computed via :func:`_special_scheme_authority_host`, WHATWG's own
-    lenient authority-slash/backslash handling and userinfo/host/port
-    splitting, since ``urlparse`` alone implements none of that. Non-special
-    scheme-only forms WHATWG accepts (``mailto:a@b``) are accepted here too
-    via a plain ``urlparse`` check, so the two languages agree on the inputs
-    that actually reach signature verification.
-
-    Leading/trailing C0-control-or-space is stripped first, mirroring another
-    WHATWG normalization step ``urlparse`` doesn't perform on its own.
-
-    ``origin`` is caller-controlled wire data — the two languages must reach
-    the same accept/reject verdict on it, or a request one approver treats as
-    well-formed another rejects outright (or, worse, the two silently
-    disagree on WHICH host it names).
-    """
+    """Approximate WHATWG ``new URL()`` acceptance for ``origin``, so both
+    languages reach the same verdict on this caller-controlled field.
+    ``urlparse`` implements none of WHATWG's authority-slash, backslash or
+    userinfo handling, hence the hand-rolled path for the special schemes that
+    mandate a host; scheme-only forms (``mailto:a@b``) go through ``urlparse``."""
     candidate = _LEADING_TRAILING_C0_SPACE_RE.sub("", origin)
     special_match = _SPECIAL_SCHEME_AUTHORITY_RE.match(candidate)
     if special_match and special_match.group(1).lower() in _SPECIAL_SCHEMES:
@@ -467,9 +343,8 @@ def _assert_valid_origin_url(origin: str) -> None:
 def _parse_iso_ms(value: str) -> Optional[int]:
     """ISO-8601 → epoch milliseconds, or ``None`` when unparseable.
 
-    Returning ``None`` (rather than raising or, worse, a NaN-like sentinel that
-    compares false against everything) is what lets the caller FAIL CLOSED on a
-    garbage timestamp instead of silently treating it as "not expired".
+    ``None`` rather than a NaN-like sentinel is what lets the caller fail CLOSED
+    on a garbage timestamp instead of reading it as "not expired".
     """
     try:
         moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -481,25 +356,13 @@ def _parse_iso_ms(value: str) -> Optional[int]:
 
 
 def parse_space_join_request(payload: str | Mapping[str, Any]) -> SpaceJoinRequestPayload:
-    """Parse and validate a phase-``request`` document.
+    """Parse and validate a phase-``request`` document, raising ``ValueError`` on
+    any structural failure. Call :func:`verify_space_join_request_pop` for the
+    signature and TTL.
 
-    Verifies the proof-of-possession signature and rejects an expired or
-    over-long-lived request — both before the approving side does anything else
-    with it. Does NOT verify that ``origin`` resolves to anything real; that
-    needs a network check the approving side performs itself (this function stays
-    I/O-free). It DOES bound and sanity-check ``origin``/``label``: a length cap,
-    a URL parse for ``origin``, and rejection of control/bidi-override characters
-    in both, since those are the two fields an approving human actually reads.
-    Full homoglyph/IDNA-confusable host detection is out of scope.
-
-    Args:
-        payload: The document, as a JSON string or an already-parsed mapping.
-
-    Returns:
-        The validated :class:`SpaceJoinRequestPayload`.
-
-    Raises:
-        ValueError: on any structural, signature, or freshness failure.
+    Bounds ``origin``/``label`` (the two fields an approving human reads) but
+    stays I/O-free, so it does NOT check that ``origin`` resolves to anything
+    real. Homoglyph/IDNA-confusable detection is out of scope.
     """
     if isinstance(payload, str):
         try:
@@ -518,7 +381,8 @@ def parse_space_join_request(payload: str | Mapping[str, Any]) -> SpaceJoinReque
     for name in required:
         if not isinstance(parsed.get(name), str):
             raise ValueError(f"space join request: malformed payload — {name}")
-    if parsed.get("label") is not None and not isinstance(parsed.get("label"), str):
+    label = parsed.get("label")
+    if label is not None and not isinstance(label, str):
         raise ValueError("space join request: malformed payload — label")
     scopes = parsed.get("requestedScopes")
     if scopes is not None and (
@@ -531,8 +395,8 @@ def parse_space_join_request(payload: str | Mapping[str, Any]) -> SpaceJoinReque
     _assert_hex_length(parsed["popSig"], "popSig", HEX_SIG_LENGTH)
     _assert_hex_length(parsed["joinRequestKemSig"], "joinRequestKemSig", HEX_SIG_LENGTH)
     _assert_bounded_safe_text(parsed["origin"], "origin", MAX_ORIGIN_LENGTH)
-    if parsed.get("label") is not None:
-        _assert_bounded_safe_text(parsed["label"], "label", MAX_LABEL_LENGTH)
+    if label is not None:
+        _assert_bounded_safe_text(label, "label", MAX_LABEL_LENGTH)
     _assert_valid_origin_url(parsed["origin"])
 
     request: SpaceJoinRequestPayload = dict(parsed)  # type: ignore[assignment]
@@ -542,15 +406,12 @@ def parse_space_join_request(payload: str | Mapping[str, Any]) -> SpaceJoinReque
 def verify_space_join_request_pop(request: SpaceJoinRequestPayload, code: str) -> None:
     """Verify ``popSig`` binds this request's keys to ``code``, and enforce the TTL.
 
-    Split out from :func:`parse_space_join_request` because in the merged
-    single-slot design the code is the slot ADDRESS: the parser validates the
-    document's shape, and only a caller that knows which code it pulled can check
-    the binding. :func:`fetch_space_join_request_by_code` always calls both.
+    Split from :func:`parse_space_join_request` because ``code`` is the slot
+    ADDRESS: only a caller that knows which code it pulled can check the binding.
 
     Raises:
-        ValueError: on an invalid PoP signature, an expired request, or a request
-            claiming to stay valid longer than :data:`MAX_REQUEST_TTL_SEC` from
-            now.
+        ValueError: invalid PoP signature, expired request, or a request claiming
+            to stay valid longer than :data:`MAX_REQUEST_TTL_SEC` from now.
     """
     verified = ed25519_suite.verify(
         bytes.fromhex(request["popSig"]),
@@ -562,22 +423,13 @@ def verify_space_join_request_pop(request: SpaceJoinRequestPayload, code: str) -
 
     now_ms = int(time.time() * 1000)
     expires_at_ms = _parse_iso_ms(request["expiresAt"])
-    # A garbage expiresAt must be REJECTED, not silently treated as "not
-    # expired" — fail closed.
+    # Fail closed: a garbage expiresAt is rejected, not read as "not expired".
     if expires_at_ms is None or expires_at_ms <= now_ms:
         raise ValueError("space join request: expired")
 
-    # The actual enforcement of "short-lived code". expiresAt/createdAt are NOT
-    # covered by popSig, so a party with the code can rewrite either to
-    # anything. Comparing expiresAt against the request's OWN createdAt would be
-    # trivially bypassable: an attacker controlling both can place them
-    # arbitrarily far in the future while keeping their DIFFERENCE inside the
-    # cap, making the code "look" freshly issued no matter when it is redeemed
-    # (createdAt = now+364d, expiresAt = now+364d+1h passes a createdAt-relative
-    # check yet keeps the code valid for the next year). Anchoring to THIS
-    # CALL's real wall clock closes that: a request cannot claim to remain valid
-    # more than MAX_REQUEST_TTL_SEC from right now, whatever it claims createdAt
-    # to be. createdAt is otherwise purely informational.
+    # Anchored to THIS call's wall clock, never to the request's own createdAt:
+    # neither field is covered by popSig, so an attacker controlling both could
+    # keep their DIFFERENCE inside the cap while placing them a year out.
     if expires_at_ms - now_ms > MAX_REQUEST_TTL_SEC * 1000:
         raise ValueError("space join request: expiry window exceeds the maximum this package allows")
 
@@ -586,12 +438,8 @@ def verify_space_join_request_pop(request: SpaceJoinRequestPayload, code: str) -
 
 
 def _client_for(rendezvous: Rendezvous, override: Optional["StarfishClient"]) -> "StarfishClient":
-    """The anonymous client for a rendezvous, or an injected one.
-
-    ``override`` is the test/advanced seam (the TS twin uses a ``fetch``
-    override; :func:`make_anon_space_client` takes no such hook, so injecting the
-    whole client is the Python-side equivalent).
-    """
+    """The anonymous client for a rendezvous, or an injected one (the test seam;
+    the TS twin overrides ``fetch`` instead)."""
     if override is not None:
         return override
     return make_anon_space_client(
@@ -610,9 +458,8 @@ class RendezvousDoc:
 async def _pull_slot(client: "StarfishClient", path: str) -> Optional[RendezvousDoc]:
     """Pull a rendezvous slot, or ``None`` when nothing is published there.
 
-    An unwritten collection document does not necessarily 404 — depending on the
-    deployment it pulls as the STRING ``"null"``, a raw ``None``, or an empty
-    ``{}``. All of those, plus a genuine 404, are the not-found signal here.
+    An unwritten document does not necessarily 404: depending on the deployment
+    it pulls as the STRING ``"null"``, a raw ``None``, or an empty ``{}``.
     """
     try:
         result = await client.pull(path)
@@ -634,10 +481,9 @@ async def _pull_slot(client: "StarfishClient", path: str) -> Optional[Rendezvous
 async def _pull_hash(client: "StarfishClient", path: str) -> Optional[str]:
     """The RAW hash at ``path``, whether or not the document is 'empty'.
 
-    Deliberately not derived from :func:`_pull_slot`, which collapses an
-    existing-but-empty ``{}`` doc down to ``None`` and discards its real hash.
-    CASing ``None`` against a slot that DOES have a hash conflicts every time —
-    that is what would make clearing an already-cleared slot permanently fail.
+    Not derived from :func:`_pull_slot`, which collapses an existing-but-empty
+    ``{}`` doc to ``None`` and discards its real hash. CASing ``None`` against a
+    slot that HAS a hash would make clearing an already-cleared slot always fail.
     """
     try:
         result = await client.pull(path)
@@ -661,11 +507,8 @@ class StartSpaceJoinRequestOptions:
     requested_scopes: Optional[list[str]] = None
     ttl_sec: Optional[int] = None
     layout: Optional[SpaceLayout] = None
-    """Path layout for the rendezvous slot. Defaults to
-    :data:`~starfish_spaces.layout.default_space_layout` — this whole request
-    half is resolvable session-lessly, mirroring
-    ``complete_device_pairing``-style ``{rendezvous, layout}`` options rather
-    than requiring a full :class:`~starfish_spaces.session.Session`."""
+    """Defaults to :data:`~starfish_spaces.layout.default_space_layout`. The
+    request half is resolvable session-lessly."""
     client: Optional[Any] = None
     """Injected :class:`StarfishClient` (tests / custom transports)."""
 
@@ -675,9 +518,8 @@ class SpaceJoinRequestSession:
     """A requester's own end of a device-code space join.
 
     Carries its own ``rendezvous`` and ``layout`` so :func:`fetch_space_join_grant`
-    / :func:`await_space_join_grant` take the session directly, with no
-    re-spreading at the call site. There is deliberately no ``session_id`` field:
-    ``code`` is the sole identifier in this design.
+    / :func:`await_space_join_grant` take the session directly. There is
+    deliberately no ``session_id``: ``code`` is the sole identifier.
     """
 
     request: SpaceJoinRequestPayload
@@ -687,12 +529,10 @@ class SpaceJoinRequestSession:
     layout: SpaceLayout = field(default=default_space_layout)
     client: Optional[Any] = None
 
-    # This session's OWN remembered hash from its last successful publish. Starts
-    # None so the FIRST publish() is create-only: it fails rather than silently
-    # adopting whatever already occupies the slot. Every later publish() uses its
-    # own remembered hash instead of re-pulling and trusting whatever the server
-    # currently reports, so a hostile overwrite between two publishes surfaces as
-    # a loud conflict instead of becoming this session's new baseline.
+    # This session's OWN hash from its last successful publish. Starts None so
+    # the first publish() is create-only rather than silently adopting whatever
+    # occupies the slot; later publishes reuse it rather than re-pulling, so a
+    # hostile overwrite between two publishes is a loud conflict.
     _last_hash: Optional[str] = field(default=None, repr=False)
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
@@ -701,13 +541,11 @@ class SpaceJoinRequestSession:
 
         Raises:
             SpaceJoinConflictError: the slot changed since this session's last
-                write — treat the code as compromised, do not retry past it.
+                write. Treat the code as compromised, do not retry past it.
         """
-        # Serializes overlapping publish() calls on the SAME session. Without
-        # it, two in-flight calls both read the same _last_hash before either
-        # awaits, so whichever the server processes second gets a real conflict
-        # caused only by this session's own overlapping write — indistinguishable
-        # from the third-party tampering the error is meant to report.
+        # Serializes overlapping publish() calls on the SAME session: without it
+        # both read the same _last_hash before either awaits, and the second
+        # write conflicts for a reason indistinguishable from real tampering.
         async with self._lock:
             client = _client_for(self.rendezvous, self.client)
             path = self.layout.join_session_push(self.code)
@@ -723,11 +561,10 @@ class SpaceJoinRequestSession:
 async def start_space_join_request(
     opts: StartSpaceJoinRequestOptions,
 ) -> SpaceJoinRequestSession:
-    """Requester side, step 1: create and publish a join request.
+    """Requester side, step 1: create a join request session.
 
-    The first :meth:`SpaceJoinRequestSession.publish` is create-only CAS
-    (``base_hash=None``), so only the first write to a fresh code's slot
-    succeeds.
+    The first :meth:`SpaceJoinRequestSession.publish` is create-only CAS, so only
+    the first write to a fresh code's slot succeeds.
 
     Example::
 
@@ -771,9 +608,8 @@ class FetchedSpaceJoinRequest:
 
     request: SpaceJoinRequestPayload
     hash: Optional[str]
-    """The hash of the request document just read. Pass it as
-    :attr:`PublishSpaceJoinGrantOptions.base_hash` — the grant is a CAS UPDATE of
-    this very document, not a fresh create."""
+    """Pass as :attr:`PublishSpaceJoinGrantOptions.base_hash`. The grant is a
+    CAS UPDATE of this very document, not a fresh create."""
 
 
 async def fetch_space_join_request_by_code(
@@ -781,17 +617,9 @@ async def fetch_space_join_request_by_code(
 ) -> Optional[FetchedSpaceJoinRequest]:
     """Approver side, step 1: look up a request by the code the human typed.
 
-    Returns ``None`` when nothing is published under that code at all (wrong
-    code, or the collection's TTL already reclaimed it), and also when the slot
-    has already advanced to ``phase="grant"`` — there is no pending request to
-    approve in either case. A request that IS still present but expired or
-    tampered with does NOT return ``None``; it raises, so the caller can tell
-    "wrong code" apart from "right code, but it expired" and say so accurately.
-
-    Returns the document's current hash alongside the parsed request: that hash
-    is exactly what :func:`publish_space_join_grant` needs as its CAS
-    ``base_hash``, and taking it from the same read that produced the request is
-    what makes the grant write a genuine pull-then-push update.
+    ``None`` means nothing to approve (nothing published, or the slot already
+    advanced to ``phase="grant"``). A request that IS present but expired or
+    tampered with raises, so the caller can tell "wrong code" from "expired".
 
     Raises:
         ValueError: the slot holds a phase-``request`` document that is
@@ -802,8 +630,8 @@ async def fetch_space_join_request_by_code(
     doc = await _pull_slot(client, layout.join_session_pull(opts.code))
     if doc is None:
         return None
-    # Behavior deliberately matched to the TypeScript twin: an already-approved
-    # slot is "nothing to approve", not an error.
+    # Matched to the TypeScript twin: an already-approved slot is "nothing to
+    # approve", not an error.
     if doc.data.get("phase") != "request":
         return None
     request = parse_space_join_request(doc.data)
@@ -820,46 +648,38 @@ class PublishSpaceJoinGrantOptions:
 
     request: SpaceJoinRequestPayload
     code: str
-    """The slot address AND the seal's AAD. Anti-relocation: a grant sealed under
-    one code cannot be replayed at another code's slot."""
+    """The slot address AND the seal's AAD, so a grant sealed under one code
+    cannot be replayed at another code's slot."""
     space_id: str
-    """The space the requester is being admitted to."""
     cap: Any
-    """The member cap minted for the requester's ephemeral identity — e.g.
-    ``json.loads(await invite_to_space(...))["cap"]``. Sealed, never written in
-    the clear."""
+    """The member cap minted for the requester's ephemeral identity, e.g.
+    ``json.loads(await invite_to_space(...))["cap"]``. Sealed, never in clear."""
     sealer: Mapping[str, str]
     """The approver's ``{edPriv, edPub}``. Its ``edPub`` becomes the grant's
     verified ``sealed_by``, which the requester TOFU-pins."""
     rendezvous: Rendezvous
-    """The approver's OWN trusted server config — the same one it used to look
-    the request up. Never a value carried inside the request document: that rides
-    in a doc anyone can publish to a public collection, so trusting it would let
-    a malicious requester aim this device's outbound write at a host of its
-    choosing. (This is why :class:`SpaceJoinRequestPayload` carries no
-    ``rendezvous`` field at all.)"""
+    """The approver's OWN trusted server config, never a value carried inside
+    the request document: that rides in a doc anyone can publish, so trusting it
+    would let a malicious requester aim this device's write at a host of its
+    choosing. (Hence :class:`SpaceJoinRequestPayload` has no ``rendezvous``.)"""
     base_hash: str
-    """The hash of the request document just read
-    (:attr:`FetchedSpaceJoinRequest.hash`). REQUIRED: the grant is a CAS UPDATE
+    """:attr:`FetchedSpaceJoinRequest.hash`. REQUIRED: the grant is a CAS UPDATE
     of the existing request document, never a create."""
     layout: Optional[SpaceLayout] = None
     client: Optional[Any] = None
 
 
 async def publish_space_join_grant(opts: PublishSpaceJoinGrantOptions) -> Optional[str]:
-    """Approver side, step 2: seal the minted cap and CAS-UPDATE the slot.
-
-    Transitions the SAME document from ``phase="request"`` to ``phase="grant"``.
+    """Approver side, step 2: seal the minted cap and CAS-UPDATE the slot from
+    ``phase="request"`` to ``phase="grant"``.
 
     Returns:
-        The resulting hash, so a caller that legitimately republishes later can
-        pass back the hash THIS call returned rather than re-deriving whatever is
-        currently at the slot (an attacker's overwrite looks exactly like
-        "whatever is currently there" too).
+        The resulting hash. A caller that republishes later must pass THIS hash
+        back rather than re-deriving what is currently at the slot, since an
+        attacker's overwrite looks exactly like that too.
 
     Raises:
-        ValueError: ``base_hash`` is missing — that would make this a create, and
-            a grant must only ever replace a request it actually read.
+        ValueError: ``base_hash`` is missing.
         SpaceJoinConflictError: the slot changed since ``base_hash`` was read.
     """
     if not opts.base_hash:
@@ -916,24 +736,14 @@ _MAX_CLEAR_ATTEMPTS = 3
 async def clear_space_join_grant(opts: ClearSpaceJoinGrantOptions) -> Optional[str]:
     """Approver side: overwrite the slot with an empty document at unpair time.
 
-    Explicit cleanup, never automatic — the grant slot is re-pollable for the
-    life of the pairing (see the module docstring), and the collection's TTL is
-    an outer backstop, not a substitute for clearing.
+    The ONE place blind-overwrite-and-retry is correct: unpairing must succeed
+    even without a remembered hash (in-memory state lost across a restart), and
+    "did someone else overwrite this" is meaningless when the intent is "nothing
+    should be published here".
 
-    This is the ONE place blind-overwrite-and-retry is correct: unpairing must
-    succeed even without a remembered hash (in-memory state lost across a
-    restart), and "did someone else already overwrite this" is not a meaningful
-    question when the caller's whole intent is "nothing should be published here
-    anymore".
-
-    Clearing does not recall a grant a requester already fetched. Real revocation
-    is :func:`~starfish_spaces.members.remove_space_member` /
-    :func:`~starfish_spaces.members.revoke_space_access`, which this complements
-    rather than replaces: it only stops the CODE from resolving to a usable grant
-    again.
-
-    Returns:
-        The resulting hash — same shape as :func:`publish_space_join_grant`.
+    Does not recall a grant already fetched; it only stops the CODE resolving to
+    a usable grant. Real revocation is
+    :func:`~starfish_spaces.members.revoke_space_access`.
     """
     layout = opts.layout or default_space_layout
     client = _client_for(opts.rendezvous, opts.client)
@@ -956,19 +766,17 @@ async def clear_space_join_grant(opts: ClearSpaceJoinGrantOptions) -> Optional[s
 
 @dataclass
 class SpaceJoinGrant:
-    """An unsealed grant. Domain object — snake_case, unlike the camelCase wire."""
+    """An unsealed grant. Domain object: snake_case, unlike the camelCase wire."""
 
     space_id: str
     cap: Any
     """A real ``space:member`` cap for the requester's ephemeral device."""
     sealed_by: str
     """The Ed25519 pubkey that ACTUALLY sealed this grant, verified via the wrap
-    entry's signature (never merely claimed). A trust-on-first-use pin: record it
-    after the first successful fetch and pass it back as ``expected_sealer`` on
-    every later poll, so a later writer to the same slot cannot silently replace
-    an established pairing's grant with their own. Nothing pins WHO this key
-    belongs to on the very first read — that trust comes from the human
-    code/origin exchange."""
+    entry's signature (never merely claimed). A trust-on-first-use pin: pass it
+    back as ``expected_sealer`` on later polls so a later writer cannot silently
+    replace an established pairing's grant. Nothing pins WHO this key belongs to
+    on the first read; that trust comes from the human code/origin exchange."""
 
 
 @dataclass
@@ -976,7 +784,7 @@ class FetchSpaceJoinGrantOptions:
     """Arguments for :func:`fetch_space_join_grant`."""
 
     expected_sealer: Optional[str] = None
-    """TOFU pin — see :attr:`SpaceJoinGrant.sealed_by`."""
+    """TOFU pin. See :attr:`SpaceJoinGrant.sealed_by`."""
 
 
 async def fetch_space_join_grant(
@@ -985,13 +793,9 @@ async def fetch_space_join_grant(
 ) -> Optional[SpaceJoinGrant]:
     """Requester side: read and unseal whatever grant is published at the slot.
 
-    Phase-gated: returns ``None`` while the slot is empty or has not yet
-    advanced past ``phase="request"`` (nobody has approved). A caller polling in
-    a loop treats ``None`` as "keep waiting", not as a failure. A slot that IS a
-    grant but fails to unseal raises instead — that is a real integrity signal,
-    not a wait state.
-
-    Deliberately does NOT read any space content — that stays the caller's job.
+    ``None`` while the slot is empty or still ``phase="request"``: a polling
+    caller treats that as "keep waiting". A slot that IS a grant but fails to
+    unseal raises instead: a real integrity signal, not a wait state.
 
     Raises:
         ValueError: the slot is a grant whose envelope is malformed, whose seal
@@ -1004,8 +808,7 @@ async def fetch_space_join_grant(
     if doc is None:
         return None
 
-    # Behavior deliberately matched to the TypeScript twin: anything that is not
-    # yet a grant is a wait state, never an error.
+    # Matched to the TypeScript twin: anything not yet a grant is a wait state.
     if doc.data.get("phase") != "grant":
         return None
 
@@ -1057,11 +860,8 @@ POLL_MAX_SEC = 5.0
 
 
 def default_poll_delay(attempt: int) -> float:
-    """Capped exponential backoff in seconds: ``min(1 · 2**attempt, 5)``.
-
-    Matches the TypeScript twin's ``pollDelay`` so both sides put the same load
-    on the rendezvous.
-    """
+    """Capped exponential backoff in seconds: ``min(1 · 2**attempt, 5)``, matching
+    the TypeScript twin so both sides load the rendezvous identically."""
     return min(POLL_MIN_SEC * 2**attempt, POLL_MAX_SEC)
 
 
@@ -1071,21 +871,10 @@ async def await_space_join_grant(
 ) -> SpaceJoinGrant:
     """Requester side: poll until the approver publishes a grant, or time out.
 
-    This is the initial-approval wait, not an ongoing refresh loop — for later
-    refreshes call :func:`fetch_space_join_grant` directly.
-
-    A :func:`fetch_space_join_grant` failure (a network blip, a transient server
-    error) does NOT end the wait: it is retried on the next tick, exactly like a
-    ``None`` for "nothing published yet". Only the deadline ends it — with the
-    last error if there was one (more informative than a bare timeout), else a
-    generic :class:`TimeoutError`.
-
-    The ONE exception to "swallow and keep polling": every failure
-    :func:`fetch_space_join_grant` itself raises (malformed sealed blob,
-    malformed envelope, an ``unseal`` rejection) is a :class:`ValueError` —
-    a real integrity signal, not a wait state — and reraises immediately
-    instead of being retried to the deadline. Retrying it would just keep
-    re-reading the same bad document every cycle.
+    A transient fetch failure is retried on the next tick like a ``None``, and
+    only the deadline ends the wait. The exception is :class:`ValueError`, which
+    is what every integrity failure raises: those reraise immediately, since
+    retrying just re-reads the same bad document.
     """
     opts = opts or AwaitSpaceJoinGrantOptions()
     fetch_opts = FetchSpaceJoinGrantOptions(expected_sealer=opts.expected_sealer)
@@ -1101,14 +890,15 @@ async def await_space_join_grant(
                 return result
         except ValueError:
             raise
-        except Exception as exc:  # noqa: BLE001 — retried until the deadline
+        except Exception as exc:  # noqa: BLE001, retried until the deadline
             last_err = exc
         if time.monotonic() >= deadline:
-            if last_err is not None:
-                raise TimeoutError(
-                    "timed out waiting for the space join to be approved"
-                ) from last_err
-            raise TimeoutError("timed out waiting for the space join to be approved")
+            # Chained to the last error when there was one: more informative
+            # than a bare timeout.
+            timed_out = TimeoutError("timed out waiting for the space join to be approved")
+            if last_err is None:
+                raise timed_out
+            raise timed_out from last_err
         await asyncio.sleep(delay_for(attempt))
         attempt += 1
 
@@ -1122,24 +912,11 @@ async def join_request_from_space_join_request(
 ) -> str:
     """Rebuild the join-request JSON :func:`~starfish_spaces.members.invite_to_space` expects.
 
-    Sibling of :func:`~starfish_spaces.members.make_join_request`, which builds
-    the same ``{edPub, kemPub, userId, kemSig}`` shape from a
-    :class:`~starfish_spaces.session.Session`. This one builds it from a join
-    request's already-public ``devEdPub``/``devKemPub`` plus the
-    ``joinRequestKemSig`` it carries, so the requester never needs a full
-    ``Session`` for an identity it has no wallet to derive.
-
-    Args:
-        request: A request already validated by
-            :func:`parse_space_join_request` (and, when it came off the wire,
-            :func:`verify_space_join_request_pop`).
-        user_id_from_ed_pub: Override for userId derivation. Defaults to
-            :func:`~starfish_spaces.layout.default_user_id_from_ed_pub`; pass the
-            session's own hook when the app configured a custom one, so the
-            derived userId matches what the roster will contain.
-
-    Returns:
-        The join-request JSON string, ready for ``invite_to_space``.
+    Sibling of :func:`~starfish_spaces.members.make_join_request`, but built from
+    an already-validated request's public fields instead of a
+    :class:`~starfish_spaces.session.Session` the requester has no wallet for.
+    Pass the app's own ``user_id_from_ed_pub`` hook when it configured one, so
+    the derived userId matches what the roster will contain.
     """
     derive = user_id_from_ed_pub or default_user_id_from_ed_pub
     user_id = await derive(request["devEdPub"])
@@ -1169,15 +946,12 @@ __all__ = [
     "UNSAFE_TEXT_PATTERN",
     "GRANT_ENVELOPE_KIND",
     "GRANT_ENVELOPE_VERSION",
-    "POLL_MIN_SEC",
-    "POLL_MAX_SEC",
     # types
     "Rendezvous",
     "SpaceJoinRequestPayload",
     "SpaceJoinGrantDoc",
     "SpaceJoinConflictError",
     "CreatedSpaceJoinRequest",
-    "RendezvousDoc",
     "StartSpaceJoinRequestOptions",
     "SpaceJoinRequestSession",
     "FetchSpaceJoinRequestOptions",

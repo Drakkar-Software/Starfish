@@ -50,6 +50,22 @@ at a time.
   three of a node's keys — a tier flip that involves `"isolated"` is detected
   and migrated like any other.
 
+#### Removed
+- **`ReplicaManager.fromChannels` / `ReplicaManager.from_channels`.** Neither
+  had a caller in any repo. Python's returned a plain `ChannelScheduler`, so it
+  was a trivial alias for constructing one directly, and it was not even
+  symmetric with TS, which returned a `ReplicaManager`. Construct
+  `ChannelScheduler` directly instead. Dropping the TS one also removed the
+  `@internal` three-argument constructor overload that existed only to serve
+  it, so `ReplicaManager` now has a single constructor signature.
+- **`starfish_replica.space`'s `DEFAULT_NODE_ENC` / `PUBLIC_NODE_ENC`
+  re-exports.** Unused, and asymmetric both ways: `ISOLATED_NODE_ENC` was never
+  exported alongside them, and TS keeps all three module-private. They remain
+  module-level in `mirror_channel.py`. Use `tier` rather than raw axes.
+- `_LastHashView`, the private mapping shim on the Python `ReplicaManager` that
+  forwarded `manager._last_hash[name]` to the owning channel's per-channel
+  scalar. It existed for one line in one test. Reach the channel directly.
+
 #### Note for callers
 `nodeEnc: { access: "invite", enc: true }` as a raw override now routes through
 the per-node keyring wherever those axes appear, including a node's STORED axes

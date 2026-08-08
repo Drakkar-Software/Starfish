@@ -9,7 +9,7 @@ exist, which space each routes to) and the ``read_source`` callback.
 Each collection picks a storage ``tier``: ``private`` (space keyring),
 ``isolated`` (its own per-node keyring, so it can be granted and revoked one
 node at a time) or ``public`` (plaintext). See
-``docs/space-mirror-tiers.md``.
+``website/docs/extensions/replica.md``.
 
 Mirrors the TS package's ``space/mirror-channel.ts``.
 """
@@ -23,7 +23,12 @@ from typing import Any, Awaitable, Callable, Optional, Sequence, Union
 
 from starfish_replica.channel import ReplicaCallContext
 from starfish_replica.space.plan import ExistingSpaceNode, plan_space_mirror
-from starfish_replica.space.port import SpacePort, default_space_port, find_or_create_space
+from starfish_replica.space.port import (
+    NodeAccessHandle,
+    SpacePort,
+    default_space_port,
+    find_or_create_space,
+)
 
 __all__ = [
     "SpaceMirrorCollection",
@@ -34,21 +39,22 @@ __all__ = [
 
 DEFAULT_NODE_ENC: dict[str, Any] = {"access": "space", "enc": True}
 
+# The "public" and "isolated" resolutions are fixed pairs, deliberately NOT
+# influenced by ``node_enc``: for those two tiers the tier IS the access model.
 PUBLIC_NODE_ENC: dict[str, Any] = {"access": "public", "enc": False}
-"""The ``tier="public"`` resolution. Deliberately NOT influenced by ``node_enc``:
-``access="public"`` with ``enc=True`` is a combination the server rejects, and
-the whole point of a single ``tier`` enum is that it cannot be expressed."""
-
 ISOLATED_NODE_ENC: dict[str, Any] = {"access": "invite", "enc": True}
-"""The ``tier="isolated"`` resolution: encrypted under the node's OWN keyring,
-so a grant over one node reaches only that node. Like ``PUBLIC_NODE_ENC``, not
-influenced by ``node_enc`` — the tier IS the access model."""
 
 TIERS = ("private", "public", "isolated")
 
 
 def _is_isolated(axes: dict[str, Any]) -> bool:
     return axes.get("access") == "invite" and bool(axes.get("enc"))
+
+
+def _is_external(axes: dict[str, Any]) -> bool:
+    """Reachable beyond this space's members: ``public`` is world-readable,
+    ``invite`` is readable by every holder of a still-valid per-node grant."""
+    return axes.get("access") in ("public", "invite")
 
 
 @dataclass(frozen=True)
@@ -63,20 +69,14 @@ class SpaceMirrorCollection:
 
     - ``"private"`` (default) — the channel's ``node_enc``, itself
       ``{"access": "space", "enc": True}`` unless the caller overrode it.
-      Encrypted under the SPACE keyring, so every space member can read it.
-    - ``"isolated"`` — ``{"access": "invite", "enc": True}``, encrypted under
-      the node's OWN keyring, so access can be granted (and revoked) one node
-      at a time without space membership.
+    - ``"isolated"`` — ``{"access": "invite", "enc": True}``, the node's OWN
+      keyring, grantable and revocable one node at a time.
     - ``"public"`` — ``{"access": "public", "enc": False}``, world-readable.
 
-    Spelling ``"private"`` out is EXACTLY equivalent to leaving the field at
-    its default — an explicit ``"private"`` that ignored a caller's custom
-    ``node_enc`` would make the documented default a lie.
-
-    One enum rather than a raw ``{access, enc}`` pair per collection: the
-    server rejects ``access="public"`` with ``enc=True``, and an enum makes
-    that combination unrepresentable here instead of catching it late, at
-    ``create_node``, once a cycle is already half-run."""
+    An explicit ``"private"`` is EXACTLY equivalent to omitting it. One enum
+    rather than a raw ``{access, enc}`` pair: the server rejects
+    ``access="public"`` with ``enc=True``, and an enum makes that combination
+    unrepresentable. See ``website/docs/extensions/replica.md``."""
 
     def __post_init__(self) -> None:
         if self.tier not in TIERS:
@@ -95,17 +95,28 @@ class SpaceMirrorResult:
     written: list[str] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
     """Ids skipped this cycle because ``change_detection="source-hash"`` found
-    no change since the last write. Always empty when change detection is
-    ``"none"``."""
+    no change since the last write."""
 
     cleared: list[str] = field(default_factory=list)
 
     failed: list[str] = field(default_factory=list)
-    """Ids whose write or clear raised this cycle. The failure is isolated — the
-    other collections in the same space, and every other space, still ran — so
-    this is the ONLY place a caller learns a collection did not make it. A
+    """Ids whose write or clear raised this cycle; failures are isolated. A
     space-level failure (space resolve or tree read) lists every id routed to
     that space, since none of them could run."""
+
+
+@dataclass
+class _SpaceOutcome:
+    """One space's contribution to a cycle."""
+
+    space_id: Optional[str] = None
+    created: list[str] = field(default_factory=list)
+    written: list[str] = field(default_factory=list)
+    skipped: list[str] = field(default_factory=list)
+    cleared: list[str] = field(default_factory=list)
+    failed: list[str] = field(default_factory=list)
+    #: The real exceptions behind `failed`, re-raised as one group by `sync`.
+    errors: list[Exception] = field(default_factory=list)
 
 
 def _fingerprint(data: Any) -> str:
@@ -115,9 +126,7 @@ def _fingerprint(data: Any) -> str:
 
 
 async def _maybe_await(value: Union[Any, Awaitable[Any]]) -> Any:
-    """Accept either a sync or async callable's result, so ``enabled_ids`` can
-    be a plain function or a coroutine function (TS's ``enabledIds`` is
-    likewise ``() => ids | Promise<ids>``)."""
+    """Await ``value`` if awaitable, so ``enabled_ids`` may be sync or async."""
     if asyncio.iscoroutine(value) or isinstance(value, asyncio.Future):
         return await value
     return value
@@ -161,27 +170,17 @@ class SpaceMirrorChannel:
         # dict.fromkeys: de-duplicate while preserving declaration order.
         self._space_names = list(dict.fromkeys(c.space_name for c in self._collections))
 
-        # Tier resolved ONCE, here, rather than per node per cycle: every hot
-        # path below is a dict lookup.
         self._tier_for = {c.id: c.tier for c in self._collections}
         self._axes_for: dict[str, dict[str, Any]] = {
             c.id: self._axes_for_tier(c.tier) for c in self._collections
         }
 
-        # f"{node_id}:{tier}" -> fingerprint of the data last written to it.
-        # Only consulted under change_detection="source-hash".
-        #
-        # Keyed by tier, not by node id alone: flipping a collection's tier does
-        # not change what read_source returns, so a node-id-keyed fingerprint
-        # would match and skip the ONE write that migrates the node onto its new
-        # access axes.
+        # f"{node_id}:{tier}" -> fingerprint last written. Keyed by tier: a tier
+        # flip does not change what read_source returns, so a node-id-only key
+        # would match and skip the ONE write that migrates the node.
         self._last_written: dict[str, str] = {}
-        # node_ids already cleared by a prior cycle of THIS channel instance —
-        # skips a repeat no-op CAS write for a node that has stayed disabled
-        # since. Per-instance, not per-space-content: a fresh channel (e.g. a
-        # caller that rebuilds the channel every call instead of reusing one
-        # across a scheduled loop) starts with this empty and re-clears once,
-        # same as if it did not exist — the skip only helps a REUSED instance.
+        # node_ids cleared by a prior cycle of THIS instance — skips a repeat
+        # no-op CAS write. Per-instance: a rebuilt channel just re-clears once.
         self._cleared_nodes: set[str] = set()
 
         self._result = SpaceMirrorResult()
@@ -194,14 +193,9 @@ class SpaceMirrorChannel:
     # ── tier helpers ─────────────────────────────────────────────────────────
 
     def _axes_for_tier(self, tier: str) -> dict[str, Any]:
-        """The ``{"access", "enc"}`` axes one tier resolves to.
-
-        ``"private"`` — explicit or defaulted — resolves to the channel-wide
-        ``node_enc`` (default ``{"access": "space", "enc": True}``) rather than
-        to a hardcoded pair, so a caller that overrode ``node_enc`` keeps that
-        override. ``tier`` defaults to ``"private"``, so an explicit
-        ``"private"`` MUST behave identically to an omitted one.
-        """
+        """The ``{"access", "enc"}`` axes one tier resolves to. ``"private"`` —
+        explicit or defaulted — resolves to the channel-wide ``node_enc``, so a
+        caller that overrode it keeps that override either way."""
         if tier == "public":
             return dict(PUBLIC_NODE_ENC)
         if tier == "isolated":
@@ -210,13 +204,9 @@ class SpaceMirrorChannel:
 
     @staticmethod
     def _stored_axes(node: ExistingSpaceNode) -> dict[str, Any]:
-        """The axes a node is ACTUALLY stored under, normalized.
-
-        ``starfish_spaces``' node creation omits ``access`` when it is
-        ``"space"`` and ``enc`` when false, so an absent field is the default,
-        not a gap — normalizing here is what makes a stored-vs-configured
-        comparison meaningful instead of "everything looks flipped".
-        """
+        """The axes a node is ACTUALLY stored under, normalized: node creation
+        omits ``access`` when it is ``"space"`` and ``enc`` when false, so an
+        absent field is the default, not a gap."""
         return {"access": node.access or "space", "enc": node.enc is True}
 
     @staticmethod
@@ -226,13 +216,9 @@ class SpaceMirrorChannel:
         return a.get("access") == b.get("access") and bool(a.get("enc")) == bool(b.get("enc"))
 
     def _forget_fingerprints(self, node_id: str) -> None:
-        """Drop every tier's fingerprint for one node.
-
-        Used wherever the node's stored content stops matching what any
-        fingerprint claims — a clear, or a tier flip's clear. Popping only the
-        tier just written would leave the OTHER tier's stale fingerprint to skip
-        a later write back to it.
-        """
+        """Drop EVERY tier's fingerprint for one node: popping only the tier just
+        written would leave the other tier's stale one to skip a later write
+        back to it."""
         for tier in TIERS:
             self._last_written.pop(f"{node_id}:{tier}", None)
 
@@ -267,13 +253,11 @@ class SpaceMirrorChannel:
 
     async def _access_for(
         self, space_id: str, node_id: str, axes: dict[str, Any]
-    ) -> Any:
-        """Resolve the handle to read/write one node under ``axes``.
-
-        An isolated node goes through its own keyring, never the space one —
-        ``get_node_access``'s owner tier would silently fall back to the space
-        keyring if the node keyring were missing.
-        """
+    ) -> NodeAccessHandle:
+        """Handle for reading/writing one node under ``axes``. An isolated node
+        goes through its OWN keyring, never the space one: ``get_node_access``'s
+        owner tier would silently fall back to the space keyring if the node
+        keyring were missing."""
         if _is_isolated(axes):
             return await self._port.get_isolated_node_access(self._session, space_id, node_id)
         return await self._port.get_node_access(self._session, space_id, node_id, axes)
@@ -286,9 +270,9 @@ class SpaceMirrorChannel:
         this call.
 
         ``axes`` is this COLLECTION's resolved tier, not the channel-wide
-        default: it selects the encryptor (space keyring, node keyring, or
-        none), and push_node_doc needs it to refuse writing ciphertext into a
-        collection the server declares ``encryption="none"``.
+        default: it selects the encryptor (space keyring, node keyring, or none)
+        and lets push_node_doc refuse ciphertext in a collection the server
+        declares ``encryption="none"``.
         """
         handle = await self._access_for(space_id, node_id, axes)
         await self._port.push_node_doc(
@@ -321,7 +305,7 @@ class SpaceMirrorChannel:
         space_name: str,
         enabled_ids: Sequence[str],
         ctx: ReplicaCallContext,
-    ) -> dict[str, Any]:
+    ) -> _SpaceOutcome:
         # Only the collections that actually belong in THIS space.
         for_this_space = [
             cid
@@ -329,33 +313,20 @@ class SpaceMirrorChannel:
             if cid in self._known_ids and self._space_name_for.get(cid) == space_name
         ]
 
-        # Don't create an empty space just to immediately clear nothing in it —
-        # if nothing is currently enabled for this space AND the space was never
-        # created before (nothing to clear either), skip it entirely. A space
-        # that DOES already exist (e.g. every collection routed here just got
-        # disabled) is still resolved below so its now-orphaned nodes get
-        # cleared.
+        # Don't create an empty space just to immediately clear nothing in it. A
+        # space that DOES already exist is still resolved below, so its
+        # now-orphaned nodes still get cleared.
         if not for_this_space:
             spaces = await self._port.read_spaces(self._session)
             if not any(s.get("name") == space_name for s in spaces):
-                return {
-                    "space_id": None,
-                    "created": [],
-                    "written": [],
-                    "skipped": [],
-                    "cleared": [],
-                    "failed": [],
-                    "errors": [],
-                }
+                return _SpaceOutcome()
 
         space = await find_or_create_space(self._session, space_name, self._port)
         space_id = space["id"]
         tree = await self._port.read_object_tree(self._session, space_id)
         # access/enc are carried through, not narrowed away: they are the node's
-        # STORED tier evidence, and the only kind that survives this channel
-        # being rebuilt (an app restart, a caller that constructs a fresh
-        # channel per call). Without them a flip made while this instance did
-        # not exist is invisible.
+        # STORED tier evidence, the only kind that survives this channel being
+        # rebuilt. Without them a flip made while it was gone is invisible.
         existing_nodes = [
             ExistingSpaceNode(
                 id=node["id"],
@@ -370,25 +341,14 @@ class SpaceMirrorChannel:
         plan = plan_space_mirror(existing_nodes, for_this_space, self._known_ids)
         existing_by_type = {n.type: n for n in existing_nodes}
 
-        written: list[str] = []
-        skipped: list[str] = []
-        cleared: list[str] = []
-        failed: list[str] = []
-        # Accumulated from what _find_or_create_node ACTUALLY created, not from
-        # plan.to_create — the plan says what should be created, and a create
-        # that raises must not be reported as though it had happened. Otherwise
-        # the same id lands in both `created` and `failed`, which is worse than
-        # either alone: a caller reconciling the two cannot tell whether the
-        # node exists.
-        created: list[str] = []
-        # The real exceptions behind `failed`, carried out so sync() can re-raise
-        # them as one group. Mirrors TS's `errors: unknown[]`.
-        errors: list[Exception] = []
+        # `created` is what _find_or_create_node ACTUALLY created, not
+        # plan.to_create: a create that raises must not land in both `created`
+        # and `failed`, leaving a caller unable to tell whether the node exists.
+        out = _SpaceOutcome(space_id=space_id)
         for cid in plan.to_write:
-            # One collection is one independent unit of work: an oversized
-            # document (413), a CAS conflict that outlived run_cas's retries, or
-            # a blip on this one node must not cost the OTHER collections in
-            # this space their write. Record and move on.
+            # One collection is one independent unit of work: a 413, a CAS
+            # conflict that outlived run_cas's retries, or a blip on this one
+            # node must not cost the OTHERS their write.
             try:
                 tier = self._tier_for[cid]
                 axes = self._axes_for[cid]
@@ -396,24 +356,15 @@ class SpaceMirrorChannel:
                 node = await self._find_or_create_node(space_id, existing, cid, axes)
                 node_id = node["id"]
                 if existing is None:
-                    created.append(cid)
-                # Set when this cycle migrated the node between tiers, so the
-                # STORED axes can be patched to match once the new content is
-                # safely written.
+                    out.created.append(cid)
                 flipped = False
 
-                # Tier flip, detected from what is STORED rather than from what
-                # this instance remembers writing. The realistic flip is a user
-                # toggling a collection in settings and the app restarting or
-                # rebuilding the channel — at which point an in-memory "last
-                # tier I wrote" map is empty and reports no flip at all,
-                # leaving a public -> private collection's old plaintext at its
-                # world-readable URL indefinitely. That is the exact hazard
-                # this clear exists to prevent.
-                #
-                # Cleared FIRST, under the STORED axes: the new ones resolve a
-                # different handle, which does not reach (or decrypt) what is
-                # actually sitting there.
+                # Tier flip detected from what is STORED, not from what this
+                # instance remembers: after a restart there is nothing to
+                # remember, and a public -> private flip would leave the old
+                # plaintext at its world-readable URL. Cleared FIRST, under the
+                # STORED axes: the new ones resolve a different handle, which
+                # does not reach (or decrypt) what is actually sitting there.
                 if existing is not None:
                     stored = self._stored_axes(existing)
                     if not self._same_axes(stored, axes):
@@ -427,7 +378,7 @@ class SpaceMirrorChannel:
                 if self._change_detection == "source-hash" and existing is not None:
                     digest = _fingerprint(data)
                     if self._last_written.get(key) == digest:
-                        skipped.append(cid)
+                        out.skipped.append(cid)
                         continue
                     await self._write_node(cid, space_id, node_id, data, axes)
                     self._last_written[key] = digest
@@ -436,43 +387,25 @@ class SpaceMirrorChannel:
                     if self._change_detection == "source-hash":
                         self._last_written[key] = _fingerprint(data)
 
-                # The flip is only finished once the INDEX agrees with the
-                # content. Strictly AFTER the write, never before: patching
-                # first would leave the index claiming a tier the stored
-                # content does not match if the write then failed. Two things
-                # go wrong without this:
-                #
-                # 1. Privacy. Infra's public-objects projection extracts every
-                #    node whose stored `access` is "public" out of an objindex
-                #    write and upserts {id, title, type, updatedAt} into a
-                #    world-readable index. A collection flipped public ->
-                #    private has its CONTENT cleared, but its node keeps being
-                #    advertised — id, title and type — to anonymous callers
-                #    indefinitely, contradicting the setting the user just
-                #    changed.
-                # 2. The flip would never be self-limiting: the stored axes
-                #    still read as the old tier next cycle, so the clear
-                #    re-fires forever and a source-hash collection can never
-                #    skip again.
-                #
-                # The patch normalizes exactly like create_node (no `access`
-                # for "space", no `enc` when false), so the node ends up
-                # indistinguishable from one born at this tier.
+                # Strictly AFTER the write: patching first would leave the index
+                # claiming a tier the stored content does not match. Without the
+                # patch a node flipped away from "public" stays advertised (id,
+                # title, type) in Infra's world-readable public-objects
+                # projection, and the flip never self-limits — the clear re-fires
+                # every cycle. See website/docs/extensions/replica.md.
                 if flipped:
                     await self._port.set_node_access(self._session, space_id, node_id, axes)
             except Exception as exc:  # noqa: BLE001
-                # Counting it in `failed` is not enough to debug it — the real
-                # exception is carried out in `errors` and re-raised as a group
-                # by sync(), so it reaches the scheduler's on_error funnel with
-                # its traceback intact.
-                failed.append(cid)
-                errors.append(exc)
+                # The real exception rides out in `errors` for sync() to re-raise
+                # into the scheduler's on_error funnel, traceback intact.
+                out.failed.append(cid)
+                out.errors.append(exc)
                 continue
 
             # A node just written to is no longer "already cleared" — if it gets
             # disabled again later it needs a real clear, not a skip.
             self._cleared_nodes.discard(node_id)
-            written.append(cid)
+            out.written.append(cid)
 
         for node in plan.to_clear:
             # The axes the content being cleared was actually written under,
@@ -482,64 +415,38 @@ class SpaceMirrorChannel:
             # does not reach the stored copy.
             clear_axes = self._stored_axes(node)
             configured = self._axes_for[node.type]
-            # Reachable by someone other than this space's members on EITHER
-            # side — what is stored, or what it is configured as now. "public"
-            # is world-readable; "invite" is readable by every holder of a
-            # still-valid per-node grant.
-            def _externally_reachable(axes: dict[str, Any]) -> bool:
-                return axes.get("access") in ("public", "invite")
-
-            touches_external = _externally_reachable(clear_axes) or _externally_reachable(
-                configured
-            )
-            # Already cleared in a prior cycle and never re-enabled since — a
-            # repeat push would be a no-op CAS write wasted every cycle this
-            # channel instance is reused for (e.g. via a persistent
-            # ChannelScheduler-driven loop).
-            #
-            # SPACE-PRIVATE ONLY. A public or invite node never takes this
-            # short-circuit: the cost of a wasted no-op push is one request,
-            # the cost of a wrongly skipped clear is data left readable by the
-            # world (public) or by every existing grant holder (invite). Those
-            # are not symmetric, and `_cleared_nodes` is only ever a BELIEF
-            # about the server's state (a clear that landed but was rolled
-            # back, another writer, a node recreated under the same id) — cheap
-            # to re-assert, unacceptable to get wrong outside the space.
+            touches_external = _is_external(clear_axes) or _is_external(configured)
+            # Already cleared in a prior cycle and never re-enabled since — skip
+            # the no-op CAS write. SPACE-PRIVATE ONLY: `_cleared_nodes` is only
+            # ever a BELIEF about the server's state (a clear rolled back,
+            # another writer, a node recreated under the same id), cheap to
+            # re-assert and unacceptable to get wrong for content the world or a
+            # grant holder can read.
             if not touches_external and node.id in self._cleared_nodes:
-                cleared.append(node.type)
+                out.cleared.append(node.type)
                 continue
             # Same isolation as the write loop: a clear that fails must not
             # abort the clears queued behind it.
             try:
                 await self._clear_node(node.type, space_id, node.id, clear_axes)
             except Exception as exc:  # noqa: BLE001
-                failed.append(node.type)
-                errors.append(exc)
+                out.failed.append(node.type)
+                out.errors.append(exc)
                 continue
             self._cleared_nodes.add(node.id)
             self._forget_fingerprints(node.id)
-            cleared.append(node.type)
+            out.cleared.append(node.type)
 
-        return {
-            "space_id": space_id,
-            "created": created,
-            "written": written,
-            "skipped": skipped,
-            "cleared": cleared,
-            "failed": failed,
-            "errors": errors,
-        }
+        return out
 
     # ── ReplicaChannel ───────────────────────────────────────────────────────
 
     async def sync(self, ctx: ReplicaCallContext) -> None:
         enabled_ids = await _maybe_await(self._enabled_ids())
 
-        # The spaces are independent (different id, different keyring, no
-        # shared state) — run them concurrently rather than paying sequential
-        # network round trips per space every cycle. Independent also means one
-        # space blowing up says nothing about the others, so return_exceptions
-        # keeps a bad space from cancelling their results out from under them.
+        # The spaces are independent (different id, different keyring, no shared
+        # state), so run them concurrently; return_exceptions keeps one bad
+        # space from cancelling the others' results out from under them.
         per_space = await asyncio.gather(
             *(self._sync_one_space(name, enabled_ids, ctx) for name in self._space_names),
             return_exceptions=True,
@@ -559,31 +466,24 @@ class SpaceMirrorChannel:
                 if isinstance(r, Exception):
                     errors.append(r)
                 else:
-                    # asyncio.CancelledError and friends are not ours to fold
-                    # into a group and report as a collection failure — let a
-                    # cancelled cycle stay cancelled.
+                    # CancelledError and friends are not ours to fold into a
+                    # group — let a cancelled cycle stay cancelled.
                     raise r
                 continue
-            result.spaces[space_name] = r["space_id"]
-            result.created.extend(r["created"])
-            result.written.extend(r["written"])
-            result.skipped.extend(r["skipped"])
-            result.cleared.extend(r["cleared"])
-            result.failed.extend(r["failed"])
-            errors.extend(r["errors"])
-        # Assigned unconditionally and BEFORE the raise below, INCLUDING a cycle
-        # where every space failed — a stale previous result read as if it were
-        # this cycle's is worse than an honest empty one, and a caller handling
-        # the raise still needs to see what DID get through.
+            result.spaces[space_name] = r.space_id
+            result.created.extend(r.created)
+            result.written.extend(r.written)
+            result.skipped.extend(r.skipped)
+            result.cleared.extend(r.cleared)
+            result.failed.extend(r.failed)
+            errors.extend(r.errors)
+        # Assigned BEFORE the raise below, even when every space failed: a stale
+        # previous result read as this cycle's is worse than an honest empty one.
         self._result = result
 
-        # Parity with TS, which rejects with an AggregateError here. Raising is
-        # what feeds ChannelScheduler's on_error funnel — the package's single
-        # error surface, which a caller can replace. Logging instead would make
-        # a mirror failure invisible to a custom on_error, and would make this
-        # channel the only one that reports failure differently from
-        # HttpReplicaChannel. The cycle has already fully run at this point, so
-        # this is "the cycle finished and some of it failed", not an abort.
+        # Parity with TS's AggregateError, and what feeds ChannelScheduler's
+        # on_error funnel. The cycle has already fully run here, so this is
+        # "finished with failures", not an abort.
         if errors:
             raise ExceptionGroup(  # noqa: F821 - builtin on py311+, and we require >=3.11
                 f"[SpaceMirrorChannel] {self.name}: "
@@ -632,21 +532,14 @@ def create_space_mirror_channel(
             when a node is first created. Defaults to the collection id
             itself.
         node_enc: Node access/encryption mode for ``tier="private"``
-            collections. Default ``{"access": "space", "enc": True}`` —
-            content gated by space membership, encrypted under the space's own
-            keyring. ``tier="public"`` and ``tier="isolated"`` ignore this and
-            always resolve to their own axes.
+            collections. Default ``{"access": "space", "enc": True}``;
+            ``"public"`` and ``"isolated"`` ignore it and use their own axes.
         change_detection: ``"none"`` (default) writes every enabled
-            collection's projection every cycle, unconditionally — matching
-            the original hand-rolled writer. ``"source-hash"`` skips the write
-            (for an already-existing node) when ``read_source``'s result is
-            identical to what this channel last wrote.
-
-            ONLY safe when this channel is the SOLE writer of a node — a
-            source-hash skip means the channel never re-checks what is
-            actually stored, so any second writer (another device, another
-            process) could silently diverge from what a skip assumes is still
-            there. Default ``"none"`` for that reason.
+            collection's projection every cycle. ``"source-hash"`` skips the
+            write (for an already-existing node) when ``read_source``'s result
+            is identical to what this channel last wrote. ONLY safe when this
+            channel is the SOLE writer, since a skip never re-checks what is
+            actually stored and a second writer could silently diverge.
         port: Override the ``starfish_spaces`` calls (tests). Default: the
             real SDK.
     """

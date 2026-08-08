@@ -82,12 +82,9 @@ export interface SpaceLayout {
   pairingPush(nonce: string): string
 
   // ── Space-join rendezvous (device-code pairing) ───────────────────────────
-  /**
-   * Pull path for a device-code space-join session slot (public-read), keyed by
-   * the human code alone. ONE slot carries both phases of the exchange — the
-   * requester's `phase:"request"` document and, after approval, the
-   * `phase:"grant"` document that replaces it. See `join-request.ts`.
-   */
+  /** Pull path for a device-code space-join session slot (public-read), keyed by
+   *  the human code alone. ONE slot carries both phases of the exchange, the
+   *  request document and the grant that replaces it. See `join-request.ts`. */
   joinSessionPull(code: string): string
   /** Push path for a space-join session slot (public, hash-guarded write). */
   joinSessionPush(code: string): string

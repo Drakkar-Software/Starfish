@@ -61,11 +61,9 @@ export interface SpacePort {
     node: { access?: NodeAccess; enc?: boolean },
     session: Session,
   ): Promise<NodeAccessHandle>
-  /** Create the node's OWN keyring if missing, so the `invite`+`enc` branch of
-   *  `getNodeAccess` (which opens that keyring with the throwing variant, and
-   *  never falls back to the space keyring) can resolve. The isolated tier's
-   *  first write would otherwise throw on a node whose keyring does not exist
-   *  yet. Idempotent and CAS-safe. */
+  /** Create the node's OWN keyring if missing (the isolated tier), so
+   *  `getNodeAccess`'s `invite`+`enc` branch, which only OPENS it and never
+   *  falls back to the space keyring, resolves on a first write. Idempotent. */
   ensureNodeKeyring(session: Session, spaceId: string, nodeId: string): Promise<void>
 }
 

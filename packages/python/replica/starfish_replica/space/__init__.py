@@ -44,8 +44,6 @@ from starfish_replica.channel import (
 from starfish_replica.scheduler import ChannelScheduler
 from starfish_replica.scheduler import ChannelScheduler as ReplicaManager
 from starfish_replica.space.mirror_channel import (
-    DEFAULT_NODE_ENC,
-    PUBLIC_NODE_ENC,
     SpaceMirrorChannel,
     SpaceMirrorCollection,
     SpaceMirrorResult,
@@ -78,8 +76,6 @@ __all__ = [
     "SpaceMirrorCollection",
     "SpaceMirrorResult",
     "create_space_mirror_channel",
-    "DEFAULT_NODE_ENC",
-    "PUBLIC_NODE_ENC",
     # plan
     "ExistingSpaceNode",
     "SpaceMirrorPlan",

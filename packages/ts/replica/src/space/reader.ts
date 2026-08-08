@@ -1,19 +1,16 @@
 /**
- * Session-less read side of a space mirror: given a read-only member cap for
- * a space (minted via `starfish-spaces`' `inviteToSpace`), pull and decrypt
- * every node this reader recognizes. The known-collection predicate and the
- * document-path template are caller-supplied.
+ * Session-less read side of a space mirror, one reader per storage tier:
+ * `readSpaceMirror` (the space's ONE keyring, from a member cap),
+ * `readIsolatedSpaceMirror` (a keyring per node, from per-node grants) and
+ * `readPublicSpaceMirror` (no cap, no keyring at all). See
+ * `website/docs/extensions/replica.md`.
  *
- * Deliberately independent of `Session`/`SpacePort` (../space/port.ts) — a
- * grant holder is NOT a space member with a wallet, just someone holding a
- * cap-cert + an ephemeral keypair. This is the one place in `./space` that
- * builds its own `StarfishClient` rather than going through a `Session`.
- *
- * `readPublicSpaceMirror` at the bottom is the same idea taken one step
- * further: the PUBLIC tier needs no grant either, so it holds no cap and no
- * keyring at all and reads through an anonymous client.
+ * Deliberately independent of `Session`/`SpacePort` (./port.ts): a grant holder
+ * is NOT a space member with a wallet, just someone holding a cap-cert and an
+ * ephemeral keypair. This is the one place in `./space` that builds its own
+ * `StarfishClient`.
  */
-import { StarfishClient, type StarfishCapProvider } from "@drakkar.software/starfish-client"
+import { StarfishClient } from "@drakkar.software/starfish-client"
 import type { CapCert } from "@drakkar.software/starfish-protocol"
 import { createKeyringEncryptor, type Keyring } from "@drakkar.software/starfish-keyring"
 import { makeAnonSpaceClient, parseObjectDirectoryDoc } from "@drakkar.software/starfish-spaces"
@@ -22,39 +19,61 @@ import { makeAnonSpaceClient, parseObjectDirectoryDoc } from "@drakkar.software/
  *  memoized keyring promise below has a type without re-deriving it inline. */
 type KeyringEncryptor = Awaited<ReturnType<typeof createKeyringEncryptor>>
 
-/** A `StarfishCapProvider` that always returns the SAME cap + ephemeral
- *  private key — the entire point of a one-shot, session-less reader: no
- *  refresh, no rotation, just "prove possession of this one grant" on every
- *  request until the caller stops using it. */
-class StaticCapProvider implements StarfishCapProvider {
-  constructor(
-    private readonly cap: CapCert,
-    private readonly devEdPrivHex: string,
-  ) {}
-  async getCap(): Promise<{ cap: CapCert; devEdPrivHex: string }> {
-    return { cap: this.cap, devEdPrivHex: this.devEdPrivHex }
-  }
+/** Rendezvous + credentials every cap-holding reader takes. */
+interface CapReaderOptions {
+  rendezvous: { baseUrl: string; namespace: string }
+  /** The grant holder's own ephemeral Ed25519 private key (hex) — every cap it
+   *  presents was minted for exactly this device's pubkey. */
+  devEdPrivHex: string
+  fetch?: typeof fetch
 }
 
-/** Storage path for a space's object index — hand-duplicated from
- *  `starfish-spaces`' `defaultSpaceLayout.objIndexPull`: a session-less
- *  reader has no `Session` (and therefore no `session.layout`) to resolve it
- *  through. */
+/** A client bound to ONE cap: a session-less reader never refreshes or
+ *  rotates, it just proves possession of that grant on every request. */
+function capClient(opts: CapReaderOptions, cap: CapCert): StarfishClient {
+  return new StarfishClient({
+    baseUrl: opts.rendezvous.baseUrl,
+    namespace: opts.rendezvous.namespace,
+    fetch: opts.fetch ?? globalThis.fetch,
+    capProvider: { getCap: async () => ({ cap, devEdPrivHex: opts.devEdPrivHex }) },
+  })
+}
+
+/** Pull one document by bare path; the transport may hand the body back as a
+ *  JSON string rather than parsed. */
+async function pullJson(client: StarfishClient, path: string): Promise<unknown> {
+  const { data } = await client.pull(`/pull/${path}`)
+  return typeof data === "string" ? JSON.parse(data) : data
+}
+
+function isSealed(doc: unknown): doc is { _encrypted: string; _epoch?: number } {
+  return !!doc && typeof doc === "object" && "_encrypted" in doc
+}
+
+function isKeyringDoc(doc: unknown): doc is Keyring {
+  return !!doc && typeof doc === "object" && !!(doc as { epochs?: unknown }).epochs
+}
+
+// Hand-duplicated from `starfish-spaces`' `defaultSpaceLayout`: a session-less
+// reader has no `Session`, hence no `session.layout`, to resolve them through.
+
 function objectIndexPath(spaceId: string): string {
   return `spaces/${spaceId}/objects/_index`
 }
 
-/** Storage path for a space's ONE keyring doc — same reason as
- *  `objectIndexPath` above. */
+/** A space's ONE keyring doc. */
 function spaceKeyringPath(spaceId: string): string {
   return `spaces/${spaceId}/_keyring`
 }
 
-/** Storage path for one shard of the global public-object directory —
- *  hand-duplicated from `starfish-spaces`' `defaultSpaceLayout.objectDirPull`,
- *  same reason as the two paths above. */
+/** One shard of the global public-object directory. */
 function objectDirectoryPath(shard: string): string {
   return `_index/objects/${shard}`
+}
+
+/** ONE node's own keyring (the isolated tier). */
+function nodeKeyringPath(spaceId: string, nodeId: string): string {
+  return `spaces/${spaceId}/objects/n/${nodeId}/_keyring`
 }
 
 interface ObjectIndexNode {
@@ -62,13 +81,11 @@ interface ObjectIndexNode {
   type: string
 }
 
-export interface ReadSpaceMirrorOptions {
-  rendezvous: { baseUrl: string; namespace: string }
+export interface ReadSpaceMirrorOptions extends CapReaderOptions {
   spaceId: string
+  /** A read-only member cap for the space, minted via `inviteToSpace`. Its
+   *  `devEdPrivHex` (above) is the device pubkey it was minted for. */
   cap: CapCert
-  /** The grant holder's own ephemeral Ed25519 private key (hex) — the cap was
-   *  minted for exactly this device's pubkey. */
-  devEdPrivHex: string
   /** The grant holder's own ephemeral X25519 KEM private key (hex) —
    *  `inviteToSpace` added this device's KEM pubkey as a recipient of the
    *  space's ONE keyring; this is what lets this reader open that keyring
@@ -77,37 +94,24 @@ export interface ReadSpaceMirrorOptions {
   /** Which object-index nodes this reader recognizes as mirror content —
    *  everything else in the space's tree is ignored. */
   isKnownCollection: (type: string) => boolean
-  /** Same bare-path template `SpaceMirrorChannel` was configured with —
-   *  including its collection-id first argument, which here is the node's
-   *  `type`, exactly as on the channel's clear path. Widened in lockstep so
-   *  ONE function literal can be shared by the writer and this reader; a
-   *  path template that keys on the collection id (a public collection at a
-   *  stable shareable path, say) would otherwise be unreadable. */
+  /** Same bare-path template `SpaceMirrorChannel` was configured with; its
+   *  collection-id argument is the node's `type` here, exactly as on the
+   *  channel's clear path, so ONE literal serves the writer and every reader. */
   docPath: (collectionId: string, spaceId: string, nodeId: string) => string
-  fetch?: typeof fetch
 }
 
 /**
  * Pull and decrypt every node in `opts.spaceId`'s object index that
  * `opts.isKnownCollection` recognizes. A REAL live read, not a point-in-time
- * export — call this again any time to see the latest write. Returns only
- * collections the space actually has a node for; one disabled since the
- * grant was minted simply won't appear (its node was cleared, not deleted —
- * see `SpaceMirrorChannel`'s clear-on-disable — so this reflects the CURRENT
- * state honestly, not a stale snapshot of what existed at grant time).
+ * export. A collection disabled since the grant was minted simply won't appear
+ * (its node was cleared, not deleted), so this reflects CURRENT state.
  */
 export async function readSpaceMirror(
   opts: ReadSpaceMirrorOptions,
 ): Promise<Record<string, unknown>> {
-  const client = new StarfishClient({
-    baseUrl: opts.rendezvous.baseUrl,
-    namespace: opts.rendezvous.namespace,
-    fetch: opts.fetch ?? globalThis.fetch,
-    capProvider: new StaticCapProvider(opts.cap, opts.devEdPrivHex),
-  })
+  const client = capClient(opts, opts.cap)
 
-  const indexResult = await client.pull(`/pull/${objectIndexPath(opts.spaceId)}`)
-  const indexDoc = typeof indexResult.data === "string" ? JSON.parse(indexResult.data) : indexResult.data
+  const indexDoc = await pullJson(client, objectIndexPath(opts.spaceId))
   const nodes: ObjectIndexNode[] = Array.isArray((indexDoc as { objects?: unknown })?.objects)
     ? (indexDoc as { objects: ObjectIndexNode[] }).objects
     : []
@@ -115,32 +119,23 @@ export async function readSpaceMirror(
   const result: Record<string, unknown> = {}
   if (mirrorNodes.length === 0) return result
 
-  // Node content is sealed under the space's ONE keyring, not under the cap
-  // itself — open it once, reused for every node below. `cap.iss` is the
-  // space owner's root edPub (who invited this device) — the only trusted
-  // adder a session-less reader can name.
+  // Node content is sealed under the space's ONE keyring, not under the cap.
+  // `cap.iss` is the space owner's root edPub, the only trusted adder a
+  // session-less reader can name.
   //
-  // LAZY, and deliberately so: a space whose every collection is written at
-  // the PUBLIC tier (`SpaceMirrorChannel`'s `tier: "public"` — plaintext at a
-  // world-readable path) never mints a keyring at all, because nothing in it
-  // was ever encrypted. Pulling the keyring up front turned that space — one
-  // this reader can read in full — into a hard throw on a doc that legitimately
-  // does not exist. So the pull happens on the FIRST node whose pulled document
-  // actually carries `_encrypted`, and not at all when none does.
-  //
-  // Memoized on the in-flight promise, not on the resolved value: the pulls
-  // below run concurrently under `Promise.all`, so two encrypted nodes would
-  // otherwise both find "no encryptor yet" and race into two keyring pulls.
+  // LAZY: an all-PUBLIC-tier space never mints a keyring, so an up-front pull
+  // would turn a space this reader can read in full into a hard throw.
+  // Memoized on the in-flight promise, not the resolved value, or the
+  // concurrent pulls below would race into two keyring pulls.
   let keyringPull: Promise<KeyringEncryptor> | null = null
   function openKeyring(): Promise<KeyringEncryptor> {
     keyringPull ??= (async () => {
-      const keyringResult = await client.pull(`/pull/${spaceKeyringPath(opts.spaceId)}`)
-      const keyringDoc = typeof keyringResult.data === "string" ? JSON.parse(keyringResult.data) : keyringResult.data
-      if (!keyringDoc || typeof keyringDoc !== "object" || !(keyringDoc as { epochs?: unknown }).epochs) {
+      const keyringDoc = await pullJson(client, spaceKeyringPath(opts.spaceId))
+      if (!isKeyringDoc(keyringDoc)) {
         throw new Error("readSpaceMirror: this space has no keyring yet — ask the owner to sync at least once")
       }
       return createKeyringEncryptor(
-        keyringDoc as Keyring,
+        keyringDoc,
         { kemPubHex: opts.cap.subKem ?? "", kemPrivHex: opts.devKemPrivHex },
         { trustedAdders: [opts.cap.iss] },
       )
@@ -148,18 +143,84 @@ export async function readSpaceMirror(
     return keyringPull
   }
 
-  // Independent, read-only pulls — one per node — so run them concurrently
-  // rather than paying N sequential round trips on every live read/poll.
   await Promise.all(
     mirrorNodes.map(async (node) => {
-      const docResult = await client.pull(`/pull/${opts.docPath(node.type, opts.spaceId, node.id)}`)
-      const sealed = typeof docResult.data === "string" ? JSON.parse(docResult.data) : docResult.data
-      if (!sealed || typeof sealed !== "object" || !("_encrypted" in sealed)) {
+      const sealed = await pullJson(client, opts.docPath(node.type, opts.spaceId, node.id))
+      if (!isSealed(sealed)) {
         result[node.type] = sealed ?? {}
         return
       }
       const encryptor = await openKeyring()
-      result[node.type] = await encryptor.decrypt(sealed as { _encrypted: string; _epoch?: number })
+      result[node.type] = await encryptor.decrypt(sealed)
+    }),
+  )
+  return result
+}
+
+// ── Isolated tier ──────────────────────────────────────────────────────────────
+
+/** One isolated node a grant covers. The caps are the two `inviteToNode(...,
+ *  {isolated: true})` mints: `contentCap` (`objinv`) fetches the document,
+ *  `keyringCap` (`nodekeyring`) fetches the key to open it. */
+export interface IsolatedMirrorNodeGrant {
+  /** The node's `type` in the object index. Carried by the grant because
+   *  `objindex` is `space:member`, unreadable to a per-node grant holder. */
+  collectionId: string
+  nodeId: string
+  contentCap: CapCert
+  keyringCap: CapCert
+}
+
+export interface ReadIsolatedSpaceMirrorOptions extends CapReaderOptions {
+  spaceId: string
+  /** Exactly the nodes this grant covers — no enumeration step, because a
+   *  per-node grant holder is not on the space roster and cannot list. */
+  nodes: readonly IsolatedMirrorNodeGrant[]
+  /** The grant holder's own ephemeral X25519 KEM private key (hex) — added as
+   *  a recipient of each node's OWN keyring at invite time. */
+  devKemPrivHex: string
+  /** Same bare-path template the writer was configured with. */
+  docPath: (collectionId: string, spaceId: string, nodeId: string) => string
+}
+
+/**
+ * Pull and decrypt each node an isolated grant names, every one through its
+ * own keyring. No object-index pull (`objindex` is `space:member` and an
+ * isolated grant holder never joins the roster) and no shared keyring, so
+ * revoking one node leaves the others readable.
+ *
+ * A node whose content or keyring pull fails is OMITTED rather than failing
+ * the batch: with per-node grants, one revoked node is a normal state.
+ */
+export async function readIsolatedSpaceMirror(
+  opts: ReadIsolatedSpaceMirrorOptions,
+): Promise<Record<string, unknown>> {
+  const result: Record<string, unknown> = {}
+  await Promise.all(
+    opts.nodes.map(async (node) => {
+      try {
+        const sealed = await pullJson(
+          capClient(opts, node.contentCap),
+          opts.docPath(node.collectionId, opts.spaceId, node.nodeId),
+        )
+        if (!isSealed(sealed)) {
+          if (sealed && typeof sealed === "object") result[node.collectionId] = sealed
+          return
+        }
+        const keyringDoc = await pullJson(
+          capClient(opts, node.keyringCap),
+          nodeKeyringPath(opts.spaceId, node.nodeId),
+        )
+        if (!isKeyringDoc(keyringDoc)) return
+        const encryptor = await createKeyringEncryptor(
+          keyringDoc,
+          { kemPubHex: node.keyringCap.subKem ?? "", kemPrivHex: opts.devKemPrivHex },
+          { trustedAdders: [node.keyringCap.iss] },
+        )
+        result[node.collectionId] = await encryptor.decrypt(sealed)
+      } catch {
+        // Revoked, cleared, or not yet written — omit it, keep the rest.
+      }
     }),
   )
   return result
@@ -187,10 +248,7 @@ export interface ReadPublicSpaceMirrorOptions {
    *  already the caller's own choice, and the directory only ever advertises
    *  nodes stored `access:"public"`. */
   isKnownCollection?: (type: string) => boolean
-  /** Same widened template the writer (`SpaceMirrorChannel.docPath`) and
-   *  `readSpaceMirror` take, so ONE function literal serves all three. The
-   *  collection id comes first precisely so a public collection can live at a
-   *  stable, shareable path — which is what makes it reachable from here. */
+  /** Same widened template the writer and the other readers take. */
   docPath: (collectionId: string, spaceId: string, nodeId: string) => string
   /** Public-object-directory shard to enumerate. Ignored when `nodes` is
    *  given. Default `"public"`, matching `starfish-spaces`'
@@ -201,30 +259,19 @@ export interface ReadPublicSpaceMirrorOptions {
 
 /**
  * Read a space's PUBLIC tier — the collections `SpaceMirrorChannel` wrote with
- * `tier: "public"`, stored as plaintext at a world-readable path.
+ * `tier: "public"`, stored as plaintext at a world-readable path. No grant, no
+ * cap, no keyring.
  *
- * No grant, no cap, no keyring: the client is `makeAnonSpaceClient`, exactly as
- * `readObjectDirectory` builds its own. That is the whole point of the public
- * tier — anyone holding the space id can read what its owner chose to publish,
- * with no invite in between.
+ * It cannot enumerate the space the way `readSpaceMirror` does (the object
+ * index is `space:member`), hence either `opts.nodes` or the world-readable
+ * public object directory, which by construction lists only `access:"public"`
+ * nodes.
  *
- * It cannot enumerate the space the way `readSpaceMirror` does: the object
- * index is `space:member`, so an anonymous caller may not list a space's nodes.
- * Hence either `opts.nodes` (ids the caller already has) or the world-readable
- * public object directory, which the server projects from `objindex` writes and
- * which by construction lists only `access:"public"` nodes.
- *
- * Keyed exactly like `readSpaceMirror`: collection id (the node `type`) ->
- * plaintext document.
- *
- * A node whose document comes back carrying `_encrypted` is OMITTED, never
- * returned: handing back the sealed envelope would give a caller ciphertext it
- * would go on to treat as data. Omission rather than a throw because that state
- * is reachable without anything being broken — `SpaceMirrorChannel` finishes a
- * public -> private flip by writing the encrypted content BEFORE patching the
- * node's stored access, so for that window the directory still advertises a
- * node whose content is already sealed. One such node must not cost every other
- * published collection its read.
+ * A node whose document carries `_encrypted` is OMITTED, never returned as a
+ * sealed envelope the caller would treat as data. Omission rather than a throw
+ * because a public -> private flip writes the encrypted content BEFORE
+ * patching the stored access, so for that window the directory advertises a
+ * node whose content is already sealed.
  */
 export async function readPublicSpaceMirror(
   opts: ReadPublicSpaceMirrorOptions,
@@ -240,11 +287,9 @@ export async function readPublicSpaceMirror(
     candidates = opts.nodes
   } else {
     // Unlike `readObjectDirectory`, a failed directory pull is NOT swallowed
-    // into an empty list here: this is the sibling of `readSpaceMirror`, whose
-    // own index pull throws, and "the server is unreachable" must not be
-    // indistinguishable from "this space publishes nothing".
-    const dirResult = await client.pull(`/pull/${objectDirectoryPath(opts.directoryShard ?? "public")}`)
-    const dirDoc = typeof dirResult.data === "string" ? JSON.parse(dirResult.data) : dirResult.data
+    // into an empty list: "server unreachable" must not look like "this space
+    // publishes nothing".
+    const dirDoc = await pullJson(client, objectDirectoryPath(opts.directoryShard ?? "public"))
     candidates = parseObjectDirectoryDoc(dirDoc)
       .filter((entry) => entry.spaceId === opts.spaceId)
       .map((entry) => ({ id: entry.id, type: entry.type }))
@@ -255,13 +300,10 @@ export async function readPublicSpaceMirror(
   const result: Record<string, unknown> = {}
   if (mirrorNodes.length === 0) return result
 
-  // Same reasoning as `readSpaceMirror`: independent read-only pulls, run
-  // concurrently rather than N sequential round trips.
   await Promise.all(
     mirrorNodes.map(async (node) => {
-      const docResult = await client.pull(`/pull/${opts.docPath(node.type, opts.spaceId, node.id)}`)
-      const doc = typeof docResult.data === "string" ? JSON.parse(docResult.data) : docResult.data
-      if (doc && typeof doc === "object" && "_encrypted" in doc) return
+      const doc = await pullJson(client, opts.docPath(node.type, opts.spaceId, node.id))
+      if (isSealed(doc)) return
       result[node.type] = doc ?? {}
     }),
   )
