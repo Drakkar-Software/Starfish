@@ -14,6 +14,7 @@ import {
   findOrCreateSpace,
   type CreateNodeInput,
   type NodeAccess,
+  type NodeAccessHandle,
   type Session,
   type SpacePort,
 } from "./port.js"
@@ -29,11 +30,14 @@ import {
  * - `"private"` -> the channel-wide `nodeEnc`, itself
  *   `{ access: "space", enc: true }` unless the caller overrode it: readable
  *   only by space members, sealed under the space's own keyring.
+ * - `"isolated"` -> `{ access: "invite", enc: true }`, always, ignoring
+ *   `nodeEnc`: sealed under the node's OWN keyring, so access can be granted
+ *   and revoked one node at a time without space membership.
  * - `"public"`  -> `{ access: "public", enc: false }`, always, ignoring
  *   `nodeEnc`: world-readable plaintext at its storage URL. Only ever for
  *   content the user explicitly chose to publish.
  */
-export type SpaceMirrorTier = "private" | "public"
+export type SpaceMirrorTier = "private" | "isolated" | "public"
 
 /** One collection this channel mirrors, and which space its node lives in. */
 export interface SpaceMirrorCollection {
@@ -96,10 +100,9 @@ export interface SpaceMirrorChannelOptions {
   title?: (collectionId: string) => string
   /** Node access/encryption mode for collections that do NOT set their own
    *  `tier`. Default: `{ access: "space", enc: true }` — content gated by
-   *  space membership, encrypted under the space's own keyring. See
-   *  `starfish-spaces`' `createNode`/`getNodeAccess` docs for why
-   *  `access:"invite"` is deliberately NOT the default here (it resolves
-   *  through a per-node keyring nothing in a mirror-style writer ever seeds). */
+   *  space membership, encrypted under the space's own keyring. Use
+   *  `tier: "isolated"` rather than setting `access: "invite"` here: the tier
+   *  also seeds the per-node keyring, which this raw override does not. */
   nodeEnc?: { access?: NodeAccess; enc?: boolean }
   /**
    * `"none"` (default): write every enabled collection's projection every
@@ -128,12 +131,25 @@ const PUBLIC_NODE_ENC: Readonly<{ access: NodeAccess; enc: boolean }> = Object.f
   enc: false,
 })
 
+/** The `tier: "isolated"` resolution. Like `PUBLIC_NODE_ENC`, not influenced by
+ *  `nodeEnc` — the tier IS the access model. */
+const ISOLATED_NODE_ENC: Readonly<{ access: NodeAccess; enc: boolean }> = Object.freeze({
+  access: "invite" as NodeAccess,
+  enc: true,
+})
+
 const DEFAULT_TIER: SpaceMirrorTier = "private"
 
 /** Every tier, so a fingerprint sweep can drop all of a node's keys at once. */
-const ALL_TIERS: readonly SpaceMirrorTier[] = ["private", "public"]
+const ALL_TIERS: readonly SpaceMirrorTier[] = ["private", "isolated", "public"]
 
 type NodeAxes = { access: NodeAccess; enc: boolean }
+
+/** Whether these axes are the isolated tier's — true wherever they come from,
+ *  including a node's STORED axes on the clear path. */
+function isIsolated(axes: { access?: NodeAccess; enc?: boolean }): boolean {
+  return axes.access === "invite" && axes.enc === true
+}
 
 /** The axes a node is ACTUALLY stored under, normalized from what the object
  *  index records. `starfish-spaces`' node creation omits `access` when it is
@@ -178,9 +194,11 @@ export function createSpaceMirrorChannel(opts: SpaceMirrorChannelOptions): Space
    *  `tier: "private"` and an omitted `tier` have to resolve identically or
    *  the documented default is a lie — a caller who passes a custom `nodeEnc`
    *  and spells out `tier: "private"` would silently lose the override.
-   *  `"public"` is a fixed pair and ignores `nodeEnc` entirely. */
+   *  `"public"` and `"isolated"` are fixed pairs and ignore `nodeEnc`. */
   function axesForTier(tier: SpaceMirrorTier): NodeAxes {
-    return tier === "public" ? { ...PUBLIC_NODE_ENC } : { ...nodeEnc }
+    if (tier === "public") return { ...PUBLIC_NODE_ENC }
+    if (tier === "isolated") return { ...ISOLATED_NODE_ENC }
+    return { ...nodeEnc }
   }
 
   /** collectionId -> its tier and the `{ access, enc }` that tier resolves to.
@@ -259,6 +277,21 @@ export function createSpaceMirrorChannel(opts: SpaceMirrorChannelOptions): Space
     } as CreateNodeInput)
   }
 
+  /** Resolve the handle to read/write one node under `enc`.
+   *
+   *  `getNodeAccess` already routes `invite`+`enc` to the node's OWN keyring
+   *  with the throwing variant (no space-keyring fallback) — but it only OPENS
+   *  that keyring, so an isolated node needs it created first or its very
+   *  first write throws. */
+  async function accessFor(
+    spaceId: string,
+    nodeId: string,
+    enc: { access: NodeAccess; enc: boolean },
+  ): Promise<NodeAccessHandle> {
+    if (isIsolated(enc)) await port.ensureNodeKeyring(opts.session, spaceId, nodeId)
+    return port.getNodeAccess(spaceId, nodeId, enc, opts.session)
+  }
+
   /** CAS-write a raw (uncurated) projection into one node — no field
    *  allowlist, no merge: whatever `data` is IS the node's content after
    *  this call. */
@@ -269,7 +302,7 @@ export function createSpaceMirrorChannel(opts: SpaceMirrorChannelOptions): Space
     data: unknown,
     enc: { access: NodeAccess; enc: boolean },
   ): Promise<void> {
-    const handle = await port.getNodeAccess(spaceId, nodeId, enc, opts.session)
+    const handle = await accessFor(spaceId, nodeId, enc)
     await handle.push(
       docPullPath(collectionId, spaceId, nodeId),
       docPushPath(collectionId, spaceId, nodeId),
@@ -288,7 +321,7 @@ export function createSpaceMirrorChannel(opts: SpaceMirrorChannelOptions): Space
     nodeId: string,
     enc: { access: NodeAccess; enc: boolean },
   ): Promise<void> {
-    const handle = await port.getNodeAccess(spaceId, nodeId, enc, opts.session)
+    const handle = await accessFor(spaceId, nodeId, enc)
     await handle.push(
       docPullPath(collectionId, spaceId, nodeId),
       docPushPath(collectionId, spaceId, nodeId),
@@ -449,18 +482,23 @@ export function createSpaceMirrorChannel(opts: SpaceMirrorChannelOptions): Space
       // have been flipped to something that does not reach the stored copy.
       const clearEnc = storedAxes(node)
       const configured = resolve(node.type)
-      // Public on EITHER side — what is stored, or what it is configured as.
-      const touchesPublic = clearEnc.access === "public" || configured.enc.access === "public"
+      // Reachable from outside the space's own membership on EITHER side —
+      // what is stored, or what it is configured as now.
+      const reachable = (a: { access?: NodeAccess }) =>
+        a.access === "public" || a.access === "invite"
+      const touchesExternal = reachable(clearEnc) || reachable(configured.enc)
       // Already cleared in a prior cycle and never re-enabled since — a
       // repeat push would be a no-op CAS write wasted every cycle this
       // channel instance is reused for (e.g. via a persistent
-      // ReplicaManager-driven scheduled loop). NOT applied to a public node:
-      // there the skip is not symmetric with the private case. A private
-      // node this channel wrongly believes it already cleared leaves stale
-      // ciphertext readable only by space members; a public one leaves stale
-      // PLAINTEXT at a world-readable URL. Pay the redundant no-op CAS write
-      // every cycle rather than ever bet on that belief.
-      if (!touchesPublic && clearedNodes.has(node.id)) {
+      // ReplicaManager-driven scheduled loop). NOT applied to a public or
+      // isolated node: there the skip is not symmetric with the space-private
+      // case. A private node this channel wrongly believes it already cleared
+      // leaves stale ciphertext readable only by space members; a public one
+      // leaves stale PLAINTEXT at a world-readable URL, and an isolated one
+      // leaves stale content readable by every holder of a still-valid
+      // per-node grant. Pay the redundant no-op CAS write every cycle rather
+      // than ever bet on that belief.
+      if (!touchesExternal && clearedNodes.has(node.id)) {
         cleared.push(node.type)
         continue
       }

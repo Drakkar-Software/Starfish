@@ -1,23 +1,17 @@
 """A :class:`~starfish_replica.channel.ReplicaChannel` that mirrors an app-local
-data source into per-collection nodes of one or more Starfish spaces, encrypted
-under each space's own keyring.
+data source into per-collection nodes of one or more Starfish spaces.
 
 The channel owns the space/node mechanics — space find-or-create, node
 find-or-create, CAS-write, clear-on-disable, and routing across several
 spaces. What stays with the caller is the collection registry (which ids
 exist, which space each routes to) and the ``read_source`` callback.
 
-Mirrors the TS package's ``space/mirror-channel.ts``, including two fixes TS
-only gained after an adversarial code-review pass — built in here from the
-start rather than repeated as bugs:
+Each collection picks a storage ``tier``: ``private`` (space keyring),
+``isolated`` (its own per-node keyring, so it can be granted and revoked one
+node at a time) or ``public`` (plaintext). See
+``docs/space-mirror-tiers.md``.
 
-- ``_cleared_nodes``: a reused channel instance does not re-push a no-op CAS
-  clear every cycle for a node that has stayed disabled.
-- in-flight coalescing on ``find_or_create_space`` (in ``port.py``).
-
-Content pushes go through ``SpacePort.push_node_doc``, which retries on CAS
-conflict via ``starfish_spaces.cas_retry.run_cas`` (5 attempts, jittered
-backoff).
+Mirrors the TS package's ``space/mirror-channel.ts``.
 """
 
 from __future__ import annotations
@@ -45,7 +39,16 @@ PUBLIC_NODE_ENC: dict[str, Any] = {"access": "public", "enc": False}
 ``access="public"`` with ``enc=True`` is a combination the server rejects, and
 the whole point of a single ``tier`` enum is that it cannot be expressed."""
 
-TIERS = ("private", "public")
+ISOLATED_NODE_ENC: dict[str, Any] = {"access": "invite", "enc": True}
+"""The ``tier="isolated"`` resolution: encrypted under the node's OWN keyring,
+so a grant over one node reaches only that node. Like ``PUBLIC_NODE_ENC``, not
+influenced by ``node_enc`` — the tier IS the access model."""
+
+TIERS = ("private", "public", "isolated")
+
+
+def _is_isolated(axes: dict[str, Any]) -> bool:
+    return axes.get("access") == "invite" and bool(axes.get("enc"))
 
 
 @dataclass(frozen=True)
@@ -56,10 +59,15 @@ class SpaceMirrorCollection:
     space_name: str
 
     tier: str = "private"
-    """Storage tier for this collection's node: ``"private"`` (the default —
-    the channel's ``node_enc``, itself ``{"access": "space", "enc": True}``
-    unless the caller overrode it) or ``"public"``
-    (``{"access": "public", "enc": False}``, always, ignoring ``node_enc``).
+    """Storage tier for this collection's node:
+
+    - ``"private"`` (default) — the channel's ``node_enc``, itself
+      ``{"access": "space", "enc": True}`` unless the caller overrode it.
+      Encrypted under the SPACE keyring, so every space member can read it.
+    - ``"isolated"`` — ``{"access": "invite", "enc": True}``, encrypted under
+      the node's OWN keyring, so access can be granted (and revoked) one node
+      at a time without space membership.
+    - ``"public"`` — ``{"access": "public", "enc": False}``, world-readable.
 
     Spelling ``"private"`` out is EXACTLY equivalent to leaving the field at
     its default — an explicit ``"private"`` that ignored a caller's custom
@@ -73,7 +81,7 @@ class SpaceMirrorCollection:
     def __post_init__(self) -> None:
         if self.tier not in TIERS:
             raise ValueError(
-                f"tier must be 'private' or 'public', got {self.tier!r}"
+                f"tier must be one of {', '.join(map(repr, TIERS))}, got {self.tier!r}"
             )
 
 
@@ -196,6 +204,8 @@ class SpaceMirrorChannel:
         """
         if tier == "public":
             return dict(PUBLIC_NODE_ENC)
+        if tier == "isolated":
+            return dict(ISOLATED_NODE_ENC)
         return dict(self._node_enc)
 
     @staticmethod
@@ -255,6 +265,19 @@ class SpaceMirrorChannel:
             },
         )
 
+    async def _access_for(
+        self, space_id: str, node_id: str, axes: dict[str, Any]
+    ) -> Any:
+        """Resolve the handle to read/write one node under ``axes``.
+
+        An isolated node goes through its own keyring, never the space one —
+        ``get_node_access``'s owner tier would silently fall back to the space
+        keyring if the node keyring were missing.
+        """
+        if _is_isolated(axes):
+            return await self._port.get_isolated_node_access(self._session, space_id, node_id)
+        return await self._port.get_node_access(self._session, space_id, node_id, axes)
+
     async def _write_node(
         self, cid: str, space_id: str, node_id: str, data: Any, axes: dict[str, Any]
     ) -> None:
@@ -263,13 +286,11 @@ class SpaceMirrorChannel:
         this call.
 
         ``axes`` is this COLLECTION's resolved tier, not the channel-wide
-        default: get_node_access needs it to decide whether to resolve an
-        encryptor at all, and push_node_doc needs it to refuse writing
-        ciphertext into a collection the server declares ``encryption="none"``.
+        default: it selects the encryptor (space keyring, node keyring, or
+        none), and push_node_doc needs it to refuse writing ciphertext into a
+        collection the server declares ``encryption="none"``.
         """
-        handle = await self._port.get_node_access(
-            self._session, space_id, node_id, axes
-        )
+        handle = await self._access_for(space_id, node_id, axes)
         await self._port.push_node_doc(
             handle,
             self._doc_pull_path(cid, space_id, node_id),
@@ -284,9 +305,7 @@ class SpaceMirrorChannel:
         """Clear a disabled collection's node content — stale data must not sit
         there encrypted under the space key indefinitely once the user opts
         out, and must REALLY not sit there in plaintext at a public URL."""
-        handle = await self._port.get_node_access(
-            self._session, space_id, node_id, axes
-        )
+        handle = await self._access_for(space_id, node_id, axes)
         await self._port.push_node_doc(
             handle,
             self._doc_pull_path(cid, space_id, node_id),
@@ -463,24 +482,30 @@ class SpaceMirrorChannel:
             # does not reach the stored copy.
             clear_axes = self._stored_axes(node)
             configured = self._axes_for[node.type]
-            # Public on EITHER side — what is stored, or what it is configured
-            # as now.
-            touches_public = (
-                clear_axes["access"] == "public" or configured.get("access") == "public"
+            # Reachable by someone other than this space's members on EITHER
+            # side — what is stored, or what it is configured as now. "public"
+            # is world-readable; "invite" is readable by every holder of a
+            # still-valid per-node grant.
+            def _externally_reachable(axes: dict[str, Any]) -> bool:
+                return axes.get("access") in ("public", "invite")
+
+            touches_external = _externally_reachable(clear_axes) or _externally_reachable(
+                configured
             )
             # Already cleared in a prior cycle and never re-enabled since — a
             # repeat push would be a no-op CAS write wasted every cycle this
             # channel instance is reused for (e.g. via a persistent
             # ChannelScheduler-driven loop).
             #
-            # PRIVATE ONLY. A public node never takes this short-circuit: the
-            # cost of a wasted no-op push is one request, the cost of a wrongly
-            # skipped clear is world-readable data left up. Those are not
-            # symmetric, and `_cleared_nodes` is only ever a BELIEF about the
-            # server's state (a clear that landed but was rolled back, another
-            # writer, a node recreated under the same id) — cheap to re-assert,
-            # unacceptable to get wrong in public.
-            if not touches_public and node.id in self._cleared_nodes:
+            # SPACE-PRIVATE ONLY. A public or invite node never takes this
+            # short-circuit: the cost of a wasted no-op push is one request,
+            # the cost of a wrongly skipped clear is data left readable by the
+            # world (public) or by every existing grant holder (invite). Those
+            # are not symmetric, and `_cleared_nodes` is only ever a BELIEF
+            # about the server's state (a clear that landed but was rolled
+            # back, another writer, a node recreated under the same id) — cheap
+            # to re-assert, unacceptable to get wrong outside the space.
+            if not touches_external and node.id in self._cleared_nodes:
                 cleared.append(node.type)
                 continue
             # Same isolation as the write loop: a clear that fails must not
@@ -588,9 +613,9 @@ def create_space_mirror_channel(
         session: A ``starfish_spaces`` session.
         collections: The full registry this channel manages — every
             id/space-name pairing it will ever create, write, or clear a node
-            for. Each may carry a ``tier`` (``"private"``, the default, or
-            ``"public"``) selecting the access axes its node is created with
-            and written through.
+            for. Each may carry a ``tier`` (``"private"`` (default),
+            ``"isolated"`` or ``"public"``) selecting the access axes its node
+            is created with and written through.
         enabled_ids: Read fresh on every sync (not captured once at
             construction) so a settings toggle applies on the next cycle
             without rebuilding the channel. May be sync or async.
@@ -609,10 +634,8 @@ def create_space_mirror_channel(
         node_enc: Node access/encryption mode for ``tier="private"``
             collections. Default ``{"access": "space", "enc": True}`` —
             content gated by space membership, encrypted under the space's own
-            keyring. ``access="invite"`` is deliberately NOT the default: it
-            resolves through a per-node keyring that nothing in a mirror-style
-            writer ever seeds. A ``tier="public"`` collection ignores this and
-            always resolves to ``{"access": "public", "enc": False}``.
+            keyring. ``tier="public"`` and ``tier="isolated"`` ignore this and
+            always resolve to their own axes.
         change_detection: ``"none"`` (default) writes every enabled
             collection's projection every cycle, unconditionally — matching
             the original hand-rolled writer. ``"source-hash"`` skips the write

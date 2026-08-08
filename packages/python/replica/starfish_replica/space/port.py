@@ -44,6 +44,8 @@ import asyncio
 from typing import Any, Awaitable, Callable, Optional, Protocol
 
 from starfish_spaces.cas_retry import run_cas
+from starfish_spaces.node_keyring import open_node_encryptor as sf_open_node_encryptor
+from starfish_spaces.node_keyring import owner_ensure_node_keyring as sf_owner_ensure_node_keyring
 from starfish_spaces.nodes import create_node as sf_create_node
 from starfish_spaces.nodes import set_node_access as sf_set_node_access
 from starfish_spaces.object_index import read_object_tree as sf_read_object_tree
@@ -51,6 +53,7 @@ from starfish_spaces.registry import create_space as sf_create_space
 from starfish_spaces.registry import read_spaces as sf_read_spaces
 from starfish_spaces.space_access import NodeAccessHandle
 from starfish_spaces.space_access import get_node_access as sf_get_node_access
+from starfish_spaces.space_access import get_space_client as sf_get_space_client
 
 __all__ = [
     "SpacePort",
@@ -163,6 +166,17 @@ class SpacePort(Protocol):
         """CAS read-modify-write one node's content through ``handle``."""
         ...
 
+    async def get_isolated_node_access(
+        self, session: Any, space_id: str, node_id: str
+    ) -> NodeAccessHandle:
+        """Resolve a handle whose encryptor is the node's OWN keyring.
+
+        Ensures the per-node keyring exists, then opens it. Unlike
+        :meth:`get_node_access`, never falls back to the space keyring — see
+        ``docs/`` on the isolated tier.
+        """
+        ...
+
 
 class _DefaultSpacePort:
     """The real :class:`SpacePort`, bound to ``starfish_spaces``."""
@@ -194,6 +208,25 @@ class _DefaultSpacePort:
         node: Optional[dict[str, Any]] = None,
     ) -> NodeAccessHandle:
         return await sf_get_node_access(session, space_id, node_id, node)
+
+    async def get_isolated_node_access(
+        self, session: Any, space_id: str, node_id: str
+    ) -> NodeAccessHandle:
+        # Ensure-then-open, and never through sf_get_node_access: its owner tier
+        # silently falls back to the SPACE keyring when the node keyring is
+        # missing, which would seal isolated content under the key every space
+        # member holds. open_node_encryptor raises instead.
+        await sf_owner_ensure_node_keyring(
+            session.content_client, session, space_id, node_id, session.layout
+        )
+        encryptor = await sf_open_node_encryptor(
+            session.content_client, session, space_id, node_id, session.layout
+        )
+        return NodeAccessHandle(
+            client=await sf_get_space_client(session, space_id),
+            encryptor=encryptor,
+            is_owner_open=True,
+        )
 
     async def push_node_doc(
         self,

@@ -91,12 +91,20 @@ function makeFakePort() {
     },
   )
 
+  /** The isolated tier's ensure-the-node-keyring step. Records `spaceId:nodeId`
+   *  so a test can assert it ran BEFORE the write that needs it. */
+  const ensuredKeyrings: string[] = []
+  const ensureNodeKeyring = vi.fn(async (_session: Session, spaceId: string, nodeId: string) => {
+    ensuredKeyrings.push(`${spaceId}:${nodeId}`)
+  })
+
   const port: SpacePort = {
     readSpaces: vi.fn(async () => ({ spaces: [...spacesByName.values()] })),
     createSpace,
     readObjectTree: vi.fn(async (_session, spaceId: string) => [...(nodesBySpace.get(spaceId)?.values() ?? [])]),
     createNode,
     setNodeAccess,
+    ensureNodeKeyring,
     getNodeAccess: vi.fn(
       async (_spaceId: string, nodeId: string, node: { access?: string; enc?: boolean }) => {
         const handle: NodeAccessHandle = {
@@ -131,6 +139,8 @@ function makeFakePort() {
     createSpace,
     createNode,
     setNodeAccess,
+    ensureNodeKeyring,
+    ensuredKeyrings,
   }
 }
 
@@ -841,7 +851,10 @@ describe("createSpaceMirrorChannel", () => {
       enabledIds: () => ["explicit", "omitted", "pub"],
       readSource: async (id) => ({ v: id }),
       docPath,
-      nodeEnc: { access: "invite", enc: true },
+      // Deliberately NOT { access: "invite", enc: true }: that pair is the
+      // isolated tier's, and is routed through the per-node keyring wherever
+      // it appears. This is just "some non-default private variant".
+      nodeEnc: { access: "owner", enc: true },
       port,
     })
 
@@ -852,7 +865,7 @@ describe("createSpaceMirrorChannel", () => {
       const input = createArgs.find((a) => a["type"] === type)!
       return { access: input["access"], enc: input["enc"] }
     }
-    expect(createdAxes("explicit")).toEqual({ access: "invite", enc: true })
+    expect(createdAxes("explicit")).toEqual({ access: "owner", enc: true })
     expect(createdAxes("explicit")).toEqual(createdAxes("omitted"))
     // "public" is the ONE tier that overrides `nodeEnc` — it has to, since
     // `access:"public"` with `enc:true` is what the server refuses.
@@ -864,7 +877,7 @@ describe("createSpaceMirrorChannel", () => {
       const push = pushes.find((p) => p.nodeId === nodeIdFor(nodesBySpace, spaceId, type))!
       return { access: push.access, enc: push.enc }
     }
-    expect(pushedAxes("explicit")).toEqual({ access: "invite", enc: true })
+    expect(pushedAxes("explicit")).toEqual({ access: "owner", enc: true })
     expect(pushedAxes("explicit")).toEqual(pushedAxes("omitted"))
     expect(pushedAxes("pub")).toEqual({ access: "public", enc: false })
   })
@@ -1125,5 +1138,199 @@ describe("createSpaceMirrorChannel", () => {
     const err = await channel.sync(REPLICATOR_CTX).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(AggregateError)
     expect((err as AggregateError).errors).toContain(boom)
+  })
+
+  // ── The isolated tier ──────────────────────────────────────────────────────
+
+  const isolatedChannel = (port: SpacePort, enabled: string[] = ["accounts"]) =>
+    createSpaceMirrorChannel({
+      name: "mirror",
+      session: FAKE_SESSION,
+      collections: [{ id: "accounts", spaceName: "sp1", tier: "isolated" }],
+      enabledIds: () => enabled,
+      readSource: async (id) => ({ v: id }),
+      docPath,
+      port,
+    })
+
+  it("isolated: the node is created invite+enc", async () => {
+    const fake = makeFakePort()
+    await isolatedChannel(fake.port).sync(REPLICATOR_CTX)
+
+    const input = fake.createNode.mock.calls[0]![2] as Record<string, unknown>
+    expect({ access: input["access"], enc: input["enc"] }).toEqual({
+      access: "invite",
+      enc: true,
+    })
+  })
+
+  it("isolated: ignores a channel-wide nodeEnc, like public does", async () => {
+    const fake = makeFakePort()
+    const channel = createSpaceMirrorChannel({
+      name: "mirror",
+      session: FAKE_SESSION,
+      collections: [{ id: "accounts", spaceName: "sp1", tier: "isolated" }],
+      enabledIds: () => ["accounts"],
+      readSource: async (id) => ({ v: id }),
+      docPath,
+      nodeEnc: { access: "owner", enc: true },
+      port: fake.port,
+    })
+
+    await channel.sync(REPLICATOR_CTX)
+
+    const input = fake.createNode.mock.calls[0]![2] as Record<string, unknown>
+    expect(input["access"]).toBe("invite")
+  })
+
+  it("isolated: the per-node keyring is seeded before the write that needs it", async () => {
+    // getNodeAccess opens the node keyring with the THROWING variant for
+    // invite+enc — it never falls back to the space keyring, so an unseeded
+    // keyring means the very first write fails rather than silently sealing
+    // under the key every space member holds.
+    const fake = makeFakePort()
+    const channel = isolatedChannel(fake.port)
+
+    await channel.sync(REPLICATOR_CTX)
+
+    const spaceId = channel.result.spaces["sp1"]!
+    const nodeId = nodeIdFor(fake.nodesBySpace, spaceId, "accounts")
+    expect(fake.ensuredKeyrings).toEqual([`${spaceId}:${nodeId}`])
+    // ...and the write really did go through the invite+enc axes.
+    expect(fake.pushes.map((p) => ({ access: p.access, enc: p.enc }))).toEqual([
+      { access: "invite", enc: true },
+    ])
+  })
+
+  it("isolated: a clear also resolves through the node keyring", async () => {
+    const fake = makeFakePort()
+    const enabled = ["accounts"]
+    const channel = isolatedChannel(fake.port, enabled)
+    await channel.sync(REPLICATOR_CTX)
+    const spaceId = channel.result.spaces["sp1"]!
+    const nodeId = nodeIdFor(fake.nodesBySpace, spaceId, "accounts")
+
+    enabled.length = 0
+    await channel.sync(REPLICATOR_CTX)
+
+    expect(channel.result.cleared).toEqual(["accounts"])
+    expect(fake.nodeContent.get(nodeId)).toEqual({})
+    expect(fake.ensuredKeyrings).toEqual([`${spaceId}:${nodeId}`, `${spaceId}:${nodeId}`])
+  })
+
+  it("isolated: a clear is never short-circuited by clearedNodes", async () => {
+    // Same asymmetry as public: an isolated node is readable by every holder
+    // of a still-valid per-node grant, so a wrongly skipped clear is not the
+    // same cost as a wasted no-op push.
+    const fake = makeFakePort()
+    const enabled = ["accounts"]
+    const channel = isolatedChannel(fake.port, enabled)
+    await channel.sync(REPLICATOR_CTX)
+
+    enabled.length = 0
+    await channel.sync(REPLICATOR_CTX)
+    const afterFirstClear = fake.pushes.length
+
+    await channel.sync(REPLICATOR_CTX)
+
+    expect(fake.pushes.length).toBe(afterFirstClear + 1)
+  })
+
+  it("isolated and private collections coexist in ONE space", async () => {
+    // The point of the tier: one space per user, mixed sensitivities, and only
+    // the isolated node is reachable by a per-node grant.
+    const fake = makeFakePort()
+    const channel = createSpaceMirrorChannel({
+      name: "mirror",
+      session: FAKE_SESSION,
+      collections: [
+        { id: "accounts", spaceName: "sp1", tier: "isolated" },
+        { id: "settings", spaceName: "sp1" },
+      ],
+      enabledIds: () => ["accounts", "settings"],
+      readSource: async (id) => ({ v: id }),
+      docPath,
+      port: fake.port,
+    })
+
+    await channel.sync(REPLICATOR_CTX)
+
+    const axesOf = (type: string) => {
+      const input = fake.createNode.mock.calls
+        .map(([, , i]) => i as Record<string, unknown>)
+        .find((i) => i["type"] === type)!
+      return input["access"]
+    }
+    expect(axesOf("accounts")).toBe("invite")
+    expect(axesOf("settings")).toBe("space")
+    expect(fake.createSpace).toHaveBeenCalledTimes(1)
+    // Only the isolated node needed a per-node keyring.
+    const spaceId = channel.result.spaces["sp1"]!
+    expect(fake.ensuredKeyrings).toEqual([
+      `${spaceId}:${nodeIdFor(fake.nodesBySpace, spaceId, "accounts")}`,
+    ])
+  })
+
+  it("isolated -> private flip clears under the stored invite axes first", async () => {
+    const fake = makeFakePort()
+    const collections: SpaceMirrorCollection[] = [
+      { id: "accounts", spaceName: "sp1", tier: "isolated" },
+    ]
+    const channel = createSpaceMirrorChannel({
+      name: "mirror",
+      session: FAKE_SESSION,
+      collections,
+      enabledIds: () => ["accounts"],
+      readSource: async (id) => ({ v: id }),
+      docPath,
+      port: fake.port,
+    })
+    await channel.sync(REPLICATOR_CTX)
+    const spaceId = channel.result.spaces["sp1"]!
+    const nodeId = nodeIdFor(fake.nodesBySpace, spaceId, "accounts")
+
+    collections[0]!.tier = "private"
+    await channel.sync(REPLICATOR_CTX)
+
+    // clear under the OLD (invite) axes, then write under the new (space) ones
+    const axes = fake.pushes.slice(1).map((p) => ({ access: p.access, enc: p.enc }))
+    expect(axes).toEqual([
+      { access: "invite", enc: true },
+      { access: "space", enc: true },
+    ])
+    // stored axes patched, so the flip is self-limiting
+    expect(fake.setNodeAccess).toHaveBeenCalledWith(FAKE_SESSION, spaceId, nodeId, {
+      access: "space",
+      enc: true,
+    })
+    expect(fake.nodesBySpace.get(spaceId)!.get(nodeId)!.access).toBeUndefined()
+  })
+
+  it("private -> isolated flip migrates onto the node keyring", async () => {
+    const fake = makeFakePort()
+    const collections: SpaceMirrorCollection[] = [{ id: "accounts", spaceName: "sp1" }]
+    const channel = createSpaceMirrorChannel({
+      name: "mirror",
+      session: FAKE_SESSION,
+      collections,
+      enabledIds: () => ["accounts"],
+      readSource: async (id) => ({ v: id }),
+      docPath,
+      port: fake.port,
+    })
+    await channel.sync(REPLICATOR_CTX)
+    const spaceId = channel.result.spaces["sp1"]!
+    const nodeId = nodeIdFor(fake.nodesBySpace, spaceId, "accounts")
+
+    collections[0]!.tier = "isolated"
+    await channel.sync(REPLICATOR_CTX)
+
+    const axes = fake.pushes.slice(1).map((p) => ({ access: p.access, enc: p.enc }))
+    expect(axes).toEqual([
+      { access: "space", enc: true }, // clear under the stored (space) axes
+      { access: "invite", enc: true }, // write under the node keyring
+    ])
+    expect(fake.ensuredKeyrings).toEqual([`${spaceId}:${nodeId}`])
+    expect(fake.nodesBySpace.get(spaceId)!.get(nodeId)!.access).toBe("invite")
   })
 })

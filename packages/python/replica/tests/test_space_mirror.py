@@ -37,6 +37,7 @@ class FakeSpacePort:
         self.pushes: list[tuple[str, str, object]] = []  # (space_id, node_id, payload)
         self.node_access_calls: list[tuple[str, str]] = []
         self.node_access_nodes: list[object] = []    # the `node` axes each call got
+        self.isolated_access_calls: list[tuple[str, str]] = []
         self.push_nodes: list[object] = []           # ditto, for push_node_doc
         self._seq = 0
 
@@ -100,6 +101,12 @@ class FakeSpacePort:
         self.node_access_nodes.append(node)
         return _FakeHandle(space_id, node_id)
 
+    async def get_isolated_node_access(self, session, space_id, node_id):
+        self.isolated_access_calls.append((space_id, node_id))
+        # The real port ensures the per-node keyring exists then opens it — a
+        # DIFFERENT encryptor from the space one, which is the whole point.
+        return _FakeHandle(space_id, node_id, encryptor=f"node-keyring:{node_id}")
+
     async def push_node_doc(self, handle, pull_path, push_path, mutator, node=None):
         self.push_nodes.append(node)
         key = f"{handle.space_id}:{handle.node_id}"
@@ -129,11 +136,11 @@ class FakeSpacePort:
 
 
 class _FakeHandle:
-    def __init__(self, space_id, node_id):
+    def __init__(self, space_id, node_id, encryptor=None):
         self.space_id = space_id
         self.node_id = node_id
         self.client = None
-        self.encryptor = None
+        self.encryptor = encryptor
         self.is_owner_open = False
 
 
@@ -918,6 +925,12 @@ async def test_a_node_nested_in_the_tree_is_found_not_duplicated():
 
 PRIVATE_AXES = {"access": "space", "enc": True}
 PUBLIC_AXES = {"access": "public", "enc": False}
+ISOLATED_AXES = {"access": "invite", "enc": True}
+
+# A node_enc override for the private tier that is NOT any tier's reserved
+# pair — so a test can prove "the override is honoured" without also tripping
+# the isolated tier's invite+enc routing.
+CUSTOM_PRIVATE_AXES = {"access": "owner", "enc": True}
 
 # One public and one private collection in the SAME space — the tier is a
 # per-collection property, not a per-space or per-channel one.
@@ -928,6 +941,9 @@ MIXED_TIERS = [
 
 ONE_PUBLIC = [SpaceMirrorCollection(id="user-accounts", space_name=SHARED, tier="public")]
 ONE_PRIVATE = [SpaceMirrorCollection(id="user-accounts", space_name=SHARED)]
+ONE_ISOLATED = [
+    SpaceMirrorCollection(id="user-accounts", space_name=SHARED, tier="isolated")
+]
 
 
 def _flip_tier(channel, cid, tier):
@@ -965,12 +981,16 @@ async def test_a_public_collection_ignores_node_enc_but_a_private_one_does_not()
     # node_enc is the default for collections that did not pick a different
     # tier; "public" is a fixed pair because access="public" with enc=True is
     # a combination the server rejects.
+    #
+    # NB the custom value is deliberately not {"access": "invite", "enc": True}
+    # — that pair is the isolated tier's, and is routed through the per-node
+    # keyring wherever it appears. See CUSTOM_PRIVATE_AXES.
     port = FakeSpacePort()
     channel, _ = _make_channel(
         port,
         ["user-accounts", "user-data"],
         collections=MIXED_TIERS,
-        node_enc={"access": "invite", "enc": True},
+        node_enc=dict(CUSTOM_PRIVATE_AXES),
     )
 
     await channel.sync(REPLICATOR_CTX)
@@ -978,7 +998,7 @@ async def test_a_public_collection_ignores_node_enc_but_a_private_one_does_not()
     public_created = port.create_input_for("user-accounts")
     private_created = port.create_input_for("user-data")
     assert (public_created["access"], public_created["enc"]) == ("public", False)
-    assert (private_created["access"], private_created["enc"]) == ("invite", True)
+    assert (private_created["access"], private_created["enc"]) == ("owner", True)
 
 
 async def test_the_public_tier_axes_reach_both_resolver_and_push_on_write():
@@ -1187,6 +1207,153 @@ async def test_a_private_clear_is_still_skipped_on_a_reused_channel():
     assert len(port.pushes) == after_first_clear
 
 
+# ── The isolated tier ────────────────────────────────────────────────────────
+
+
+async def test_an_isolated_collection_is_created_as_an_invite_enc_node():
+    port = FakeSpacePort()
+    channel, _ = _make_channel(port, ["user-accounts"], collections=ONE_ISOLATED)
+
+    await channel.sync(REPLICATOR_CTX)
+
+    created = port.create_input_for("user-accounts")
+    assert (created["access"], created["enc"]) == ("invite", True)
+
+
+async def test_an_isolated_collection_ignores_node_enc():
+    # Same rule as "public": the tier IS the access model, so a channel-wide
+    # node_enc must not be able to quietly downgrade it to the space keyring.
+    port = FakeSpacePort()
+    channel, _ = _make_channel(
+        port,
+        ["user-accounts"],
+        collections=ONE_ISOLATED,
+        node_enc=dict(CUSTOM_PRIVATE_AXES),
+    )
+
+    await channel.sync(REPLICATOR_CTX)
+
+    created = port.create_input_for("user-accounts")
+    assert (created["access"], created["enc"]) == ("invite", True)
+
+
+async def test_an_isolated_write_resolves_through_the_node_keyring_not_the_space_one():
+    # The load-bearing assertion for this tier. get_node_access's owner tier
+    # falls back to the SPACE keyring when a node keyring is missing, which
+    # would seal isolated content under the key every space member holds.
+    port = FakeSpacePort()
+    channel, _ = _make_channel(port, ["user-accounts"], collections=ONE_ISOLATED)
+
+    await channel.sync(REPLICATOR_CTX)
+
+    node_id = port.node_for(SHARED, "user-accounts")["id"]
+    assert port.isolated_access_calls == [(port.space_id_for(SHARED), node_id)]
+    assert port.node_access_calls == []  # never the space-keyring resolver
+
+
+async def test_an_isolated_clear_also_uses_the_node_keyring():
+    # The clear path resolves from the node's STORED axes, so it must reach the
+    # same per-node keyring the content was written under.
+    port = FakeSpacePort()
+    channel, enabled = _make_channel(port, ["user-accounts"], collections=ONE_ISOLATED)
+    await channel.sync(REPLICATOR_CTX)
+    node_id = port.node_for(SHARED, "user-accounts")["id"]
+
+    enabled["ids"] = []
+    await channel.sync(REPLICATOR_CTX)
+
+    assert channel.result.cleared == ["user-accounts"]
+    assert port.content_for(SHARED, "user-accounts") == {}
+    assert port.isolated_access_calls == [
+        (port.space_id_for(SHARED), node_id),
+        (port.space_id_for(SHARED), node_id),
+    ]
+    assert port.node_access_calls == []
+
+
+async def test_an_isolated_clear_is_never_short_circuited():
+    # Same reasoning as public: `_cleared_nodes` is only a BELIEF about the
+    # server's state, and an isolated node is readable by every holder of a
+    # still-valid per-node grant — cheap to re-assert, unacceptable to skip
+    # wrongly.
+    port = FakeSpacePort()
+    channel, enabled = _make_channel(port, ["user-accounts"], collections=ONE_ISOLATED)
+    await channel.sync(REPLICATOR_CTX)
+
+    enabled["ids"] = []
+    await channel.sync(REPLICATOR_CTX)
+    after_first_clear = len(port.pushes)
+
+    await channel.sync(REPLICATOR_CTX)  # third cycle, still disabled
+
+    assert len(port.pushes) == after_first_clear + 1
+
+
+async def test_isolated_and_private_collections_coexist_in_one_space():
+    # The point of the tier: one space per user, mixed sensitivities, and only
+    # the isolated ones are reachable by a per-node grant.
+    port = FakeSpacePort()
+    collections = [
+        SpaceMirrorCollection(id="user-accounts", space_name=SHARED, tier="isolated"),
+        SpaceMirrorCollection(id="user-settings", space_name=SHARED),  # private
+    ]
+    channel, _ = _make_channel(
+        port, ["user-accounts", "user-settings"], collections=collections
+    )
+
+    await channel.sync(REPLICATOR_CTX)
+
+    assert port.create_input_for("user-accounts")["access"] == "invite"
+    assert port.create_input_for("user-settings")["access"] == "space"
+    # One space, two access models.
+    assert len(port.create_space_calls) == 1
+    isolated_node = port.node_for(SHARED, "user-accounts")["id"]
+    assert port.isolated_access_calls == [(port.space_id_for(SHARED), isolated_node)]
+    assert port.node_access_nodes == [PRIVATE_AXES]
+
+
+async def test_a_flip_from_isolated_to_private_clears_under_the_node_keyring_first():
+    # The stored axes say invite+enc, so the clear has to go through the node
+    # keyring — resolving the new (space) axes would not decrypt what is
+    # actually sitting there.
+    port = FakeSpacePort()
+    channel, _ = _make_channel(port, ["user-accounts"], collections=ONE_ISOLATED)
+    await channel.sync(REPLICATOR_CTX)
+    node_id = port.node_for(SHARED, "user-accounts")["id"]
+    isolated_calls_after_write = len(port.isolated_access_calls)
+
+    _flip_tier(channel, "user-accounts", "private")
+    await channel.sync(REPLICATOR_CTX)
+
+    # The migrating clear used the node keyring...
+    assert len(port.isolated_access_calls) == isolated_calls_after_write + 1
+    # ...and the new content went through the space resolver.
+    assert port.node_access_nodes == [PRIVATE_AXES]
+    # Stored axes patched to the new tier so the flip is self-limiting.
+    assert port.set_access_calls == [
+        (port.space_id_for(SHARED), node_id, PRIVATE_AXES)
+    ]
+    assert "access" not in port.node_for(SHARED, "user-accounts")
+
+
+async def test_a_flip_from_private_to_isolated_migrates_onto_the_node_keyring():
+    port = FakeSpacePort()
+    channel, _ = _make_channel(port, ["user-accounts"], collections=ONE_PRIVATE)
+    await channel.sync(REPLICATOR_CTX)
+    node_id = port.node_for(SHARED, "user-accounts")["id"]
+
+    _flip_tier(channel, "user-accounts", "isolated")
+    await channel.sync(REPLICATOR_CTX)
+
+    # Cleared under the STORED (space) axes, then written under the node keyring.
+    assert port.node_access_nodes == [PRIVATE_AXES, PRIVATE_AXES]
+    assert port.isolated_access_calls == [(port.space_id_for(SHARED), node_id)]
+    assert port.set_access_calls == [
+        (port.space_id_for(SHARED), node_id, ISOLATED_AXES)
+    ]
+    assert port.node_for(SHARED, "user-accounts")["access"] == "invite"
+
+
 async def test_an_invalid_tier_is_rejected_at_construction():
     with pytest.raises(ValueError, match="tier"):
         SpaceMirrorCollection(id="user-accounts", space_name=SHARED, tier="secret")
@@ -1208,7 +1375,7 @@ async def test_an_explicit_private_tier_resolves_to_node_enc_exactly_like_an_omi
         SpaceMirrorCollection(id="user-data", space_name=SHARED),  # tier omitted
         SpaceMirrorCollection(id="user-settings", space_name=SHARED, tier="public"),
     ]
-    custom = {"access": "invite", "enc": True}
+    custom = dict(CUSTOM_PRIVATE_AXES)
     channel, _ = _make_channel(
         port,
         ["user-accounts", "user-data", "user-settings"],
@@ -1220,7 +1387,7 @@ async def test_an_explicit_private_tier_resolves_to_node_enc_exactly_like_an_omi
 
     explicit = port.create_input_for("user-accounts")
     omitted = port.create_input_for("user-data")
-    assert (explicit["access"], explicit["enc"]) == ("invite", True)
+    assert (explicit["access"], explicit["enc"]) == ("owner", True)
     assert (explicit["access"], explicit["enc"]) == (omitted["access"], omitted["enc"])
     # "public" is the ONE tier that overrides node_enc — it has to, since
     # access="public" with enc=True is what the server refuses.

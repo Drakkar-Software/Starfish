@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "starfish-spaces"
-version = "3.0.0a71"
+version = "3.0.0a72"
 description = "Starfish multi-user spaces extension (registry, membership, object tree, E2EE keyrings, invite flows, resource-request inbox)"
 requires-python = ">=3.11"
 dependencies = [
