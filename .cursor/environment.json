@@ -1,0 +1,18 @@
+{
+  "name": "Starfish",
+  "install": "bash .cursor/install.sh",
+  "terminals": [
+    {
+      "name": "backend",
+      "command": "export PATH=\"$HOME/.local/bin:$PATH\"; cd examples/app/backend; STARFISH_DEMO_SECRET=dev-demo-secret uv run --no-sync uvicorn server:app --host 0.0.0.0 --port 8000"
+    },
+    {
+      "name": "frontend",
+      "command": "cd examples/app/frontend; pnpm dev --host 0.0.0.0 --port 5173"
+    }
+  ],
+  "ports": [
+    { "name": "backend", "port": 8000 },
+    { "name": "frontend", "port": 5173 }
+  ]
+}
