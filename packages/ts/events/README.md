@@ -7,7 +7,7 @@ it writes through the abstract `ObjectStore.putBytes` interface. The DuckDB quer
 examples below use S3; see [Storage backends](/analytics/events#storage-backends) for
 non-S3 alternatives.
 
-Mirrors [`starfish-events`](../python/events) (Python) with identical Parquet
+Mirrors [`starfish-events`](../../python/events) (Python) with identical Parquet
 encoding — both are locked to the same test vectors.
 
 ## Install
