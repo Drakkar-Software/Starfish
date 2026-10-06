@@ -4,7 +4,7 @@ Starfish extension for **multi-user spaces**: a roster of members, a shared obje
 tree with per-node access control and optional E2EE, invite / link join flows,
 revocation, and a sealed request/grant inbox round-trip.
 
-Mirrors [`@drakkar.software/starfish-spaces`](../ts/spaces) (TypeScript).
+Mirrors [`@drakkar.software/starfish-spaces`](../../ts/spaces) (TypeScript).
 
 ## Install
 

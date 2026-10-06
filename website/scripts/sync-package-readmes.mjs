@@ -177,12 +177,15 @@ function rewriteLinks(content, srcFilePath, pkgLang) {
     }
 
     // ── Sibling package README (../other-pkg/README.md) → /packages/<lang>/<pkg> ─
-    const relFromPackages = relative(join(repoRoot, "packages"), resolvedAbs).replace(/\\/g, "/");
-    const pkgMatch = relFromPackages.match(/^(ts|python)\/([^/]+)\/README\.md$/);
+    // Directory links (../../ts/<pkg>, ../../python/<pkg>) use the same route.
+    // The site path is /packages/typescript/<pkg>, not /packages/ts/<pkg>, so
+    // leaving them relative breaks the docs build.
+    const relFromPackages = relative(join(repoRoot, "packages"), resolvedAbs).replace(/\\/g, "/").replace(/\/$/, "");
+    const pkgMatch = relFromPackages.match(/^(ts|python)\/([^/]+)(?:\/README\.md)?$/);
     if (pkgMatch) {
       const lang = pkgMatch[1] === "ts" ? "typescript" : "python";
       const pkg  = pkgMatch[2];
-      return `](/packages/${lang}/${pkg})`;
+      return `](/packages/${lang}/${pkg}${anchor})`;
     }
 
     return match; // unchanged — leave as-is

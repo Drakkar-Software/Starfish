@@ -7,7 +7,7 @@ it writes through the abstract `AbstractObjectStore.put_bytes` interface. The Du
 query examples below use S3; see [Storage backends](/analytics/events#storage-backends)
 for non-S3 alternatives.
 
-Mirrors [`@drakkar.software/starfish-events`](../ts/events) (TypeScript) with
+Mirrors [`@drakkar.software/starfish-events`](../../ts/events) (TypeScript) with
 identical Parquet encoding — both are locked to the same test vectors.
 
 ## Install
