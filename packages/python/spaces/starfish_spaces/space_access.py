@@ -39,7 +39,6 @@ from starfish_spaces.client import (
 )
 from starfish_spaces.space_access_error import SpaceAccessError
 from starfish_spaces.space_access_store import (
-    SpaceAccessEntry,
     get_node_access_entry,
     get_node_keyring_access_entry,
     get_node_stream_access_entry,
@@ -82,19 +81,6 @@ class NodeAccessHandle:
 
 
 # ── Resolution helpers ────────────────────────────────────────────────────────
-
-
-async def _decrypt_keys_for(
-    entry: SpaceAccessEntry,
-    session: "Session",
-) -> tuple[Optional[str], Optional[str]]:
-    """Decrypt the ephemeral keys from a link-access entry.
-
-    Returns ``(ed_priv_hex, kem_priv_hex)`` or ``(None, None)`` on failure.
-    """
-    if entry.get("kind") != "link":
-        return None, None
-    return entry.get("key"), entry.get("kemPriv")
 
 
 async def get_space_client(

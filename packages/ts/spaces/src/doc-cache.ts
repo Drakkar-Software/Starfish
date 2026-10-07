@@ -46,11 +46,6 @@ export function noteDoc(path: string, hash: string, data: Record<string, unknown
   _cache.set(docKey(path), { hash, data })
 }
 
-/** Evict a single entry (on definitive 404/410 or targeted invalidation). */
-export function evictDoc(path: string): void {
-  _cache.delete(docKey(path))
-}
-
 /** Clear the entire cache (on account switch — keys are per-identity). */
 export function clearDocCache(): void {
   _cache.clear()
