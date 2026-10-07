@@ -39,10 +39,8 @@ import { createComposedStore } from "./keyed-store.js"
 import { addObject } from "./objects.js"
 import { updateObjectIndex } from "./object-index.js"
 import { addSpaceMember, buildSpace } from "./registry.js"
-import type { NodeInviteBundle, NodeInviteKind, NodeInviteLinkToken, StoredNodeInvite } from "./token-types.js"
+import type { NodeInviteBundle, NodeInviteLinkToken, StoredNodeInvite } from "./token-types.js"
 import { RECIPIENT_LABEL_LEN } from "./layout.js"
-
-export type { NodeInviteBundle, NodeInviteKind, NodeInviteLinkToken, StoredNodeInvite }
 
 function recipientFor(subKem: string, userId: string) {
   return { subKem, userId, label: userId.slice(0, RECIPIENT_LABEL_LEN) }

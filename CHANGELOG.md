@@ -74,6 +74,22 @@ space-keyring fallback, but it IS a behaviour change for anyone who set that
 pair by hand. Use `tier: "isolated"` instead — it also seeds the keyring, which
 the raw override never did.
 
+### `starfish-spaces` / `@drakkar.software/starfish-spaces`
+
+#### Removed
+- **`evictDoc`** (`doc-cache.ts`). No caller in the package, tests, or examples.
+  Account switches still clear the cache through `clearDocCache`.
+- **`computeOwnerTrustedAdders` re-export** from `node-keyring.ts`. Nothing imported
+  it from that module. The function remains exported from
+  `@drakkar.software/starfish-identities`.
+- **Invite token type re-exports** from `nodes.ts` (`NodeInviteBundle`,
+  `NodeInviteKind`, `NodeInviteLinkToken`, `StoredNodeInvite`). Nothing imported
+  them from that module. The package entry point still exports them from
+  `token-types.ts`.
+- **`_compare_siblings`** (`objects.py`). Sibling ordering goes through `_cmp_key`.
+- **`_decrypt_keys_for`** (`space_access.py`). No caller. Link-key selection stays
+  inline at the access-resolution sites.
+
 ## 3.0.0-alpha.71
 
 Adds device-code space-join pairing to `starfish-spaces` — the "requester

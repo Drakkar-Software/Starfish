@@ -19,9 +19,6 @@ import { openEncryptor, buildEncryptor, ownerEnsureKeyring, addKeyringRecipientC
 import type { DeviceKeys } from "./client.js"
 import { ownerTrustedAdders } from "./session.js"
 import type { Session } from "./session.js"
-import { computeOwnerTrustedAdders } from "@drakkar.software/starfish-identities"
-
-export { computeOwnerTrustedAdders }
 
 /** A keyring recipient referenced by their X25519 KEM pubkey (hex). */
 export interface NodeKeyringRecipient {

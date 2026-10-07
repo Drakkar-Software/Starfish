@@ -89,17 +89,6 @@ class NewObjectInput:
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
 
-def _compare_siblings(a: ObjectNode, b: ObjectNode) -> int:
-    """Deterministic total order for sibling nodes: by order, then by id."""
-    if a.order != b.order:
-        return -1 if a.order < b.order else 1
-    if a.id < b.id:
-        return -1
-    if a.id > b.id:
-        return 1
-    return 0
-
-
 def _cmp_key(node: ObjectNode):
     return (node.order, node.id)
 
