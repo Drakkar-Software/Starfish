@@ -247,6 +247,31 @@ describe("assemblePairingBundle + installPairingBundle — synthetic roundtrip",
   })
 })
 
+describe("generateDeviceKeys", () => {
+  it("returns a key object that round-trips through QR pairing", async () => {
+    const root = await deriveRootIdentity("alice-root-passphrase")
+    const device = generateDeviceKeys()
+    for (const field of ["edPriv", "edPub", "kemPriv", "kemPub"] as const) {
+      expect(device[field]).toMatch(/^[0-9a-f]{64}$/)
+    }
+
+    const scope = { ops: ["read" as const], collections: ["notes"], paths: ["notes/*"] }
+    const parsed = parsePairingQr(buildPairingQr(device.edPub, device.kemPub, scope))
+    const bundle = await assemblePairingBundle(
+      { edPriv: root.keys.edPriv, edPub: root.keys.edPub },
+      parsed,
+      {},
+      { grantedScope: parsed.requestedScope },
+    )
+    const installed = await installPairingBundle(bundle, device, {
+      expectedRootEdPub: root.keys.edPub,
+    })
+    expect(installed.credentials.device).toEqual(device)
+    expect(installed.credentials.capCert.sub).toBe(device.edPub)
+    expect(installed.credentials.capCert.subKem).toBe(device.kemPub)
+  })
+})
+
 // ── provisionDevice (one-way) → installProvisionedDevice ──────────────────────
 
 describe("provisionDevice + installProvisionedDevice — one-way provisioning", () => {

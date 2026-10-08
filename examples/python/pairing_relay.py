@@ -13,10 +13,6 @@ Run:
 
 import asyncio
 
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
-
 from starfish_identities import (
     AssemblePairingBundleOpts,
     assemble_pairing_bundle,
@@ -24,6 +20,7 @@ from starfish_identities import (
     build_pairing_qr,
     build_pairing_request,
     build_pairing_response,
+    generate_device_keys,
     install_pairing_bundle,
     parse_pairing_qr,
     read_pairing_request,
@@ -31,34 +28,6 @@ from starfish_identities import (
 )
 from starfish_keyring import create_keyring
 from starfish_sharing import scopes
-
-
-def _ed25519_pair() -> tuple[str, str]:
-    priv = Ed25519PrivateKey.generate()
-    priv_bytes = priv.private_bytes(
-        encoding=serialization.Encoding.Raw,
-        format=serialization.PrivateFormat.Raw,
-        encryption_algorithm=serialization.NoEncryption(),
-    )
-    pub_bytes = priv.public_key().public_bytes(
-        encoding=serialization.Encoding.Raw,
-        format=serialization.PublicFormat.Raw,
-    )
-    return priv_bytes.hex(), pub_bytes.hex()
-
-
-def _x25519_pair() -> tuple[str, str]:
-    priv = X25519PrivateKey.generate()
-    priv_bytes = priv.private_bytes(
-        encoding=serialization.Encoding.Raw,
-        format=serialization.PrivateFormat.Raw,
-        encryption_algorithm=serialization.NoEncryption(),
-    )
-    pub_bytes = priv.public_key().public_bytes(
-        encoding=serialization.Encoding.Raw,
-        format=serialization.PublicFormat.Raw,
-    )
-    return priv_bytes.hex(), pub_bytes.hex()
 
 
 async def main() -> None:
@@ -73,14 +42,13 @@ async def main() -> None:
     )
 
     # ── New device. ─────────────────────────────────────────────────────────
-    new_dev_ed_priv, new_dev_ed_pub = _ed25519_pair()
-    new_dev_kem_priv, new_dev_kem_pub = _x25519_pair()
+    new_dev = generate_device_keys()
 
     # ── Step 1: new device → relay (encrypted PairingRequest). ──────────────
     # The request carries a proof-of-possession signature over the device keys
     # (made with edPriv), so a relay cannot swap the KEM pubkey it controls.
     encrypted_req = build_pairing_request(
-        {"edPriv": new_dev_ed_priv, "edPub": new_dev_ed_pub, "kemPub": new_dev_kem_pub},
+        {"edPriv": new_dev["edPriv"], "edPub": new_dev["edPub"], "kemPub": new_dev["kemPub"]},
         PAIRING_CODE,
     )
     print(f"[new-device] uploaded request, nonce: {encrypted_req.request_nonce}")
@@ -126,12 +94,7 @@ async def main() -> None:
     # show that fingerprint to the user and get explicit confirmation.
     installed = install_pairing_bundle(
         recovered_bundle,
-        {
-            "edPriv": new_dev_ed_priv,
-            "edPub": new_dev_ed_pub,
-            "kemPriv": new_dev_kem_priv,
-            "kemPub": new_dev_kem_pub,
-        },
+        new_dev,
         expected_root_ed_pub=root.device["edPub"],
     )
 

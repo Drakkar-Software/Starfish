@@ -172,18 +172,10 @@ Locked cross-language by [`tests/test-vectors/identity-derivation-evm.json`](htt
 Every device added after the first one runs under **freshly generated** Ed25519 + X25519 key pairs — they are not derived from the passphrase.
 
 ```ts
-import { ed25519, x25519 } from "@noble/curves/ed25519.js"
+import { generateDeviceKeys } from "@drakkar.software/starfish-identities"
 
-function generateDeviceKeys() {
-  const edPriv = ed25519.utils.randomSecretKey()
-  const kemPriv = x25519.utils.randomSecretKey()
-  return {
-    edPriv:  hex(edPriv),
-    edPub:   hex(ed25519.getPublicKey(edPriv)),
-    kemPriv: hex(kemPriv),
-    kemPub:  hex(x25519.getPublicKey(kemPriv)),
-  }
-}
+const device = generateDeviceKeys()
+// device.edPriv, device.edPub, device.kemPriv, device.kemPub are lowercase hex.
 ```
 
 Why generate locally instead of deriving from the passphrase?

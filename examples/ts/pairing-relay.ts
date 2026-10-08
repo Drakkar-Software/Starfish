@@ -35,14 +35,10 @@ import {
   installPairingBundle,
   parsePairingQr,
   buildPairingQr,
+  generateDeviceKeys,
 } from "@drakkar.software/starfish-identities"
 import { createKeyring } from "@drakkar.software/starfish-keyring"
 import { scopes } from "@drakkar.software/starfish-sharing"
-import { ed25519, x25519 } from "@noble/curves/ed25519.js"
-
-function bytesToHex(b: Uint8Array): string {
-  return Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("")
-}
 
 async function main() {
   const PAIRING_CODE = "428193" // 6-digit numeric, shown briefly on root device
@@ -55,17 +51,14 @@ async function main() {
   )
 
   // ── New device: generate a fresh local keypair. ──────────────────────────
-  const newDevEdPriv = ed25519.utils.randomSecretKey()
-  const newDevEdPub = bytesToHex(ed25519.getPublicKey(newDevEdPriv))
-  const newDevKemPriv = x25519.utils.randomSecretKey()
-  const newDevKemPub = bytesToHex(x25519.getPublicKey(newDevKemPriv))
+  const newDev = generateDeviceKeys()
 
   // ── Step 1: new device → relay (encrypted PairingRequest). ───────────────
   // The request carries the new device's public keys plus a proof-of-possession
   // signature over them (made with the device's edPriv), so a relay cannot swap
   // the KEM pubkey for one it controls. `edPriv` is required for that signature.
   const encryptedReq = await buildPairingRequest(
-    { edPriv: bytesToHex(newDevEdPriv), edPub: newDevEdPub, kemPub: newDevKemPub },
+    { edPriv: newDev.edPriv, edPub: newDev.edPub, kemPub: newDev.kemPub },
     PAIRING_CODE,
   )
   console.log("[new-device] uploaded request, nonce:", encryptedReq.requestNonce)
@@ -115,12 +108,7 @@ async function main() {
   // instead.
   const installed = await installPairingBundle(
     recoveredBundle,
-    {
-      edPriv: bytesToHex(newDevEdPriv),
-      edPub: newDevEdPub,
-      kemPriv: bytesToHex(newDevKemPriv),
-      kemPub: newDevKemPub,
-    },
+    newDev,
     { expectedRootEdPub: root.device.edPub },
   )
 

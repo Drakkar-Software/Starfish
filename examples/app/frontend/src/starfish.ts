@@ -3,7 +3,6 @@
  * scopes, client construction, the keyring decryptor, profiles, and the plain
  * REST calls to the demo-only backend endpoints.
  */
-import { ed25519, x25519 } from "@noble/curves/ed25519.js"
 import { StarfishClient, buildRevocationList } from "@drakkar.software/starfish-client"
 import type { RevocationList } from "@drakkar.software/starfish-client"
 import type { Encryptor, StarfishCapProvider } from "@drakkar.software/starfish-client"
@@ -25,14 +24,17 @@ import {
   pushPairingBundle,
   removeDeviceEntry,
   sealWithPassphrase,
+  generateDeviceKeys,
 } from "@drakkar.software/starfish-identities"
-import type { ScopePreset, DeviceEntry, SealedEnvelope } from "@drakkar.software/starfish-identities"
+import type { ScopePreset, DeviceEntry, SealedEnvelope, GeneratedDeviceKeys } from "@drakkar.software/starfish-identities"
 import { evictMember } from "@drakkar.software/starfish-sharing"
 // Type-only — erased under verbatimModuleSyntax, so this introduces no runtime
 // import cycle even though session.ts imports values from this module.
 import type { Session } from "./session.js"
 
-export type { DeviceEntry } from "@drakkar.software/starfish-identities"
+export type { DeviceEntry }
+export type DeviceKeys = GeneratedDeviceKeys
+export { generateDeviceKeys }
 
 // Origin only — the sync router is mounted at the server root so the path the
 // client signs (`/pull/…`) matches the path the server verifies.
@@ -58,36 +60,11 @@ export const membersPush = (id: string) => `/push/${membersName(id)}/_members`
 export const profilePull = (userId: string) => `/pull/user/${userId}/profile`
 export const profilePush = (userId: string) => `/push/user/${userId}/profile`
 
-export interface DeviceKeys {
-  edPriv: string
-  edPub: string
-  kemPriv: string
-  kemPub: string
-}
-
-export function bytesToHex(b: Uint8Array): string {
-  let s = ""
-  for (const x of b) s += x.toString(16).padStart(2, "0")
-  return s
-}
-
 /** Standard (non-URL-safe) base64 of bytes — matches the server's base64 decode. */
 function bytesToBase64(b: Uint8Array): string {
   let s = ""
   for (const x of b) s += String.fromCharCode(x)
   return btoa(s)
-}
-
-/** Generate a fresh device-local keypair (used by a brand-new paired device). */
-export function generateDeviceKeys(): DeviceKeys {
-  const edPriv = ed25519.utils.randomSecretKey()
-  const kemPriv = x25519.utils.randomSecretKey()
-  return {
-    edPriv: bytesToHex(edPriv),
-    edPub: bytesToHex(ed25519.getPublicKey(edPriv)),
-    kemPriv: bytesToHex(kemPriv),
-    kemPub: bytesToHex(x25519.getPublicKey(kemPriv)),
-  }
 }
 
 // ── Cap scopes ─────────────────────────────────────────────────────────────
