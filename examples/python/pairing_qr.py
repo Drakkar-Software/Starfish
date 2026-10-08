@@ -13,50 +13,18 @@ Run:
 """
 
 import asyncio
-import secrets
-
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 
 from starfish_identities import (
     AssemblePairingBundleOpts,
     assemble_pairing_bundle,
     bootstrap_root_identity,
     build_pairing_qr,
+    generate_device_keys,
     install_pairing_bundle,
     parse_pairing_qr,
 )
 from starfish_keyring import create_keyring
 from starfish_sharing import scopes
-
-
-def _ed25519_pair() -> tuple[str, str]:
-    priv = Ed25519PrivateKey.generate()
-    priv_bytes = priv.private_bytes(
-        encoding=serialization.Encoding.Raw,
-        format=serialization.PrivateFormat.Raw,
-        encryption_algorithm=serialization.NoEncryption(),
-    )
-    pub_bytes = priv.public_key().public_bytes(
-        encoding=serialization.Encoding.Raw,
-        format=serialization.PublicFormat.Raw,
-    )
-    return priv_bytes.hex(), pub_bytes.hex()
-
-
-def _x25519_pair() -> tuple[str, str]:
-    priv = X25519PrivateKey.generate()
-    priv_bytes = priv.private_bytes(
-        encoding=serialization.Encoding.Raw,
-        format=serialization.PrivateFormat.Raw,
-        encryption_algorithm=serialization.NoEncryption(),
-    )
-    pub_bytes = priv.public_key().public_bytes(
-        encoding=serialization.Encoding.Raw,
-        format=serialization.PublicFormat.Raw,
-    )
-    return priv_bytes.hex(), pub_bytes.hex()
 
 
 async def main() -> None:
@@ -74,14 +42,13 @@ async def main() -> None:
     current_by_collection = {"notes": {"epoch": 1, "cek": notes_cek}}
 
     # ── New device: generate a fresh device-local keypair. ──────────────────
-    new_dev_ed_priv, new_dev_ed_pub = _ed25519_pair()
-    new_dev_kem_priv, new_dev_kem_pub = _x25519_pair()
+    new_dev = generate_device_keys()
 
     # ── Encode the request as a QR string. ──────────────────────────────────
     # The new device asks for read-only access to the "notes" collection.
     qr = build_pairing_qr(
-        new_dev_ed_pub,
-        new_dev_kem_pub,
+        new_dev["edPub"],
+        new_dev["kemPub"],
         scopes.read_only("notes"),
     )
     print(f"[new-device] QR payload: {qr[:60]}…")
@@ -112,12 +79,7 @@ async def main() -> None:
     # show that fingerprint to the user and get explicit confirmation.
     installed = install_pairing_bundle(
         bundle,
-        {
-            "edPriv": new_dev_ed_priv,
-            "edPub": new_dev_ed_pub,
-            "kemPriv": new_dev_kem_priv,
-            "kemPub": new_dev_kem_pub,
-        },
+        new_dev,
         expected_root_ed_pub=root.device["edPub"],
     )
     print(f"[new-device] installed; user_id = {installed.credentials.user_id}")
@@ -127,8 +89,6 @@ async def main() -> None:
     # CEKs. It can now read encrypted documents in notes/* by using the
     # cap-cert as a CapProvider and feeding the CEK to
     # create_keyring_encryptor().
-
-    _ = secrets  # quiet pyflakes if it ever runs on this file
 
 
 if __name__ == "__main__":

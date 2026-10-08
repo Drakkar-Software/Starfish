@@ -78,6 +78,27 @@ def test_build_parse_qr_roundtrip_with_synthetic_nonce() -> None:
     assert parsed.qr_nonce == base64.b64encode(nonce).decode("ascii")
 
 
+def test_generated_device_keys_roundtrip_through_qr_pairing() -> None:
+    root = derive_root_identity("alice-root-passphrase")
+    device = generate_device_keys()
+    for field in ("edPriv", "edPub", "kemPriv", "kemPub"):
+        assert len(device[field]) == 64
+        int(device[field], 16)
+
+    scope = {"ops": ["read"], "collections": ["notes"], "paths": ["notes/*"]}
+    parsed = parse_pairing_qr(build_pairing_qr(device["edPub"], device["kemPub"], scope))
+    bundle = assemble_pairing_bundle(
+        {"edPriv": root.keys.ed_priv, "edPub": root.keys.ed_pub},
+        parsed,
+        {},
+        AssemblePairingBundleOpts(granted_scope=parsed.requested_scope),
+    )
+    installed = install_pairing_bundle(bundle, device, expected_root_ed_pub=root.keys.ed_pub)
+    assert installed.credentials.device == device
+    assert installed.credentials.cap_cert["sub"] == device["edPub"]
+    assert installed.credentials.cap_cert["subKem"] == device["kemPub"]
+
+
 # ── Bundle install roundtrip ──────────────────────────────────────────────────
 
 

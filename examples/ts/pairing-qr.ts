@@ -38,14 +38,10 @@ import {
   parsePairingQr,
   assemblePairingBundle,
   installPairingBundle,
+  generateDeviceKeys,
 } from "@drakkar.software/starfish-identities"
 import { scopes } from "@drakkar.software/starfish-sharing"
 import { createKeyring } from "@drakkar.software/starfish-keyring"
-import { ed25519, x25519 } from "@noble/curves/ed25519.js"
-
-function bytesToHex(b: Uint8Array): string {
-  return Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("")
-}
 
 async function main() {
   // ── Root device: existing user. ──────────────────────────────────────────
@@ -63,16 +59,13 @@ async function main() {
   }
 
   // ── New device: generate a fresh device-local keypair. ───────────────────
-  const newDevEdPriv = ed25519.utils.randomSecretKey()
-  const newDevEdPub = ed25519.getPublicKey(newDevEdPriv)
-  const newDevKemPriv = x25519.utils.randomSecretKey()
-  const newDevKemPub = x25519.getPublicKey(newDevKemPriv)
+  const newDev = generateDeviceKeys()
 
   // ── Encode the request as a QR string. ───────────────────────────────────
   // The new device asks for read-only access to the "notes" collection.
   const qr = buildPairingQr(
-    bytesToHex(newDevEdPub),
-    bytesToHex(newDevKemPub),
+    newDev.edPub,
+    newDev.kemPub,
     scopes.readOnly("notes"),
   )
   console.log("[new-device] QR payload:", qr.slice(0, 60), "...")
@@ -104,12 +97,7 @@ async function main() {
   // instead.
   const installed = await installPairingBundle(
     bundle,
-    {
-      edPriv: bytesToHex(newDevEdPriv),
-      edPub: bytesToHex(newDevEdPub),
-      kemPriv: bytesToHex(newDevKemPriv),
-      kemPub: bytesToHex(newDevKemPub),
-    },
+    newDev,
     { expectedRootEdPub: root.device.edPub },
   )
 
