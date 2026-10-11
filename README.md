@@ -26,7 +26,7 @@ Starfish is a document sync library you drop in front of any storage backend. Pu
 
 ## Packages
 
-Starfish ships **31 packages** — a TypeScript and a Python build of each of the 15 families below, plus one TypeScript-only family (webhook). All packages use **lockstep versioning** (every release bumps all 31 to the same version).
+Starfish ships **33 packages** — TypeScript and Python builds of each family below (including TypeScript-only `webhook` and `events`). All packages use **lockstep versioning** (every release bumps all 33 to the same version).
 
 ### Core
 
