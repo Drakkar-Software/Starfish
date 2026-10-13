@@ -24,6 +24,7 @@ packages/
     outbox/              # @drakkar.software/starfish-outbox (extension)
     wal/                 # @drakkar.software/starfish-wal (extension)
     spaces/              # @drakkar.software/starfish-spaces (extension)
+    events/              # @drakkar.software/starfish-events (extension)
     webhook/             # @drakkar.software/starfish-webhook (extension)
   python/                # Python packages
     protocol/            # starfish-protocol
@@ -41,6 +42,7 @@ packages/
     outbox/              # starfish-outbox (extension)
     wal/                 # starfish-wal (extension)
     spaces/              # starfish-spaces (extension)
+    events/              # starfish-events (extension)
 docs/                    # Documentation (Markdown)
   ts/client/             # Client guides (01-26)
 examples/                # Usage examples (ts/ and python/)
