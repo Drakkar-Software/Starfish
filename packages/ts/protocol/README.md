@@ -17,6 +17,7 @@ The v3 protocol is built around two signed envelopes — **capability certificat
 | Export | Kind | Purpose |
 |---|---|---|
 | `stableStringify(value)` | function | Canonical UTF-8 JSON: recursively sorted keys, no whitespace. The signing input for both cap-certs and per-request signatures runs through this. |
+| `compareCodePoints(a, b)` | function | Unicode code-point order used when `stableStringify` sorts object keys. JavaScript's default sort is UTF-16 code units and disagrees for non-BMP characters. TypeScript only: Python `sorted()` already uses code-point order. |
 | `computeHash(data)` | function | SHA-256 over `stableStringify(data)`, lowercase hex. The hash that backs `baseHash` optimistic concurrency. |
 | `deepMerge(local, remote)` | function | Default remote-wins deep-merge resolver. Arrays are atomic. |
 | `configurePlatform`, `getCrypto`, `getBase64` | functions | Polyfill hooks for environments without the Web Crypto API (React Native, older runtimes). |
@@ -78,7 +79,7 @@ Full schema, role synthesis, and rotation: [docs/ts/client/25-capability-certs.m
 
 Both signing inputs (`capCertCanonicalSigningInput` and `requestSigningCanonicalInput`) follow the same rule: produce a value, strip the `sig` field if present, run it through `stableStringify`, and sign the UTF-8 bytes.
 
-`stableStringify` is the single canonicalization primitive: every object key, at every nesting level, is sorted lexicographically; arrays preserve order; no whitespace. Two implementations that agree on `stableStringify` agree on every higher-level signature.
+`stableStringify` is the single canonicalization primitive: every object key, at every nesting level, is sorted by `compareCodePoints`; arrays preserve order; no whitespace. Two implementations that agree on `stableStringify` agree on every higher-level signature.
 
 ## Per-request signing
 

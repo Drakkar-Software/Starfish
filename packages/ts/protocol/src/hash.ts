@@ -8,7 +8,7 @@ import { getCrypto } from "./platform.js"
  * Object keys must sort identically in both languages or their canonical strings
  * — and therefore document hashes — diverge.
  */
-function compareCodePoints(a: string, b: string): number {
+export function compareCodePoints(a: string, b: string): number {
   const ai = a[Symbol.iterator]()
   const bi = b[Symbol.iterator]()
   for (;;) {
