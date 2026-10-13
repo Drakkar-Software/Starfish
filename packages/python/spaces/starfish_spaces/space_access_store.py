@@ -154,7 +154,6 @@ async def hydrate_space_access_store(
     # Step 2 — server wins
     if server_entries:
         for uid, entry in server_entries.items():
-            cache_key = f"{_active_key}:{space_id}:{uid}" if uid != _active_key else _key_for(space_id)
             # Server entries are space-level member entries for each userId.
             # Store under the main space key for the active user.
             if uid == _active_key:

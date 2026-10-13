@@ -14,7 +14,7 @@ Build sessions with:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable, Coroutine, Optional, TYPE_CHECKING
 
 from starfish_identities import bootstrap_root_identity, mint_device_cap, compute_owner_trusted_adders

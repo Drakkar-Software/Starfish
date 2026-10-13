@@ -6,7 +6,6 @@ All functions are pure (no side-effects) and take / return plain Python objects.
 
 from __future__ import annotations
 
-import math
 import time
 from dataclasses import dataclass, field
 from typing import Any, Optional

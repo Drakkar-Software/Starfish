@@ -88,7 +88,7 @@ def test_accepts_ctx_list_4arg_lambda():
 
 async def test_old_1arg_on_get_still_works():
     store = CustomObjectStore(on_get=lambda key: f"val:{key}")
-    result = ctx_obj = None
+    result = None
     result = await store.get_string("k")
     assert result == "val:k"
 

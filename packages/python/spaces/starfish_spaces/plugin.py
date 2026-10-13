@@ -18,7 +18,7 @@ These are **lazy-imported** from :mod:`starfish_spaces.__init__` via
 from __future__ import annotations
 
 import json
-from typing import Any, Optional, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 from starfish_sharing import make_registry_role_enricher
 
