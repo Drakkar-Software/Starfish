@@ -111,7 +111,7 @@ function entryFromCert(
 
 const MAX_RETRIES = 3
 
-export async function upsertEntry(
+async function upsertEntry(
   client: StarfishClient,
   path: string,
   cert: CapCert,
@@ -141,7 +141,7 @@ export async function upsertEntry(
   throw new Error(`directory.upsertEntry: too many baseHash conflicts at ${path}`)
 }
 
-export async function removeEntryByNonce(
+async function removeEntryByNonce(
   client: StarfishClient,
   path: string,
   nonce: string,
@@ -178,7 +178,7 @@ export interface ListDirectoryOpts {
   revokedNonces?: ReadonlySet<string>
 }
 
-export async function listEntries(
+async function listEntries(
   client: StarfishClient,
   path: string,
   opts: ListDirectoryOpts,

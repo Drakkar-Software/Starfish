@@ -66,9 +66,6 @@ const IV_BYTES = 12
 const AES_ALGO = "AES-GCM"
 const ENC = new TextEncoder()
 const DEC = new TextDecoder()
-// Exported for use in tests and cross-language serialisation verification.
-export const _SEAL_EPOCH = SEAL_EPOCH
-
 function toBytes(plaintext: Uint8Array | string): Uint8Array {
   return typeof plaintext === "string" ? ENC.encode(plaintext) : plaintext
 }

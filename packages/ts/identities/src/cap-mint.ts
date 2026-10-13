@@ -51,11 +51,10 @@ export interface MintOpts {
   nonce?: Uint8Array
 }
 
-export const DEFAULT_TTL_SEC = 30 * 24 * 3600
-export const NONCE_LEN = 16
+const DEFAULT_TTL_SEC = 30 * 24 * 3600
+const NONCE_LEN = 16
 
-
-export function defaultNonce(): Uint8Array {
+function defaultNonce(): Uint8Array {
   const buf = new Uint8Array(NONCE_LEN)
   getCrypto().getRandomValues(buf)
   return buf
