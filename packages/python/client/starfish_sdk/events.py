@@ -105,9 +105,15 @@ async def subscribe_changes(
     Yields:
         Parsed event data dicts from ``data:`` lines of each SSE frame.
 
-    The generator runs until it is closed by the caller (``aclose()`` or a
-    ``break`` inside an ``async for`` loop). It never raises — network errors
-    trigger a reconnect after the backoff delay.
+    Retried with capped exponential backoff: transport errors
+    (``httpx.HTTPError`` and ``OSError``) and any exception raised while
+    resolving a callable ``url``. Exceptions from ``on_status`` propagate to
+    the caller, as do any other errors once the URL has been resolved and the
+    failure is not a transport error.
+
+    Backoff resets when a connection opens (HTTP 2xx), not when the first
+    frame arrives. The generator runs until the caller closes it
+    (``aclose()`` or ``break`` inside an ``async for`` loop).
     """
     import httpx  # local import so the module can be imported without httpx installed in tests that don't need it
 
@@ -119,32 +125,51 @@ async def subscribe_changes(
 
     try:
         while True:
-            resolved_url = url() if callable(url) else url
+            # Factory failures are attempt failures: resolve inside the retry
+            # loop so a transient url() error backs off instead of ending the
+            # subscription. on_status errors are captured and re-raised below
+            # so they are not treated as transport failures.
+            try:
+                resolved_url = url() if callable(url) else url
+            except GeneratorExit:
+                return
+            except Exception:
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, max_backoff)
+                continue
+
+            callback_error: Exception | None = None
             try:
                 async with client.stream("GET", resolved_url, headers=_headers) as resp:
                     if on_status is not None:
-                        on_status(resp.status_code)
+                        try:
+                            on_status(resp.status_code)
+                        except Exception as exc:
+                            callback_error = exc
+                    if callback_error is None:
+                        # On non-2xx, back off and retry.
+                        if resp.status_code < 200 or resp.status_code >= 300:
+                            await asyncio.sleep(backoff)
+                            backoff = min(backoff * 2, max_backoff)
+                            continue
 
-                    # On non-2xx, back off and retry.
-                    if resp.status_code < 200 or resp.status_code >= 300:
-                        await asyncio.sleep(backoff)
-                        backoff = min(backoff * 2, max_backoff)
-                        continue
+                        # Successful connect — reset backoff.
+                        backoff = initial_backoff_ms / 1000.0
+                        carry = ""
 
-                    # Successful connect — reset backoff.
-                    backoff = initial_backoff_ms / 1000.0
-                    carry = ""
-
-                    async for chunk in resp.aiter_text():
-                        frames, carry = parse_sse_frames(chunk, carry)
-                        for frame in frames:
-                            yield frame
+                        async for chunk in resp.aiter_text():
+                            frames, carry = parse_sse_frames(chunk, carry)
+                            for frame in frames:
+                                yield frame
 
             except (httpx.HTTPError, OSError):
                 # Network error — fall through to backoff and retry.
                 pass
             except GeneratorExit:
                 return
+
+            if callback_error is not None:
+                raise callback_error
 
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, max_backoff)
