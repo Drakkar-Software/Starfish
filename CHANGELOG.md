@@ -4,6 +4,7 @@
 
 ### Changed
 - **README**: package count corrected to 33 (lockstep TS + Python families, including TypeScript-only `webhook` and `events`).
+- **`starfish-server` tests**: direct dispatcher contract tests for the plugin hooks in `starfish_server/plugins.py` (`authorize`, `before_pull`, `after_write`, `intercept_push`, `intercept_pull`), covering short-circuit order, fail-closed propagation for gating hooks, and log-and-continue for `after_write`. No runtime behavior change.
 
 Adds a third storage tier, `"isolated"`, to `starfish-replica`'s space-mirror
 channel: a collection whose node is sealed under its OWN per-node keyring
