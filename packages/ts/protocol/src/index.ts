@@ -1,7 +1,7 @@
 export { configurePlatform, getCrypto, getBase64 } from "./platform.js"
 export type { CryptoProvider, Base64Provider, PlatformConfig } from "./platform.js"
 export * as ed25519Suite from "./suites/ed25519.js"
-export { stableStringify, computeHash } from "./hash.js"
+export { compareCodePoints, stableStringify, computeHash } from "./hash.js"
 export { buildRevocationList, revocationListCanonicalSigningInput } from "./revocation.js"
 export type {
   RevocationList,

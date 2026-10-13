@@ -13,6 +13,8 @@
  * resolution.
  */
 
+import { compareCodePoints } from "@drakkar.software/starfish-protocol"
+
 /** A Lamport counter (`c`) tie-broken by a stable replica id (`r`). */
 export interface Clock {
   /** Monotonic Lamport counter, advanced locally before each op. */
@@ -26,21 +28,11 @@ export interface Clock {
  * ordering and the protocol's `stableStringify` key sort). JavaScript's default
  * comparison is by UTF-16 code unit, which disagrees for non-BMP characters, so
  * a replica-id tie-break must use this to stay byte-identical cross-language.
+ *
+ * The implementation lives in `@drakkar.software/starfish-protocol` so the
+ * canonical key sort and the WAL tie-break cannot drift.
  */
-export function compareCodePoints(a: string, b: string): number {
-  const ai = a[Symbol.iterator]()
-  const bi = b[Symbol.iterator]()
-  for (;;) {
-    const x = ai.next()
-    const y = bi.next()
-    if (x.done && y.done) return 0
-    if (x.done) return -1
-    if (y.done) return 1
-    const cx = x.value.codePointAt(0)!
-    const cy = y.value.codePointAt(0)!
-    if (cx !== cy) return cx - cy
-  }
-}
+export { compareCodePoints }
 
 /**
  * Total order over clocks: counter first, replica id second. Returns a negative
