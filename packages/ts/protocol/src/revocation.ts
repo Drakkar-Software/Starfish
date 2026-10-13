@@ -12,11 +12,9 @@
  * `build_revocation_list` byte-for-byte — guarded by the shared
  * `tests/test-vectors/revocation-list.json` conformance vector.
  */
-import { sha256 } from "@noble/hashes/sha2.js"
 import { getBase64 } from "./platform.js"
 import { stableStringify } from "./hash.js"
 import * as ed25519Suite from "./suites/ed25519.js"
-import { bytesToHex, hexToBytes } from "./suites/_hex.js"
 import { userIdFromPubHex } from "./cap.js"
 
 /** A single revoked cap-cert, identified by its subject + nonce, with the cap's expiry. */
