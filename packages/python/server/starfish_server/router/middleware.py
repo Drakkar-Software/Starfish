@@ -3,7 +3,7 @@
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import Any, Callable, Awaitable, Sequence
+from typing import Any, Sequence
 
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse

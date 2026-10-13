@@ -13,7 +13,6 @@ from starfish_keyring import remove_recipient
 from starfish_identities import compute_owner_trusted_adders
 
 from starfish_spaces.client import (
-    DeviceKeys,
     add_keyring_recipient_core,
     build_encryptor,
     open_encryptor,

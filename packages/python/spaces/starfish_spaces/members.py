@@ -17,12 +17,12 @@ call :func:`revoke_space_access` instead — it also rotates the space keyring.
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any, Callable, Optional, TypedDict
+from typing import TYPE_CHECKING, Any, Optional, TypedDict
 
 from starfish_protocol.encoding import decode_link_fragment, encode_link_fragment
 from starfish_sharing.cap_mint import MintOpts
 
-from starfish_spaces.account_seal import seal_to_self, unseal_from_self
+from starfish_spaces.account_seal import seal_to_self
 from starfish_spaces.client import (
     add_space_keyring_recipient,
     ensure_space_keyring_recipient,
@@ -57,7 +57,6 @@ from starfish_spaces.space_access_store import (
 from starfish_spaces.token_types import JoinRequest, SpaceInviteLinkToken
 
 if TYPE_CHECKING:
-    from starfish_spaces.config import SealedBlob
     from starfish_spaces.session import Session
 
 
@@ -339,7 +338,6 @@ async def recover_space_access(
     link_access: dict[str, Any] = {}
     for space_id, sealed_blob in pub_access.items():
         try:
-            from starfish_spaces.config import SealedBlob as SealedBlobType
             sealed = sealed_blob if isinstance(sealed_blob, dict) else dict(sealed_blob)
             from starfish_spaces.account_seal import unseal_from_self as _unseal
             raw = _unseal(session, sealed)

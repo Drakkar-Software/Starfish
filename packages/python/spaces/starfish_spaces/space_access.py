@@ -28,21 +28,18 @@ Resolved handles are cached in two module-level dicts:
 
 from __future__ import annotations
 
-import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Optional
 
 from starfish_spaces.client import (
     build_encryptor,
     make_space_client,
-    open_encryptor,
 )
 from starfish_spaces.space_access_error import SpaceAccessError
 from starfish_spaces.space_access_store import (
     get_node_access_entry,
     get_node_keyring_access_entry,
     get_node_stream_access_entry,
-    get_space_access_entry,
     link_access_from_store,
     member_caps_from_store,
 )
