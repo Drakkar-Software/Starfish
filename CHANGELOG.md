@@ -5,6 +5,9 @@
 ### Changed
 - **README**: package count corrected to 33 (lockstep TS + Python families, including TypeScript-only `webhook` and `events`).
 
+### Added
+- **Python server**: direct unit tests for `check_body_limit` Content-Length branches (missing, non-numeric, negative, equal to the cap, and over the cap).
+
 Adds a third storage tier, `"isolated"`, to `starfish-replica`'s space-mirror
 channel: a collection whose node is sealed under its OWN per-node keyring
 rather than the space-wide one, so access can be granted and revoked one node
