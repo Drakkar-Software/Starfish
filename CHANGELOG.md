@@ -93,6 +93,16 @@ the raw override never did.
 - **`_decrypt_keys_for`** (`space_access.py`). No caller. Link-key selection stays
   inline at the access-resolution sites.
 
+### `starfish-sdk`
+
+#### Changed
+- **`subscribe_changes` retries URL-factory failures.** Resolving a callable
+  `url` now sits in the reconnect loop. A factory exception (for example a
+  token refresh) backs off and retries with the same cap as a transport error
+  (`httpx.HTTPError`, `OSError`). Exceptions from `on_status` propagate.
+  Backoff still resets when the connection opens (HTTP 2xx), not on the first
+  frame. The docstring no longer says the generator never raises.
+
 ## 3.0.0-alpha.71
 
 Adds device-code space-join pairing to `starfish-spaces` — the "requester
