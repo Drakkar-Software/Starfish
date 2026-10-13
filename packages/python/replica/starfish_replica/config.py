@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class WriteMode(StrEnum):
@@ -44,7 +44,7 @@ class SyncTrigger(StrEnum):
 class RemoteConfig(BaseModel):
     """Declares that a collection should be replicated from a remote (primary) starfish server."""
 
-    model_config = {"populate_by_name": True}
+    model_config = ConfigDict(populate_by_name=True)
 
     url: str
     """Base URL of the primary starfish server, e.g. ``https://primary.example.com/v1``."""
