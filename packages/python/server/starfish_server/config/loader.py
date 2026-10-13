@@ -1,7 +1,6 @@
 """Load and save sync configuration from/to object storage or JSON."""
 
 
-import json
 import logging
 from pathlib import Path
 
@@ -24,7 +23,7 @@ def parse_config_json(raw: str) -> SyncConfig:
     parsed = SyncConfig.model_validate_json(raw)
     errors = validate_config(parsed)
     if errors:
-        raise StartupError(f"Invalid sync config:\n" + "\n".join(errors))
+        raise StartupError("Invalid sync config:\n" + "\n".join(errors))
     for warning in collect_config_warnings(parsed):
         _log.warning("config warning: %s", warning)
     return parsed
@@ -54,7 +53,7 @@ async def load_config(
     parsed = SyncConfig.model_validate_json(raw)
     errors = validate_config(parsed)
     if errors:
-        raise StartupError(f"Invalid sync config:\n" + "\n".join(errors))
+        raise StartupError("Invalid sync config:\n" + "\n".join(errors))
     return parsed
 
 
@@ -66,7 +65,7 @@ async def save_config(
     """Save a SyncConfig to storage. Validates before saving."""
     errors = validate_config(config)
     if errors:
-        raise StartupError(f"Invalid sync config:\n" + "\n".join(errors))
+        raise StartupError("Invalid sync config:\n" + "\n".join(errors))
 
     await store.put(
         config_key,
