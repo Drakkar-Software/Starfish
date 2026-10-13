@@ -252,7 +252,7 @@ async def owner_ensure_keyring(
 ) -> None:
     """Ensure the keyring for ``collection_name`` exists and that the owner is in it.
 
-    CAS-safe: retries up to 3 times on :class:`ConflictError`.  Creates a fresh
+    CAS-safe: retries up to 5 times on :class:`ConflictError`.  Creates a fresh
     keyring doc if it does not exist yet.
     """
     adder = _adder_keys(keys)

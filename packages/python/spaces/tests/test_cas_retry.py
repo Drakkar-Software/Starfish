@@ -1,7 +1,7 @@
 """Tests for run_cas retry logic."""
 import pytest
 from starfish_sdk.types import ConflictError
-from starfish_spaces.cas_retry import run_cas, MAX_ATTEMPTS
+from starfish_spaces.cas_retry import CasHint, run_cas, MAX_ATTEMPTS
 
 
 async def test_run_cas_succeeds_first_try():
@@ -68,3 +68,31 @@ async def test_run_cas_propagates_non_conflict_error():
 
     with pytest.raises(ValueError):
         await run_cas(fn)
+
+
+async def test_run_cas_zero_arg_callback_unchanged():
+    calls = []
+
+    async def fn():
+        calls.append(1)
+
+    await run_cas(fn)
+    assert len(calls) == 1
+
+
+async def test_run_cas_passes_cas_hint_after_conflict():
+    hints: list[CasHint] = []
+
+    async def fn(hint: CasHint):
+        hints.append(hint)
+        if len(hints) < 2:
+            raise ConflictError('{"error":"hash_mismatch","currentHash":"abc"}')
+
+    async def no_sleep(_seconds):
+        pass
+
+    await run_cas(fn, sleep=no_sleep, rand=lambda: 0.0)
+
+    assert len(hints) == 2
+    assert hints[0] == CasHint(current_hash="", attempt=0)
+    assert hints[1] == CasHint(current_hash="abc", attempt=1)

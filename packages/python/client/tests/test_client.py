@@ -382,3 +382,35 @@ async def test_get_config_with_namespace():
 
     url = mock_http.get.call_args.args[0]
     assert url == "http://sync.example.com/sync/config"
+
+
+def test_conflict_error_parses_current_hash_from_json():
+    body = '{"error":"hash_mismatch","currentHash":"deadbeef"}'
+    err = ConflictError(body)
+    assert err.server_response == body
+    assert err.current_hash == "deadbeef"
+    assert str(err) == f"hash_mismatch: {body}"
+
+
+def test_conflict_error_empty_current_hash_when_missing():
+    err = ConflictError('{"error":"hash_mismatch"}')
+    assert err.current_hash == ""
+
+
+def test_conflict_error_empty_current_hash_for_non_json():
+    err = ConflictError("plain text 409")
+    assert err.current_hash == ""
+    assert err.server_response == "plain text 409"
+
+
+@pytest.mark.asyncio
+async def test_push_conflict_parses_current_hash():
+    mock_http = AsyncMock()
+    body = '{"error":"hash_mismatch","currentHash":"abc123"}'
+    mock_http.post.return_value = make_response(409, text=body)
+    client = StarfishClient("http://test", client=mock_http)
+
+    with pytest.raises(ConflictError) as exc_info:
+        await client.push("/push/test", {}, "bad-hash")
+    assert exc_info.value.current_hash == "abc123"
+    assert exc_info.value.server_response == body
