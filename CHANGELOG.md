@@ -2,6 +2,9 @@
 
 ## 3.0.0-alpha.72
 
+### Added
+- **CI**: new `example-backend-tests` workflow runs the `examples/app/backend` pytest suite (`uv run pytest tests/`) on pull requests and pushes to `master`. Previously no workflow exercised the example backend.
+
 ### Changed
 - **README**: package count corrected to 33 (lockstep TS + Python families, including TypeScript-only `webhook` and `events`).
 
