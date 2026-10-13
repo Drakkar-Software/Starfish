@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.14'",
@@ -732,7 +732,7 @@ wheels = [
 
 [[package]]
 name = "starfish-identities"
-version = "3.0.0a30"
+version = "3.0.0a72"
 source = { editable = "../identities" }
 dependencies = [
     { name = "argon2-cffi" },
@@ -762,7 +762,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "starfish-keyring"
-version = "3.0.0a30"
+version = "3.0.0a72"
 source = { editable = "../keyring" }
 dependencies = [
     { name = "cryptography" },
@@ -783,7 +783,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "starfish-protocol"
-version = "3.0.0a30"
+version = "3.0.0a72"
 source = { editable = "../protocol" }
 dependencies = [
     { name = "argon2-cffi" },
@@ -801,7 +801,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "starfish-sdk"
-version = "3.0.0a30"
+version = "3.0.0a72"
 source = { editable = "../client" }
 dependencies = [
     { name = "cryptography" },
@@ -822,7 +822,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "starfish-server"
-version = "3.0.0a30"
+version = "3.0.0a72"
 source = { editable = "../server" }
 dependencies = [
     { name = "aiofiles" },
@@ -858,7 +858,7 @@ provides-extras = ["s3", "dev"]
 
 [[package]]
 name = "starfish-sharing"
-version = "3.0.0a30"
+version = "3.0.0a72"
 source = { editable = "." }
 dependencies = [
     { name = "starfish-keyring" },
