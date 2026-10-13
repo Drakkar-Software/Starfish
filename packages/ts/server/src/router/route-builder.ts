@@ -1,5 +1,6 @@
 import { Hono } from "hono"
 import type { Context } from "hono"
+import type { ContentfulStatusCode } from "hono/utils/http-status"
 import {
   getCrypto,
   computeHash,
@@ -529,7 +530,7 @@ async function checkAuth(
     roles: effectiveRolesArray,
   })
   if (authz.action === "reject") {
-    const err = c.json({ error: authz.error }, authz.status as any)
+    const err = c.json({ error: authz.error }, authz.status as ContentfulStatusCode)
     await auditDenial(identity, err)
     return { identity, roles: effectiveRolesArray, error: err, presenter }
   }
@@ -675,12 +676,12 @@ async function runPush(
 ): Promise<Response> {
   const contentLength = c.req.header("content-length")
   const limitErr = checkBodyLimit(contentLength ?? null, col.maxBodyBytes)
-  if (limitErr) return c.json({ error: limitErr.error }, limitErr.status as any)
+  if (limitErr) return c.json({ error: limitErr.error }, limitErr.status as ContentfulStatusCode)
 
   // Hono has no portable socket IP; pass clientIp=null (direct anonymous traffic
   // shares one bucket). A proxy MUST set X-Forwarded-For for per-client limiting.
   const rateErr = await checkRateLimiters(rateLimiters, identity ?? null, c.req.header("x-forwarded-for") ?? null)
-  if (rateErr) return c.json({ error: rateErr.error }, rateErr.status as any)
+  if (rateErr) return c.json({ error: rateErr.error }, rateErr.status as ContentfulStatusCode)
 
   const contentType = c.req.header("content-type") ?? ""
   if (!contentType.includes("application/json")) {
@@ -732,7 +733,7 @@ async function runPush(
     const data = bodyObj[DATA_FIELD]
     if (data != null && typeof data === "object" && !Array.isArray(data)) {
       const schemaErr = validateObjectSchema(data as Record<string, unknown>, col.objectSchema)
-      if (schemaErr) return c.json(schemaErr.body, schemaErr.status as any)
+      if (schemaErr) return c.json(schemaErr.body, schemaErr.status as ContentfulStatusCode)
     }
   }
 
@@ -846,7 +847,7 @@ async function runPush(
     context,
     presenter,
   )
-  return c.json(result.body, result.status as any)
+  return c.json(result.body, result.status as ContentfulStatusCode)
 }
 
 async function runBinaryPush(
@@ -860,12 +861,12 @@ async function runBinaryPush(
 ): Promise<Response> {
   const contentLength = c.req.header("content-length")
   const limitErr = checkBodyLimit(contentLength ?? null, col.maxBodyBytes)
-  if (limitErr) return c.json({ error: limitErr.error }, limitErr.status as any)
+  if (limitErr) return c.json({ error: limitErr.error }, limitErr.status as ContentfulStatusCode)
 
   // Hono has no portable socket IP; pass clientIp=null (direct anonymous traffic
   // shares one bucket). A proxy MUST set X-Forwarded-For for per-client limiting.
   const rateErr = await checkRateLimiters(rateLimiters, identity ?? null, c.req.header("x-forwarded-for") ?? null)
-  if (rateErr) return c.json({ error: rateErr.error }, rateErr.status as any)
+  if (rateErr) return c.json({ error: rateErr.error }, rateErr.status as ContentfulStatusCode)
 
   const contentType = c.req.header("content-type") ?? ""
   if (!matchesAllowedMime(contentType, col.allowedMimeTypes)) {
@@ -999,7 +1000,7 @@ function addCollectionRoutes(
 
       if (limiters.pull) {
         const rateErr = await checkRateLimiters(limiters.pull, identity ?? null, c.req.header("x-forwarded-for") ?? null)
-        if (rateErr) return c.json({ error: rateErr.error }, rateErr.status as any)
+        if (rateErr) return c.json({ error: rateErr.error }, rateErr.status as ContentfulStatusCode)
       }
 
       const pullCtx: StoreContext = {
@@ -1020,7 +1021,7 @@ function addCollectionRoutes(
           ...(namespaceName != null && { namespace: namespaceName }),
         })
         if (decision.action === "reject") {
-          return c.json({ error: decision.error }, decision.status as any)
+          return c.json({ error: decision.error }, decision.status as ContentfulStatusCode)
         }
       }
 
@@ -1177,13 +1178,13 @@ function addCollectionRoutes(
       }
 
       if (pullResult.headers) {
-        const res = c.json(pullResult.body, pullResult.status as any)
+        const res = c.json(pullResult.body, pullResult.status as ContentfulStatusCode)
         for (const [k, v] of Object.entries(pullResult.headers)) {
           res.headers.set(k, v)
         }
         return res
       }
-      return c.json(pullResult.body, pullResult.status as any)
+      return c.json(pullResult.body, pullResult.status as ContentfulStatusCode)
     })
   }
 
@@ -1205,7 +1206,7 @@ function addCollectionRoutes(
 
       if (limiters.list) {
         const rateErr = await checkRateLimiters(limiters.list, listIdentity ?? null, c.req.header("x-forwarded-for") ?? null)
-        if (rateErr) return c.json({ error: rateErr.error }, rateErr.status as any)
+        if (rateErr) return c.json({ error: rateErr.error }, rateErr.status as ContentfulStatusCode)
       }
 
       const listCtx: StoreContext = {
@@ -1294,7 +1295,7 @@ function addCollectionRoutes(
             })
           }
           const responseBody = decision.action === "reject" ? { error: decision.error } : decision.body
-          return c.json(responseBody as any, decision.status as any)
+          return c.json(responseBody as any, decision.status as ContentfulStatusCode)
         }
       }
 
