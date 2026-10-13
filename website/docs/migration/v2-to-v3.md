@@ -234,6 +234,10 @@ After the upgrade is rolled out:
 - [ ] The server logs no `signatureVerifier`-related warnings; `Authorization: Cap` is the only auth scheme appearing in requests.
 - [ ] `pnpm test` and `uv run pytest -v` in each Python package are fully green against the upgraded codebase.
 
+## Python server extension callers
+
+If you call `handle_sync_pull` directly (outside the built-in router), pass `cache_duration_ms`, `is_public`, `context`, and `with_keyring` as keywords only. The removed `checkpoint_param`, `force_full_fetch`, and `client_encrypted` arguments were inert; regular HTTP pulls still ignore a legacy `?checkpoint=` query (append-only collections use checkpoint filtering as before).
+
 ## Known limitations
 
 - **Forward secrecy for documents is not provided** — by design. Persistent documents must remain decryptable by current recipients, which is incompatible with full FS. Post-compromise security is provided via epoch rotation. See [`docs/ts/client/23-multi-recipient-delegated.md`](/encryption-identity/multi-recipient-delegated) for the full discussion.

@@ -5,6 +5,11 @@
 ### Changed
 - **README**: package count corrected to 33 (lockstep TS + Python families, including TypeScript-only `webhook` and `events`).
 
+### `starfish-server` / `@drakkar.software/starfish-server`
+
+#### Changed (pre-GA breaking)
+- **`handle_sync_pull` (Python)** — removed unused parameters `checkpoint_param`, `force_full_fetch`, and `client_encrypted` (they were never read; HTTP behavior is unchanged). Remaining options after `store` are keyword-only. Positional callers must switch to keywords; keyword callers are unaffected. Collection `forceFullFetch` in sync config is unchanged and still exposed on `GET /config`.
+
 Adds a third storage tier, `"isolated"`, to `starfish-replica`'s space-mirror
 channel: a collection whose node is sealed under its OWN per-node keyring
 rather than the space-wide one, so access can be granted and revoked one node

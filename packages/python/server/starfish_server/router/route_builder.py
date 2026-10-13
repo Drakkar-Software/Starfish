@@ -1085,7 +1085,6 @@ def _add_collection_routes(
                     f"{document_key}/_keyring", cap_scope_paths
                 ):
                     with_keyring = False
-            is_client_encrypted = col.encryption == ENCRYPTION_DELEGATED
             is_public = ROLE_PUBLIC in col.read_roles
 
             # AppendOnly persist=true uses custom per-item checkpoint filtering
@@ -1105,9 +1104,9 @@ def _add_collection_routes(
                 )
             else:
                 response = await handle_sync_pull(
-                    document_key, store, checkpoint_param,
-                    bool(col.force_full_fetch), is_client_encrypted,
-                    col.cache_duration_ms,
+                    document_key,
+                    store,
+                    cache_duration_ms=col.cache_duration_ms,
                     is_public=is_public,
                     context=pull_ctx,
                     with_keyring=with_keyring,

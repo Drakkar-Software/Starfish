@@ -208,6 +208,24 @@ class TestParseConfigJson:
         with pytest.raises(Exception):
             parse_config_json("not json")
 
+    def test_parses_force_full_fetch_on_collection(self):
+        raw = json.dumps({
+            "version": 1,
+            "collections": [
+                {
+                    "name": "snapshots",
+                    "storagePath": "app/snapshots",
+                    "readRoles": ["public"],
+                    "writeRoles": ["admin"],
+                    "encryption": "none",
+                    "maxBodyBytes": 65536,
+                    "forceFullFetch": True,
+                },
+            ],
+        })
+        config = parse_config_json(raw)
+        assert config.collections[0].force_full_fetch is True
+
     def test_rejects_semantically_invalid_config(self):
         bad = json.dumps({
             "version": 1,
