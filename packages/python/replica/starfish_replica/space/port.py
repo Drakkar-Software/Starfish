@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-from typing import Any, Awaitable, Callable, Optional, Protocol
+from typing import Any, Callable, Optional, Protocol
 
 from starfish_spaces.cas_retry import run_cas
 from starfish_spaces.node_keyring import open_node_encryptor as sf_open_node_encryptor
