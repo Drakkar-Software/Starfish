@@ -512,6 +512,8 @@ async def join_node_by_link(session: "Session", token: NodeInviteLinkToken) -> s
     # Store as a node space entry in pubAccess under compound key.
     from starfish_spaces.registry import update_spaces_doc
     node_space = build_space(node_id, token.get("nodeName") or node_id)
+    # Plain dict so the spaces document stays JSON-serializable.
+    space_entry = {"id": node_space.id, "name": node_space.name, "members": node_space.members}
 
     def mutator(cur: dict[str, Any]) -> Optional[dict[str, Any]]:
         exists = any(s.get("id") == node_id for s in cur["spaces"] if isinstance(s, dict))
@@ -524,7 +526,7 @@ async def join_node_by_link(session: "Session", token: NodeInviteLinkToken) -> s
         if sealed_keyring:
             new_pub[f"{space_id}:{node_id}:keyring"] = sealed_keyring
         return {
-            "spaces": cur["spaces"] if exists else [*cur["spaces"], {"id": node_id, "name": token.get("nodeName") or node_id, "members": 1}],
+            "spaces": cur["spaces"] if exists else [*cur["spaces"], space_entry],
             "caps": cur["caps"],
             "pubAccess": new_pub,
         }
