@@ -234,9 +234,7 @@ def is_with_keyring_enabled(raw: str | None) -> bool:
 async def handle_sync_pull(
     document_key: str,
     store: AbstractObjectStore,
-    checkpoint_param: str | None = None,
-    force_full_fetch: bool = False,
-    client_encrypted: bool = False,
+    *,
     cache_duration_ms: int | None = None,
     is_public: bool = True,
     context: StoreContext | None = None,
@@ -248,8 +246,6 @@ async def handle_sync_pull(
     # Regular collections always return the full document. ``?checkpoint=`` is
     # ignored here (incremental sync is an appendOnly-only feature now); a stale
     # checkpoint param from an older client is harmless — we do NOT 400 on it.
-    # ``force_full_fetch`` / ``client_encrypted`` are retained as inert no-ops
-    # for call-site compatibility.
     result = await pull(store, document_key, context)
     body: dict[str, Any] = {
         "data": result.data,

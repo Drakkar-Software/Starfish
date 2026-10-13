@@ -70,6 +70,21 @@ async def test_pull_empty_collection():
 
 
 @pytest.mark.asyncio
+async def test_regular_pull_ignores_checkpoint_query():
+    """Regular (non-appendOnly) pull returns the full document; ``?checkpoint=`` is ignored."""
+    app, _ = _build_app()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        await client.post(
+            "/push/users/user-1/settings",
+            json={"data": {"theme": "dark", "lang": "en"}, "baseHash": None},
+            headers={"content-type": "application/json"},
+        )
+        pull_resp = await client.get("/pull/users/user-1/settings?checkpoint=0")
+    assert pull_resp.status_code == 200
+    assert pull_resp.json()["data"] == {"theme": "dark", "lang": "en"}
+
+
+@pytest.mark.asyncio
 async def test_push_then_pull_roundtrip():
     app, _ = _build_app()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
