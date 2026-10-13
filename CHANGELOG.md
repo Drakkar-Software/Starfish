@@ -2,6 +2,9 @@
 
 ## 3.0.0-alpha.72
 
+### Added
+- **CI**: `.github/workflows/example-backend-tests.yml` runs the chat example backend's pytest suite (`examples/app/backend/tests`) on pull requests and pushes to `master`.
+
 ### Changed
 - **README**: package count corrected to 33 (lockstep TS + Python families, including TypeScript-only `webhook` and `events`).
 
