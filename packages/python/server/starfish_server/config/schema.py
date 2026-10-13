@@ -1,12 +1,11 @@
 """Pydantic models for sync configuration."""
 
 
-from enum import StrEnum
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-from starfish_server.constants import ENCRYPTION_NONE, ENCRYPTION_DELEGATED, APPEND_DEFAULT_FIELD
+from starfish_server.constants import APPEND_DEFAULT_FIELD
 
 EncryptionMode = Literal["none", "delegated"]
 
