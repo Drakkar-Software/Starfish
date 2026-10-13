@@ -485,7 +485,7 @@ class SpaceMirrorChannel:
         # on_error funnel. The cycle has already fully run here, so this is
         # "finished with failures", not an abort.
         if errors:
-            raise ExceptionGroup(  # noqa: F821 - builtin on py311+, and we require >=3.11
+            raise ExceptionGroup(
                 f"[SpaceMirrorChannel] {self.name}: "
                 f"{len(result.failed)} collection(s) failed to mirror: "
                 f"{', '.join(result.failed)}",
