@@ -4,7 +4,7 @@
 import json
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from starfish_server.storage.base import AbstractObjectStore
 from starfish_server.router.route_builder import AuthResult, RoleEnricher
