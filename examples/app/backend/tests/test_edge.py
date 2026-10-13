@@ -1330,13 +1330,13 @@ async def test_blind_overwrite_of_existing_doc_conflicts(sdk):
         await owner.client.push(room_push("edge-blind"), owner.encryptor.encrypt({"messages": []}), None)
 
 
-# ── author fields: identity is pinned, but the signature is not verified ──────
+# ── author fields: proof is verified when present, pubkey must match presenter ─
 async def test_author_pubkey_cannot_be_spoofed_at_rest(sdk, http):
-    """A push that claims a different `authorPubkey` is recorded under the WRITER's id.
+    """A push whose `authorPubkey` does not match the authenticated writer is refused.
 
-    The server ignores the body's `authorPubkey` and stamps the document's author
-    with the *authenticated* cap identity, so a writer cannot attribute a write to
-    someone else at rest — even via a hand-crafted request that sets `authorPubkey`.
+    When a client supplies an author proof, the server requires `authorPubkey` to
+    equal the cap presenter. A hand-crafted push that attributes the write to someone
+    else is rejected with 403 and nothing is stored at the path.
     """
     user = bootstrap_root_identity("edge-authorpub")
     cap = mint_device_cap(user.device["edPriv"], user.device["edPub"], _sub(user), account_scope(user.user_id))
@@ -1353,48 +1353,59 @@ async def test_author_pubkey_cannot_be_spoofed_at_rest(sdk, http):
         "X-Starfish-Sig": sig.sig, "X-Starfish-Ts": str(sig.ts), "X-Starfish-Nonce": sig.nonce,
         "Content-Type": "application/json",
     })
-    assert resp.status_code == 200
+    assert resp.status_code == 403
 
     stored = await sdk().pull(f"/pull/user/{user.user_id}/profile")
-    assert stored.author_pubkey == user.user_id          # the writer's real identity
-    assert stored.author_pubkey != "deadbeefdeadbeef"     # not the spoofed value
+    assert stored.data == {}  # rejected push left no document
 
 
-async def test_author_signature_is_not_verified_server_side(sdk, http):
-    """The server stores a client-supplied `authorSignature` verbatim, unchecked.
+async def test_author_proof_is_verified_when_present(sdk, http):
+    """When an author proof is supplied, the server verifies it before storing.
 
-    PINS a property apps must know: author non-repudiation is an END-TO-END
-    guarantee — the server is a dumb store for `authorSignature` and never verifies
-    it, so a writer can attach a bogus signature and it round-trips on read. A
-    consumer that trusts pulled documents must verify the signature itself.
+    A partial proof (only one of `authorPubkey` / `authorSignature`) is rejected
+    with 400. A complete but cryptographically invalid proof is rejected with 403.
+    Absent proof is not exercised here; pushes without author fields remain allowed.
     """
     user = bootstrap_root_identity("edge-authorsig")
     cap = mint_device_cap(user.device["edPriv"], user.device["edPub"], _sub(user), account_scope(user.user_id))
     cap_b64 = base64.b64encode(stable_stringify(cap).encode("utf-8")).decode("ascii")
     path = f"/push/user/{user.user_id}/profile"
     bogus = "not-a-real-ed25519-signature"
-    body = json.dumps({"data": {"v": 1, "pseudo": "Real"}, "baseHash": None, "authorSignature": bogus}).encode("utf-8")
-    sig = sign_request("POST", path, body, user.device["edPriv"], host="testserver")
-    resp = await http.post(path, content=body, headers={
+
+    incomplete = json.dumps({"data": {"v": 1, "pseudo": "Real"}, "baseHash": None, "authorSignature": bogus}).encode("utf-8")
+    sig_inc = sign_request("POST", path, incomplete, user.device["edPriv"], host="testserver")
+    resp_inc = await http.post(path, content=incomplete, headers={
         "Authorization": f"Cap {cap_b64}",
-        "X-Starfish-Sig": sig.sig, "X-Starfish-Ts": str(sig.ts), "X-Starfish-Nonce": sig.nonce,
+        "X-Starfish-Sig": sig_inc.sig, "X-Starfish-Ts": str(sig_inc.ts), "X-Starfish-Nonce": sig_inc.nonce,
         "Content-Type": "application/json",
     })
-    assert resp.status_code == 200  # accepted despite the garbage signature
+    assert resp_inc.status_code == 400
+
+    invalid = json.dumps({
+        "data": {"v": 1, "pseudo": "Real"}, "baseHash": None,
+        "authorPubkey": user.user_id,
+        "authorSignature": bogus,
+    }).encode("utf-8")
+    sig_inv = sign_request("POST", path, invalid, user.device["edPriv"], host="testserver")
+    resp_inv = await http.post(path, content=invalid, headers={
+        "Authorization": f"Cap {cap_b64}",
+        "X-Starfish-Sig": sig_inv.sig, "X-Starfish-Ts": str(sig_inv.ts), "X-Starfish-Nonce": sig_inv.nonce,
+        "Content-Type": "application/json",
+    })
+    assert resp_inv.status_code == 403
 
     stored = await sdk().pull(f"/pull/user/{user.user_id}/profile")
-    assert stored.author_signature == bogus  # stored and returned unverified
+    assert stored.data == {}
 
 
 # ── feature/layout: `?withKeyring=1` degrades gracefully on this app ──────────
 async def test_with_keyring_optimization_degrades_gracefully(sdk):
-    """`?withKeyring=1` on the `chat` room returns 200 with `keyring: null`, not 500.
+    """`?withKeyring=1` on a room the cap cannot keyring-read returns 200 without 500.
 
-    The `withKeyring` optimization reads the sibling `chat/rooms/<id>/_keyring`, but
-    this app stores the keyring in a SEPARATE namespace (`chatkeyring/...`), so the
-    sibling read hits the room *file* as a directory. The server now catches the
-    store error and returns `keyring: null` instead of crashing — so a read-cap
-    holder can no longer 500 the server with one query param.
+    A member read cap scoped to `chat/rooms/<id>` does not cover the sibling
+    `chat/rooms/<id>/_keyring` path, so the server drops the optimization instead of
+    fetching an unauthorized keyring. The pull succeeds and omits a `keyring` field
+    rather than erroring.
     """
     await _setup_owner(sdk, room="edge-withkeyring")
     reader = bootstrap_root_identity("edge-withkeyring-reader")
@@ -1408,7 +1419,7 @@ async def test_with_keyring_optimization_degrades_gracefully(sdk):
     async with httpx.AsyncClient(transport=transport, base_url=BASE_URL) as raw:
         resp = await raw.get(signed_path, headers=headers)
     assert resp.status_code == 200
-    assert resp.json()["keyring"] is None
+    assert "keyring" not in resp.json()
 
 
 # ── rendezvous pairing: an unpinned install is REJECTED (MITM closed) ─────────
@@ -2740,14 +2751,14 @@ async def test_public_rendezvous_slot_self_expires_via_ttl(sdk):
 
     A pushed bundle is readable immediately, but once the stored document ages past
     the collection's TTL the server returns empty — so a stale/abandoned bundle does
-    not linger readable in the open slot. We model the age by writing a doc whose
-    stored timestamp is 10 min in the past and confirming the read comes back empty.
+    not linger readable in the open slot.     We model the age by writing a doc whose document-level `ts` is 10 min in the
+    past and confirming the read comes back empty.
     """
     rid = "ttlexpiretestid001122334455"
     old_ts = int(time.time() * 1000) - 600_000  # 10 min ago > the 5-min TTL
     await server.store.put(
         f"_pairing/{rid}",
-        json.dumps({"v": 1, "data": {"capCert": "stale"}, "timestamps": {"data": old_ts}, "hash": ""}),
+        json.dumps({"v": 1, "data": {"capCert": "stale"}, "ts": old_ts, "hash": ""}),
     )
     res = await sdk().pull(f"/pull/_pairing/{rid}")
     assert res.data == {}  # expired → server returns empty data
