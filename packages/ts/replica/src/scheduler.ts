@@ -6,7 +6,7 @@ export interface ChannelSchedulerEntry {
   schedule: ChannelSchedule
 }
 
-export function defaultSchedulerOnError(name: string, err: Error): void {
+function defaultSchedulerOnError(name: string, err: Error): void {
   console.error(`[ReplicaManager] ${name}: ${err}`)
 }
 
