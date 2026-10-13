@@ -158,6 +158,23 @@ jobs:
         working-directory: packages/python/spaces
         run: pytest -v
 
+  lint:
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install ruff
+        run: pip install ruff==0.17.0
+
+      - name: Run ruff check (informational)
+        continue-on-error: true
+        run: ruff check --config ruff.toml packages/python
+
   setup:
     needs: test
     if: startsWith(github.ref, 'refs/tags/')
