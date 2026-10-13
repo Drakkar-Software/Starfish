@@ -58,7 +58,11 @@ def build_space(
     name: str,
     overrides: Optional[dict[str, Any]] = None,
 ) -> "Space":
-    """Build a :class:`Space` dict with computed ``short`` monogram."""
+    """Build a :class:`Space` from an id and a display name.
+
+    A blank or whitespace-only name becomes ``space-`` plus the last six
+    characters of the id.
+    """
     from starfish_spaces.config import Space  # lazy to avoid circular
 
     trimmed = name.strip() or f"space-{space_id[-_SPACE_FALLBACK_SUFFIX:]}"

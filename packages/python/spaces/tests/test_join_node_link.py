@@ -14,6 +14,7 @@ from starfish_sdk.types import StarfishHttpError
 
 from starfish_spaces.account_seal import unseal_from_self
 from starfish_spaces.nodes import join_node_by_link
+from starfish_spaces.registry import build_space
 from starfish_spaces.space_access_store import clear_space_access_store
 from tests.helpers import make_fake_session
 
@@ -63,6 +64,9 @@ async def test_join_node_by_link_round_trips():
 
     node_id = await join_node_by_link(session, token)
     assert node_id == "nd-9"
+    stored = client.data["spaces"][0]
+    assert stored["name"] == build_space("nd-9", "Doc").name
+    assert stored["id"] == "nd-9"
 
     pub = client.data["pubAccess"]
     # Node access blob is stored as a whole self-sealed dict (not {v,ct,wks}),
@@ -76,3 +80,28 @@ async def test_join_node_by_link_round_trips():
     # The optional stream branch is stored the same way.
     sealed_stream = pub["sp-1:nd-9:stream"]
     assert json.loads(unseal_from_self(session, sealed_stream))["cap"] == token["streamCap"]
+
+
+async def test_join_node_by_link_stores_normalized_blank_name():
+    """A whitespace-only nodeName is stored as the name build_space produces."""
+    client = FakeSpacesClient()
+    session = make_fake_session(account_client=client)
+    node_id = "node-abcdef"
+    blank_name = " \t "
+    token = {
+        "v": 1,
+        "spaceId": "sp-1",
+        "nodeId": node_id,
+        "nodeName": blank_name,
+        "cap": {"kind": "member", "sub": "abc"},
+        "key": "edprivhex",
+        "write": False,
+    }
+
+    joined = await join_node_by_link(session, token)
+    assert joined == node_id
+
+    expected = build_space(node_id, blank_name)
+    stored = client.data["spaces"][0]
+    assert stored == {"id": expected.id, "name": expected.name, "members": expected.members}
+    assert stored["name"] == "space-abcdef"
