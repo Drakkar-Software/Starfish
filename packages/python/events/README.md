@@ -33,9 +33,9 @@ as one logical dataset.
 ## Usage
 
 ```python
+from starfish_server import CollectionConfig, SyncConfig
 from starfish_server.storage.s3 import S3ObjectStore
-from starfish_server.router.sync_router import create_sync_router
-from starfish_protocol.config import SyncConfig, CollectionConfig, SyncRouterOptions
+from starfish_server.router import SyncRouterOptions, create_sync_router
 from starfish_events import create_events_server_plugin
 
 store = S3ObjectStore(...)

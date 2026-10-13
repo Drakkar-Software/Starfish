@@ -26,7 +26,7 @@ Starfish is a document sync library you drop in front of any storage backend. Pu
 
 ## Packages
 
-Starfish ships **33 packages** — TypeScript and Python builds of each family below (including TypeScript-only `webhook` and `events`). All packages use **lockstep versioning** (every release bumps all 33 to the same version).
+Starfish ships **33 packages** — TypeScript and Python builds of each family below, plus TypeScript-only `webhook`. All packages use **lockstep versioning** (every release bumps all 33 to the same version).
 
 ### Core
 
@@ -53,6 +53,7 @@ Each extension is an additive plugin/helper layered on the core — wire only wh
 | `@drakkar.software/starfish-replica` | `starfish-replica` | Multi-server replication (pull / push-through / bidirectional) |
 | `@drakkar.software/starfish-outbox` | `starfish-outbox` | Durable client-side offline write-queue (dedup, claim, retry, reconnect-drain) |
 | `@drakkar.software/starfish-wal` | `starfish-wal` | Append-only CRDT op-log document model (LWW register + RGA list + text) with trusted snapshots |
+| `@drakkar.software/starfish-events` | `starfish-events` | JSON event batches encoded as Parquet on the configured object store |
 | `@drakkar.software/starfish-webhook` | _(TS only — Python parity pending)_ | Inbound-webhook ingestion: framework-neutral handler, generic HMAC auth, payload transform, forwards into the real push pipeline; optional sealed-write E2EE for a keyless writer |
 | `@drakkar.software/starfish-spaces` | `starfish-spaces` | Multi-user spaces: member roster, shared object tree (two-axis `access × enc`), invite/link join flows, E2EE keyrings, identity links, sealed inbox round-trips, and a server role-enricher |
 
@@ -1094,7 +1095,7 @@ See the [CHANGELOG](CHANGELOG.md) for full details.
 ```
 starfish/
 ├── packages/
-│   ├── python/            # protocol · server · client (starfish-sdk) + 12 extensions
+│   ├── python/            # protocol · server · client (starfish-sdk) + 13 extensions
 │   │   ├── protocol/      # Shared protocol primitives (hash, merge, crypto, types)
 │   │   ├── server/        # Python server (FastAPI router, S3 storage, encryption, config)
 │   │   ├── client/        # Python client SDK (httpx + cryptography)
@@ -1109,14 +1110,15 @@ starfish/
 │   │   ├── replica/       # Multi-server replication
 │   │   ├── outbox/        # Durable offline write-queue (generic over payload)
 │   │   ├── wal/           # Append-only CRDT op-log documents (core)
-│   │   └── spaces/        # Multi-user spaces (roster, E2EE keyrings, invite flows)
+│   │   ├── spaces/        # Multi-user spaces (roster, E2EE keyrings, invite flows)
+│   │   └── events/        # JSON event batches encoded as Parquet
 │   └── ts/                # same 16 families + webhook (TS-only) (@drakkar.software/starfish-*)
 │       ├── protocol/      # Shared protocol primitives (hash, merge, crypto, types)
 │       ├── server/        # TypeScript server (Hono router, encryption, config, CF Workers)
 │       ├── client/        # TypeScript client SDK + Zustand/Legend bindings
 │       ├── keyring/  identities/  sharing/  entitlements/  restrictions/
 │       ├── queuing/  projection/  audit/  replica/  outbox/
-│       ├── wal/  spaces/
+│       ├── wal/  spaces/  events/
 │       └── webhook/
 ├── examples/
 │   ├── ts/ · python/      # Single-file examples, one per v3 feature slice
