@@ -129,7 +129,7 @@ from starfish_spaces.account_seal import (
 from starfish_spaces.request_verify import sign_kem_sig, verify_kem_sig
 
 # ── CAS retry ─────────────────────────────────────────────────────────────────
-from starfish_spaces.cas_retry import run_cas
+from starfish_spaces.cas_retry import CasHint, run_cas
 
 # ── Objects (pure tree algorithms) ────────────────────────────────────────────
 from starfish_spaces.objects import add_object, build_tree
@@ -377,6 +377,7 @@ __all__ = [
     "sign_kem_sig", "verify_kem_sig",
     # CAS retry
     "run_cas",
+    "CasHint",
     # objects
     "build_tree", "add_object",
     # node keyring

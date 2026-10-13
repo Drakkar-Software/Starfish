@@ -1,10 +1,26 @@
 """Types for the Starfish client SDK."""
 
 
+import json
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol
 
 from starfish_protocol.types import PullResult, PushSuccess, Timestamps
+
+
+def _current_hash_from_server_response(server_response: str) -> str:
+    if not server_response:
+        return ""
+    try:
+        body = json.loads(server_response)
+    except json.JSONDecodeError:
+        return ""
+    if not isinstance(body, dict):
+        return ""
+    current = body.get("currentHash")
+    if isinstance(current, str) and current:
+        return current
+    return ""
 
 
 @dataclass
@@ -28,6 +44,7 @@ class ConflictError(Exception):
 
     def __init__(self, server_response: str = "") -> None:
         self.server_response = server_response
+        self.current_hash = _current_hash_from_server_response(server_response)
         super().__init__(f"hash_mismatch: {server_response}" if server_response else "hash_mismatch")
 
 
